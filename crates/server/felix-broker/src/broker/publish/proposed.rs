@@ -593,6 +593,13 @@ impl<E: Send + 'static> ProposedPublish<E> {
         self
     }
 
+    /// Undo [`Self::answer_within`]: the caller bounds its own wait for the
+    /// answer and arms no timer here for it.
+    pub fn without_deadline(mut self) -> Self {
+        self.answer_within = None;
+        self
+    }
+
     /// Wait until the batch is committed and fanned out or queued for
     /// delivery behind every batch handed over before it, or until
     /// [`Self::answer_at`] says it may be answered. Reports its offsets and
@@ -655,6 +662,8 @@ impl<E: Send + 'static> ProposedPublish<E> {
         let answered = match self.answer_within.take() {
             None => answered.await,
             Some((timeout, timed_out)) => {
+                #[cfg(any(test, feature = "test-support"))]
+                crate::timer_probe::note_armed();
                 match tokio::time::timeout(timeout, answered).await {
                     Ok(answered) => answered,
                     // `Drop` finishes the batch on a task.

@@ -619,6 +619,21 @@ impl LaneWork {
         let shard = shard.clone();
         match proposed {
             Ok(proposed) => {
+                // A client's ack is timed out by its control stream's
+                // sweep, at the quorum wait and with the engine's error, so
+                // the engine need not arm a timer per publish for it.
+                let timeout = self.quorum_timeout;
+                let timed_out =
+                    |timeout| crate::shards::routing::RaftPublish::timed_out(timeout).into();
+                let bounded = job
+                    .response
+                    .as_ref()
+                    .is_some_and(|reply| reply.answer_within(timeout, timed_out));
+                let proposed = if bounded {
+                    proposed.without_deadline()
+                } else {
+                    proposed
+                };
                 // The delivery is finished on this task once the publisher
                 // is answered: one task per publish, not two.
                 self.work.spawn(async move {

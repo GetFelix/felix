@@ -1462,6 +1462,57 @@ mod on_raft {
         Ok(())
     }
 
+    /// **A Raft publish whose client ack its control stream times out arms
+    /// no timer of its own.** The stream's sweep answers it at the quorum
+    /// wait with the engine's error, and the commit wait behind its delivery
+    /// has no deadline. Each was one timer per publish.
+    #[tokio::test]
+    async fn a_raft_publish_acked_to_a_client_arms_no_timer() -> Result<()> {
+        use crate::serving::quic::handlers::publish::ack::{AckEncoding, Outgoing};
+        use crate::serving::quic::handlers::publish::commit_ack::{AckRequest, Armed};
+
+        let at = Leading::new().await?;
+        let (out_tx, mut out_rx) = tokio::sync::mpsc::channel(8);
+        let acks = super::super::super::CommitAcks::for_test(
+            &out_tx,
+            Arc::new(tokio::sync::Semaphore::new(8)),
+        );
+        let request = AckRequest {
+            request_id: 1,
+            encoding: AckEncoding::Binary,
+            payload_bytes: 3,
+            forwarded_to: None,
+            start: crate::serving::quic::telemetry::t_instant_now(),
+            single: true,
+        };
+        let (reply, pending) = acks.reserve(request).expect("room");
+        let (mut one, _) = job(&at.handle, &at.orders, at.term, b"one", None);
+        one.response = Some(super::super::super::PublishReply::Ack(reply));
+
+        let armed = felix_broker::timer_probe::armed();
+        at.publish_ctx.scheduler.send(one).await;
+        assert_eq!(pending.arm(), Armed::Waiting);
+        let answer = tokio::time::timeout(Duration::from_secs(30), out_rx.recv()).await?;
+        assert!(
+            matches!(
+                answer,
+                Some(Outgoing::PublishAck {
+                    request_id: 1,
+                    error: None,
+                    ..
+                })
+            ),
+            "{answer:?}"
+        );
+        assert_eq!(
+            felix_broker::timer_probe::armed() - armed,
+            0,
+            "timers armed for one publish"
+        );
+        at.stop().await;
+        Ok(())
+    }
+
     /// A broker leading `orders` on its own, with a publish context on it.
     struct Leading {
         _root: tempfile::TempDir,

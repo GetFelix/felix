@@ -49,6 +49,8 @@ mod stream;
 mod telemetry;
 
 pub mod replication;
+#[cfg(any(test, feature = "test-support"))]
+pub mod timer_probe;
 pub mod timings;
 
 pub use broker::{
