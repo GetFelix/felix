@@ -37,6 +37,7 @@
 //! foundation for a decision that has to be identical everywhere.
 mod caught_up;
 mod decision;
+mod in_memory;
 mod leadership;
 mod metrics;
 mod moves;
