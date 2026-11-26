@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795673308453,
+  "lastUpdate": 1795673706283,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -70720,6 +70720,58 @@ window.BENCHMARK_DATA = {
             "range": "5132.11",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1013440.89\nmean: 1015007.82\nstdev: 5132.11\ncv: 0.51%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "4d368034f713220725c88b4330d5925ad7599fa7",
+          "message": "refactor(broker): in-memory stream shards run on a path of their own, off the hybrid (#3065) (#3220)\n\n* refactor(broker): in-memory stream shards on a path of their own (#3065)\n\nWIP: shards::memory takes every stream shard the Raft engine leaves.\n\nSpec-Unaffected: in-memory shards are not modelled; durable shards are unchanged\n\n* docs: in-memory shards run on shards::memory on a Raft broker (#3065)\n\nSpec-Unaffected: docs and changelog only\n\n* fix(broker): an in-memory shard's closes share one bound (#3065)\n\nSpec-Unaffected: in-memory shards are not modelled\n\n* test(broker): contains_key in the shared-bound test (#3065)\n\nSpec-Unaffected: test only",
+          "timestamp": "2026-11-26T06:05:53Z",
+          "tree_id": "136e22d79453044ae4caea133d49c7780fd6546c",
+          "url": "https://github.com/GetFelix/felix/commit/4d368034f713220725c88b4330d5925ad7599fa7"
+        },
+        "date": 1795673705507,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 365045.41,
+            "range": "12767.47",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 365045.41\nmean: 358497.44\nstdev: 12767.47\ncv: 3.56%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 365045.41,
+            "range": "12767.47",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 365045.41\nmean: 358497.44\nstdev: 12767.47\ncv: 3.56%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 80967.67,
+            "range": "961.31",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 80967.67\nmean: 80747.38\nstdev: 961.31\ncv: 1.19%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 809676.71,
+            "range": "9613.07",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 809676.71\nmean: 807473.77\nstdev: 9613.07\ncv: 1.19%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
