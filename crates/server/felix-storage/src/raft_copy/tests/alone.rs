@@ -127,6 +127,7 @@ async fn reform(copies: &CopyRoot, dir: &Path) -> io::Result<Aloned> {
             fold: &fold,
             member: &member,
             record: &LocalRecord,
+            floor: None,
         })
         .await
 }
@@ -162,6 +163,7 @@ async fn stop_if(
                 fold: &fold,
                 member: &member,
                 record: &LocalRecord,
+                floor: None,
             },
             may_stop,
         )
@@ -460,5 +462,162 @@ async fn stopping_alone_without_a_crash_owes_nothing() {
         crate::raft_copy::stop_file::stopped(&dir)
             .expect("stopped")
             .is_none()
+    );
+}
+
+/// What a restore through the tools does to the root after the shard wrote
+/// `count` records: the id is rotated with the restore marked, and the
+/// start after it rotates once more.
+async fn restored(count: u64) -> (Root, PathBuf) {
+    let root = Root::new();
+    run_state::begin(root.path(), true, None, boot(1), || false, || [9; 16]).expect("begin");
+    let dir = root.shard_dir();
+    written_copy(&root.open(), &dir, count).await;
+    restore_again(&root, 5);
+    (root, dir)
+}
+
+fn restore_again(root: &Root, n: u8) {
+    run_state::rotate_for_restore(root.path(), [n; 16]).expect("restore");
+    run_state::begin(root.path(), true, None, boot(n), || false, || [n + 100; 16]).expect("begin");
+    root.witness_current_id();
+}
+
+fn first_indexes(dir: &Path) -> Vec<u64> {
+    crate::raft_copy::epoch_file::load(dir)
+        .expect("epoch")
+        .expect("an epoch file")
+        .bases
+        .iter()
+        .map(|base| base.first_index)
+        .collect()
+}
+
+const R: u64 = crate::raft_copy::RESTORE_OFFSETS_PER_MILLI;
+const GAP: u64 = crate::raft_copy::DEFAULT_OFFSET_GAP;
+/// How far the line must clear an earlier epoch with the default gap:
+/// 2^32 offsets, 2^18 ms (about 4.4 minutes) of clock.
+const MARGIN_MILLIS: u64 = crate::raft_copy::MIN_OFFSET_GAP / R;
+const T0: u64 = 1_800_000_000_000;
+
+/// The highest offset an epoch starting at `first` at true time `began`
+/// can have given out by `now`, at half the line's slope.
+fn last_given(first: u64, began: u64, now: u64) -> u64 {
+    first + R / 2 * (now - began)
+}
+
+/// The line epoch planned at `T0` by a clock that read `T0 + ahead`.
+fn line_epoch(ahead: u64) -> u64 {
+    R * (T0 + ahead) + GAP
+}
+
+use crate::raft_copy::alone::restored_first;
+
+/// The clock is behind the one that planned an earlier epoch on the line:
+/// the line now is below that epoch's first index, and without a refusal
+/// the max with the copy's own first index is all that kept it apart.
+#[test]
+fn a_restore_on_a_clock_behind_an_earlier_epoch_is_refused() {
+    let earlier = line_epoch(0);
+    let now = T0 - 60_000;
+    let err = restored_first(3, Some(earlier), now).expect_err("refused");
+    assert!(err.contains("clears in about 6 min"), "{err}");
+    assert!(err.contains("check that this clock is not behind"), "{err}");
+}
+
+/// A clock stepped back by less than the margin: one minute back, the plan
+/// comes 90 s of true time after the earlier epoch began, so the line has
+/// moved only 30 s while that epoch can have given out 45 s worth. Refused
+/// until the clock reads the margin past that epoch's plan, and the first
+/// plan let through starts past everything it gave out.
+#[test]
+fn a_clock_stepped_back_less_than_the_margin_waits_until_the_line_clears() {
+    let earlier = line_epoch(0);
+    let back = 60_000;
+    let clock = |elapsed: u64| T0 + elapsed - back;
+    let line = R * clock(90_000) + GAP;
+    assert!(
+        line < last_given(earlier, T0, T0 + 90_000),
+        "the case reuses offsets without the refusal"
+    );
+    assert!(restored_first(3, Some(earlier), clock(90_000)).is_err());
+    let through = back + MARGIN_MILLIS + 1;
+    assert!(restored_first(3, Some(earlier), clock(through - 1)).is_err());
+    let first = restored_first(3, Some(earlier), clock(through)).expect("a plan");
+    assert!(first > last_given(earlier, T0, T0 + through));
+}
+
+/// A clock stepped back by more than the margin, ten minutes: every plan
+/// while it reads below the earlier epoch's plan time plus the margin is
+/// refused, so the shard waits out the step back. Past that, the bound
+/// assumes clocks within the margin (`docs/per-shard-raft.md`).
+#[test]
+fn a_clock_stepped_back_more_than_the_margin_is_refused_while_it_reads_behind() {
+    let earlier = line_epoch(0);
+    let back = 10 * 60_000;
+    for elapsed in [1, 60_000, back, back + MARGIN_MILLIS] {
+        let clock = T0 + elapsed - back;
+        assert!(
+            restored_first(3, Some(earlier), clock).is_err(),
+            "{elapsed} ms after the earlier epoch"
+        );
+    }
+    assert!(restored_first(3, Some(earlier), T0 + MARGIN_MILLIS + 1).is_ok());
+}
+
+/// The line exactly the margin above what was given is refused; one past is
+/// taken, and starts on the line.
+#[test]
+fn a_line_exactly_the_margin_above_is_refused() {
+    let line = R * T0 + GAP;
+    let margin = crate::raft_copy::MIN_OFFSET_GAP;
+    assert!(restored_first(3, Some(line - margin), T0).is_err());
+    assert_eq!(restored_first(3, Some(line - margin - 1), T0), Ok(line));
+    // A copy that is past the line keeps its own first index.
+    assert_eq!(restored_first(line + 7, Some(0), T0), Ok(line + 7));
+    assert_eq!(restored_first(3, None, T0), Ok(line));
+}
+
+/// A restore re-forms the shard on the line, two relaxed crashes in quick
+/// succession re-form it again with no wait, since a crash's epoch starts
+/// past what the copy reserved and not on the clock, and only a second
+/// restore within the margin of the first is refused, leaving the copy
+/// unstopped.
+#[tokio::test]
+async fn crashes_right_after_a_restore_re_form_and_a_second_restore_waits() {
+    let (root, dir) = restored(3).await;
+    let copies = root.open();
+    assert_eq!(
+        reform(&copies, &dir).await.expect("restore"),
+        Aloned::Reformed { epoch: 1 }
+    );
+    let line = first_indexes(&dir)[0];
+    assert!(
+        line > GAP,
+        "the restore's epoch is on the time line: {line}"
+    );
+    for (n, epoch) in [(3, 2), (4, 3)] {
+        relaxed_crash(&root, n);
+        root.witness_current_id();
+        let copies = root.open();
+        assert_eq!(
+            reform(&copies, &dir).await.expect("crash"),
+            Aloned::Reformed { epoch },
+            "crash {n}"
+        );
+    }
+    let firsts = first_indexes(&dir);
+    // Nothing was given out in between, so each crash's epoch may start
+    // where the last did; none goes back below the line.
+    assert!(firsts.windows(2).all(|w| w[1] >= w[0]), "{firsts:?}");
+
+    restore_again(&root, 6);
+    let copies = root.open();
+    let err = reform(&copies, &dir).await.expect_err("too soon");
+    assert!(err.to_string().contains("clears in about"), "{err}");
+    assert_eq!(group_epoch(&dir).expect("epoch"), Some(3));
+    assert!(
+        crate::raft_copy::stopped(&dir).expect("stop").is_none(),
+        "a refused plan leaves the copy as it is"
     );
 }

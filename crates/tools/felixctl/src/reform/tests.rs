@@ -78,6 +78,15 @@ fn a_restore_point_names_each_shards_end_its_time_and_the_gap() {
         args(&accepted).expect("body")["restore"]["offset_gap"],
         json!(1000)
     );
+    for flag in [&["--accept-short-gap"][..], &[]] {
+        let over = [
+            &["--restore-point", path, "--offset-gap", "1099511627777"][..],
+            flag,
+        ]
+        .concat();
+        let err = args(&over).expect_err("a gap above 2^40 is refused");
+        assert!(err.to_string().contains("above"), "{err}");
+    }
 }
 
 #[test]

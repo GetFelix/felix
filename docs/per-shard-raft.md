@@ -6416,6 +6416,10 @@ Why it is safe:
 - An RF 3 group that lost members is refused by the control plane's atomic
   check, and the broker only asks when membership and placement both name
   only itself.
+- After a restore the plan's line is read from the broker's clock, as on a
+  standalone broker, and the same refusal applies, with the offset floor
+  the broker's assignment carries as one more index the line must clear.
+  The control plane checks only that the first index is above the floor.
 - A directory restored from before an earlier re-form plans an epoch the
   record already holds, for another copy, so the broker neither asks nor
   stops it. A start from that record's seed would be refused anyway: the
@@ -6455,11 +6459,34 @@ re-forms the same way, in every fsync mode:
    re-form of its own. So when a restore is among the rotations since the
    kept copy was minted, the epoch also starts no lower than the time line
    a backup-point restore uses ("A restore from a backup point is a
-   re-form"), read from the broker's own clock. That assumes the clock at a
-   later restore is not behind the clock at an earlier one by more than the
-   offsets written in between could cover. If the clock was set back, fix
-   it, or wait until it has passed the time of the last restore, before
-   starting the broker. The tool writes
+   re-form"), read from the broker's own clock, with the default gap.
+
+   Being above an earlier epoch is not enough when the clock is behind the
+   one that planned it: after the clock steps back by S, or on a host whose
+   clock is S behind the old one, a plan made a true time E after that
+   epoch began has moved the line only `2^14 * (E - S)`, while the epoch
+   can have given out `2^13 * E`. Any E up to 2S gives offsets out again.
+   So the plan is refused unless its line clears the copy's last index,
+   the control plane's offset floor in a cluster, and every earlier epoch's
+   first index by 2^32, the margin a backup-point restore takes. That is
+   2^18 ms, about 4.4 minutes of clock. The broker leaves the shard closed,
+   with the copy not stopped, and plans again on each pass, so the shard
+   starts by itself once the line clears. The log line says how long that
+   is. If the wait is longer than about 4.4 minutes, the clock is behind
+   the one that planned the last epoch; fix it, or wait.
+
+   Why it is safe: with S at most 2^18 ms, a plan let through has
+   `E - S > 2^18 ms >= S`, so E > 2S and the line is past everything the
+   earlier epoch gave out. It assumes, as every restore does, a shard
+   that gives out at most 2^13 offsets per millisecond, and a clock that
+   is never more than about four minutes behind the one that planned an
+   earlier epoch. A clock further behind is refused for as long as it
+   reads below that epoch's plan time plus the margin, but not for the
+   whole 2S. Only restores wait: a relaxed crash's epoch starts past the
+   copy's own reservation, not on the clock, so an RF 1 shard that crashes
+   twice in a minute re-forms each time with no wait. A second restore
+   within about 4.4 minutes of the first waits out the rest of that time.
+   The tool writes
    `restore-pending` first and removes it last, and a start that finds it
    refuses, so a crash part way through the tool never starts the restored
    data under its old id. A copy put back without the tool, by hand or by

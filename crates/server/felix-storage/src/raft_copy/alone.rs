@@ -21,7 +21,10 @@ use serde::{Deserialize, Serialize};
 use super::epoch_file::{self, EpochBase};
 use super::judge::{CopyRoot, kept_copies, lock_dir, parent_of, reached_before};
 use super::start::{building, start_due, started_in};
-use super::vouch::{BrokerReport, DEFAULT_OFFSET_GAP, GroupRecord, RestoreAt};
+use super::vouch::{
+    BrokerReport, DEFAULT_OFFSET_GAP, GroupRecord, RestoreAt, line_behind_reason,
+    restore_line_clears,
+};
 use super::wire::{
     PlanView, SurveyStep, WireBase, WireReport, WireStart, first_probes, plan_starts_alone,
     survey_step_alone,
@@ -107,6 +110,9 @@ pub struct Alone<'a> {
     /// This copy's member id as its log stores a vote for it.
     pub member: &'a (dyn Fn(u64) -> String + Send + Sync),
     pub record: &'a dyn EpochRecord,
+    /// The highest index the control plane holds as committed in any epoch
+    /// of the shard, when it holds one. A restore's line must clear it.
+    pub floor: Option<u64>,
 }
 
 /// What [`CopyRoot::reform_alone`] did.
@@ -355,9 +361,14 @@ fn plan(a: &Alone<'_>, minted: String, restored: bool) -> io::Result<AlonePlan> 
                 let last = reports[&me].copies.current.last.map(|last| last.index);
                 let mut base = new_base(&view);
                 if restored {
-                    let line = time_line()
-                        .ok_or_else(|| refuse("the clock is past the time line".into()))?;
-                    base.first_index = base.first_index.max(line);
+                    let given = bases
+                        .iter()
+                        .map(|base| base.first_index)
+                        .chain(a.floor)
+                        .chain(last)
+                        .max();
+                    base.first_index =
+                        restored_first(base.first_index, given, now_millis()).map_err(refuse)?;
                     tracing::warn!(
                         shard = a.label,
                         first_index = base.first_index,
@@ -386,19 +397,47 @@ fn plan(a: &Alone<'_>, minted: String, restored: bool) -> io::Result<AlonePlan> 
     Err(refuse("the plan needed more reads than allowed".into()))
 }
 
-/// `RESTORE_OFFSETS_PER_MILLI` times this broker's clock in Unix
-/// milliseconds, plus the default gap: the first index a backup-point
-/// restore planned now takes. `None` past the last index.
-fn time_line() -> Option<u64> {
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .ok()?;
-    RestoreAt {
+/// The first index of a group of one re-formed after a restore, planned at
+/// `now_millis` of this broker's clock: no lower than `first` and the time
+/// line a backup-point restore with the default gap takes.
+///
+/// Refused while that line does not clear `given`, the highest index the
+/// floor, the copy or an earlier epoch's first index reached, by the margin
+/// a backup-point restore takes (`restore_line_clears`). An epoch planned
+/// before this clock stepped back, or on a host whose clock ran ahead, can
+/// have given out offsets above its own first index that a line only just
+/// past it would give out again. The broker plans again on its next pass,
+/// so the shard starts once the line clears.
+pub(crate) fn restored_first(
+    first: u64,
+    given: Option<u64>,
+    now_millis: u64,
+) -> Result<u64, String> {
+    let line = RestoreAt {
         end: 0,
         gap: DEFAULT_OFFSET_GAP,
-        planned_at_millis: u64::try_from(now.as_millis()).ok()?,
+        planned_at_millis: now_millis,
     }
     .first_index()
+    .ok_or("the clock is past the time line")?;
+    if let Some(given) = given
+        && !restore_line_clears(line, DEFAULT_OFFSET_GAP, given)
+    {
+        return Err(format!(
+            "not re-forming after the restore yet, so no offset is given out twice: {}; the \
+             broker plans again on each pass and starts the shard then, or fix this host's clock",
+            line_behind_reason(line, DEFAULT_OFFSET_GAP, given)
+        ));
+    }
+    Ok(first.max(line))
+}
+
+/// This broker's clock in Unix milliseconds; 0 before 1970, which any
+/// earlier epoch on the line refuses.
+fn now_millis() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |now| u64::try_from(now.as_millis()).unwrap_or(u64::MAX))
 }
 
 fn new_base(view: &PlanView) -> WireBase {

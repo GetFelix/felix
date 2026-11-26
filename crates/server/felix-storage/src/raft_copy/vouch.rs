@@ -238,8 +238,8 @@ pub(crate) enum Refused<B> {
     RestoreTooLate { planned_at_millis: u64 },
     /// A restore's time line plus gap is not far enough above `given`, the
     /// floor or an earlier epoch's first index, to clear what that epoch
-    /// can have given out (`restore_line_clears`).
-    LineBehind { line: u64, given: u64 },
+    /// can have given out (`restore_line_clears`), for a plan with `gap`.
+    LineBehind { line: u64, given: u64, gap: u64 },
     /// No copy was read.
     NothingRead,
     /// No broker with a copy id holds the base, so the epoch would have no
@@ -574,7 +574,11 @@ pub(crate) fn plan_reform_as<B: Ord + Clone>(
             if let Some(given) = given
                 && !restore_line_clears(line, restore.gap, given)
             {
-                return Err(Refused::LineBehind { line, given });
+                return Err(Refused::LineBehind {
+                    line,
+                    given,
+                    gap: restore.gap,
+                });
             }
             first_index.max(line)
         }
@@ -608,9 +612,64 @@ pub(crate) fn plan_reform_as<B: Ord + Clone>(
 /// past `given`. Requiring `line - given > MIN_OFFSET_GAP + MAX_OFFSET_GAP -
 /// gap` covers that for any `g0` and any `D` up to `MIN_OFFSET_GAP / R`
 /// (about four minutes). With the default gap it is the abandon's bound.
-fn restore_line_clears(line: u64, gap: u64, given: u64) -> bool {
-    let margin = MIN_OFFSET_GAP.saturating_add(MAX_OFFSET_GAP.saturating_sub(gap));
-    line > given.saturating_add(margin)
+pub(crate) fn restore_line_clears(line: u64, gap: u64, given: u64) -> bool {
+    line > given.saturating_add(line_margin(gap))
+}
+
+/// How far above `given` a line planned with `gap` must be.
+fn line_margin(gap: u64) -> u64 {
+    MIN_OFFSET_GAP.saturating_add(MAX_OFFSET_GAP.saturating_sub(gap))
+}
+
+/// How long the clock must move on before a line planned with `gap`, now
+/// at `line`, clears `given` (`restore_line_clears`), in milliseconds.
+pub(crate) fn line_wait_millis(line: u64, gap: u64, given: u64) -> u64 {
+    given
+        .saturating_add(line_margin(gap))
+        .saturating_add(1)
+        .saturating_sub(line)
+        .div_ceil(RESTORE_OFFSETS_PER_MILLI)
+}
+
+/// The refusal text for a line that does not clear `given`: how long to
+/// wait, and what a gap below the default adds to it.
+pub(crate) fn line_behind_reason(line: u64, gap: u64, given: u64) -> String {
+    let wait = line_wait_millis(line, gap, given);
+    let mut why = format!(
+        "the time line plus gap ({line}) is not far enough above index {given}, which the floor \
+         or an earlier epoch reached, to clear what that epoch can have given out; it clears in \
+         about {}",
+        about_millis(wait)
+    );
+    // A gap below the default lowers the line and raises the margin by the
+    // same amount, so it adds up to twice that much line to the wait.
+    let gap_wait = 2 * (MAX_OFFSET_GAP.saturating_sub(gap) / RESTORE_OFFSETS_PER_MILLI);
+    if gap < DEFAULT_OFFSET_GAP {
+        why.push_str(&format!(
+            "; the gap below the default adds up to {} of that, which the default gap avoids",
+            about_millis(gap_wait.min(wait))
+        ));
+    }
+    // With clocks that agree, the wait past what the gap adds is at most
+    // the margin, about 4.4 minutes. More means this clock is behind the
+    // one that planned the epoch.
+    if wait.saturating_sub(gap_wait) > MIN_OFFSET_GAP / RESTORE_OFFSETS_PER_MILLI + 1000 {
+        why.push_str(
+            "; that is longer than clocks that agree need, so check that this clock is not \
+             behind the one that planned that epoch",
+        );
+    }
+    why
+}
+
+/// `millis` in whole seconds, minutes or hours.
+fn about_millis(millis: u64) -> String {
+    let secs = millis.div_ceil(1000);
+    match secs {
+        0..=119 => format!("{secs} s"),
+        120..=7199 => format!("{} min", secs.div_ceil(60)),
+        _ => format!("{} h", secs.div_ceil(3600)),
+    }
 }
 
 /// Whether one broker is placed, none is dead, and every voter set the

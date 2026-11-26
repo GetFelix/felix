@@ -1020,7 +1020,11 @@ fn a_leader_that_moved_after_the_point_is_below_the_time_line() {
     let reports: BTreeMap<_, _> = reports.into_iter().collect();
     assert_eq!(
         plan_reform(&rec, &reports),
-        Err(Refused::LineBehind { line: 0, given: 3 })
+        Err(Refused::LineBehind {
+            line: 0,
+            given: 3,
+            gap: 0
+        })
     );
 
     let at = RestoreAt {
@@ -1225,7 +1229,8 @@ fn a_restore_after_an_epoch_planned_on_a_fast_clock_waits_for_a_full_gap() {
         restore_after_line_epoch(earlier, at(soon)),
         Err(Refused::LineBehind {
             line: earlier + R,
-            given: earlier
+            given: earlier,
+            gap: DEFAULT_OFFSET_GAP
         }),
         "{} offsets of the earlier epoch would be given out again",
         last_given(earlier, t0, soon) - (earlier + R)
@@ -1305,7 +1310,34 @@ fn a_restore_waits_for_the_line_to_clear_the_floor() {
         plan_reform(&rec, &reports),
         Err(Refused::LineBehind {
             line,
-            given: line - MIN_OFFSET_GAP
+            given: line - MIN_OFFSET_GAP,
+            gap: DEFAULT_OFFSET_GAP
         })
     );
+}
+
+/// The refusal says how long until the line clears, that a short gap is
+/// what makes a wait long, and points at the clock only when the wait is
+/// longer than agreeing clocks need.
+#[test]
+fn a_line_behind_says_how_long_to_wait() {
+    use crate::raft_copy::vouch::line_behind_reason;
+    let given = R * 1_800_000_000_000 + DEFAULT_OFFSET_GAP;
+    // Planned in the same millisecond as the epoch it follows: 2^18 ms.
+    let why = line_behind_reason(given, DEFAULT_OFFSET_GAP, given);
+    assert!(why.contains("clears in about 5 min"), "{why}");
+    assert!(!why.contains("default gap"), "{why}");
+    assert!(!why.contains("clock"), "{why}");
+    // The same moment with the smallest gap: about 37 hours, all of it the
+    // gap's doing.
+    let short = given - DEFAULT_OFFSET_GAP + MIN_OFFSET_GAP;
+    let why = line_behind_reason(short, MIN_OFFSET_GAP, given);
+    assert!(why.contains("clears in about 38 h"), "{why}");
+    assert!(why.contains("which the default gap avoids"), "{why}");
+    assert!(!why.contains("clock"), "{why}");
+    // A clock an hour behind the one that planned the epoch.
+    let behind = given - R * 3_600_000;
+    let why = line_behind_reason(behind, DEFAULT_OFFSET_GAP, given);
+    assert!(why.contains("clears in about 65 min"), "{why}");
+    assert!(why.contains("check that this clock is not behind"), "{why}");
 }
