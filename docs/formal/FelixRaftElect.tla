@@ -297,25 +297,28 @@ TypeOK ==
 OneLeaderPerTerm == \A x, y \in elected : x[1] = y[1] => x[2] = y[2]
 
 \* A leader up and connected that no member up and connected has outvoted.
-\* TLC expands a quantifier in a temporal property over its bound before it
-\* has a state, so these range over Servers.
 Settled(l) ==
     /\ l \in Healthy
     /\ role[l] = "leader"
-    /\ \A s \in Servers : s \in Healthy => VoteGE(vote[l], vote[s])
+    /\ \A s \in Healthy : VoteGE(vote[l], vote[s])
 
 \* That leader is open and every member up and connected follows it.
 Serves(l) ==
     /\ Settled(l)
     /\ open[l]
-    /\ \A s \in Servers : s \in Healthy => vote[s] = vote[l] /\ log[s] = log[l]
+    /\ \A s \in Healthy : vote[s] = vote[l] /\ log[s] = log[l]
 
-MajorityHealthy == Quorum(Healthy)
+\* TLC inlines the operators of a temporal property and evaluates a part whose
+\* body looks constant before it has a state, which breaks on Quorum(Healthy)
+\* and VoteGE. So the properties compare sets that are defined outside them.
+MajorityHealthy == 2 * Cardinality(Healthy) > Cardinality(Servers)
+SettledLeaders == {l \in Servers : Settled(l)}
+ServingLeaders == {l \in Servers : Serves(l)}
 
 \* Terms are bounded and a new leader needs a new term, so a leader that is
 \* eventually always there is eventually always the same one.
-ElectionSettles == (<>[]MajorityHealthy) => <>[](\E l \in Servers : Settled(l))
+ElectionSettles == (<>[]MajorityHealthy) => <>[](SettledLeaders # {})
 
-EventuallyServes == (<>[]MajorityHealthy) => <>[](\E l \in Servers : Serves(l))
+EventuallyServes == (<>[]MajorityHealthy) => <>[](ServingLeaders # {})
 
 =============================================================================
