@@ -337,6 +337,25 @@ struct RaftMember {
     shard: u32,
     kind: String,
     term: u64,
+    /// This member, as its group's membership names it. Absent from a
+    /// broker that predates it, whose answer then counts toward no majority.
+    #[serde(default)]
+    member: Option<Voter>,
+    /// The voter sets of the last membership in the member's log: one, or
+    /// two while a change is joint.
+    #[serde(default)]
+    voters: Vec<Vec<Voter>>,
+    /// `[term, index]` of the entry that membership is from.
+    #[serde(default)]
+    membership_at: Option<[u64; 2]>,
+}
+
+/// A group member: a broker and the copy of the shard it holds. A broker
+/// that lost its copy comes back as another member, which is not a voter.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Deserialize)]
+struct Voter {
+    broker: String,
+    copy: u64,
 }
 
 #[derive(Debug, Deserialize)]
@@ -469,9 +488,10 @@ fn raft_keys<'a>(
 }
 
 /// Each Raft shard's entry, from the broker that leads it at the highest
-/// term any member reported. A broker leading at a lower term may be deposed
-/// without knowing it, and its commit index may then miss a write the newer
-/// leader acknowledged.
+/// term any member reported, once a majority of each of the shard's voter
+/// sets answered (see [`majority_answered`]). A broker leading at a lower
+/// term may be deposed without knowing it, and its commit index may then
+/// miss a write the newer leader acknowledged.
 fn match_raft(
     assigned: &[&Assignment],
     answers: &[(String, &BrokerOffsets)],
@@ -480,13 +500,23 @@ fn match_raft(
     let mut missing = Vec::new();
     for assignment in assigned {
         let key = assignment.key();
-        let newest = answers
+        let members: Vec<&RaftMember> = answers
             .iter()
             .flat_map(|(_, offsets)| &offsets.raft_members)
             .filter(|m| (&*m.tenant_id, &*m.namespace, &*m.kind, &*m.name, m.shard) == key)
-            .map(|m| m.term)
-            .max()
-            .unwrap_or(0);
+            .collect();
+        if let Err(short) = majority_answered(&members) {
+            missing.push(format!(
+                "{}/{}/{}/{} ({}): {short}",
+                assignment.tenant_id,
+                assignment.namespace,
+                assignment.stream,
+                assignment.shard,
+                assignment.kind
+            ));
+            continue;
+        }
+        let newest = members.iter().map(|m| m.term).max().unwrap_or(0);
         let led = answers.iter().find_map(|(broker, offsets)| {
             offsets
                 .shards
@@ -526,6 +556,36 @@ fn match_raft(
     } else {
         Err(missing)
     }
+}
+
+/// Whether the answering `members` of one shard include a majority of each
+/// voter set of its newest membership: the one from the latest entry any of
+/// them holds. Every answer is read after the barrier and terms only grow,
+/// so a majority intersects the voters that elected any leader that
+/// acknowledged a write before it, and the newest term is seen. A joint
+/// membership needs both majorities. A learner, or a copy that came back
+/// under a new id, is in no voter set and counts for nothing.
+fn majority_answered(members: &[&RaftMember]) -> Result<(), String> {
+    let Some(newest) = members
+        .iter()
+        .filter(|m| !m.voters.is_empty())
+        .max_by_key(|m| m.membership_at)
+    else {
+        return Err("no answering member reports its voters".to_string());
+    };
+    let answered: std::collections::BTreeSet<&Voter> =
+        members.iter().filter_map(|m| m.member.as_ref()).collect();
+    for set in &newest.voters {
+        let set: std::collections::BTreeSet<&Voter> = set.iter().collect();
+        let heard = set.intersection(&answered).count();
+        if heard * 2 <= set.len() {
+            return Err(format!(
+                "{heard} of its {} voters answered; a point needs a majority",
+                set.len()
+            ));
+        }
+    }
+    Ok(())
 }
 
 async fn fetch_offsets(http: &reqwest::Client, url: &str) -> Result<BrokerOffsets> {

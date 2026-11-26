@@ -647,6 +647,7 @@ async fn a_shard_learned_only_from_a_snapshot_serves() {
             raft_voters: None,
             raft_seed: None,
             raft_bases: None,
+            raft_leader: None,
             raft_ordered: None,
         })
         .await

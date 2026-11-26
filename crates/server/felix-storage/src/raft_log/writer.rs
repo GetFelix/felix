@@ -328,16 +328,25 @@ where
             // covers them.
             callback.io_completed(Ok(()));
             // `flushed` still waits for the log's own fsync.
+            let mark = shared
+                .marking
+                .get()
+                .filter(|marking| marking.exact)
+                .zip(last)
+                .map(|(marking, last)| (marking.marks.clone(), last));
+            // With nothing to sync but the log, the sync that covers the
+            // append raises `flushed` itself. An exact mark, or a trim's
+            // sync, still needs the flush task to do it.
+            if mark.is_none()
+                && shared.synced.told
+                && let Some((target, last)) = pending.sync_target(log).zip(last)
+            {
+                shared.raise_when_synced(target, last);
+                return Ok(());
+            }
             let positions = Arc::clone(shared);
             let raise = move |flushed: io::Result<()>| match flushed {
-                Ok(()) => positions.positions.send_modify(|at| {
-                    if at
-                        .flushed
-                        .is_none_or(|f| last.is_some_and(|last| last.index > f.index))
-                    {
-                        at.flushed = last;
-                    }
-                }),
+                Ok(()) => positions.raise_flushed(last),
                 // A close flushes everything itself, so a flush it beat to
                 // the log lost nothing.
                 Err(err) if closed(&err) => {}
@@ -348,12 +357,6 @@ where
                     "a written-commit flush or exact log mark failed ({err})"
                 )),
             };
-            let mark = shared
-                .marking
-                .get()
-                .filter(|marking| marking.exact)
-                .zip(last)
-                .map(|(marking, last)| (marking.marks.clone(), last));
             shared.flushes.push(log, pending, Box::new(raise), mark);
             return Ok(());
         }
@@ -378,14 +381,7 @@ where
             move |flushed: io::Result<()>| {
                 if flushed.is_ok() {
                     // An append behind this one may have flushed first.
-                    shared.positions.send_modify(|at| {
-                        if at
-                            .flushed
-                            .is_none_or(|f| last.is_some_and(|last| last.index > f.index))
-                        {
-                            at.flushed = last;
-                        }
-                    });
+                    shared.raise_flushed(last);
                 }
                 callback.io_completed(flushed);
             }

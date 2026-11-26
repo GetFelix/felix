@@ -61,8 +61,29 @@ impl StreamEngine {
         #[cfg(feature = "raft")]
         {
             use felix_replication::raft::Role;
-            let engine = self.raft(shard)?;
-            let status = engine.status(shard)?;
+            let shards = self.raft.get()?;
+            let stopped = shards
+                .stopped_copy(shard)
+                .map(|stopped| felix_wire::InspectedStop {
+                    term: stopped.term,
+                    error: stopped.error,
+                });
+            // A stopped copy is closed until it reopens, and still reported.
+            let Some((engine, status)) = self
+                .raft(shard)
+                .and_then(|engine| Some((engine, engine.status(shard)?)))
+            else {
+                let stopped = stopped?;
+                return Some(felix_wire::InspectedRaft {
+                    role: "stopped".to_string(),
+                    term: stopped.term,
+                    leader: None,
+                    last_index: None,
+                    committed: None,
+                    voters: Vec::new(),
+                    stopped: Some(stopped),
+                });
+            };
             let voters = engine.voters(shard).unwrap_or_default();
             Some(felix_wire::InspectedRaft {
                 role: match status.role {
@@ -81,6 +102,7 @@ impl StreamEngine {
                     .into_iter()
                     .map(|member| member.broker.to_string())
                     .collect(),
+                stopped,
             })
         }
         #[cfg(not(feature = "raft"))]
@@ -772,6 +794,11 @@ impl Engine for StreamEngine {
         generation: u64,
         timeout: Duration,
     ) -> anyhow::Result<()> {
+        // An in-memory publish takes no offset, so there is nothing to
+        // commit: it was acknowledged when it was enqueued.
+        if outcome.offsets.is_none() {
+            return Ok(());
+        }
         self.hybrid
             .await_commit(handle, shard, outcome, generation, timeout)
             .await

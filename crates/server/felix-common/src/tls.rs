@@ -29,7 +29,7 @@ use rustls::sign::CertifiedKey;
 mod binding;
 mod client_ca;
 pub use binding::{PRINCIPAL_URI_PREFIX, UriSanError, check_subject_binding, uri_sans_after};
-pub use client_ca::{ReloadingClientCa, SavedClientCa};
+pub use client_ca::{ClientTrust, ReloadingClientCa};
 mod expiry;
 mod rotation;
 pub use expiry::{ChainExpiry, Presenter, UnreadableCertificate, spread_before};
@@ -48,7 +48,7 @@ pub type IdentityCheck =
 pub struct ReloadingIdentity {
     files: IdentityFiles,
     provider: Arc<CryptoProvider>,
-    current: ArcSwap<Loaded>,
+    current: ArcSwap<LoadedIdentity>,
     check: Option<IdentityCheck>,
     keep_names: bool,
 }
@@ -71,7 +71,7 @@ impl ReloadingIdentity {
         provider: Arc<CryptoProvider>,
         check: Option<IdentityCheck>,
     ) -> Result<Self, TlsFileError> {
-        let loaded = load(&files, &provider, check.as_ref())?;
+        let loaded = LoadedIdentity::load(&files, &provider, |chain| run(check.as_ref(), chain))?;
         Ok(Self {
             files,
             provider,
@@ -110,14 +110,13 @@ impl ReloadingIdentity {
         if cert == current.cert {
             return Ok(false);
         }
-        if let Some(why) = rotation::refusal(&cert[0], &current.cert[0], self.keep_names) {
-            return Err(TlsFileError::Refused {
-                var: self.files.cert_var,
-                path: self.files.cert_path.clone(),
-                why,
-            });
-        }
-        let fresh = certified(&self.files, cert, &self.provider, self.check.as_ref())?;
+        let fresh = current.rotate(
+            &self.files,
+            cert,
+            &self.provider,
+            self.keep_names,
+            |chain| run(self.check.as_ref(), chain),
+        )?;
         self.current.store(Arc::new(fresh));
         Ok(true)
     }
@@ -152,7 +151,7 @@ impl ReloadingIdentity {
     }
 
     fn key(&self) -> Arc<CertifiedKey> {
-        Arc::clone(&self.current.load().key)
+        self.current.load().key()
     }
 }
 
@@ -271,19 +270,64 @@ fn roots_from(
     Ok(roots)
 }
 
-/// The certificate and key currently presented.
-struct Loaded {
+/// A certificate chain and the key that matches it, read from disk and
+/// checked. Nothing presents it until a holder swaps it in, so a caller can
+/// check it against other material before committing either.
+pub struct LoadedIdentity {
     cert: Vec<CertificateDer<'static>>,
     key: Arc<CertifiedKey>,
 }
 
-fn load(
-    files: &IdentityFiles,
-    provider: &CryptoProvider,
-    check: Option<&IdentityCheck>,
-) -> Result<Loaded, TlsFileError> {
-    let cert = load_pem_certs(files.cert_var, &files.cert_path)?;
-    certified(files, cert, provider, check)
+impl LoadedIdentity {
+    /// Read the certificate and key, refusing a certificate that fails
+    /// `check`.
+    pub fn load(
+        files: &IdentityFiles,
+        provider: &CryptoProvider,
+        check: impl FnOnce(&[CertificateDer<'static>]) -> Result<(), String>,
+    ) -> Result<Self, TlsFileError> {
+        let cert = load_pem_certs(files.cert_var, &files.cert_path)?;
+        certified(files, cert, provider, check)
+    }
+
+    /// `cert`, with the key on disk, as a rotation of this identity. Refused
+    /// unless `cert` is valid now, covers every DNS name and IP address this
+    /// one does when `keep_names` is set, and passes `check`.
+    pub fn rotate(
+        &self,
+        files: &IdentityFiles,
+        cert: Vec<CertificateDer<'static>>,
+        provider: &CryptoProvider,
+        keep_names: bool,
+        check: impl FnOnce(&[CertificateDer<'static>]) -> Result<(), String>,
+    ) -> Result<Self, TlsFileError> {
+        let refused = |why| TlsFileError::Refused {
+            var: files.cert_var,
+            path: files.cert_path.clone(),
+            why,
+        };
+        let leaf = cert
+            .first()
+            .ok_or_else(|| refused("no certificate".to_string()))?;
+        if let Some(why) = rotation::refusal(leaf, &self.cert[0], keep_names) {
+            return Err(refused(why));
+        }
+        certified(files, cert, provider, check)
+    }
+
+    /// The certificate chain, leaf first.
+    pub fn chain(&self) -> &[CertificateDer<'static>] {
+        &self.cert
+    }
+
+    /// The chain and key as rustls presents them.
+    pub fn key(&self) -> Arc<CertifiedKey> {
+        Arc::clone(&self.key)
+    }
+}
+
+fn run(check: Option<&IdentityCheck>, chain: &[CertificateDer<'static>]) -> Result<(), String> {
+    check.map_or(Ok(()), |check| check(chain))
 }
 
 /// `cert` with the key on disk, once it passes `check`.
@@ -291,15 +335,13 @@ fn certified(
     files: &IdentityFiles,
     cert: Vec<CertificateDer<'static>>,
     provider: &CryptoProvider,
-    check: Option<&IdentityCheck>,
-) -> Result<Loaded, TlsFileError> {
-    if let Some(check) = check {
-        check(&cert).map_err(|why| TlsFileError::Refused {
-            var: files.cert_var,
-            path: files.cert_path.clone(),
-            why,
-        })?;
-    }
+    check: impl FnOnce(&[CertificateDer<'static>]) -> Result<(), String>,
+) -> Result<LoadedIdentity, TlsFileError> {
+    check(&cert).map_err(|why| TlsFileError::Refused {
+        var: files.cert_var,
+        path: files.cert_path.clone(),
+        why,
+    })?;
     let key =
         PrivateKeyDer::from_pem_file(&files.key_path).map_err(|source| TlsFileError::Read {
             var: files.key_var,
@@ -313,7 +355,7 @@ fn certified(
             source,
         }
     })?;
-    Ok(Loaded {
+    Ok(LoadedIdentity {
         cert,
         key: Arc::new(key),
     })

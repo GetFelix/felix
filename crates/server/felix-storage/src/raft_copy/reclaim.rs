@@ -22,6 +22,7 @@
 //! reserved past the current copy (`raft_log::reserved`). See
 //! `docs/per-shard-raft.md`, "Reclaiming kept copies".
 
+use std::fmt;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -54,6 +55,31 @@ pub struct HeldCopy {
     pub last_index: Option<u64>,
     /// Why it was left.
     pub reason: HeldReason,
+    /// Its `raft-reserved` and the current copy's, as the pass read them.
+    /// None when the pass did not read them, as for [`HeldReason::Itself`].
+    pub reserved: Option<HeldReservations>,
+}
+
+/// The two reservations a pass compares before it judges a kept directory's
+/// records. With both, an operator can tell whether deleting a damaged kept
+/// `raft-reserved` is safe (`docs/storage-format.md`, "`raft-reserved`").
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HeldReservations {
+    /// The kept directory's.
+    pub kept: ReservationRead,
+    /// The current shard directory's.
+    pub current: ReservationRead,
+}
+
+/// One directory's `raft-reserved` as a pass read it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReservationRead {
+    /// No file: the copy never reserved.
+    Absent,
+    /// The highest reserved Raft index.
+    At(u64),
+    /// Present but not readable or not decodable. The value is unknown.
+    Unreadable,
 }
 
 /// Why a kept directory was left in place.
@@ -77,6 +103,50 @@ pub enum HeldReason {
     Unreadable,
     /// It was due, but deleting it failed.
     DeleteFailed,
+}
+
+impl ReservationRead {
+    fn of(read: &io::Result<Option<u64>>) -> Self {
+        match read {
+            Ok(None) => Self::Absent,
+            Ok(Some(index)) => Self::At(*index),
+            Err(_) => Self::Unreadable,
+        }
+    }
+}
+
+impl fmt::Display for ReservationRead {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Absent => f.write_str("absent"),
+            Self::At(index) => write!(f, "{index}"),
+            Self::Unreadable => f.write_str("unreadable"),
+        }
+    }
+}
+
+impl fmt::Display for HeldReservations {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "kept {}, current {}", self.kept, self.current)
+    }
+}
+
+/// The line an operator reads: the directory, why it is held, and both
+/// reservations.
+impl fmt::Display for HeldCopy {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{} held ({:?})", self.path.display(), self.reason)?;
+        if let Some(copy) = self.copy {
+            write!(f, ", copy {copy:016x}")?;
+        }
+        if let Some(last) = self.last_index {
+            write!(f, ", last index {last}")?;
+        }
+        match self.reserved {
+            Some(reserved) => write!(f, ", raft-reserved {reserved}"),
+            None => Ok(()),
+        }
+    }
 }
 
 impl KeptReport {
@@ -182,25 +252,30 @@ async fn judge(
                 copy,
                 last_index: None,
                 reason: HeldReason::Itself,
+                reserved: None,
             });
             continue;
         }
         // A rotation carries every kept reservation into the new copy, so
         // this holds only a directory some other path left uncovered.
-        let uncovered = {
+        let reads = {
             let (dir, path) = (dir.to_path_buf(), path.clone());
-            off_runtime(move || Ok(reserved::load(&path)? > reserved::load(&dir)?)).await
+            off_runtime(move || Ok((reserved::load(&path), reserved::load(&dir)))).await
         };
-        if let Err(err) = &uncovered {
-            tracing::warn!(
-                path = %path.display(),
-                // Names the file that failed, which can be the current copy's.
-                error = %err,
-                "a reservation cannot be read, so the kept shard copy is held"
-            );
-        }
+        let (kept_read, current_read) = reads.unwrap_or_else(|err| {
+            let again = io::Error::new(err.kind(), err.to_string());
+            (Err(err), Err(again))
+        });
+        let reservations = HeldReservations {
+            kept: ReservationRead::of(&kept_read),
+            current: ReservationRead::of(&current_read),
+        };
+        let uncovered = match (kept_read, current_read) {
+            (Ok(kept), Ok(current)) => Ok(kept > current),
+            (Err(err), _) | (_, Err(err)) => Err(err),
+        };
         if !matches!(uncovered, Ok(false)) {
-            report.held.push(HeldCopy {
+            let held = HeldCopy {
                 path,
                 copy,
                 last_index: None,
@@ -209,7 +284,21 @@ async fn judge(
                 } else {
                     HeldReason::Unreadable
                 },
-            });
+                reserved: Some(reservations),
+            };
+            match &uncovered {
+                // Names the file that failed, which can be the current copy's.
+                Err(err) => tracing::warn!(
+                    held = %held,
+                    error = %err,
+                    "a reservation cannot be read, so the kept shard copy is held"
+                ),
+                Ok(_) => tracing::warn!(
+                    held = %held,
+                    "a kept shard copy reserved past the current copy, so it is held"
+                ),
+            }
+            report.held.push(held);
             continue;
         }
         let read = {
@@ -219,17 +308,19 @@ async fn judge(
         let kept = match read {
             Ok(kept) => kept,
             Err(err) => {
-                tracing::warn!(
-                    path = %path.display(),
-                    error = %err,
-                    "a kept shard copy cannot be read, so it is held"
-                );
-                report.held.push(HeldCopy {
+                let held = HeldCopy {
                     path,
                     copy,
                     last_index: None,
                     reason: HeldReason::Unreadable,
-                });
+                    reserved: Some(reservations),
+                };
+                tracing::warn!(
+                    held = %held,
+                    error = %err,
+                    "a kept shard copy cannot be read, so it is held"
+                );
+                report.held.push(held);
                 continue;
             }
         };
@@ -268,12 +359,15 @@ async fn judge(
             (Some(_), _, _) => Some(HeldReason::Unreadable),
         };
         if let Some(reason) = reason {
-            report.held.push(HeldCopy {
+            let held = HeldCopy {
                 path,
                 copy,
                 last_index: kept.last,
                 reason,
-            });
+                reserved: Some(reservations),
+            };
+            tracing::info!(held = %held, "a kept shard copy is held");
+            report.held.push(held);
             continue;
         }
         // Checked as late as possible: once the group stops, another member
@@ -292,22 +386,25 @@ async fn judge(
                     copy = ?copy.map(|copy| format!("{copy:016x}")),
                     last_index = ?kept.last,
                     committed = ?committed,
+                    reserved = %reservations,
                     "reclaimed a kept shard copy"
                 );
                 report.reclaimed.push(path);
             }
             Err(err) => {
-                tracing::warn!(
-                    path = %path.display(),
-                    error = %err,
-                    "could not reclaim a kept shard copy"
-                );
-                report.held.push(HeldCopy {
+                let held = HeldCopy {
                     path,
                     copy,
                     last_index: kept.last,
                     reason: HeldReason::DeleteFailed,
-                });
+                    reserved: Some(reservations),
+                };
+                tracing::warn!(
+                    held = %held,
+                    error = %err,
+                    "could not reclaim a kept shard copy"
+                );
+                report.held.push(held);
             }
         }
     }

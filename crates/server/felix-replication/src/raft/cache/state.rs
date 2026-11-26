@@ -6,7 +6,7 @@ use std::sync::Arc;
 use bytes::Bytes;
 
 use super::layers::{Delta, Layers, Tables};
-use super::recent::{Change, Recent, WINDOW_MICROS};
+use super::recent::{Change, MARK_MICROS, Recent, WINDOW_MICROS};
 use super::{CacheCommand, Condition, Request};
 
 /// A key's value. Its version is the index of the put that wrote it.
@@ -122,6 +122,11 @@ pub(crate) struct CacheState {
     recent: Option<Box<Recent>>,
     /// Until when, in the log's time, `recent` keeps recording.
     watched_until: u64,
+    /// Until when, in the log's time, the applied
+    /// [`CacheCommand::Watched`] entries ask every member to record. A
+    /// function of the applied entries, so it is in the snapshot: a member
+    /// that opens from one inside a mark's life records from there.
+    pub(super) marked_until: u64,
 }
 
 /// A snapshot cut holds `base`, so apply writes to `delta` until the delta
@@ -137,6 +142,7 @@ struct Layered {
 /// Apply goes on meanwhile and does not change it.
 pub(crate) struct Cut {
     time: u64,
+    marked_until: u64,
     base: Arc<Tables>,
     /// Writes not yet folded into `base` when the cut was taken.
     delta: Option<Arc<Delta>>,
@@ -148,7 +154,7 @@ impl Cut {
             base: &self.base,
             delta: self.delta.as_deref(),
         };
-        super::snapshot::encode(self.time, maps)
+        super::snapshot::encode(self.time, self.marked_until, maps)
     }
 }
 
@@ -204,6 +210,11 @@ impl CacheState {
             CacheCommand::Add { .. } | CacheCommand::Retire { .. } => {
                 return self.fold_in(index, stamp, command);
             }
+            CacheCommand::Watched => {
+                let answer = self.fold_in(index, stamp, command);
+                self.marked(index, stamp);
+                return answer;
+            }
         };
         if report.is_none() && self.recent.is_none() {
             return self.fold_in(index, stamp, command);
@@ -258,6 +269,7 @@ impl CacheState {
                 self.producer_mut(*producer).raise(*floor);
                 return None;
             }
+            CacheCommand::Watched => return None,
             CacheCommand::Put { request, .. }
             | CacheCommand::Delete { request, .. }
             | CacheCommand::Add { request, .. } => *request,
@@ -354,7 +366,7 @@ impl CacheState {
                     (here, Some(_)) => Answer::Refused { version: here },
                 }
             }
-            CacheCommand::Expire { .. } | CacheCommand::Retire { .. } => {
+            CacheCommand::Expire { .. } | CacheCommand::Retire { .. } | CacheCommand::Watched => {
                 unreachable!("not a client write")
             }
         }
@@ -437,6 +449,7 @@ impl CacheState {
             layered: None,
             recent: None,
             watched_until: 0,
+            marked_until: 0,
         }
     }
 
@@ -454,13 +467,14 @@ impl CacheState {
         {
             while self.fold(usize::MAX) {}
         }
-        let time = self.time;
+        let (time, marked_until) = (self.time, self.marked_until);
         match &self.layered {
             None => {
                 let base = Arc::new(std::mem::take(&mut self.tables));
                 self.next_expiry = None;
                 let cut = Cut {
                     time,
+                    marked_until,
                     base: Arc::clone(&base),
                     delta: None,
                 };
@@ -472,6 +486,7 @@ impl CacheState {
             }
             Some(layered) => Cut {
                 time,
+                marked_until,
                 base: Arc::clone(&layered.base),
                 delta: (!layered.delta.is_empty()).then(|| Arc::new(layered.delta.clone())),
             },
@@ -533,8 +548,14 @@ impl CacheState {
     }
 
     /// The state restored from a snapshot whose last entry is `index`.
+    /// Inside a mark's life it records from past `index`: nothing at or
+    /// below it can be replayed, everything above it is applied here.
     pub(crate) fn restored_through(&mut self, index: u64) {
         self.applied = index;
+        if self.recent.is_none() && self.time < self.marked_until {
+            self.watched_until = self.watched_until.max(self.marked_until);
+            self.recent = Some(Box::default());
+        }
         if let Some(recent) = &mut self.recent {
             recent.restart(index);
         }
@@ -550,13 +571,33 @@ impl CacheState {
         self.recent.as_ref()?.since(from, keep)
     }
 
-    /// A watch of this shard here ended at `now`: record from the live edge
-    /// on, for a window, so its resume can be replayed.
+    /// A watch of this shard here ended, or resumes, at `now`: record from
+    /// the live edge on, for a window, so a resume can be replayed.
     pub(crate) fn watch_ended(&mut self, now: u64) {
         self.watched_until = self.watched_until.max(now.saturating_add(WINDOW_MICROS));
         if self.recent.is_none() {
             self.recent = Some(Box::new(Recent::starting_at(self.applied + 1)));
         }
+    }
+
+    /// A [`CacheCommand::Watched`] at `index`, stamped `stamp`: record from
+    /// here on. The entry changes no key, so every change from `index` on
+    /// is kept and that is the floor of a recording it starts.
+    fn marked(&mut self, index: u64, stamp: u64) {
+        let until = stamp.saturating_add(MARK_MICROS);
+        self.marked_until = self.marked_until.max(until);
+        self.watched_until = self.watched_until.max(until);
+        if self.recent.is_none() {
+            self.recent = Some(Box::new(Recent::starting_at(index)));
+        }
+    }
+
+    /// Whether the shard's leader should append a [`CacheCommand::Watched`]
+    /// at `now` for a watch that took a change: the last one applied keeps
+    /// members recording for less than a window more. Renewed once a
+    /// window at most while watched.
+    pub(crate) fn wants_mark(&self, now: u64) -> bool {
+        self.marked_until < now.saturating_add(WINDOW_MICROS)
     }
 
     /// Whether this state records changes no watch has wanted since `now`
@@ -752,6 +793,7 @@ impl PartialEq for CacheState {
             }
         };
         self.time == other.time
+            && self.marked_until == other.marked_until
             && ours.entries().eq(theirs.entries())
             && ours.expiring().eq(theirs.expiring())
             && ours.counters().eq(theirs.counters())

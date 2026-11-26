@@ -44,6 +44,7 @@ mod shards;
 pub(crate) use shards::SetHold;
 mod streams;
 mod switch;
+pub(crate) use switch::FloorRules;
 mod tenants;
 
 pub(crate) use nodes::FleetRule;
@@ -927,7 +928,15 @@ impl ControlPlaneStore for InMemoryStore {
         floors: Vec<crate::model::RaftFloorReport>,
     ) -> StoreResult<u32> {
         Ok(self
-            .apply_record_raft_floors(node_id, &floors, true, true)
+            .apply_record_raft_floors(
+                node_id,
+                &floors,
+                FloorRules {
+                    mark_formed: true,
+                    vouched_voters: true,
+                    note_leader: true,
+                },
+            )
             .await)
     }
 
@@ -1273,6 +1282,7 @@ impl AuthStore for InMemoryStore {
                 tenant_id,
                 revocation.principal_ids,
                 revocation.revoked_at,
+                false,
             )
             .await?;
         }
@@ -1407,7 +1417,30 @@ impl AuthStore for InMemoryStore {
     ) -> StoreResult<()> {
         #[cfg(test)]
         Faults::take(&self.faults.revocation_writes)?;
-        revocations::revoke_principals(self, tenant_id, principal_ids, revoked_at).await
+        revocations::revoke_principals(self, tenant_id, principal_ids, revoked_at, false).await
+    }
+
+    async fn revoke_principals_explicitly(
+        &self,
+        tenant_id: &str,
+        principal_ids: Vec<String>,
+        revoked_at: i64,
+    ) -> StoreResult<()> {
+        #[cfg(test)]
+        Faults::take(&self.faults.revocation_writes)?;
+        revocations::revoke_principals(self, tenant_id, principal_ids, revoked_at, true).await
+    }
+
+    async fn principal_cutoffs(
+        &self,
+        tenant_id: &str,
+        principal_id: &str,
+    ) -> StoreResult<crate::store::PrincipalCutoffs> {
+        #[cfg(test)]
+        self.faults
+            .cutoff_reads
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        revocations::principal_cutoffs(self, tenant_id, principal_id).await
     }
 
     async fn principal_revocations(

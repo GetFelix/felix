@@ -258,6 +258,9 @@ pub fn start_move(
         }
         return Err(Refused::AlreadyLeads(destination.to_string()));
     }
+    if !durable {
+        return in_memory_move(catalog, existing, destination);
+    }
     if let Some(halt) = catalog.caught_up.halted(key, destination) {
         return Err(Refused::DestinationHalted {
             node: destination.to_string(),
@@ -322,6 +325,45 @@ pub fn start_move(
         assignment,
         expected_generation: existing.generation,
         zones,
+    })
+}
+
+/// Name `destination` an in-memory shard's owner, in one write at the next
+/// generation, as placement re-places one. Nothing is copied and no report
+/// is read, and the write is never in flight, so it takes no move slot. The
+/// old owner must be live, as for any move: one that is not is placement's
+/// to replace.
+fn in_memory_move(
+    catalog: &Catalog<'_>,
+    existing: &ShardAssignment,
+    destination: &str,
+) -> Result<OperatorStep, Refused> {
+    if existing.pending_set.is_some() {
+        return Err(Refused::SetChangePending);
+    }
+    if moving(existing) {
+        return Err(Refused::Moving);
+    }
+    if lifecycle_of(catalog, &existing.leader) != Some(NodeLifecycle::Live) {
+        return Err(Refused::LeaderUnavailable(existing.leader.clone()));
+    }
+    if let Some(max) = catalog
+        .nodes
+        .iter()
+        .find(|node| node.node_id == destination)
+        .and_then(|node| node.spec.capacity.max_shards)
+        && roles_on(catalog, destination) >= max
+    {
+        return Err(Refused::AtCapacity(destination.to_string()));
+    }
+    Ok(OperatorStep {
+        step: MoveStep::OwnerReplaced {
+            from: existing.leader.clone(),
+            to: destination.to_string(),
+        },
+        assignment: assignment_for(&existing.key, destination, Vec::new()),
+        expected_generation: existing.generation,
+        zones: None,
     })
 }
 

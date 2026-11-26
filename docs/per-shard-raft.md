@@ -175,9 +175,13 @@ no vote, no log position.
 
 A member with a new id has never voted. It joins as a learner and the old
 member is removed by a membership change. This is the rule issue #1331 asks
-for, and it replaces vouching and copy trust. The copy ids of a shard
-rotate, and the directory's log is kept as plain records, in each of these
-cases:
+for, and it replaces vouching and copy trust.
+
+> `crates/server/felix-replication/src/raft/tests/identity.rs`,
+> `a_wiped_voter_never_votes_under_its_old_id_and_its_record_survives`.
+
+The copy ids of a shard rotate, and the directory's log is kept as plain
+records, in each of these cases:
 
 - The shard directory is missing or empty.
 - The storage id rotated: the data root was lost, it failed the restore
@@ -673,6 +677,9 @@ A kept directory is also held while its reservation (`raft-reserved`, see
 highest reservation into the new copy, so this holds only a directory some
 other path left uncovered, and deleting it would lose how far a re-form must
 pad.
+Each held directory is logged with both reservations, the kept one's and the
+current copy's, so an operator can check the damaged-file step in
+`docs/storage-format.md` against them.
 
 The first index comes from the running member, so a purge held only in memory
 counts. The flushed tail is read from the log's durable offset, so a copy
@@ -989,7 +996,14 @@ mechanism:
   once did for `backup_members`. The point is read only from a member serving its term
   at the newest term any member reports: a leader at an older term may be
   deposed without knowing it, and a new one knows the commit index only
-  once it has committed in its own term. The point is one past the furthest
+  once it has committed in its own term. That check means something only
+  when the answering members include a majority of each voter set of the
+  newest membership any of them reports (by its entry's log id), so the
+  collector requires one (#3179). Every answer is read after the barrier
+  and terms only grow, so that majority meets the voters that elected any
+  leader that acknowledged a write before the barrier. A joint membership
+  needs both majorities; a learner, or a copy back under a new copy id, is
+  in no voter set. A member that reports no voters counts toward none. The point is one past the furthest
   entry of that term the leader acknowledged, which is its commit index or
   past it: a `Quorum` write on a `Periodic` stream is answered on a written
   majority, and a `Leader` write on the lease, before the commit reaches
@@ -3046,11 +3060,40 @@ what is on disk, as after a crash. The first stop reopens on the next pass. A
 member that stops again within a minute of its reopen waits longer each time,
 from a second up to 30, since every open scans its log.
 
+The broker reports the stop until the copy hears a leader again, or the
+shard leaves the broker. A copy that reopens and leads hears itself, so it
+clears too. A rotated copy clears once the group takes it in as a voter and
+its leader reaches it. A rotated copy with no other copy to catch up from
+stays reported.
+
+- `felix_broker_raft_shards_stopped_on_storage_error` counts such copies.
+- `shard_inspect` shows `raft.stopped` with the term the copy stopped at and
+  the error. While the copy is closed, `raft.role` is `stopped`.
+- A publish or subscribe that would get "still opening the shard" gets
+  `not_ready` with "this broker's copy of the shard was stopped by a storage
+  error", at once: a write is not held waiting for a takeover. The error
+  itself is not in the refusal, because it can name the broker's data paths
+  and segments. It is in the broker log and in `shard_inspect`, which needs
+  `node.view:cluster:*`. A request this broker can forward to the leader is
+  still forwarded.
+- `/ready` stays 200. Only a poisoned hybrid log or a failed node record
+  fails it.
+
+Nothing the stopped copy did is trusted after it. Its core refuses appends,
+votes and read rounds, its role watcher closes the write fence
+(`deposed`), and a commit or publish wait ends as leadership lost. A
+poisoned log comes back under a new copy id, which is not a voter in the
+group's membership, so it is never counted in a quorum with the cut log.
+
 > `crates/server/felix-replication/src/raft/tests/identity.rs`,
 > `a_member_stopped_on_a_storage_error_reopens_once_the_disk_heals`,
 > `a_poisoned_single_copy_group_comes_back_empty_and_serves_nothing`;
 > `services/felix-broker-service/src/shards/raft/tests.rs`,
 > `a_member_stopped_on_a_storage_error_reopens_once_the_disk_heals`;
+> `services/felix-broker-service/src/shards/raft/tests/stopped_copy.rs`,
+> `a_poisoned_log_stops_its_shard_alone_and_is_reported`,
+> `a_copy_that_reopens_and_leads_is_no_longer_reported` and
+> `a_rotated_follower_is_reported_until_it_hears_the_leader`;
 > `crates/server/felix-storage/src/raft_copy/tests/marks.rs`,
 > `a_reopen_after_the_disk_heals_starts_from_the_synced_marks`,
 > `a_failed_fsync_is_not_retried_by_the_reopen` and
@@ -3667,6 +3710,15 @@ been had it waited for the write.
   leader acknowledged. The pass waits while the broker still holds a batch
   it was handed as leader, so a record is never delivered once from the
   batch and again from the log.
+- With no subscriber registered, and no state view a state read built,
+  the pass reads nothing: the stream moves to the bound with an empty
+  replay ring, so a follower does no read of its log per commit. A
+  subscriber registers under the same ring lock the move takes, so it
+  either joins above the move and reads what lies below from the log, or
+  is registered first and the pass reads for it. The move does not count
+  the generation-start records just below the bound, so the first pass
+  that reads after it, or the term that opens there, counts them from the
+  log and reports them as skipped.
 - Records are grouped into frames by append time, so a follower's frame
   boundaries can differ from the leader's. Order and offsets are the same.
 - A batch that reaches the stream at offsets the log already delivered is
@@ -3697,6 +3749,11 @@ been had it waited for the write.
   joins by offset instead, at the committed end. No pass runs first: the
   records the pass still delivers below that offset are skipped for it.
 
+> `crates/server/felix-broker/src/broker/shards/tests.rs`,
+> `a_follower_with_no_subscriber_reads_nothing_back`,
+> `a_subscriber_joining_mid_stream_gets_every_offset_once`,
+> `a_jump_past_a_generation_start_still_reports_it_skipped` and
+> `leading_after_a_jump_reports_the_generation_start_run`;
 > `crates/server/felix-replication/src/raft/tests/deliver.rs`,
 > `a_record_a_later_leader_replaced_reaches_no_subscriber`,
 > `a_record_is_delivered_only_once_a_majority_holds_it`,
@@ -5563,6 +5620,40 @@ Pacing keeps this from churning:
 The values are fields of `RuntimeConfig::placement`. Placement's leader is
 only a preference: routing follows the group's real leader.
 
+Rule 4 means a group with a voter down keeps whatever leader it elected. If
+placement then named a different member, the two would disagree until the
+broker came back, and anything that reads the assignment as the shard's
+server (discovery, `felixctl`, dashboards) would point at a follower
+(#3041). So placement follows the group instead:
+
+- Every floor report a leader sends ("Offset floor") also tells the control
+  plane that its sender leads the group, with the term of the entry it
+  reports. The control plane keeps the sender with the highest term as the
+  shard's `raft_leader`. A second sender at the same term is not taken: a
+  new leader reports an older term's entry until its own first entry
+  commits, so a later report at that term can come from a deposed leader.
+  Only a broker in the set, and in the voters the report names, counts.
+  The record is kept from metadata level 52.
+- When placement renames a leader that is down, it names that broker if it
+  is a live, serving member of the set and a voter as last reported. With
+  no such report, while the group is still electing, it names the member
+  leading fewest, as before.
+- While any member of the set is down, a live placement leader that is not
+  the reported one is renamed to it. That covers a rename made before the
+  report arrived. Both writes go ahead while placement is paused: they move
+  nothing and ask for no transfer, they record what the group did.
+- A reported broker the leave rules rename a leader away from (draining,
+  internal, or outside the stream's region) is not followed. Placement keeps
+  its own choice there, so the leave rename is not undone on the next pass.
+
+Nothing acts on this name in a way Raft does not judge. A member that leads
+hands over only through rule 2 to 6, a broker with no member forwards to
+the name and is redirected by the member there, and only the group's leader
+answers a write, after the group commits it. A wrong or stale report costs
+at most a redirect or a hand-over the leader refuses. Once the broker is
+back, the hand-over rules apply again and balancing decides the leader as
+before.
+
 | Metric | Meaning |
 | --- | --- |
 | `felix_broker_raft_shards_led_off_placement` | Shards this broker leads whose placement names another leader. Above zero for long means a hand-over is held back, or placement names a broker that holds no voter of the group |
@@ -5885,12 +5976,15 @@ what stops that.
   (2^20) above is refused and logged: the gap counts restores the backup
   missed, and the bound keeps a broker from walking the incarnation to its
   limit.
-- **A broker a restore rewound has to restart.** A restore puts back each
+- **A broker a restore rewound registers again.** A restore puts back each
   node record's incarnation as the backup held it. A broker that registered
   after the backup keeps beating under its newer incarnation, which the
   control plane accepts, but its acknowledgements are not from the record's
-  process and are dropped. Nothing tells it to register again yet, so the
-  gate stays shut until an operator restarts it.
+  process and are dropped. The heartbeat answer to such a beat carries
+  `register_again: true`, and the broker registers again without giving up
+  its lease. The new registration takes the record's next incarnation, so
+  only acknowledgements that process reports count. See "Registering again
+  after a restore" in `docs/control-plane.md`.
 - **Nothing goes out until every broker has.** `placement_acked_by` holds
   only while every broker named has acknowledged exactly the current
   incarnation (the model's `AllAcked`). A broker that never reported counts
@@ -6108,41 +6202,55 @@ directory's storage id, and every Raft copy on it reopens as a new, empty
 member. In a cluster the other voters catch it up. A standalone broker's
 groups have no other voter and no control plane, so each one re-forms
 itself, before its member opens (`shards/raft/standalone.rs`,
-`CopyRoot::reform_alone` in `raft_copy/alone.rs`):
+`CopyRoot::reform_alone` in `raft_copy/alone.rs`). A data directory put
+back from a backup and passed through `felix-broker rotate-storage-id`
+re-forms the same way, in every fsync mode:
 
 1. The start reads `relaxed-crash-id` (`docs/storage-format.md`). It acts
    only when that file names the current storage id, and only on a copy
-   whose kept copies were all minted under an id a relaxed crash rotated
-   away. A clean stop, an `OnCommit` crash and an operator's rotation
-   leave no such evidence, and the copy stays as it is. The file keeps an
-   id for as long as a copy on disk was minted under it, so a shard that no
-   start opened through any number of crashes in a row is still re-formed
-   when it opens. A standalone
-   broker cannot tell a restored volume from a relaxed crash, so it
-   re-forms a restored copy from the reservation the snapshot holds. A
-   volume snapshot taken while the broker ran can therefore give out
-   offsets again; restore from a backup point instead.
+   whose kept copies were all minted under an id a relaxed crash or the
+   restore tool rotated away. A clean stop, an `OnCommit` crash and a
+   `storage-id` deleted by hand leave no such evidence, and the copy stays
+   as it is. The file keeps an id for as long as a copy on disk was minted
+   under it, so a shard that no start opened through any number of crashes
+   in a row is still re-formed when it opens.
 2. It plans the next group epoch from its kept copy with the same rule
    every re-form uses, with one difference: it keeps the copy's whole log,
    not only what the saved commit covers. The commit is saved at most once
    a second, so cutting there would drop records that were synced. The loss
-   is the unsynced tail `Periodic` already allows.
-3. The new epoch starts above every index the crashed run reserved, so no
-   offset it handed out is given out again. That holds only for the data
-   directory the crashed run used. A directory restored from a snapshot or
-   backup starts from the reservation the snapshot holds and can give out
-   offsets handed out after that point again
-   ([#3048](https://github.com/GetFelix/felix/issues/3048)), as a
-   standalone broker on the hybrid engine can.
+   is the unsynced tail `Periodic` already allows, or, after a restore,
+   what was acknowledged after the copy was taken.
+3. The new epoch starts above every index the copy reserved. After a relaxed
+   crash that is every offset the crashed run handed out. A restored copy
+   holds the reservation of the moment it was copied, which the run after
+   it may have passed, by handing out more than a reservation step or by a
+   re-form of its own. So when a restore is among the rotations since the
+   kept copy was minted, the epoch also starts no lower than the time line
+   a backup-point restore uses ("A restore from a backup point is a
+   re-form"), read from the broker's own clock. That assumes the clock at a
+   later restore is not behind the clock at an earlier one by more than the
+   offsets written in between could cover. If the clock was set back, fix
+   it, or wait until it has passed the time of the last restore, before
+   starting the broker. The tool writes
+   `restore-pending` first and removes it last, and a start that finds it
+   refuses, so a crash part way through the tool never starts the restored
+   data under its old id. A copy put back without the tool, by hand or by
+   rolling back a volume or VM snapshot, is not detected and can give out
+   offsets again ([#3048](https://github.com/GetFelix/felix/issues/3048)),
+   as a standalone broker on the hybrid engine can.
 4. The plan is written to `raft-reform-alone` and synced before the copy is
-   stopped and started in the new epoch. A crash part way resumes that plan.
-   A plan made under an older storage id, left by a second crash during the
-   re-form, is dropped and the group is planned again.
+   stopped and started in the new epoch. A crash part way resumes that plan,
+   with the first index it recorded. A plan made under an older storage id,
+   left by a second crash during the re-form, is dropped and the group is
+   planned again.
 
 The planner refuses this mode unless the group's only placed broker is this
 one and every voter set it reads names only it. `FelixRaftReform` checks it
 with `Alone`: `FelixRaftReformAlone` holds `KeptLossBound`, and
 `FelixRaftReformAloneCutToCommit`, which cuts at the saved commit, breaks it.
+`FelixRaftReform` does not model a standalone restore. Its first index is
+the rule `FelixRaftRestoreRepeated` checks with `Line`, with the broker's
+clock as the planner's.
 
 ## Cache and counters
 
@@ -6163,8 +6271,10 @@ A cache shard's group has one log holding puts, deletes and counter deltas
 - **The snapshot** is the applied state as of one log id: the cache records
   that are unexpired at the log's time, with their values, versions and
   expiries, the counter sums, the
-  log's time (the stamp of the last stamped entry applied) and, per
-  producer, its floor and the answers it still keeps.
+  log's time (the stamp of the last stamped entry applied), when the last
+  watched entry's life ends and, per producer, its floor and the answers
+  it still keeps. The format is versioned; this build writes version 2 and
+  still reads version 1, which has no watched entry's end.
 - **Apply never reads a clock.** The leader stamps each entry, no earlier
   than the last stamped entry in its log (the uncommitted tail it inherited
   included, blank and membership entries skipped), or the snapshot's time
@@ -6201,6 +6311,15 @@ A cache shard's group has one log holding puts, deletes and counter deltas
   in a queue or on the network can commit after the retire, and without the
   floor it would be applied a second time. The snapshot holds each
   producer's floor and kept answers.
+- **A watched entry changes nothing a read or a write sees.** It moves the
+  log's time to its stamp, as every stamped entry does, and changes no
+  key, answer or floor. When its life ends is a function of the applied
+  entries, so it is in the snapshot and in state equality. What a member
+  records because of it is that member's own memory, kept out of the
+  snapshot and out of every answer, so two members that applied the same
+  entries hold the same state whether or not they record. A build that predates the entry stops at
+  it, as at any cache entry it cannot read; skipping it is never safe in
+  general, so no entry kind is skipped.
 
 `FelixRaftCache.tla` checks these rules (`docs/formal/README.md`, "Raft
 cache state machine").
@@ -6218,6 +6337,43 @@ no more of them than are in flight. A write that fails or whose caller gives
 up stops holding the floor. Such a write has no retry guarantee: a client that
 sends it again after an unknown outcome may apply it twice, as on the
 hybrid.
+
+### Cache entry and snapshot bytes
+
+Both are little-endian and start with a version byte
+(`raft/cache/record.rs`, `raft/cache/snapshot.rs`). A key is a four-byte
+length and its UTF-8 bytes. A member refuses an entry or a snapshot whose
+version or kind it does not know: an entry stops the member, as skipping
+it would leave its state unlike the others', and a snapshot is refused
+before it is stored.
+
+A cache entry is version 1, then a one-byte kind. A request is three
+eight-byte fields: producer, sequence and floor. A condition is a tag byte
+(0 none, 1 absent, 2 version) and an eight-byte version.
+
+| Kind | Name | After the kind |
+|---|---|---|
+| 0 | put | request, condition, expiry (8), key, then the value to the entry's end |
+| 1 | delete | request, condition (none or version), key |
+| 2 | expire | version (8), key |
+| 3 | add | request, delta (8, signed), key |
+| 4 | retire | producer (8), floor (8) |
+| 5 | watched | nothing |
+
+A cache snapshot is version 2:
+
+| Field | Size |
+|---|---|
+| version | 1 |
+| log's time | 8 |
+| end of the last watched entry's life, in the log's time (0 for none) | 8 |
+| value count, then per value: key, version (8), expiry (8), value length (4), value | 8 + each |
+| counter count, then per counter: key, sum (8, signed) | 8 + each |
+| producer count, then per producer: id (8), floor (8), answer count (8), then per answer: sequence (8), answer tag (1), answer value (8) | 8 + each |
+
+Version 1 is the same without the watched entry's end. This build still
+reads it, as a snapshot with no live watched entry, and writes only
+version 2.
 
 ### Serving a cache shard from its group
 
@@ -6277,24 +6433,37 @@ on the hybrid.
   watch is handed. That edge is the member's own, so a follower that is
   behind can hand a retained watch a value older than one the client just
   read from the leader. The newer value is committed and arrives as a
-  change once the follower applies it; nothing is lost. A member keeps
-  its latest applied changes in memory while it serves a watch of the
-  shard and for five minutes after (in the log's time), long enough for a
-  client to reconnect after a dropped connection or a broker failover. It
-  starts at the first change a watch of the shard took, or at the live
-  edge when one ends, and keeps up to 4096 changes or 1 MiB per shard,
-  counting each change's key, value and slot (`raft/cache/recent.rs`). A
-  member that has not served a watch of the shard in that window keeps
-  nothing and pays nothing extra per write; its tick frees what an idle
-  shard kept. A client that resumes on a member that kept nothing for the
-  shard, such as one it never watched on, is resnapshotted. A resume
+  change once the follower applies it; nothing is lost. Every member
+  keeps its latest applied changes in memory while the shard is watched
+  anywhere in the group, so a client that reconnects to another member
+  after a dropped connection or a broker failover, the new leader
+  included, is replayed. A member that serves a watch has the group's
+  leader append a watched entry when the watch joins, takes a change or
+  ends: the leader appends it itself, and a follower asks its leader with
+  the `Watched` peer message, again every 10 s until one is applied.
+  Every member that applies the entry records from that entry on, until
+  ten minutes past its stamp (in the log's time). The leader appends
+  another only once the last has less than five minutes left, so a
+  watched shard costs one entry about every five minutes and an unwatched
+  one costs none. A member that serves a watch also records from the
+  first change the watch took, and for five minutes after it ends. A
+  member keeps up to 4096 changes or 1 MiB per shard, counting each
+  change's key, value and slot (`raft/cache/recent.rs`). A member that is
+  not recording keeps nothing and pays nothing extra per write; its tick
+  frees what an idle shard kept. Where a member's recording starts is its
+  floor: every change from there on is kept, so a resume from below it,
+  for example from before the first watched entry, or on a member that
+  is not recording, is resnapshotted. A resume
   whose offset is still kept is replayed `[from_offset, edge)` from them,
   deletes included, exactly as the hybrid replays its log, then joins live
   delivery. One from below the oldest kept change is answered with
   `resnapshot` and each key's current value, read after the member has
   applied every put acknowledged before the watch began. A snapshot
-  install starts the kept changes empty, past the snapshot's entry, and a
-  restart keeps none, so a resume from before either resnapshots. A value
+  install or a restart starts the kept changes empty, past the snapshot's
+  entry: recording again at once if the snapshot is inside a watched
+  entry's life, which the snapshot carries, and otherwise from the next
+  watched entry applied. A resume from at or before the snapshot's entry
+  resnapshots. A value
   bigger than the byte bound still reaches live watches, and moves the
   oldest kept change past it. A resume from past the
   edge, an offset a member further ahead gave out, waits for this one to
@@ -7144,7 +7313,8 @@ for the written acknowledgement. The proposal extends it to the commit.
 `flushed` keeps meaning a real fsync, because three things read it as
 one: the root's log mark (an unsynced id would read as a restore after a
 power cut), a `Leader` write on a stream that fsyncs, and the snapshot
-rule below.
+rule below. It rises when the log's durable bound covers the entry, raised
+by the sync itself, so the append does not hand the wait to a task.
 
 Each follower answers an append by its own mode. Every leader asks for
 the written report (`await_quorum_ack`, `Request::Written`) once a

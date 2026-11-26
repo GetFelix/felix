@@ -78,6 +78,12 @@ pub enum Reason {
     /// Deliberately not `Local`: serving now would acknowledge a write against
     /// a log that is not yet recovered.
     NotReady,
+    /// This node's copy of a Raft shard was stopped by a storage error.
+    /// Retryable like [`Self::NotReady`]: another copy takes over, or this
+    /// one rejoins once it is reopened. The error is not in the message: it
+    /// can name the broker's data paths, so it goes to the broker log and
+    /// `shard_inspect` only.
+    CopyStopped,
     /// This node's routing view is behind the caller's.
     Stale { have: u64, wanted: u64 },
     /// The shard is moving to another broker and has not cut over yet.
@@ -95,7 +101,7 @@ impl Reason {
         match self {
             Self::NotAssigned => wire::NOT_ASSIGNED,
             Self::OwnerUnavailable(_) => wire::OWNER_UNAVAILABLE,
-            Self::NotReady => wire::NOT_READY,
+            Self::NotReady | Self::CopyStopped => wire::NOT_READY,
             Self::Stale { .. } => wire::STALE,
             Self::Moving => wire::MOVING,
             Self::RegionNotRoutable { .. } => wire::REGION_NOT_ROUTABLE,
@@ -109,6 +115,10 @@ impl std::fmt::Display for Reason {
             Self::NotAssigned => write!(f, "shard is not assigned to any broker"),
             Self::OwnerUnavailable(detail) => write!(f, "shard owner is unavailable: {detail}"),
             Self::NotReady => write!(f, "this broker is still opening the shard"),
+            Self::CopyStopped => write!(
+                f,
+                "this broker's copy of the shard was stopped by a storage error"
+            ),
             Self::Stale { have, wanted } => {
                 write!(
                     f,
@@ -151,6 +161,9 @@ pub struct IngressRouter {
     /// Routes for the shards the hybrid does not run. They never reach the
     /// view, so they are asked for first.
     engine_shards: std::sync::OnceLock<Arc<dyn EngineShards>>,
+    /// The in-memory shards serving here, which every view's servable set
+    /// includes.
+    memory: std::sync::OnceLock<Arc<super::memory::MemoryShards>>,
     /// Runs inside [`IngressRouter::publish`] just before the view is stored,
     /// so a test can land a change between the read and the store. Held while
     /// the hook runs, so a hook must not call `publish` itself.
@@ -185,6 +198,7 @@ impl IngressRouter {
             fence,
             hold: MoveHold::disabled(),
             engine_shards: std::sync::OnceLock::new(),
+            memory: std::sync::OnceLock::new(),
             #[cfg(test)]
             before_publish: std::sync::Mutex::new(None),
         }
@@ -194,6 +208,12 @@ impl IngressRouter {
     /// call counts.
     pub fn set_engine_shards(&self, engine_shards: Arc<dyn EngineShards>) {
         let _ = self.engine_shards.set(engine_shards);
+    }
+
+    /// Serve the shards `memory` holds as well as the lifecycle's. Only the
+    /// first call counts.
+    pub(crate) fn set_memory(&self, memory: Arc<super::memory::MemoryShards>) {
+        let _ = self.memory.set(memory);
     }
 
     /// Where another engine sends `key`, when one runs it here. A local
@@ -612,7 +632,12 @@ impl IngressRouter {
         }
     }
 
-    fn store(&self, view: View) {
+    fn store(&self, mut view: View) {
+        // Every publish goes through here, the lifecycle's own included, so
+        // none leaves the in-memory shards out.
+        if let Some(memory) = self.memory.get() {
+            view.servable.extend(memory.servable());
+        }
         self.view.store(Arc::new(view));
         self.fence.changed().notify_waiters();
     }
@@ -888,8 +913,17 @@ pub struct BackupMember {
     pub key: ShardKey,
     /// The stream or cache incarnation the group runs.
     pub incarnation: u64,
+    /// This member, as its group's membership names it.
+    pub member: felix_replication::raft::MemberId,
     /// The member's current term.
     pub term: u64,
+    /// The voter sets of the last membership in the member's log: one, or
+    /// two while a change is joint. A backup point needs a majority of
+    /// each to answer before it trusts the newest term it sees.
+    pub voter_sets: Vec<std::collections::BTreeSet<felix_replication::raft::MemberId>>,
+    /// The entry that membership is from, so the collector can tell which
+    /// of several members' memberships is the newest.
+    pub membership_at: Option<felix_replication::raft::LogPoint>,
     /// One past the furthest entry this member acknowledged (its commit
     /// index, or a write answered before its commit), while it leads `term`
     /// and serves it. Every write acknowledged before the read is below it.
@@ -1012,6 +1046,9 @@ pub struct FeedState {
     pub nodes: HashMap<String, felix_router::NodeRef>,
     /// Whoever runs the shards the hybrid does not. `None` when it runs all.
     pub engine_shards: Option<Arc<dyn EngineShards>>,
+    /// Takes every stream shard `engine_shards` left, on a broker whose
+    /// durable shards run on Raft: those are the in-memory ones.
+    pub(crate) memory: Option<Arc<super::memory::MemoryShards>>,
 }
 
 /// What the feed needs to read the node catalog.
@@ -1058,6 +1095,7 @@ pub fn spawn_feed<L: ControlPlaneLink>(
         elections,
         nodes,
         engine_shards,
+        memory,
     } = state;
     // Seeded with the kept addresses, so a first read that fails still leaves
     // the feed something to route by.
@@ -1133,6 +1171,13 @@ pub fn spawn_feed<L: ControlPlaneLink>(
                 }
                 None => Taken::new(),
             };
+            // After the Raft engine took the durable ones, so only in-memory
+            // shards are left to take. None of them reaches the elections,
+            // the prefetch or the lifecycle below.
+            let in_memory = match &memory {
+                Some(memory) => memory.take(&mut assignments),
+                None => HashMap::default(),
+            };
             let assignments = match &elections {
                 Some(elections) => with_elected(assignments, elections),
                 None => assignments,
@@ -1166,6 +1211,13 @@ pub fn spawn_feed<L: ControlPlaneLink>(
                 &mut early,
             )
             .await;
+            let mut assignments = assignments;
+            if let Some(memory) = &memory {
+                memory.apply(&in_memory).await;
+                // Routed like any other shard, so every broker forwards to
+                // the owner.
+                assignments.extend(in_memory);
+            }
             let newest = Arc::clone(&fetched.borrow_and_update());
             if !Arc::ptr_eq(&newest, &catalog) {
                 catalog = newest;

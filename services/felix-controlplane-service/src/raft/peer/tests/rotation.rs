@@ -6,9 +6,12 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
-use rustls::pki_types::{CertificateDer, ServerName};
+use rustls::client::danger::ServerCertVerifier;
+use rustls::pki_types::{CertificateDer, ServerName, UnixTime};
+use rustls::server::danger::ClientCertVerifier;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
+use super::super::live::{LivePeerTls, PeerTrust};
 use super::super::{PeerSecurity, PeerTls, client_tls, fingerprint};
 use crate::auth::cert_binding::PeerCertificates;
 
@@ -302,6 +305,30 @@ async fn a_connection_closes_when_its_client_certificate_ends() {
     assert!(matches!(read, Ok(0) | Err(_)), "{read:?}");
 }
 
+/// Whether `trust`'s server verifier, as the dialler uses it, accepts `cert`.
+fn server_accepts(trust: &PeerTrust, cert: &CertificateDer<'_>) -> bool {
+    trust
+        .server_verifier()
+        .verify_server_cert(
+            cert,
+            &[],
+            &ServerName::try_from("localhost").expect("name"),
+            &[],
+            UnixTime::now(),
+        )
+        .is_ok()
+}
+
+/// Whether the listener's client verifier accepts `cert` now.
+fn client_accepts(live: &LivePeerTls, cert: &CertificateDer<'_>) -> bool {
+    live.verify_client_cert(cert, &[], UnixTime::now()).is_ok()
+}
+
+/// A certificate for member `id` under `ca`, written nowhere a member reads.
+fn stray(ca: &Ca, id: u64) -> CertificateDer<'static> {
+    issue(ca, tempfile::tempdir().expect("dir").path(), id)
+}
+
 /// After a reload of member 1, member 2 still sees `a1` and is still
 /// answered: TLS 1.3 finishes the client's handshake before the server
 /// checks the client certificate, so only a request shows a refusal.
@@ -433,7 +460,8 @@ async fn a_new_root_and_a_leaf_under_it_in_the_same_tick_are_taken_together() {
     });
     connect(&two, port).await.expect("both on the old root");
 
-    let b1 = fingerprint(&issue(&new_ca, dir1.path(), 1));
+    let b1_der = issue(&new_ca, dir1.path(), 1);
+    let b1 = fingerprint(&b1_der);
     let b2 = fingerprint(&issue(&new_ca, dir2.path(), 2));
     for (live, dir) in live.iter().zip([&dir1, &dir2]) {
         std::fs::write(dir.path().join("ca.pem"), &new_ca.pem).expect("write ca");
@@ -442,6 +470,23 @@ async fn a_new_root_and_a_leaf_under_it_in_the_same_tick_are_taken_together() {
     let (mut stream, server) = connect(&two, port).await.expect("both on the new root");
     assert_eq!(server, b1);
     assert_eq!(who(&mut stream).await, b2);
+
+    // One store switched the CA, the server verifier and the certificate.
+    let commits = live[0].commits.lock().expect("commits").clone();
+    assert_eq!(commits.len(), 1, "the pair is stored in one step");
+    let trust = live[0].trust();
+    assert!(Arc::ptr_eq(&commits[0], &trust));
+    assert_eq!(trust.chain()[0], b1_der);
+    assert_eq!(trust.bundle(), [pem_der(&new_ca.pem)]);
+    assert!(server_accepts(&trust, &stray(&new_ca, 2)));
+    assert!(!server_accepts(&trust, &stray(&old_ca, 2)));
+    assert!(client_accepts(&live[0], &stray(&new_ca, 2)));
+    assert!(!client_accepts(&live[0], &stray(&old_ca, 2)));
+}
+
+fn pem_der(pem: &str) -> CertificateDer<'static> {
+    use rustls::pki_types::pem::PemObject;
+    CertificateDer::from_pem_slice(pem.as_bytes()).expect("pem")
 }
 
 /// A new-root-only bundle taken on the word of a leaf that is then refused
@@ -463,12 +508,54 @@ async fn a_new_root_whose_waiting_leaf_is_refused_is_not_kept() {
     let port = serve(&one).await;
     let live = one.tls.as_ref().expect("tls").live(CLUSTER).expect("live");
 
+    let before = live.trust();
     issue(&new_ca, dir1.path(), 2);
     std::fs::write(dir1.path().join("ca.pem"), &new_ca.pem).expect("write ca");
     live.reload();
+
+    // Nothing was stored, so no handshake at any point saw the new root:
+    // not with the old certificate, and not before the leaf was refused.
+    assert!(
+        live.commits.lock().expect("commits").is_empty(),
+        "a refused rotation stores nothing"
+    );
+    let trust = live.trust();
+    assert!(Arc::ptr_eq(&trust, &before));
+    assert_eq!(fingerprint(&trust.chain()[0]), a1);
+    assert_eq!(trust.bundle(), [pem_der(&old_ca.pem)]);
+    assert!(!server_accepts(&trust, &stray(&new_ca, 2)));
+    assert!(server_accepts(&trust, &stray(&old_ca, 2)));
+    assert!(!client_accepts(&live, &stray(&new_ca, 2)));
+    assert!(client_accepts(&live, &stray(&old_ca, 2)));
+
     let (mut stream, server) = connect(&two, port).await.expect("still on the old root");
     assert_eq!(server, a1);
     who(&mut stream).await;
+}
+
+/// A bundle that still holds this member's root stands on its own when the
+/// leaf waiting beside it is refused: the CA moves, the certificate stays.
+#[tokio::test]
+async fn a_bundle_the_current_leaf_verifies_is_taken_without_a_refused_waiting_leaf() {
+    let (old_ca, new_ca) = (ca(), ca());
+    let dir1 = tempfile::tempdir().expect("dir");
+    let a1 = issue(&old_ca, dir1.path(), 1);
+    let one = member_security(&old_ca, dir1.path());
+    let live = one.tls.as_ref().expect("tls").live(CLUSTER).expect("live");
+
+    issue(&new_ca, dir1.path(), 2);
+    let both = format!("{}{}", old_ca.pem, new_ca.pem);
+    std::fs::write(dir1.path().join("ca.pem"), &both).expect("write ca");
+    live.reload();
+
+    let commits = live.commits.lock().expect("commits").clone();
+    assert_eq!(commits.len(), 1);
+    let trust = live.trust();
+    assert!(Arc::ptr_eq(&commits[0], &trust));
+    assert_eq!(trust.chain()[0], a1);
+    assert_eq!(trust.bundle().len(), 2);
+    assert!(server_accepts(&trust, &stray(&new_ca, 2)));
+    assert!(client_accepts(&live, &stray(&new_ca, 2)));
 }
 
 #[tokio::test]

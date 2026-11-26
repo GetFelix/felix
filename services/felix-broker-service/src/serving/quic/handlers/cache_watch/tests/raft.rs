@@ -9,6 +9,11 @@ use crate::shards::raft::tests as fixture;
 use crate::shards::routing::EngineShards;
 
 const TIMEOUT: Duration = Duration::from_secs(10);
+
+// A watch has the group append a watched entry, which takes an index and
+// changes nothing, so a confirmation's `resume_offset` can land past an edge
+// read before the watch. The changes that follow, by the versions their
+// writes were acknowledged at, are what pin replay and order.
 const ORDERS: &str = "orders";
 
 fn cache_key() -> ShardKey {
@@ -280,7 +285,7 @@ async fn a_raft_cache_watch_resumes_by_offset() -> Result<()> {
     assert!(
         matches!(
             started,
-            Message::CacheWatchStarted { resume_offset, resnapshot: false, .. } if resume_offset == edge
+            Message::CacheWatchStarted { resume_offset, resnapshot: false, .. } if resume_offset >= edge
         ),
         "{started:?}"
     );
@@ -366,7 +371,7 @@ async fn a_raft_cache_watch_resume_past_the_edge_waits_for_it() -> Result<()> {
     assert!(
         matches!(
             started,
-            Message::CacheWatchStarted { resume_offset, resnapshot: false, .. } if resume_offset == from
+            Message::CacheWatchStarted { resume_offset, resnapshot: false, .. } if resume_offset >= from
         ),
         "{started:?}"
     );
@@ -509,6 +514,8 @@ async fn a_full_raft_cache_watch_ends_as_lagged() {
 #[tokio::test]
 async fn a_raft_cache_resume_is_replayed_from_the_kept_changes() -> Result<()> {
     let cache = RaftCache::start().await;
+    // Before any watch, so below every change the member keeps.
+    let zero = cache.write(RaftCache::put("k", b"zero")).await;
     let (_, events) = cache.watch(false, None).await?;
     let mut events = events.expect("events");
     let one = cache.write(RaftCache::put("k", b"one")).await;
@@ -530,7 +537,7 @@ async fn a_raft_cache_resume_is_replayed_from_the_kept_changes() -> Result<()> {
     assert!(
         matches!(
             started,
-            Message::CacheWatchStarted { resume_offset, resnapshot: false, .. } if resume_offset == edge
+            Message::CacheWatchStarted { resume_offset, resnapshot: false, .. } if resume_offset >= edge
         ),
         "{started:?}"
     );
@@ -542,7 +549,8 @@ async fn a_raft_cache_resume_is_replayed_from_the_kept_changes() -> Result<()> {
     assert_eq!(events.change().await?, (Some(b"four".to_vec()), four));
 
     // From before the first kept change, the key's current value instead.
-    let (started, events) = cache.watch(false, Some(one - 1)).await?;
+    assert!(zero < one);
+    let (started, events) = cache.watch(false, Some(zero)).await?;
     assert!(
         matches!(
             started,

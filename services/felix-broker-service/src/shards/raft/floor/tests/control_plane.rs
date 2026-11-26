@@ -274,6 +274,7 @@ async fn switched(store: &InMemoryStore) -> ShardAssignment {
         raft_ordered: None,
         raft_seed: None,
         raft_bases: None,
+        raft_leader: None,
     };
     store
         .put_shard_assignment(wanted.clone())
@@ -421,4 +422,24 @@ async fn a_refresh_marks_an_idle_group_formed() {
         2,
         "a marked group is not re-sent"
     );
+}
+
+/// A leader's floor report names it to the control plane as the broker the
+/// group elected, which placement follows when the placed leader is down
+/// (#3041). No field is added to the report: the sender and its term are it.
+#[tokio::test]
+async fn a_floor_report_names_its_sender_the_elected_leader() {
+    let cp = ControlPlane::start().await;
+    let shard = switched(&cp.store).await;
+    let mut floors = Floors::default();
+    cp.tick(&mut floors, vec![(key("a"), shard.incarnation, at(3, 7))])
+        .await;
+    let held = cp
+        .store
+        .get_shard_assignment(&shard.key)
+        .await
+        .expect("assignment")
+        .raft_leader
+        .expect("noted");
+    assert_eq!((held.node.as_str(), held.term), ("broker-x", 3));
 }

@@ -265,6 +265,13 @@ impl ShardAssignment {
             if self.raft_copy_ids.get(node).is_some_and(|copy| voters.members.get(node) == Some(copy)))
     }
 
+    /// Whether the voters a leader of this record's formed group last
+    /// reported leave `node` possible as a voter: they include it, or there
+    /// is no such report to rule it out.
+    pub(crate) fn may_be_voting(&self, node: &str) -> bool {
+        !matches!(self.formed_voters(), Some(Some(_))) || self.reports_voting(node)
+    }
+
     /// `None` when this record's group has not formed; otherwise the voters
     /// its leader reported at this incarnation and epoch, if any.
     fn formed_voters(&self) -> Option<Option<&RaftVoters>> {

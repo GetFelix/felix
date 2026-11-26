@@ -383,6 +383,7 @@ pub(super) async fn write_shard_assignment(
     stored.carry_raft_target(existing, hold.counter);
     stored.carry_raft_floor(existing);
     stored.carry_raft_formed(existing);
+    stored.carry_raft_leader(existing);
     stored.carry_raft_ordered(existing);
     stored.carry_raft_epochs(existing);
     let held = existing

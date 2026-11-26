@@ -651,7 +651,7 @@ Four properties:
    the old one or the new one, and memory keeps the old value. Stopping the
    log keeps anything from being decided on that difference.
 
-   A broker with a poisoned log answers `/ready` with 503, so a load
+   A broker with a poisoned hybrid log answers `/ready` with 503, so a load
    balancer or an orchestrator takes it out of rotation. The body has one
    line per poisoned log, naming its tenant and what stopped it, for example
    `a log of tenant acme is poisoned: a flush of the replica state failed
@@ -660,22 +660,29 @@ Four properties:
    on it carries tenant labels only, so the namespace and stream stay in the
    broker's log. The process does not exit and `/live` stays ok. The broker also attests no trusted copy to a fence from then on.
    See "A failed flush" in [replication-engine.md](replication-engine.md) for
-   what a replicated shard does.
+   what a replicated shard does. A failed sync of a node record, such as the
+   copy-trust record, also answers 503.
 
-   One poisoned log failing the whole broker's `/ready` is an interim rule.
-   The decided behaviour is per shard
-   ([#2300](https://github.com/GetFelix/felix/issues/2300)): only the
-   poisoned log's shard stops taking writes, its leader steps down so another
-   copy takes over, `/ready` stays 200 for the broker's healthy shards, and
-   the poisoned log is reported in metrics and in the broker's status. Until
-   that lands a broker cannot hand off one shard by itself, so taking the
-   whole broker out of rotation is the only way to move its traffic.
+   A poisoned per-shard Raft log stops that shard's copy only, and `/ready`
+   stays 200. The copy's group stops, so it takes no write, answers no read
+   and casts no vote; if it led, the other copies elect a new leader. The
+   broker closes the copy and reopens it under a new copy id, and the rest of
+   its shards keep serving. Until the copy hears a leader again it is
+   counted in `felix_broker_raft_shards_stopped_on_storage_error`,
+   `shard_inspect` shows its term and error under `raft.stopped`, and a
+   publish or subscribe for the shard on this broker is refused as
+   `not_ready`. The refusal says the copy was stopped by a storage error but
+   not what the error was, since it can name the broker's data paths; the
+   broker log and `shard_inspect` have it. See `docs/per-shard-raft.md`,
+   "A member that stops on a storage error".
 
    > `disk_log/tests/flush_failures.rs` fails each flush of an append, a
    > rollover, a seal, a truncation, a retention removal and each state-file
    > write in turn on the simulator's filesystem, then cuts the power and
    > reopens. `a_poisoned_log_is_listed_with_its_cause` covers what `/ready`
-   > reports. The `a_restart_after_a_*` tests in
+   > reports, and `a_poisoned_raft_log_leaves_the_broker_ready` in
+   > `felix-broker-service`'s `observability/tests.rs` that a Raft log does
+   > not fail it. The `a_restart_after_a_*` tests in
    > `disk_log/tests/durability.rs` cover the same-boot restart on the
    > real filesystem, where the failed flush's bytes stay readable: the cut,
    > the rewrite under a relaxed mode, a mode change across the restart, a
@@ -1458,7 +1465,9 @@ storage, stop the broker and replace or wipe its whole data directory. Version
 without storage ids looks the same, so the first start on this release gives
 every broker a new id even though its shards are intact. A file that does not
 decode is replaced with a new id. `felixctl data restore-point` also writes a
-new one, because restored logs are an older copy of what peers last saw here.
+new one, because restored logs are an older copy of what peers last saw here,
+and so does `felix-broker rotate-storage-id`; both record the restore for a
+standalone broker (see below).
 
 A machine crash under `Periodic` or `None` (a power loss, a kernel panic, a
 reboot) keeps the directory but can lose the unsynced tail of a log, records
@@ -1539,9 +1548,11 @@ memory snapshot, or a disk snapshot taken with the machine running, puts
 the broker back in a boot whose id has not changed, with the page cache and
 the disk both older than what peers last saw. A run that crashes after such
 a restore keeps its id. Where snapshot restores are part of operations, run
-`on_commit`, or delete `storage-id` from the restored data directory before
-the broker starts, as for any restored copy (see "Restoring to a backup
-point" and [#1334](https://github.com/GetFelix/felix/issues/1334)).
+`felix-broker rotate-storage-id` on the restored data directory before the
+broker starts, as for any restored copy (see "Restoring to a backup point"
+and [#1334](https://github.com/GetFelix/felix/issues/1334)). On a standalone
+broker that is the only way: deleting `storage-id` by hand records no
+restore, and its Raft shards stay closed.
 
 A crash under `OnCommit` keeps the id, since every record it acknowledged was
 synced first. The record names the mode of the run that crashed, so changing
@@ -1678,11 +1689,30 @@ records a relaxed crash's rotation in `relaxed-crash-id`, and each Raft group
 of one then re-forms itself from its own kept copy: it keeps every record
 that reached the disk, including ones past the saved commit, and starts its
 next offsets above everything the crashed run reserved. What it loses is the
-unsynced tail `Periodic` allows. A data directory restored from a snapshot or
-backup is not detected: it starts from the reservation the snapshot holds and
-can give out offsets handed out after that point again
-([#3048](https://github.com/GetFelix/felix/issues/3048)). See `docs/per-shard-raft.md`, "A standalone
-broker re-forms itself".
+unsynced tail `Periodic` allows.
+
+A standalone data directory put back from a backup or a snapshot holds the
+reservation of the moment it was copied, not of the run that came after it.
+Started as it is, its groups would hand out offsets that run already handed
+out, in every fsync mode: under `OnCommit` nothing rotates at all, and a
+re-form from the copy starts only above the copy's own reservation. So after
+putting one back, run `felix-broker rotate-storage-id` with the broker
+stopped. It records the restore in `relaxed-crash-id` as well as rotating
+the id, and each group then re-forms from its restored copy with its next
+epoch on the backup-point restore's time line: 2^14 offsets per
+millisecond of the broker's clock, plus 2^40. That is above every offset
+given out since the copy was taken, as long as a shard averaged at most
+2^13 offsets per millisecond since its last restore and the clock has not
+gone back. What it loses is what was acknowledged after the copy.
+
+The tool writes `restore-pending` before it starts and removes it once the
+evidence and the new id are on disk. A start that finds it refuses, naming
+the command to run again, so a tool that crashed part way cannot leave
+restored data under the old id. Nothing in a directory can show it was put
+back without the tool: a copy made by hand, a volume snapshot rolled back or
+a VM restored is not detected and can reuse offsets
+([#3048](https://github.com/GetFelix/felix/issues/3048)). See
+`docs/per-shard-raft.md`, "A standalone broker re-forms itself".
 
 Losing the directory does reset them. So a copy with no promise on disk, on
 any broker, answers a fence only as its routing view backs it: with no route

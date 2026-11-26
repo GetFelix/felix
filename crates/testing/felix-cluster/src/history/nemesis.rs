@@ -24,6 +24,7 @@ use std::fmt;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
+use felix_controlplane_service::model::ShardKind;
 
 mod compound;
 mod rounds;
@@ -210,6 +211,14 @@ pub enum FaultKind {
     MetadataKillLeader,
     /// Cut the metadata group's leader off from the other two members.
     MetadataPartitionLeader,
+    /// `SIGKILL`, then a restart in a new boot: a machine crash. Under the
+    /// default `periodic` fsync the broker cannot trust its unsynced tail,
+    /// so its copies come back under a new id. Healing waits until every
+    /// copy it holds votes again.
+    MachineCrash,
+    /// `SIGKILL`, the storage directory removed, then a restart: a disk
+    /// replaced. Healing waits until every copy it holds votes again.
+    Wipe,
 }
 
 impl FaultKind {
@@ -221,9 +230,11 @@ impl FaultKind {
             | FaultKind::DelayOutbound
             | FaultKind::DropControlPlaneReplies => FaultFamily::Link,
             FaultKind::ClockRate | FaultKind::ControlPlaneClockStep => FaultFamily::Clock,
-            FaultKind::SlowFsync | FaultKind::FsyncFailOnce | FaultKind::TornWrite => {
-                FaultFamily::Disk
-            }
+            FaultKind::SlowFsync
+            | FaultKind::FsyncFailOnce
+            | FaultKind::TornWrite
+            | FaultKind::MachineCrash
+            | FaultKind::Wipe => FaultFamily::Disk,
             FaultKind::MoveShard | FaultKind::Drain => FaultFamily::Assignment,
             FaultKind::Isolate
             | FaultKind::KillTwo
@@ -398,6 +409,12 @@ pub enum Fault {
         /// out of the shard until then; nothing checks that it rejoins.
         restart_while_down: bool,
     },
+    MachineCrash {
+        node: String,
+    },
+    Wipe {
+        node: String,
+    },
 }
 
 impl Fault {
@@ -432,6 +449,8 @@ impl Fault {
             Fault::MetadataKill { .. } => FaultKind::MetadataKill,
             Fault::MetadataKillLeader => FaultKind::MetadataKillLeader,
             Fault::MetadataPartitionLeader => FaultKind::MetadataPartitionLeader,
+            Fault::MachineCrash { .. } => FaultKind::MachineCrash,
+            Fault::Wipe { .. } => FaultKind::Wipe,
         }
     }
 
@@ -452,6 +471,8 @@ impl Fault {
             | Fault::TornWrite { node }
             | Fault::Isolate { node }
             | Fault::RestartLoop { node, .. }
+            | Fault::MachineCrash { node }
+            | Fault::Wipe { node }
             | Fault::ElectWithoutControlPlane { node, .. } => vec![node.clone()],
             // Every broker, so nothing else can be aimed away from it.
             Fault::ControlPlaneClockStep { .. }
@@ -520,6 +541,19 @@ impl Fault {
                 cluster.crash_control_plane().await?;
                 cluster.kill_node(node)
             }
+            Fault::MachineCrash { node } => {
+                cluster.kill_node(node)?;
+                cluster.reboot_node(node)
+            }
+            Fault::Wipe { node } => {
+                cluster.kill_node(node)?;
+                let storage = cluster
+                    .node(node)
+                    .with_context(|| format!("unknown node {node}"))?
+                    .storage_dir();
+                std::fs::remove_dir_all(&storage)
+                    .with_context(|| format!("wipe {}", storage.display()))
+            }
             _ => {
                 for fault in self.harness_faults() {
                     cluster.inject(&fault).await?;
@@ -564,6 +598,10 @@ impl Fault {
                 node,
                 restart_while_down,
             } => compound::return_control_plane(cluster, node, *restart_while_down).await,
+            Fault::MachineCrash { node } | Fault::Wipe { node } => {
+                restart_if_down(cluster, node).await?;
+                copies_vote_again(cluster, node).await
+            }
             _ => {
                 for fault in self.harness_faults() {
                     cluster.heal(&fault).await?;
@@ -596,6 +634,8 @@ impl Fault {
             | Fault::MetadataKill { .. }
             | Fault::MetadataKillLeader
             | Fault::MetadataPartitionLeader
+            | Fault::MachineCrash { .. }
+            | Fault::Wipe { .. }
             | Fault::ElectWithoutControlPlane { .. } => Vec::new(),
             Fault::ControlPlaneCrash { during } => during.harness_faults(),
             Fault::Several { faults, .. } => {
@@ -648,6 +688,8 @@ impl fmt::Display for Fault {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Fault::Kill { node } => write!(f, "kill {node}"),
+            Fault::MachineCrash { node } => write!(f, "crash {node}'s machine"),
+            Fault::Wipe { node } => write!(f, "wipe {node}'s storage"),
             Fault::MetadataKill { member } => write!(f, "kill metadata member {member}"),
             Fault::MetadataKillLeader => write!(f, "kill the metadata leader"),
             Fault::MetadataPartitionLeader => write!(f, "partition the metadata leader"),
@@ -914,6 +956,8 @@ impl Nemesis for RandomNemesis {
                 node: compound::a_leader(rng, view, node),
                 restart_while_down: rng.percent(50),
             },
+            FaultKind::MachineCrash => Fault::MachineCrash { node },
+            FaultKind::Wipe => Fault::Wipe { node },
         })
     }
 
@@ -937,6 +981,10 @@ impl Nemesis for RandomNemesis {
         self.kinds.iter().any(|kind| kind.needs_metadata_group())
     }
 }
+
+/// How long a broker back from a machine crash or a wipe has for every copy
+/// it holds to vote again.
+const COPIES_VOTE_WITHIN: Duration = Duration::from_secs(90);
 
 /// How long the metadata members get to agree after a fault is healed.
 const METADATA_CONVERGE: Duration = Duration::from_secs(60);
@@ -986,6 +1034,54 @@ async fn restart_if_down(cluster: &mut Cluster, node: &str) -> Result<()> {
         return Ok(());
     }
     cluster.restart_node(node).await
+}
+
+/// Wait until every Raft copy `node` holds, of a stream or a cache, is a
+/// leader or a follower again, not a learner.
+/// A copy that came back under a new id joins as a learner, and the next
+/// fault on another broker would then leave its group without a majority,
+/// which only an operator's re-form brings back. Nothing to wait for off
+/// Raft.
+async fn copies_vote_again(cluster: &Cluster, node: &str) -> Result<()> {
+    if !cluster.raft() {
+        return Ok(());
+    }
+    let control_plane = cluster
+        .control_plane
+        .as_ref()
+        .context("the control plane is not running")?;
+    let last = std::sync::Mutex::new(Vec::new());
+    wait::until(COPIES_VOTE_WITHIN, "every copy to vote again", || async {
+        let Ok(assignments) = control_plane.live_store().list_shard_assignments().await else {
+            return false;
+        };
+        let mut learning = Vec::new();
+        for assignment in assignments.iter().filter(|a| {
+            a.key.tenant_id == cluster.tenant_id
+                && (a.leader == node || a.replicas.iter().any(|replica| replica == node))
+        }) {
+            let (name, shard) = (&assignment.key.stream, assignment.key.shard);
+            let kind = match assignment.key.kind {
+                ShardKind::Stream => felix_client::ShardKind::Stream,
+                ShardKind::Cache => felix_client::ShardKind::Cache,
+            };
+            match cluster.raft_copy(kind, node, name, shard).await {
+                Some(member) if matches!(member.role.as_str(), "leader" | "follower") => {}
+                Some(member) => learning.push(format!("{name}/{shard} ({})", member.role)),
+                None => learning.push(format!("{name}/{shard} (no member)")),
+            }
+        }
+        let done = learning.is_empty();
+        *last.lock().expect("learning lock") = learning;
+        done
+    })
+    .await
+    .with_context(|| {
+        format!(
+            "{node} still learning: {}",
+            last.lock().expect("learning lock").join(", ")
+        )
+    })
 }
 
 #[cfg(unix)]

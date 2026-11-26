@@ -861,6 +861,7 @@ mod engine_log {
                     Err::<ProposalCommitted, _>(ProposalFailed {
                         error: (),
                         written_end: Some(1),
+                        refused: false,
                     })
                 },
             )
@@ -906,6 +907,7 @@ mod engine_log {
                     Err::<ProposalCommitted, _>(ProposalFailed {
                         error: (),
                         written_end: Some(1),
+                        refused: false,
                     })
                 },
             )
@@ -982,6 +984,7 @@ mod engine_log {
                     Err::<ProposalCommitted, _>(ProposalFailed {
                         error: (),
                         written_end: Some(1),
+                        refused: false,
                     })
                 },
             )
@@ -1429,5 +1432,176 @@ mod engine_log {
         *bound.0.lock() = ReadBound::Committed(4);
         handle.deliver_from_log().await.expect("pass");
         assert_eq!(batch(&mut receiver).await, (3, 0, payloads(&["3"])));
+    }
+
+    /// Append record `n` (payload `n`) as a publish of its own, as the engine would.
+    async fn append_numbered(log: &StreamLog, n: u64) {
+        let order = Arc::new(CommitSequencer::new(n));
+        let (pending, _turn) = log
+            .begin_append(&[Bytes::from(n.to_string())], &[], None, n + 1, &order)
+            .await
+            .expect("append");
+        log.commit(&pending).await.expect("commit");
+    }
+
+    /// **A follower with no subscriber reads nothing back per commit
+    /// (#3223).** The pass moves the sequence to the bound instead; with a
+    /// subscriber it reads once per commit, as before.
+    #[tokio::test]
+    async fn a_follower_with_no_subscriber_reads_nothing_back() {
+        let dir = tempfile::tempdir().expect("dir");
+        let log = engine_log(dir.path(), 0).await;
+        let (broker, bound) = broker(ReadBound::Committed(0)).await;
+        let handle = open(&broker, &log).await;
+        let reads = || {
+            handle
+                .state
+                .pass_reads
+                .load(std::sync::atomic::Ordering::Relaxed)
+        };
+
+        for n in 0..5 {
+            append_numbered(&log, n).await;
+            *bound.0.lock() = ReadBound::Committed(n + 1);
+            handle.deliver_from_log().await.expect("pass");
+            assert_eq!(handle.tail_seq(), n + 1);
+        }
+        assert_eq!(reads(), 0, "log reads for five commits with no subscriber");
+
+        let (mut receiver, _guard) = {
+            let subscription = broker.subscribe("t1", "ns", "orders", 0).await;
+            subscription.expect("subscribe").into_parts()
+        };
+        for n in 5..8 {
+            append_numbered(&log, n).await;
+            *bound.0.lock() = ReadBound::Committed(n + 1);
+            handle.deliver_from_log().await.expect("pass");
+            assert_eq!(
+                batch(&mut receiver).await,
+                (n, 0, vec![Bytes::from(n.to_string())])
+            );
+        }
+        assert_eq!(reads(), 3, "one read per commit with a subscriber");
+    }
+
+    /// **A subscriber joining a follower while commits keep advancing gets
+    /// every offset once, in order (#3223).** Below where it joins is read
+    /// from the log, above it arrives live; a jump of the unwatched ring must
+    /// leave no offset between the two.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_subscriber_joining_mid_stream_gets_every_offset_once() {
+        const RECORDS: u64 = 300;
+        let dir = tempfile::tempdir().expect("dir");
+        let log = engine_log(dir.path(), 0).await;
+        let (broker, bound) = broker(ReadBound::Committed(0)).await;
+        let handle = open(&broker, &log).await;
+
+        let writer = {
+            let (log, bound, handle) = (log.clone(), Arc::clone(&bound), handle.clone());
+            tokio::spawn(async move {
+                for n in 0..RECORDS {
+                    append_numbered(&log, n).await;
+                    *bound.0.lock() = ReadBound::Committed(n + 1);
+                    handle.deliver_from_log().await.expect("pass");
+                    tokio::task::yield_now().await;
+                }
+            })
+        };
+        while handle.tail_seq() < RECORDS / 3 {
+            tokio::task::yield_now().await;
+        }
+        let resumed = broker
+            .subscribe_from("t1", "ns", "orders", 0, StartPosition::Earliest)
+            .await
+            .expect("subscribe");
+
+        let mut seen: Vec<(u64, Bytes)> = Vec::new();
+        if let Some(history) = &resumed.history {
+            let mut next = history.from_offset;
+            while next < history.until_offset {
+                let page = broker
+                    .read_committed("t1", "ns", "orders", 0, next, 1 << 20)
+                    .await
+                    .expect("history");
+                for record in page.into_iter().filter(|r| r.offset < history.until_offset) {
+                    next = record.offset + 1;
+                    seen.push((record.offset, record.payload));
+                }
+            }
+        }
+        seen.extend(
+            resumed
+                .backlog
+                .iter()
+                .map(|record| (record.offset, record.payload.clone())),
+        );
+        let (mut receiver, _guard) = resumed.subscription.into_parts();
+        while seen.last().map_or(0, |(offset, _)| offset + 1) < RECORDS {
+            let (first, _, delivered) = batch(&mut receiver).await;
+            seen.extend((first..).zip(delivered));
+        }
+        writer.await.expect("writer");
+
+        let expected: Vec<(u64, Bytes)> = (0..RECORDS)
+            .map(|n| (n, Bytes::from(n.to_string())))
+            .collect();
+        assert_eq!(seen, expected);
+        assert!(
+            resumed.backlog_start > 0,
+            "joined at the start, not mid-stream"
+        );
+    }
+
+    /// **A follower that moved past a generation-start record with nobody
+    /// subscribed still reports it as skipped (#3223).** A subscriber joins
+    /// below the record, so the next event must say it skipped it, or the
+    /// record reads as a drop. The same holds for the run a member that
+    /// leads next reports.
+    #[tokio::test]
+    async fn a_jump_past_a_generation_start_still_reports_it_skipped() {
+        let dir = tempfile::tempdir().expect("dir");
+        let log = engine_log(dir.path(), 0).await;
+        let (broker, bound) = broker(ReadBound::Committed(0)).await;
+        let handle = open(&broker, &log).await;
+        append(&log, &["a"], 1).await;
+        assert_eq!(log.append_generation_start(2).await.expect("marker"), 1);
+        *bound.0.lock() = ReadBound::Committed(2);
+        handle.deliver_from_log().await.expect("pass");
+
+        let resumed = broker
+            .subscribe_from("t1", "ns", "orders", 0, StartPosition::Latest)
+            .await
+            .expect("subscribe");
+        assert_eq!(resumed.join.expect("durable join").start_offset, 1);
+        let (mut receiver, _guard) = resumed.subscription.into_parts();
+        append(&log, &["b"], 3).await;
+        *bound.0.lock() = ReadBound::Committed(3);
+        handle.deliver_from_log().await.expect("pass");
+        assert_eq!(batch(&mut receiver).await, (2, 1, payloads(&["b"])));
+    }
+
+    /// [`a_jump_past_a_generation_start_still_reports_it_skipped`] for the
+    /// member that leads next: its first publish reports the run.
+    #[tokio::test]
+    async fn leading_after_a_jump_reports_the_generation_start_run() {
+        let dir = tempfile::tempdir().expect("dir");
+        let log = engine_log(dir.path(), 0).await;
+        let (broker, bound) = broker(ReadBound::Committed(0)).await;
+        let handle = open(&broker, &log).await;
+        append(&log, &["a"], 1).await;
+        assert_eq!(log.append_generation_start(2).await.expect("marker"), 1);
+        *bound.0.lock() = ReadBound::Committed(2);
+        handle.deliver_from_log().await.expect("pass");
+
+        let led = broker
+            .lead_from_tail("t1", "ns", "orders", 0)
+            .await
+            .expect("lead");
+        assert!(led);
+        assert_eq!(handle.tail_seq(), 2);
+        assert_eq!(
+            handle.state.log_state.lock().generation_start_run,
+            Some((2, 1))
+        );
     }
 }

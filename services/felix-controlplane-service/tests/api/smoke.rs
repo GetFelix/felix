@@ -1612,6 +1612,23 @@ impl AuthStore for FailingStore {
     ) -> StoreResult<Option<i64>> {
         Err(StoreError::Unexpected(anyhow::anyhow!("fail")))
     }
+
+    async fn revoke_principals_explicitly(
+        &self,
+        _tenant_id: &str,
+        _principal_ids: Vec<String>,
+        _revoked_at: i64,
+    ) -> StoreResult<()> {
+        Err(StoreError::Unexpected(anyhow::anyhow!("fail")))
+    }
+
+    async fn principal_cutoffs(
+        &self,
+        _tenant_id: &str,
+        _principal_id: &str,
+    ) -> StoreResult<felix_controlplane_service::store::PrincipalCutoffs> {
+        Err(StoreError::Unexpected(anyhow::anyhow!("fail")))
+    }
 }
 
 /// Health answers 503 when the store does not, and it must probe the *real*

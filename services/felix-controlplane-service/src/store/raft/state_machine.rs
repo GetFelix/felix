@@ -188,6 +188,14 @@ impl MetadataStateMachine {
         carried || self.join_floor() >= super::VOUCHED_VOTERS_LEVEL
     }
 
+    /// Whether a floor entry records its reporter as the group's elected
+    /// broker: carried by the entry, or the join floor is at the level
+    /// that knows it.
+    fn notes_leader(&self, carried: bool) -> bool {
+        use crate::raft::AppStateMachine;
+        carried || self.join_floor() >= super::RAFT_LEADER_LEVEL
+    }
+
     /// The set holds an entry applies: the unformed hold as
     /// [`Self::holds_unformed`] decides, and the formed group's hold (#2905)
     /// once the join floor is at the level that knows it. The target counter
@@ -574,14 +582,18 @@ impl MetadataStateMachine {
                 floors,
                 mark_formed,
                 vouched_voters,
+                note_leader,
             } => Ok(MetaResponse::Count {
                 count: u64::from(
                     store
                         .apply_record_raft_floors(
                             &node_id,
                             &floors,
-                            self.holds_unformed(mark_formed),
-                            self.vouches_voters(vouched_voters),
+                            crate::store::memory::FloorRules {
+                                mark_formed: self.holds_unformed(mark_formed),
+                                vouched_voters: self.vouches_voters(vouched_voters),
+                                note_leader: self.notes_leader(note_leader),
+                            },
                         )
                         .await,
                 ),
@@ -684,11 +696,18 @@ impl MetadataStateMachine {
                 tenant_id,
                 principal_ids,
                 revoked_at,
-            } => store
-                .revoke_principals(&tenant_id, principal_ids, revoked_at)
-                .await
-                .map(|()| MetaResponse::Unit)
-                .map_err(Into::into),
+                assertions,
+            } => if assertions {
+                store
+                    .revoke_principals_explicitly(&tenant_id, principal_ids, revoked_at)
+                    .await
+            } else {
+                store
+                    .revoke_principals(&tenant_id, principal_ids, revoked_at)
+                    .await
+            }
+            .map(|()| MetaResponse::Unit)
+            .map_err(Into::into),
             MetaCommand::PurgeExpiredRefreshTokens { before_secs } => store
                 .purge_expired_refresh_tokens(before_secs)
                 .await

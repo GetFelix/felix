@@ -43,6 +43,10 @@ impl Authenticator for Recorder {
         self.threads.lock().expect("lock").push(name);
         Ok(Principal::anonymous(tenant_id))
     }
+
+    fn anonymous(&self, tenant_id: &str, _peer_certs: &[Vec<u8>]) -> Result<Principal, AuthError> {
+        Ok(Principal::anonymous(tenant_id))
+    }
 }
 
 fn connect_packet(tenant: &str, token: &str) -> Vec<u8> {
@@ -261,6 +265,242 @@ async fn credentials_the_broker_refuses_are_rejected_not_unavailable() {
         .await
         .expect("no certificate, nothing to bind to");
     assert_eq!(principal.tenant_id(), "t1");
+}
+
+/// A CA, a server certificate it issued for `localhost`, and a client
+/// certificate it issued that ends at `client_not_after` (seconds since the
+/// epoch).
+struct Pki {
+    ca: rustls::pki_types::CertificateDer<'static>,
+    server: (
+        rustls::pki_types::CertificateDer<'static>,
+        rustls::pki_types::PrivateKeyDer<'static>,
+    ),
+    client: (
+        rustls::pki_types::CertificateDer<'static>,
+        rustls::pki_types::PrivateKeyDer<'static>,
+    ),
+}
+
+fn pki(client_not_after: i64) -> Pki {
+    let ca_key = rcgen::KeyPair::generate().expect("key");
+    let mut ca_params = rcgen::CertificateParams::new(Vec::<String>::new()).expect("params");
+    ca_params.is_ca = rcgen::IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
+    let ca = ca_params.self_signed(&ca_key).expect("ca");
+    let issuer = rcgen::Issuer::new(ca_params, ca_key);
+    let issue = |name: &str, not_after: Option<i64>| {
+        let key = rcgen::KeyPair::generate().expect("key");
+        let mut params = rcgen::CertificateParams::new(vec![name.to_string()]).expect("params");
+        if let Some(not_after) = not_after {
+            params.not_before = rcgen::date_time_ymd(2000, 1, 1);
+            params.not_after = rcgen::date_time_ymd(1970, 1, 1)
+                + Duration::from_secs(u64::try_from(not_after).expect("after 1970"));
+        }
+        let cert = params.signed_by(&key, &issuer).expect("cert");
+        (
+            cert.der().clone(),
+            rustls::pki_types::PrivatePkcs8KeyDer::from(key.serialize_der()).into(),
+        )
+    };
+    Pki {
+        ca: ca.der().clone(),
+        server: issue("localhost", None),
+        client: issue("client", Some(client_not_after)),
+    }
+}
+
+fn unix_now() -> i64 {
+    i64::try_from(felix_common::clock::unix_now().as_secs()).expect("now")
+}
+
+/// An anonymous `CONNECT`, as the dev switch admits it.
+fn anonymous_connect() -> Vec<u8> {
+    Packet::Connect(Connect {
+        version: Version::V311,
+        clean_start: true,
+        keep_alive: 600,
+        client_id: Utf8::new("dev-1").expect("id"),
+        will: None,
+        username: None,
+        password: None,
+        properties: Properties::default(),
+    })
+    .to_bytes(Version::V311)
+    .expect("encode")
+    .to_vec()
+}
+
+/// Whether `stream` answers a `PINGREQ` within two seconds.
+async fn answers_ping<S>(stream: &mut S) -> bool
+where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+{
+    if stream.write_all(&[0xC0, 0x00]).await.is_err() {
+        return false;
+    }
+    let mut reply = [0u8; 2];
+    matches!(
+        tokio::time::timeout(Duration::from_secs(2), stream.read_exact(&mut reply)).await,
+        Ok(Ok(_))
+    ) && reply == [0xD0, 0x00]
+}
+
+/// A listener on the anonymous dev switch, with a client that presented a
+/// certificate ending at `not_after` and one that presented none, both
+/// connected and answered once.
+struct AnonymousPair {
+    running: Running,
+    with_cert: tokio_rustls::client::TlsStream<TcpStream>,
+    bare: tokio_rustls::client::TlsStream<TcpStream>,
+    not_after: i64,
+}
+
+/// [`AnonymousPair`] with a certificate `lifetime_secs` long, or `None` when
+/// setting up did not finish a second before the certificate ended: a slow
+/// runner, not the behaviour under test.
+async fn anonymous_pair(lifetime_secs: i64) -> Option<AnonymousPair> {
+    let not_after = unix_now() + lifetime_secs;
+    let pki = pki(not_after);
+    let mut roots = rustls::RootCertStore::empty();
+    roots.add(pki.ca.clone()).expect("root");
+    let roots = Arc::new(roots);
+    let provider = crate::serving::tls::provider();
+    let verifier = rustls::server::WebPkiClientVerifier::builder_with_provider(
+        Arc::clone(&roots),
+        Arc::clone(&provider),
+    )
+    .allow_unauthenticated()
+    .build()
+    .expect("verifier");
+    let server = rustls::ServerConfig::builder_with_provider(Arc::clone(&provider))
+        .with_protocol_versions(rustls::ALL_VERSIONS)
+        .expect("versions")
+        .with_client_cert_verifier(verifier)
+        .with_single_cert(vec![pki.server.0.clone()], pki.server.1.clone_key())
+        .expect("server config");
+    let auth = Arc::new(BrokerMqttAuth::new(Arc::new(
+        crate::serving::auth::BrokerAuth::new("http://127.0.0.1:1".to_string())
+            .with_client_roots(Some(Arc::clone(&roots))),
+    )));
+    let mut config = config(64);
+    config.tls = true;
+    config.settings.anonymous_tenant = Some("t1".to_string());
+    let running = start_with_tls(&config, Some(Arc::new(server)), auth);
+
+    let connect = |with_cert: bool| {
+        let builder = rustls::ClientConfig::builder_with_provider(Arc::clone(&provider))
+            .with_protocol_versions(rustls::ALL_VERSIONS)
+            .expect("versions")
+            .with_root_certificates(Arc::clone(&roots));
+        let client = Arc::new(if with_cert {
+            builder
+                .with_client_auth_cert(vec![pki.client.0.clone()], pki.client.1.clone_key())
+                .expect("client cert")
+        } else {
+            builder.with_no_client_auth()
+        });
+        let addr = running.addr;
+        async move {
+            let socket = TcpStream::connect(addr).await.ok()?;
+            let mut tls = tokio_rustls::TlsConnector::from(client)
+                .connect("localhost".try_into().expect("name"), socket)
+                .await
+                .ok()?;
+            tls.write_all(&anonymous_connect()).await.ok()?;
+            let mut ack = [0u8; 4];
+            tls.read_exact(&mut ack).await.ok()?;
+            (ack == [0x20, 0x02, 0x00, 0x00]).then_some(tls)
+        }
+    };
+    let mut with_cert = connect(true).await;
+    let bare = connect(false).await;
+    let answered = match &mut with_cert {
+        Some(stream) => answers_ping(stream).await,
+        None => false,
+    };
+    if !answered || unix_now() >= not_after - 1 {
+        running.stop().await;
+        return None;
+    }
+    Some(AnonymousPair {
+        running,
+        with_cert: with_cert.expect("connected"),
+        bare: bare.expect("a connection without a certificate is accepted"),
+        not_after,
+    })
+}
+
+/// On the anonymous dev switch, a connection whose client presented a
+/// certificate closes at its `notAfter`, as an authenticated one does, and is
+/// not served after it. One without a certificate stays open.
+#[tokio::test]
+async fn an_anonymous_connection_closes_when_its_client_certificate_expires() {
+    // Short, to keep the test quick; longer only if setting up outlasts it.
+    let mut pair = None;
+    for lifetime_secs in [4, 15, 60] {
+        pair = anonymous_pair(lifetime_secs).await;
+        if pair.is_some() {
+            break;
+        }
+    }
+    let AnonymousPair {
+        running,
+        mut with_cert,
+        mut bare,
+        not_after,
+    } = pair.expect("set up before the certificate ended");
+    assert!(
+        answers_ping(&mut bare).await,
+        "served without a certificate"
+    );
+
+    // Generous: the close is due at `not_after`, the bound only stops a hang.
+    let wait = Duration::from_secs(u64::try_from(not_after - unix_now()).unwrap_or(0) + 30);
+    let mut byte = [0u8; 1];
+    let closed = tokio::time::timeout(wait, with_cert.read(&mut byte)).await;
+    assert!(
+        matches!(closed, Ok(Ok(0)) | Ok(Err(_))),
+        "a connection with a client certificate outlived its notAfter: {closed:?}"
+    );
+    assert!(
+        unix_now() >= not_after,
+        "closed before the certificate ended"
+    );
+    assert!(!answers_ping(&mut with_cert).await, "served after expiry");
+    assert!(
+        answers_ping(&mut bare).await,
+        "a connection without a certificate closed"
+    );
+    running.stop().await;
+}
+
+/// A certificate that has already ended, or that does not parse, is refused
+/// at `CONNECT` on the anonymous switch, and the principal handed out for a
+/// live one is still the anonymous tenant.
+#[test]
+fn the_anonymous_switch_refuses_an_ended_or_unreadable_certificate() {
+    let live_pki = pki(unix_now() + 3600);
+    let mut roots = rustls::RootCertStore::empty();
+    roots.add(live_pki.ca.clone()).expect("root");
+    let auth = BrokerMqttAuth::new(Arc::new(
+        crate::serving::auth::BrokerAuth::new("http://127.0.0.1:1".to_string())
+            .with_client_roots(Some(Arc::new(roots))),
+    ));
+    let live = auth
+        .anonymous("t1", &[live_pki.client.0.to_vec()])
+        .expect("a live certificate");
+    assert_eq!(live.tenant_id(), "t1");
+    assert!(auth.anonymous("t1", &[]).is_ok(), "no certificate");
+
+    let ended = pki(unix_now() - 60);
+    assert!(matches!(
+        auth.anonymous("t1", &[ended.client.0.to_vec()]),
+        Err(AuthError::Rejected(_))
+    ));
+    assert!(matches!(
+        auth.anonymous("t1", &[b"not a certificate".to_vec()]),
+        Err(AuthError::Rejected(_))
+    ));
 }
 
 mod websocket {

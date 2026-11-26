@@ -29,7 +29,10 @@ use crate::stream::HeldBatch;
 
 type Committing<E> =
     Pin<Box<dyn Future<Output = std::result::Result<ProposalCommitted, ProposalFailed<E>>> + Send>>;
-type Finishing<E> = Pin<Box<dyn Future<Output = std::result::Result<PublishOutcome, E>> + Send>>;
+/// `Err(None)`: the error went to the publisher through the refusal
+/// channel, before the batch's turn.
+type Finishing<E> =
+    Pin<Box<dyn Future<Output = std::result::Result<PublishOutcome, Option<E>>> + Send>>;
 
 impl Broker {
     /// Hand `payloads` to the shard's engine and take the batch's place in
@@ -224,6 +227,7 @@ impl Broker {
         if payloads.is_empty() {
             return Ok(ProposedPublish {
                 finishing: None,
+                refusal: None,
                 count: 0,
                 answer_early: false,
                 answer_at: None,
@@ -238,7 +242,9 @@ impl Broker {
                 Box::pin(propose(timestamp_micros)) as Committing<E>
             })
             .map_err(|waited| BrokerError::ProposalsStalled { waited })?;
+        let (refuse, refusal) = oneshot::channel();
         Ok(ProposedPublish {
+            refusal: Some(refusal),
             count: payloads.len() as u64,
             // Whether the record landed where expected is known from where
             // it was written, but the answer waits for the commit so it is
@@ -255,6 +261,7 @@ impl Broker {
                 commit,
                 handed.queued,
                 handed.turn,
+                refuse,
             ))),
             answer_within: None,
             batch_first: None,
@@ -496,14 +503,27 @@ pub struct ProposalFailed<E> {
     /// may still commit, so readers resuming here start above it and read
     /// it from the log.
     pub written_end: Option<u64>,
+    /// The engine refused the batch before writing any of it, so none of it
+    /// can commit. Its publisher is answered at once, not at its turn.
+    pub refused: bool,
 }
 
 impl<E> ProposalFailed<E> {
-    /// The engine never wrote the batch.
+    /// No record of the batch is known written. It may still be.
     pub fn unwritten(error: E) -> Self {
         Self {
             error,
             written_end: None,
+            refused: false,
+        }
+    }
+
+    /// The engine refused the batch before writing any of it.
+    pub fn refused(error: E) -> Self {
+        Self {
+            error,
+            written_end: None,
+            refused: true,
         }
     }
 
@@ -512,6 +532,7 @@ impl<E> ProposalFailed<E> {
         Self {
             error,
             written_end: Some(end),
+            refused: false,
         }
     }
 }
@@ -523,6 +544,8 @@ impl<E> ProposalFailed<E> {
 #[must_use = "a proposed publish reports its outcome only through `complete`"]
 pub struct ProposedPublish<E: Send + 'static> {
     finishing: Option<Finishing<E>>,
+    /// Sent the engine's refusal of a batch it wrote none of.
+    refusal: Option<oneshot::Receiver<E>>,
     /// How many records the batch holds.
     count: u64,
     /// The stream had little enough waiting for a commit when this batch
@@ -610,13 +633,23 @@ impl<E: Send + 'static> ProposedPublish<E> {
             let end = written?.await.ok()?;
             Some((end.checked_sub(count)?, end - 1))
         };
+        let mut refusal = self.refusal.take();
         let answered = async {
+            let refused = async {
+                match refusal.as_mut() {
+                    Some(refusal) => refusal.await.ok(),
+                    None => None,
+                }
+            };
             tokio::select! {
                 biased;
-                // First: this is what sends `written`, and a commit that is
-                // already known wins.
+                // First: this is what sends `written` and the refusal, and a
+                // commit that is already known wins.
                 outcome = finishing => Ok(outcome),
-                Some(offsets) = written => Err(offsets),
+                Some(offsets) = written => Err(Early::Written(offsets)),
+                // Held no offset, so nothing waits on its answer: the turn
+                // is still taken behind the earlier batches, on a task.
+                Some(error) = refused => Err(Early::Refused(error)),
             }
         };
         let answered = match self.answer_within.take() {
@@ -633,13 +666,18 @@ impl<E: Send + 'static> ProposedPublish<E> {
         let outcome = match answered {
             Ok(outcome) => {
                 self.finishing = None;
-                outcome
+                outcome.map_err(|error| {
+                    error
+                        .or_else(|| refusal.and_then(|mut refusal| refusal.try_recv().ok()))
+                        .expect("a refusal sent is held until received")
+                })
             }
             // Not committed yet. `Drop` runs the rest on a task.
-            Err(offsets) => Ok(PublishOutcome {
+            Err(Early::Written(offsets)) => Ok(PublishOutcome {
                 subscribers: 0,
                 offsets: Some(offsets),
             }),
+            Err(Early::Refused(error)) => Err(error),
         };
         outcome.map(|mut outcome| {
             if let (Some(first), Some((_, last))) = (batch_first, outcome.offsets) {
@@ -648,6 +686,12 @@ impl<E: Send + 'static> ProposedPublish<E> {
             outcome
         })
     }
+}
+
+/// How [`ProposedPublish::complete`] was answered before the batch's turn.
+enum Early<E> {
+    Written((u64, u64)),
+    Refused(E),
 }
 
 impl<E: Send + 'static> Drop for ProposedPublish<E> {
@@ -689,8 +733,19 @@ async fn finish<E>(
     commit: Option<Arc<[StateOp]>>,
     committed: Committing<E>,
     turn: CommitTurn<'static>,
-) -> std::result::Result<PublishOutcome, E> {
-    let committed = committed.await;
+    refuse: oneshot::Sender<E>,
+) -> std::result::Result<PublishOutcome, Option<E>> {
+    // A refusal is answered before the turn: the batch took no offset, so
+    // an earlier batch that never settles must not hold it. The turn below
+    // is still taken, so the hold and the settle order are unchanged.
+    let committed = committed.await.map_err(|failed| ProposalFailed {
+        error: match failed.refused {
+            true => refuse.send(failed.error).err(),
+            false => Some(failed.error),
+        },
+        written_end: failed.written_end,
+        refused: failed.refused,
+    });
     let count = payloads.len() as u64;
     let first_offset = match &committed {
         Ok(at) => at.end.checked_sub(count),
@@ -770,7 +825,7 @@ async fn finish<E>(
     }
     committed.map_err(|failed| failed.error)?;
     if let (Some(tail), Some(expected)) = (missed, expected) {
-        return Err((expected.mismatch)(tail));
+        return Err(Some((expected.mismatch)(tail)));
     }
     if let Some(in_view) = in_view {
         let _ = in_view.await;

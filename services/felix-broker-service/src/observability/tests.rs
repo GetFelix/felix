@@ -320,10 +320,12 @@ fn a_poisoned_log_makes_the_broker_not_ready() {
         PoisonedLog {
             shard: "t/ns/orders/0".to_string(),
             reason: "a flush of t/ns/orders/0 failed (EIO)".to_string(),
+            raft: false,
         },
         PoisonedLog {
             shard: "t/ns/orders/1".to_string(),
             reason: "a truncation or reset failed: no space".to_string(),
+            raft: false,
         },
     ];
     // Whether or not it is otherwise ready, and it names each log's tenant
@@ -338,6 +340,40 @@ fn a_poisoned_log_makes_the_broker_not_ready() {
              reboot the host before restarting the broker; the broker log has the details"
         );
     }
+}
+
+/// A poisoned Raft log stops its own copy, not the broker: the probe stays
+/// ready, and a poisoned hybrid log beside it still fails it.
+#[test]
+fn a_poisoned_raft_log_leaves_the_broker_ready() {
+    use axum::http::StatusCode;
+    use felix_storage::disk_log::PoisonedLog;
+
+    let raft = PoisonedLog {
+        shard: "t/ns/orders/0".to_string(),
+        reason: "a flush failed (EIO)".to_string(),
+        raft: true,
+    };
+    assert_eq!(
+        ready_status(std::slice::from_ref(&raft), &[], true),
+        (StatusCode::OK, "ok".to_string())
+    );
+    assert_eq!(
+        ready_status(std::slice::from_ref(&raft), &[], false).0,
+        StatusCode::SERVICE_UNAVAILABLE
+    );
+    let hybrid = PoisonedLog {
+        shard: "t/ns/payments/0".to_string(),
+        raft: false,
+        ..raft.clone()
+    };
+    let (status, body) = ready_status(&[raft, hybrid], &[], true);
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(
+        body,
+        "a log of tenant t is poisoned: a flush failed (EIO)\n\
+         reboot the host before restarting the broker; the broker log has the details"
+    );
 }
 
 #[test]

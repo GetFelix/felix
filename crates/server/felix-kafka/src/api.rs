@@ -109,19 +109,23 @@ enum SaslState {
 }
 
 impl Session {
-    pub(crate) fn new(shared: &Shared, peer_certs: Vec<Vec<u8>>) -> Self {
-        Self {
-            principal: shared
-                .settings
-                .anonymous_tenant
-                .as_ref()
-                .map(|tenant| Principal::anonymous(tenant.clone())),
+    /// A new connection's state. Under the anonymous dev switch it starts as
+    /// the anonymous tenant, bounded by any client certificate; the error is
+    /// why the cluster refused that certificate.
+    pub(crate) fn new(shared: &Shared, peer_certs: Vec<Vec<u8>>) -> Result<Self, String> {
+        let mut session = Self {
+            principal: None,
             sasl: SaslState::Idle,
             closing: false,
             throttle: Duration::ZERO,
             peer_certs,
             ended: None,
+        };
+        if let Some(tenant) = &shared.settings.anonymous_tenant {
+            let principal = shared.cluster.anonymous(tenant, &session.peer_certs)?;
+            session.authenticated_as(principal);
         }
+        Ok(session)
     }
 
     /// Become `principal`, whose credential's end the connection then waits

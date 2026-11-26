@@ -70,8 +70,12 @@ pub(super) struct FakeCluster {
     pub(super) gated: Mutex<Option<Gated>>,
     /// Fence permits `admit_write` handed out and not yet dropped.
     pub(super) live_permits: Arc<AtomicUsize>,
-    /// Set to end every credential `authenticate` handed out.
+    /// Set to end every credential `authenticate` handed out, and every
+    /// anonymous connection that presented a certificate.
     pub(super) credential_ended: tokio::sync::watch::Sender<bool>,
+    /// Set, the client certificate of every anonymous connection has passed
+    /// its end, whether or not `credential_ended` has fired yet.
+    pub(super) certificate_expired: Arc<AtomicBool>,
 }
 
 /// Counts itself in [`FakeCluster::live_permits`] while alive.
@@ -148,6 +152,23 @@ impl Cluster for FakeCluster {
             .expect("lock")
             .push(peer_certs.to_vec());
         self.authenticate(tenant_id, token).await
+    }
+
+    fn anonymous(&self, tenant_id: &str, peer_certs: &[Vec<u8>]) -> Result<Principal, String> {
+        let principal = Principal::anonymous(tenant_id);
+        if peer_certs.is_empty() {
+            return Ok(principal);
+        }
+        let expired = Arc::clone(&self.certificate_expired);
+        let ended = self.credential_ended.clone();
+        Ok(principal
+            .with_revocation(move || expired.load(Ordering::SeqCst))
+            .with_end(move || {
+                let mut ended = ended.subscribe();
+                Box::pin(async move {
+                    let _ = ended.wait_for(|ended| *ended).await;
+                })
+            }))
     }
 
     fn brokers(&self) -> Vec<Endpoint> {
@@ -420,6 +441,7 @@ impl Fixture {
             gated: Mutex::new(None),
             live_permits: Arc::new(AtomicUsize::new(0)),
             credential_ended: tokio::sync::watch::channel(false).0,
+            certificate_expired: Arc::new(AtomicBool::new(false)),
         });
         cluster.add_broker(LOCAL, "kafka-a.test", 9092);
         let service = KafkaService::new(Arc::clone(&broker), cluster.clone(), settings);

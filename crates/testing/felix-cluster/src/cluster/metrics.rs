@@ -294,18 +294,24 @@ impl Cluster {
         name: &str,
         shard: u32,
     ) -> Option<felix_wire::InspectedRaft> {
+        self.raft_copy(felix_client::ShardKind::Stream, node, name, shard)
+            .await
+    }
+
+    /// [`Self::raft_member_of`] for a stream or a cache shard.
+    pub(crate) async fn raft_copy(
+        &self,
+        kind: felix_client::ShardKind,
+        node: &str,
+        name: &str,
+        shard: u32,
+    ) -> Option<felix_wire::InspectedRaft> {
         let addr = self.node(node)?.client_addr;
         let client = crate::client::connect(addr, &self.tenant_id, &self.inspector_token())
             .await
             .ok()?;
         let view = client
-            .inspect_shard(
-                felix_client::ShardKind::Stream,
-                &self.tenant_id,
-                &self.namespace,
-                name,
-                shard,
-            )
+            .inspect_shard(kind, &self.tenant_id, &self.namespace, name, shard)
             .await;
         drop(client);
         view.ok().and_then(|view| view.raft)
@@ -362,29 +368,49 @@ impl Cluster {
         self.raft_leader_terms().await.err()
     }
 
-    /// The term each Raft shard's placed leader leads it in, by shard key, or
-    /// the first shard its placed leader does not lead yet.
+    /// [`Self::raft_hand_over_pending`] for one stream made after the cluster
+    /// started, which the configured streams do not name.
+    pub async fn raft_hand_over_pending_for(&self, stream: &crate::StreamSpec) -> Option<String> {
+        if !self.raft() || !stream.durable {
+            return None;
+        }
+        let targets = vec![(
+            "stream",
+            felix_client::ShardKind::Stream,
+            stream.name.clone(),
+            stream.shards,
+        )];
+        self.raft_leader_terms_of(targets).await.err()
+    }
+
+    /// The term each configured Raft shard's placed leader leads it in.
     async fn raft_leader_terms(&self) -> Result<std::collections::BTreeMap<String, u64>, String> {
         use felix_client::ShardKind;
+        // An in-memory stream has no log for a group to run.
+        let mut targets = Vec::new();
+        for spec in self.config.streams.iter().filter(|spec| spec.durable) {
+            targets.push(("stream", ShardKind::Stream, spec.name.clone(), spec.shards));
+        }
+        for spec in &self.config.caches {
+            targets.push(("cache", ShardKind::Cache, spec.name.clone(), spec.shards));
+        }
+        self.raft_leader_terms_of(targets).await
+    }
+
+    /// The term each listed shard's placed leader leads it in, by shard key,
+    /// or the first shard its placed leader does not lead yet.
+    async fn raft_leader_terms_of(
+        &self,
+        targets: Vec<(&'static str, felix_client::ShardKind, String, u32)>,
+    ) -> Result<std::collections::BTreeMap<String, u64>, String> {
         let owners = self
             .shard_owners()
             .await
             .map_err(|err| format!("could not read the assignments: {err:#}"))?;
-        // An in-memory stream has no log for a group to run.
-        let streams = self
-            .config
-            .streams
-            .iter()
-            .filter(|spec| spec.durable)
-            .map(|spec| ("stream", ShardKind::Stream, &spec.name, spec.shards));
-        let caches = self
-            .config
-            .caches
-            .iter()
-            .map(|spec| ("cache", ShardKind::Cache, &spec.name, spec.shards));
         let mut clients = std::collections::HashMap::new();
         let mut terms = std::collections::BTreeMap::new();
-        for (label, kind, name, shards) in streams.chain(caches) {
+        for (label, kind, name, shards) in &targets {
+            let (kind, shards) = (*kind, *shards);
             for shard in 0..shards {
                 let key = format!(
                     "{label}/{}/{}/{name}/{shard}",

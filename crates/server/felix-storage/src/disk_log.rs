@@ -144,6 +144,9 @@ pub struct PoisonedLog {
     /// The first failure, which is not always a flush: a truncation that
     /// failed partway poisons too.
     pub reason: String,
+    /// A Raft log ([`LogConfig::raft_log`]): its group stops this copy alone,
+    /// and the others serve the shard.
+    pub raft: bool,
 }
 
 /// One entry per shard, with its first failure. Like [`ANY_POISONED`], never
@@ -156,12 +159,13 @@ pub fn poisoned_logs() -> Vec<PoisonedLog> {
     POISONED.lock().clone()
 }
 
-fn note_poisoned(shard: &str, reason: &str) {
+fn note_poisoned(shard: &str, reason: &str, raft: bool) {
     let mut poisoned = POISONED.lock();
     if !poisoned.iter().any(|log| log.shard == shard) {
         poisoned.push(PoisonedLog {
             shard: shard.to_string(),
             reason: reason.to_string(),
+            raft,
         });
     }
 }
@@ -1772,6 +1776,26 @@ impl DiskLog {
         self.inner.segments.read().tail_offset()
     }
 
+    /// Call `progress` each time the durable bound rises or the log stops,
+    /// on the thread that did it. It must not block or call back into this
+    /// log's flushes. Only one may be set; false if one already was.
+    #[cfg(feature = "raft")]
+    pub(crate) fn on_durable(&self, progress: impl Fn() + Send + Sync + 'static) -> bool {
+        self.inner
+            .durability
+            .tell_progress(sync::Progress(Box::new(progress)))
+    }
+
+    /// What [`Self::synced`] answers for a batch whose
+    /// [`PendingAppend::sync_target`] is `target`, or `None` while it would
+    /// still be waiting.
+    #[cfg(feature = "raft")]
+    pub(crate) fn synced_now(&self, target: Offset) -> Option<Result<()>> {
+        let inner = &self.inner;
+        (inner.durability.durable_upto() >= target || inner.is_poisoned())
+            .then(|| inner.check_healthy())
+    }
+
     /// What [`Self::commit`] answers when it has nothing to wait for, and
     /// `None` when a flush must cover the batch first.
     #[cfg(feature = "raft")]
@@ -2326,6 +2350,14 @@ pub struct HeadTrim {
 }
 
 impl PendingAppend {
+    /// The durable bound that covers this batch, when the log's own syncs
+    /// are all it waits for: not under `OnCommit`, and not for a trim.
+    #[cfg(feature = "raft")]
+    pub(crate) fn sync_target(&self, log: &DiskLog) -> Option<Offset> {
+        (log.inner.durability.acknowledges_before_sync() && !self.holds_trim)
+            .then_some(self.durable_target)
+    }
+
     pub fn first_offset(&self) -> Offset {
         self.result.first_offset
     }

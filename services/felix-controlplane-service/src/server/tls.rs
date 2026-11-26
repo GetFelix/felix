@@ -118,7 +118,7 @@ fn bootstrap_tls(
         &tls.client_ca_path,
         provider(),
     )?;
-    let config = mtls_server_config(Arc::clone(&identity), Arc::clone(&client_ca) as _)?;
+    let config = mtls_server_config(Arc::clone(&identity) as _, Arc::clone(&client_ca) as _)?;
     Ok((config, identity, client_ca))
 }
 
@@ -127,7 +127,7 @@ fn bootstrap_tls(
 /// session skips the client certificate check, so a rotated-out or revoked
 /// certificate would go on being accepted.
 pub(crate) fn mtls_server_config(
-    identity: Arc<felix_common::tls::ReloadingIdentity>,
+    identity: Arc<dyn rustls::server::ResolvesServerCert>,
     verifier: Arc<dyn rustls::server::danger::ClientCertVerifier>,
 ) -> Result<Arc<rustls::ServerConfig>> {
     let mut config = rustls::ServerConfig::builder_with_provider(provider())

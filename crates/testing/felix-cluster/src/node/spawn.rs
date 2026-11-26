@@ -96,7 +96,10 @@ pub(crate) fn spawn_broker(
         // exporting a certificate nobody can read. The client fixture
         // concatenates them into one PEM bundle, which is a thing a trust
         // store is allowed to be.
-        .env("FELIX_TLS_CERT_EXPORT", data_dir.join("broker-cert.pem"))
+        .env(
+            "FELIX_TLS_CERT_EXPORT",
+            data_dir.join(super::CLIENT_CERTIFICATE),
+        )
         .env("FELIX_INTERNAL_BIND", internal_addr.to_string())
         .env("FELIX_BROKER_METRICS_BIND", metrics_addr.to_string())
         .env("FELIX_DURABLE_STORAGE_DIR", &storage)
@@ -123,7 +126,13 @@ pub(crate) fn spawn_broker(
         command
             .env("FELIX_KAFKA_LISTEN", format!("0.0.0.0:{port}"))
             .env("FELIX_KAFKA_ADVERTISE_ADDR", &advertise)
-            .env("FELIX_KAFKA_TLS", "false");
+            .env("FELIX_KAFKA_TLS", config.kafka_listener.tls.to_string());
+        if config.kafka_listener.anonymous {
+            command.env("FELIX_KAFKA_ANONYMOUS_TENANT", &config.tenant_id);
+        }
+        if config.kafka_listener.record_headers {
+            command.env("FELIX_KAFKA_RECORD_HEADERS", "true");
+        }
         Some(advertise)
     } else {
         None

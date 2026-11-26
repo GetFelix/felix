@@ -7,6 +7,10 @@
 //! nothing else.
 //!
 //! Run with `cargo test -p felix-broker-service --test mqtt_isolation`.
+#[path = "support/raft_shard.rs"]
+mod raft_shard;
+
+use std::net::SocketAddr;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
@@ -31,6 +35,8 @@ use tokio::net::TcpStream;
 use tokio_util::sync::CancellationToken;
 use tokio_util::task::TaskTracker;
 
+use raft_shard::RaftShard;
+
 const FLOOD_TASKS: usize = 48;
 const PUBLISHES: usize = 200;
 /// Far above a publish's normal cost on a loaded machine, far below the
@@ -53,8 +59,90 @@ fn connect_with_bad_token() -> Vec<u8> {
     .to_vec()
 }
 
+/// The broker the flood runs against, and where its stream is.
+struct Target {
+    client: Connection,
+    mqtt_addr: SocketAddr,
+    namespace: &'static str,
+    stream: &'static str,
+    _held: Held,
+}
+
+enum Held {
+    Local {
+        shutdown: CancellationToken,
+        connections: TaskTracker,
+        quic: tokio::task::JoinHandle<Result<()>>,
+    },
+    /// Holds the cluster up until the test is done with it.
+    Raft { _shard: Box<RaftShard> },
+}
+
+impl Drop for Held {
+    fn drop(&mut self) {
+        if let Held::Local {
+            shutdown,
+            connections,
+            quic,
+        } = self
+        {
+            shutdown.cancel();
+            connections.close();
+            quic.abort();
+        }
+    }
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_connection_flood_does_not_slow_quic_publishes() -> Result<()> {
+async fn a_connection_flood_does_not_slow_quic_publishes_on_a_local_broker() -> Result<()> {
+    a_connection_flood_does_not_slow_quic_publishes(local().await?).await
+}
+
+/// A durable stream, so the publishes go through the shard's Raft group.
+#[serial_test::serial(raft_fixture)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_connection_flood_does_not_slow_quic_publishes_on_a_raft_shard() -> Result<()> {
+    let shard = RaftShard::start(
+        felix_cluster::ClusterConfig {
+            namespace: "default".to_string(),
+            tcp_listeners: vec![(
+                "FELIX_MQTT_LISTEN".to_string(),
+                "127.0.0.1:{port}".to_string(),
+            )],
+            broker_env: [
+                ("FELIX_MQTT_TLS", "false"),
+                ("FELIX_MQTT_WORKER_THREADS", "1"),
+                ("FELIX_MQTT_MAX_CONNECTIONS", "1024"),
+                ("FELIX_MQTT_MAX_CONNECTIONS_PER_IP", "0"),
+                ("FELIX_MQTT_CONNECT_RATE", "0"),
+            ]
+            .map(|(key, value)| (key.to_string(), value.to_string()))
+            .to_vec(),
+            ..Default::default()
+        },
+        felix_cluster::StreamSpec::new("orders", 1),
+        false,
+    )
+    .await;
+    let node = shard.cluster.node(&shard.node).expect("the broker");
+    let mqtt_addr = SocketAddr::from((
+        [127, 0, 0, 1],
+        node.tcp_port("FELIX_MQTT_LISTEN").expect("an MQTT port"),
+    ));
+    let client = shard.cluster.client_on(&shard.node).await?;
+    a_connection_flood_does_not_slow_quic_publishes(Target {
+        client,
+        mqtt_addr,
+        namespace: "default",
+        stream: "orders",
+        _held: Held::Raft {
+            _shard: Box::new(shard),
+        },
+    })
+    .await
+}
+
+async fn local() -> Result<Target> {
     let broker = Arc::new(Broker::new(EphemeralCache::new().into()));
     broker.register_tenant("t1").await?;
     broker.register_namespace("t1", "default").await?;
@@ -73,7 +161,7 @@ async fn a_connection_flood_does_not_slow_quic_publishes() -> Result<()> {
     )?);
     let quic_addr = server.local_addr()?;
     let demo = demo_auth_for_tenant("t1")?;
-    let quic_task = tokio::spawn(serve(
+    let quic = tokio::spawn(serve(
         server,
         broker,
         BrokerConfig::default(),
@@ -110,6 +198,24 @@ async fn a_connection_flood_does_not_slow_quic_publishes() -> Result<()> {
     config.auth_tenant_id = Some(demo.tenant_id.clone());
     config.auth_token = Some(demo.token.clone());
     let client = Connection::connect(quic_addr, "localhost", config).await?;
+    Ok(Target {
+        client,
+        mqtt_addr,
+        namespace: "default",
+        stream: "orders",
+        _held: Held::Local {
+            shutdown,
+            connections,
+            quic,
+        },
+    })
+}
+
+async fn a_connection_flood_does_not_slow_quic_publishes(target: Target) -> Result<()> {
+    let Target {
+        client, mqtt_addr, ..
+    } = &target;
+    let mqtt_addr = *mqtt_addr;
     let publisher = client.publisher().await?;
 
     let stop = Arc::new(AtomicBool::new(false));
@@ -140,8 +246,8 @@ async fn a_connection_flood_does_not_slow_quic_publishes() -> Result<()> {
             Duration::from_secs(10),
             publisher.publish(
                 "t1",
-                "default",
-                "orders",
+                target.namespace,
+                target.stream,
                 format!("m{i}").into_bytes(),
                 AckMode::PerMessage,
             ),
@@ -155,9 +261,7 @@ async fn a_connection_flood_does_not_slow_quic_publishes() -> Result<()> {
     for task in flood {
         let _ = task.await;
     }
-    shutdown.cancel();
-    connections.close();
-    quic_task.abort();
+    drop(target);
 
     assert!(
         attempts.load(Ordering::Relaxed) > 100,
