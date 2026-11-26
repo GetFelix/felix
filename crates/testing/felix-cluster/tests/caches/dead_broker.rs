@@ -66,6 +66,10 @@ async fn start_with_value(before: &[u8]) -> (Cluster, String, Arc<Client>) {
 /// is open on the owner when it dies, so nothing but the transport says the
 /// connection is gone. It must not end or hang: a change written after the
 /// failover arrives on the same handle.
+///
+/// On Raft a follower serves the watch, so the kill takes the shard's leader
+/// rather than the watch's connection. The follower is left without a leader
+/// until the election, and the watch has to carry on through that too.
 #[serial]
 #[tokio::test]
 async fn a_cache_watch_survives_losing_its_broker() {
@@ -127,7 +131,15 @@ async fn a_cache_watch_survives_losing_its_broker() {
             Err(_) => panic!("the watch never delivered the change written after the failover"),
         }
     }
-    assert_eq!(watch.reconnects(), 1, "reopened once, after the kill");
+    if cluster.raft() {
+        assert_eq!(
+            watch.reconnects(),
+            0,
+            "the follower serving the watch survived, so its connection should have"
+        );
+    } else {
+        assert_eq!(watch.reconnects(), 1, "reopened once, after the kill");
+    }
 
     cluster.shutdown().await;
 }
@@ -220,6 +232,10 @@ async fn cache_requests_stop_going_to_a_killed_owner() {
 /// watcher's client buffers, and the watcher stops reading after its first
 /// value, so the kill lands inside that shard's state phase. `StateComplete`
 /// must wait for the reopened shard's full state.
+///
+/// The kill takes the broker serving the watch: the owner on the hybrid, and
+/// on Raft the follower the watcher entered through, since a follower serves
+/// reads. Killing the Raft leader would leave that stream running.
 #[serial]
 #[tokio::test]
 async fn a_sharded_retained_watch_restarts_a_state_phase_cut_by_a_kill() {
@@ -332,11 +348,33 @@ async fn a_sharded_retained_watch_restarts_a_state_phase_cut_by_a_kill() {
         }
     }
 
-    cluster.kill_node(&leader).expect("kill shard 0's owner");
-    assert!(
-        failover_from(&cluster, &leader, Duration::from_secs(30)).await,
-        "no replica was promoted"
-    );
+    let serving = if cluster.raft() {
+        // Every watch was opened through the seed, and a following member
+        // serves it there instead of redirecting.
+        let seed_addr = cluster.node(&seed).expect("seed").client_addr;
+        let elsewhere: Vec<_> = watcher
+            .connections_per_node()
+            .await
+            .into_iter()
+            .filter(|(addr, live)| *addr != seed_addr && *live > 0)
+            .collect();
+        assert!(
+            elsewhere.is_empty(),
+            "the watcher reached past the seed, so the seed may not serve shard 0: {elsewhere:?}"
+        );
+        seed.clone()
+    } else {
+        leader.clone()
+    };
+    cluster
+        .kill_node(&serving)
+        .expect("kill shard 0's serving broker");
+    if !cluster.raft() {
+        assert!(
+            failover_from(&cluster, &leader, Duration::from_secs(30)).await,
+            "no replica was promoted"
+        );
+    }
 
     let deadline =
         tokio::time::Instant::now() + felix_cluster::wait::budget(Duration::from_secs(90));

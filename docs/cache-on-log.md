@@ -348,7 +348,10 @@ member's memory while the shard is watched, so a resume from below the
 oldest change a member kept is a resnapshot rather than a replay, and a
 resume from past the edge waits for the member to catch up. And a snapshot install replaces the
 state whole, so it ends the shard's watches as `cache_watch_lagged` at the
-first entry they were not told of, as does a member that loses its leader.
+first entry they were not told of. A member that loses its leader ends
+them at the same point, but as `shard_moved` with no new owner named for a
+client that follows moves, so a cluster client's watch carries on through
+the election at whichever member serves the shard next instead of ending.
 A broker that runs its caches on Raft but has no member of the shard open
 yet, at startup or before placement reaches it after a failover, refuses
 the watch as retryable `shard_unavailable`. Its own cache store is never

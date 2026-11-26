@@ -124,6 +124,16 @@ impl RaftCache {
         retained: bool,
         from_offset: Option<u64>,
     ) -> Result<(Message, Option<Events>)> {
+        self.watch_offering(retained, from_offset, 0).await
+    }
+
+    /// [`Self::watch`] from a client that offered `peer_features`.
+    async fn watch_offering(
+        &self,
+        retained: bool,
+        from_offset: Option<u64>,
+        peer_features: u32,
+    ) -> Result<(Message, Option<Events>)> {
         let (client, client_conn, connection) = connection().await?;
         let publish_ctx = build_publish_context(
             Arc::clone(&self.broker),
@@ -165,7 +175,7 @@ impl RaftCache {
                 retained,
                 subscription_id: Some(7),
             },
-            0,
+            peer_features,
             None,
         )
         .await?;
@@ -488,6 +498,35 @@ async fn an_ended_raft_cache_watch_names_where_to_resume() -> Result<()> {
         "{ended:?}"
     );
     assert_eq!(hub.registered_watchers("t1", "ns", ORDERS, 0), 0);
+    Ok(())
+}
+
+/// **A client that follows moves is told the shard moved, not that it
+/// lagged**, when its member can no longer say its state is current. A lag
+/// ends a cluster client's watch, and a member losing its leader is a
+/// failover the watch has to carry on through, at the same edge.
+#[tokio::test]
+async fn an_ended_raft_cache_watch_is_followed_by_a_client_that_follows_moves() -> Result<()> {
+    let cache = RaftCache::start().await;
+    let (_, events) = cache
+        .watch_offering(false, None, felix_wire::FEATURE_SHARD_MOVED)
+        .await?;
+    let mut events = events.expect("events");
+    let put = cache.write(RaftCache::put("k", b"one")).await;
+    assert_eq!(events.change().await?, (Some(b"one".to_vec()), put));
+
+    let hub = Arc::clone(cache.broker.cache_watches().expect("a hub"));
+    let edge = cache.edge();
+    cache.raft().end_cache_watches(&cache_key(), hub.as_ref());
+    let ended = events.next().await?;
+    assert!(
+        matches!(
+            ended,
+            Message::ShardMoved { subscription_id: 7, resume_from: Some(from), node_id: None, .. }
+                if from == edge
+        ),
+        "{ended:?}"
+    );
     Ok(())
 }
 
