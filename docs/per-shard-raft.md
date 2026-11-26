@@ -1626,12 +1626,20 @@ stopped by a re-form is left alone. The start runs under the
 copy that does not open, and the next pass redoes the start from the
 record.
 
+A broker of the lost epoch can come back, declared dead or not, with its
+copy and its old membership. Opened, that member would elect itself and
+serve a log the operator gave up. So a broker never opens a copy whose
+epoch is behind an epoch that started from an empty base, and closes such
+a member if it is open when the record moves on. The copy's data is left
+on disk, and it sends no copy id, so it never joins the new epoch either.
+
 > `crates/server/felix-storage/src/raft_copy/tests/fresh_epoch.rs`,
 > `an_abandoned_copy_starts_at_the_first_index`,
 > `an_abandon_start_refuses_a_copy_that_is_not_blank` and
 > `an_abandon_start_cut_at_any_step_finishes_when_run_again`.
 > `services/felix-broker-service/src/shards/raft/tests.rs`,
-> `a_blank_copy_of_an_abandoned_epoch_starts_at_its_first_index`.
+> `a_blank_copy_of_an_abandoned_epoch_starts_at_its_first_index` and
+> `a_copy_of_an_abandoned_epoch_does_not_lead_when_it_returns`.
 
 ### Writing through openraft
 

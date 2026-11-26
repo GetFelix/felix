@@ -572,6 +572,70 @@ async fn a_blank_copy_of_an_abandoned_epoch_starts_at_its_first_index() {
     shards.shutdown().await;
 }
 
+/// **A broker of an abandoned epoch that comes back never leads its old
+/// group.** The record has moved the shard to another broker's empty epoch;
+/// an old member that elected itself would serve, and take writes for, a
+/// group the operator gave up.
+#[tokio::test]
+async fn a_copy_of_an_abandoned_epoch_does_not_lead_when_it_returns() {
+    use crate::shards::watch::{RaftBases, RaftEpochBase, RaftVoters};
+    let root = tempfile::tempdir().expect("tempdir");
+    let broker = broker(root.path()).await;
+    let shards = shards(&broker);
+    let orders = key("orders", 0);
+    take_formed(&shards, assigned(orders.clone(), INCARNATION)).await;
+    until("the old epoch to be led", || {
+        shards.leading(&orders).is_some()
+    })
+    .await;
+
+    let mut abandoned = assigned(orders.clone(), INCARNATION);
+    abandoned.leader = "broker-b".to_string();
+    abandoned.replicas = vec!["broker-b".to_string()];
+    abandoned.generation = 2;
+    abandoned.placed = Some(crate::shards::watch::PlacedEpoch { epoch: 1 });
+    abandoned.raft_bases = Some(RaftBases {
+        incarnation: INCARNATION,
+        bases: vec![RaftEpochBase {
+            base_last: None,
+            first_index: 1 << 30,
+        }],
+    });
+    abandoned.raft_seed = Some(RaftVoters {
+        incarnation: INCARNATION,
+        epoch: 1,
+        members: std::collections::BTreeMap::from([("broker-b".to_string(), 7)]),
+        starts: Default::default(),
+    });
+    // Still open when the record moves on, as on a broker cut off while
+    // the operator abandoned the group.
+    shards.take(&mut assignments([abandoned.clone()])).await;
+    assert!(
+        shards.runtime.status(&orders).is_none(),
+        "the old epoch's member stayed open"
+    );
+    shards.shutdown().await;
+    drop(shards);
+    drop(broker);
+
+    // Restarted.
+    let broker = self::broker(root.path()).await;
+    let back = self::shards(&broker);
+    for _ in 0..40 {
+        back.take(&mut assignments([abandoned.clone()])).await;
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(
+            back.leading(&orders).is_none(),
+            "the old epoch's copy leads a group the operator abandoned"
+        );
+        assert!(
+            !matches!(route(&back, &orders), Some(Dispatch::Local { .. })),
+            "the old epoch's copy serves a group the operator abandoned"
+        );
+    }
+    back.shutdown().await;
+}
+
 /// **A shard restored from an export has no placed record, but its bases
 /// still say it re-formed.** Read as epoch 0, a copy without `raft-epoch`
 /// would send its copy id and could vote (#2882).

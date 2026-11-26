@@ -183,6 +183,16 @@ pub(crate) struct RaftShards {
     alone: std::sync::atomic::AtomicBool,
 }
 
+/// Whether an epoch after `copy_epoch` in `bases` starts from an empty
+/// base, as an abandon's does: it kept nothing of the earlier log, so a
+/// copy of `copy_epoch` holds a log the group gave up.
+fn abandoned_since(bases: Option<&[EpochBase]>, copy_epoch: u64) -> bool {
+    let after = usize::try_from(copy_epoch).unwrap_or(usize::MAX);
+    bases
+        .and_then(|bases| bases.get(after..))
+        .is_some_and(|later| later.iter().any(|base| base.base_last.is_none()))
+}
+
 /// A shard directory an earlier build wrote as a member with no copy id.
 /// Opening it as a copy would rotate it, and with it every member of its
 /// group, so the brokers would form the group again on empty logs.
@@ -194,6 +204,19 @@ pub(crate) struct RaftShards {
 )]
 pub(crate) struct CarriedOver {
     dir: String,
+}
+
+/// A copy of a group epoch an operator has since abandoned. Opened, it
+/// would elect itself in its old membership and serve a log the group
+/// gave up, so it stays closed. Its data is left for the operator.
+#[derive(Debug, thiserror::Error)]
+#[error(
+    "{dir} is a copy of group epoch {copy_epoch}, and the shard's record is at epoch {epoch};      it is not opened"
+)]
+pub(crate) struct LeftBehind {
+    dir: String,
+    copy_epoch: u64,
+    epoch: u64,
 }
 
 /// The fsync mode a member's Raft log opens with. A relaxed broker's own
@@ -706,6 +729,31 @@ impl RaftShards {
         self.start_reformed(key, assignment, root, &dir, &config)
             .await
             .context("start the re-formed copy")?;
+        // A stopped or half-started copy is refused by the open itself.
+        let epoch = assignment.group_epoch();
+        let behind = {
+            let dir = dir.clone();
+            let bases = assignment.epoch_bases();
+            tokio::task::spawn_blocking(move || -> std::io::Result<Option<u64>> {
+                if felix_storage::raft_copy::stopped(&dir)?.is_some()
+                    || felix_storage::raft_copy::start_due(&dir, epoch)?
+                {
+                    return Ok(None);
+                }
+                let copy_epoch = felix_storage::raft_copy::group_epoch(&dir)?.unwrap_or(0);
+                Ok(abandoned_since(bases.as_deref(), copy_epoch).then_some(copy_epoch))
+            })
+            .await
+            .context("epoch check task")??
+        };
+        if let Some(copy_epoch) = behind {
+            return Err(LeftBehind {
+                dir: dir.display().to_string(),
+                copy_epoch,
+                epoch,
+            }
+            .into());
+        }
         admit(&self.runtime, key, assignment);
         let opened = self
             .runtime
@@ -1616,6 +1664,32 @@ impl EngineShards for RaftShards {
                     self.close_with_stream(&key, member).await;
                 }
             }
+            // A member open in an epoch the operator has since abandoned,
+            // as on a broker cut off meanwhile, keeps its old membership and
+            // would go on leading it. The open below refuses it.
+            let left: Vec<ShardKey> = {
+                let epochs = self.epochs.lock();
+                open.iter()
+                    .filter(|(key, member)| {
+                        fed.get(*key).is_some_and(|(assignment, _)| {
+                            member.incarnation == assignment.incarnation
+                                && epochs.get(*key).is_some_and(|epoch| {
+                                    abandoned_since(
+                                        assignment.epoch_bases().as_deref(),
+                                        epoch.unwrap_or(0),
+                                    )
+                                })
+                        })
+                    })
+                    .map(|(key, _)| key.clone())
+                    .collect()
+            };
+            for key in left {
+                if let Some(member) = open.remove(&key) {
+                    tracing::warn!(shard = ?key, "closing a Raft member of a group epoch the shard's record has left");
+                    self.close_with_stream(&key, member).await;
+                }
+            }
             self.restarts.lock().retain(|key| fed.contains_key(key));
             self.runtime.retain_admitted(|key| fed.contains_key(key));
             *self.unplaced.lock() = fed
@@ -1693,7 +1767,7 @@ impl EngineShards for RaftShards {
                             open.insert(key.clone(), member);
                         }
                         // Tried again on the next pass.
-                        Err(err) if err.is::<CarriedOver>() => {
+                        Err(err) if err.is::<CarriedOver>() || err.is::<LeftBehind>() => {
                             if self.carried_over.lock().insert(key.clone()) {
                                 tracing::error!(shard = ?key, error = %err, "not opening a Raft shard");
                             }
