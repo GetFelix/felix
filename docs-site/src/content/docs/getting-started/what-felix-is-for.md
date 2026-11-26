@@ -141,7 +141,7 @@ At a glance:
 
 | Area | Status | In one line |
 |---|---|---|
-| Streams | ✅ Today | Ephemeral and durable streams, replicated, with quorum acknowledgement and failover |
+| Streams | ✅ Today | Ephemeral and durable streams. A durable stream is replicated, with quorum acknowledgement and failover. An ephemeral one has one owner the control plane places, is acknowledged on enqueue and runs no Raft group; when its owner is lost it is placed again and the new owner starts empty |
 | Cache | ✅ Today | Key/value with TTL, compare-and-set, counters and keyed watches; the key index is held in memory |
 | Queues | 🚧 Partial | Consumer groups with acks, redelivery and dead letters, one shard per group |
 | Clustering | 🚧 Partial | Placement, replication, failover and online rebalancing work; fault coverage is single-machine |

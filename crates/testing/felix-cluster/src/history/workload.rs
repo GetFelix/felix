@@ -245,6 +245,33 @@ impl Workload {
         })
     }
 
+    /// Read every list from its base on every broker, one after another,
+    /// each recorded as a read by `process`. A broker that does not serve
+    /// the list sends the read on to its leader, as any read would be. A
+    /// read that fails observed nothing and is not recorded.
+    pub(super) async fn read_on_every_broker(&self, process: usize) {
+        for addr in self.addrs() {
+            for list in &self.lists {
+                let invoke = self.now();
+                let read = self
+                    .read(addr, list, Some(self.base(list)), self.op_timeout)
+                    .await;
+                let Ok(read) = read else {
+                    continue;
+                };
+                self.recorder.record(Op {
+                    process,
+                    invoke,
+                    complete: self.now(),
+                    action: Action::Read {
+                        list: list.clone(),
+                        observed: read.elements,
+                    },
+                });
+            }
+        }
+    }
+
     /// Append a fresh value to `list` through `addr`, recorded as process
     /// `process` like any other append. The liveness check's write probe: a
     /// value the history did not know about would read as a phantom.
