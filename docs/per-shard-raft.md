@@ -1616,6 +1616,11 @@ bounds what it gave out since its last report. So the abandon is refused
 earlier epoch's first index. Fix the clock, or wait for it to pass, and ask
 again.
 
+The new epoch is a group of one, whatever the stream's replication factor:
+the abandon places only the new leader. A Quorum publish is then
+acknowledged on that one copy. Placement does not yet add copies to a Raft
+group short of its factor, so the shard stays at one copy.
+
 A broker never forms a group past epoch 0 from index 0, since forming
 writes the group's first entries there. A blank copy of an abandoned epoch
 starts at the epoch's first index instead:

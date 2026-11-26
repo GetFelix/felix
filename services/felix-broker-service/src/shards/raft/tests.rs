@@ -488,13 +488,24 @@ async fn a_fresh_copy_past_epoch_zero_takes_the_records_epoch() {
 /// acknowledged.
 #[tokio::test]
 async fn a_blank_copy_past_epoch_zero_does_not_form_the_group() {
+    blank_copy_past_epoch_zero(1).await;
+}
+
+/// The same with a record whose bases do not cover its epoch: they say
+/// nothing of the epoch's first index, so the copy still does not form.
+#[tokio::test]
+async fn a_blank_copy_does_not_form_the_group_when_the_bases_are_short() {
+    blank_copy_past_epoch_zero(2).await;
+}
+
+async fn blank_copy_past_epoch_zero(epoch: u64) {
     use crate::shards::watch::{RaftBases, RaftEpochBase};
     let root = tempfile::tempdir().expect("tempdir");
     let broker = broker(root.path()).await;
     let shards = shards(&broker);
     let orders = key("orders", 0);
     let mut placed = assigned(orders.clone(), INCARNATION);
-    placed.placed = Some(crate::shards::watch::PlacedEpoch { epoch: 1 });
+    placed.placed = Some(crate::shards::watch::PlacedEpoch { epoch });
     placed.raft_bases = Some(RaftBases {
         incarnation: INCARNATION,
         bases: vec![RaftEpochBase {
@@ -503,16 +514,22 @@ async fn a_blank_copy_past_epoch_zero_does_not_form_the_group() {
         }],
     });
     shards.take(&mut assignments([placed.clone()])).await;
-    let stored = stored(placed, &[&shards]);
+    // Bases short of the epoch keep the blank copy closed from the start.
+    let stored = if shards.runtime.status(&orders).is_some() {
+        stored(placed, &[&shards])
+    } else {
+        placed
+    };
     for _ in 0..10 {
         shards.take(&mut assignments([stored.clone()])).await;
         tokio::time::sleep(Duration::from_millis(50)).await;
     }
-    let status = shards.runtime.status(&orders).expect("open");
-    assert_eq!(
-        (status.term, status.last_index),
-        (0, None),
-        "formed a group past epoch 0 from index 0"
+    let status = shards.runtime.status(&orders);
+    assert!(
+        status
+            .as_ref()
+            .is_none_or(|status| (status.term, status.last_index) == (0, None)),
+        "formed a group past epoch 0 from index 0: {status:?}"
     );
     shards.shutdown().await;
 }
@@ -578,6 +595,19 @@ async fn a_blank_copy_of_an_abandoned_epoch_starts_at_its_first_index() {
 /// group the operator gave up.
 #[tokio::test]
 async fn a_copy_of_an_abandoned_epoch_does_not_lead_when_it_returns() {
+    abandoned_copy_returns(1).await;
+}
+
+/// After a restart, the same with a record whose bases do not cover its
+/// epoch: they cannot say the later epochs kept the copy's log, so it is
+/// not opened. A member already open at an unknown epoch stays open
+/// (`a_copy_without_an_epoch_file_counts_only_at_epoch_zero`).
+#[tokio::test]
+async fn a_copy_behind_a_record_with_short_bases_does_not_lead() {
+    abandoned_copy_returns(2).await;
+}
+
+async fn abandoned_copy_returns(epoch: u64) {
     use crate::shards::watch::{RaftBases, RaftEpochBase, RaftVoters};
     let root = tempfile::tempdir().expect("tempdir");
     let broker = broker(root.path()).await;
@@ -593,7 +623,7 @@ async fn a_copy_of_an_abandoned_epoch_does_not_lead_when_it_returns() {
     abandoned.leader = "broker-b".to_string();
     abandoned.replicas = vec!["broker-b".to_string()];
     abandoned.generation = 2;
-    abandoned.placed = Some(crate::shards::watch::PlacedEpoch { epoch: 1 });
+    abandoned.placed = Some(crate::shards::watch::PlacedEpoch { epoch });
     abandoned.raft_bases = Some(RaftBases {
         incarnation: INCARNATION,
         bases: vec![RaftEpochBase {
@@ -603,17 +633,19 @@ async fn a_copy_of_an_abandoned_epoch_does_not_lead_when_it_returns() {
     });
     abandoned.raft_seed = Some(RaftVoters {
         incarnation: INCARNATION,
-        epoch: 1,
+        epoch,
         members: std::collections::BTreeMap::from([("broker-b".to_string(), 7)]),
         starts: Default::default(),
     });
     // Still open when the record moves on, as on a broker cut off while
     // the operator abandoned the group.
-    shards.take(&mut assignments([abandoned.clone()])).await;
-    assert!(
-        shards.runtime.status(&orders).is_none(),
-        "the old epoch's member stayed open"
-    );
+    if epoch == 1 {
+        shards.take(&mut assignments([abandoned.clone()])).await;
+        assert!(
+            shards.runtime.status(&orders).is_none(),
+            "the old epoch's member stayed open"
+        );
+    }
     shards.shutdown().await;
     drop(shards);
     drop(broker);

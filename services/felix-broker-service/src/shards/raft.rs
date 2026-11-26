@@ -183,14 +183,19 @@ pub(crate) struct RaftShards {
     alone: std::sync::atomic::AtomicBool,
 }
 
-/// Whether an epoch after `copy_epoch` in `bases` starts from an empty
-/// base, as an abandon's does: it kept nothing of the earlier log, so a
-/// copy of `copy_epoch` holds a log the group gave up.
-fn abandoned_since(bases: Option<&[EpochBase]>, copy_epoch: u64) -> bool {
+/// Whether a copy of `copy_epoch` is left behind by a record at `epoch`
+/// with `bases`: an epoch after it starts from an empty base, as an
+/// abandon's does, so the copy holds a log the group gave up. Bases that do
+/// not cover every epoch say nothing about how each started, so any later
+/// epoch counts.
+fn left_behind(epoch: u64, bases: Option<&[EpochBase]>, copy_epoch: u64) -> bool {
     let after = usize::try_from(copy_epoch).unwrap_or(usize::MAX);
-    bases
-        .and_then(|bases| bases.get(after..))
-        .is_some_and(|later| later.iter().any(|base| base.base_last.is_none()))
+    copy_epoch < epoch
+        && bases.is_none_or(|bases| {
+            bases
+                .get(after..)
+                .is_some_and(|later| later.iter().any(|base| base.base_last.is_none()))
+        })
 }
 
 /// A shard directory an earlier build wrote as a member with no copy id.
@@ -211,7 +216,8 @@ pub(crate) struct CarriedOver {
 /// gave up, so it stays closed. Its data is left for the operator.
 #[derive(Debug, thiserror::Error)]
 #[error(
-    "{dir} is a copy of group epoch {copy_epoch}, and the shard's record is at epoch {epoch};      it is not opened"
+    "{dir} is a copy of group epoch {copy_epoch}, and the shard's record is at epoch {epoch}; \
+     it is not opened"
 )]
 pub(crate) struct LeftBehind {
     dir: String,
@@ -255,8 +261,6 @@ struct Formable {
 /// How often a `none` broker's written-commit Raft logs flush.
 const NONE_RAFT_FLUSH: Duration = Duration::from_secs(1);
 
-/// One open member: the log is this module's to close, because the storage
-/// provider never opened it.
 /// This broker's part in an abandoned epoch, from the shard's record.
 struct AbandonedVoter {
     bases: Vec<EpochBase>,
@@ -264,6 +268,8 @@ struct AbandonedVoter {
     voters: BTreeSet<MemberId>,
 }
 
+/// One open member: the log is this module's to close, because the storage
+/// provider never opened it.
 struct Member {
     incarnation: u64,
     /// The copy id the member votes under, synced before the member opened.
@@ -741,7 +747,7 @@ impl RaftShards {
                     return Ok(None);
                 }
                 let copy_epoch = felix_storage::raft_copy::group_epoch(&dir)?.unwrap_or(0);
-                Ok(abandoned_since(bases.as_deref(), copy_epoch).then_some(copy_epoch))
+                Ok(left_behind(epoch, bases.as_deref(), copy_epoch).then_some(copy_epoch))
             })
             .await
             .context("epoch check task")??
@@ -1673,11 +1679,14 @@ impl EngineShards for RaftShards {
                     .filter(|(key, member)| {
                         fed.get(*key).is_some_and(|(assignment, _)| {
                             member.incarnation == assignment.incarnation
-                                && epochs.get(*key).is_some_and(|epoch| {
-                                    abandoned_since(
-                                        assignment.epoch_bases().as_deref(),
-                                        epoch.unwrap_or(0),
-                                    )
+                                && assignment.epoch_bases().is_some_and(|bases| {
+                                    epochs.get(*key).is_some_and(|epoch| {
+                                        left_behind(
+                                            assignment.group_epoch(),
+                                            Some(&bases),
+                                            epoch.unwrap_or(0),
+                                        )
+                                    })
                                 })
                         })
                     })
@@ -1835,7 +1844,7 @@ impl EngineShards for RaftShards {
                 // Forming writes the group's first entries from index 0. Past
                 // epoch 0 an index below the epoch's first one may have been
                 // given out, so only a start at that index may begin it.
-                let past_zero = assignment.epoch_bases().is_some();
+                let past_zero = assignment.group_epoch() > 0;
                 if *full && blank && past_zero && self.held_warn.lock().due(key) {
                     tracing::warn!(shard = ?key, epoch = assignment.group_epoch(), "not forming the shard's Raft group from index 0: it is past epoch 0");
                 }

@@ -199,7 +199,7 @@ pub(crate) async fn cancel_shard_move(
     responses(
         (status = 200, description = "Log abandoned and the shard placed afresh", body = ShardMoveResponse),
         (status = 404, description = "No such shard", body = crate::api::types::ErrorResponse),
-        (status = 409, description = "Nothing to abandon, or no node can take the shard", body = crate::api::types::ErrorResponse)
+        (status = 409, description = "Nothing to abandon, or no node can take the shard; on Raft also `not_declared_dead`, `abandon_unsupported` or `abandon_refused`", body = crate::api::types::ErrorResponse)
     )
 )]
 /// Give up a shard's log and place the shard afresh. **This loses data.**
@@ -213,10 +213,22 @@ pub(crate) async fn cancel_shard_move(
 /// new generation; records only the old leader held are gone, acknowledged
 /// ones included.
 ///
+/// On Raft the shard's group is given up instead: refused until every broker
+/// placed in its epoch is declared dead, the next epoch starts empty on one
+/// live broker at a first index on the restore time line, above every offset
+/// the lost group gave out. The new group has that one copy whatever the
+/// stream's replication factor, and stays at one copy
+/// (`docs/per-shard-raft.md`, "Abandoning a lost group").
+///
 /// # Errors
 /// - 404 when the shard has no assignment.
 /// - 409 `not_stranded` when the leader is serving or a replica can take
 ///   over without loss, and `unplaceable` when no node can take the shard.
+/// - 409 on Raft: `not_declared_dead` while a broker placed in the group's
+///   epoch is not declared dead, `abandon_unsupported` until the fleet
+///   finalizes `raft_abandon`, and `abandon_refused` when the store refuses
+///   the write (the shard moved on, or the control plane's clock puts the
+///   time line at or below an index the group already reached).
 pub(crate) async fn abandon_shard_log(
     State(state): State<AppState>,
     headers: HeaderMap,
