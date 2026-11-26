@@ -425,6 +425,8 @@ impl LaneWork {
             );
         }
         metrics::histogram!(PUBLISH_CLAIM_JOBS).record(group.members.len() as f64);
+        #[cfg(test)]
+        MERGED_JOBS.lock().unwrap().push(group.members.len());
         // The only ordered part: offsets are consumed here, so the order
         // claims return in is the order records land on disk.
         felix_storage::hops::mark(felix_storage::hops::Stage::Handed);
@@ -630,6 +632,8 @@ impl LaneWork {
                 &mut permits,
             );
             metrics::histogram!(PUBLISH_CLAIM_JOBS).record(members.len() as f64);
+            #[cfg(test)]
+            MERGED_JOBS.lock().unwrap().push(members.len());
         }
         let attribution = felix_broker::Attribution {
             publisher: job.publisher.take(),
@@ -1056,6 +1060,10 @@ const CLAIM_MAX_BYTES: usize = 1024 * 1024;
 
 /// Publishes per durable claim. Close to 1 means the lanes are not backing up.
 const PUBLISH_CLAIM_JOBS: &str = "felix_broker_publish_claim_jobs";
+
+/// Jobs per claim or merged proposal, for diagnostics run alone.
+#[cfg(test)]
+static MERGED_JOBS: std::sync::Mutex<Vec<usize>> = std::sync::Mutex::new(Vec::new());
 
 /// Publishes claimed as one append, in lane order.
 struct ClaimGroup {

@@ -293,6 +293,45 @@ async fn the_tracker_waits_for_queued_publishes_and_their_completions() -> Resul
 /// shard is served here, lets a move close the fence while the job waits in
 /// the queue, and then lets it be claimed -- which must refuse it and write
 /// nothing, since the drained report may already have gone out.
+/// Keep `window` publishes in flight from one task, as one connection does,
+/// `total` in all, and return the jobs in each claim or merged proposal.
+/// Diagnostic: `MERGED_JOBS` is shared, so run it alone.
+async fn merge_depth(
+    ctx: &PublishContext,
+    window: usize,
+    total: usize,
+    mut make: impl FnMut() -> (PublishJob, oneshot::Receiver<Result<Option<u64>>>),
+) -> Vec<usize> {
+    use futures::stream::{FuturesUnordered, StreamExt};
+    MERGED_JOBS.lock().unwrap().clear();
+    let mut inflight = FuturesUnordered::new();
+    let mut sent = 0;
+    while sent < total || !inflight.is_empty() {
+        while sent < total && inflight.len() < window {
+            let (job, answer) = make();
+            ctx.scheduler.send(job).await;
+            inflight.push(answer);
+            sent += 1;
+        }
+        let answer = inflight.next().await.expect("in flight");
+        answer.expect("answered").expect("acknowledged");
+    }
+    std::mem::take(&mut *MERGED_JOBS.lock().unwrap())
+}
+
+fn depth_summary(window: usize, sizes: &[usize]) -> String {
+    let jobs: usize = sizes.iter().sum();
+    let mut counts = std::collections::BTreeMap::new();
+    for size in sizes {
+        *counts.entry(*size).or_insert(0usize) += 1;
+    }
+    format!(
+        "window {window}: {} claims, {:.2} jobs each, sizes {counts:?}",
+        sizes.len(),
+        jobs as f64 / sizes.len().max(1) as f64
+    )
+}
+
 mod fence {
     use felix_common::random::HashMap;
 
@@ -559,6 +598,20 @@ mod lane_claim {
         answer
             .expect("worker response")
             .expect("publish acknowledged")
+    }
+
+    /// Diagnostic: jobs per hybrid claim under a closed loop of `window`.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    #[ignore = "diagnostic, run alone"]
+    async fn diag_hybrid_merge_depth() -> Result<()> {
+        let (_dir, broker, handle) = durable_broker().await?;
+        let publish_ctx = context(&broker, ClusterContext::default());
+        for window in [1, 2, 4, 16, 64] {
+            let sizes =
+                super::merge_depth(&publish_ctx, window, 2000, || job(&handle, None, 0, 1)).await;
+            eprintln!("hybrid {}", super::depth_summary(window, &sizes));
+        }
+        Ok(())
     }
 
     #[tokio::test]
@@ -1762,6 +1815,30 @@ mod on_raft {
                 .expect("answered")
                 .expect("acknowledged")
                 .expect("an offset")
+        }
+
+        /// Diagnostic: jobs per merged Raft proposal under a closed loop.
+        #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+        #[ignore = "diagnostic, run alone"]
+        async fn diag_raft_merge_depth() -> Result<()> {
+            let at = Leading::new().await?;
+            for window in [1, 2, 4, 16, 64] {
+                let sizes = crate::serving::quic::handlers::publish::worker::tests::merge_depth(
+                    &at.publish_ctx,
+                    window,
+                    2000,
+                    || at.job_of(1),
+                )
+                .await;
+                eprintln!(
+                    "raft {}",
+                    crate::serving::quic::handlers::publish::worker::tests::depth_summary(
+                        window, &sizes
+                    )
+                );
+            }
+            at.stop().await;
+            Ok(())
         }
 
         /// **Publishes queued on one Raft shard's lane are one proposal,
