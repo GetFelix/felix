@@ -324,3 +324,165 @@ fn client_certs_are_offered_exactly_when_the_broker_binds_subjects() {
         "a broker without binding must not offer it"
     );
 }
+
+/// Point a standalone durable broker at `data`, answering probes on
+/// `metrics`. Its control plane does not answer and it has no token, so it
+/// opens storage without one and never becomes ready.
+fn standalone_durable(data: &std::path::Path, metrics: std::net::SocketAddr) -> Vec<EnvGuard> {
+    vec![
+        EnvGuard::set("FELIX_BROKER_METRICS_BIND", &metrics.to_string()),
+        EnvGuard::set("FELIX_QUIC_BIND", "127.0.0.1:0"),
+        EnvGuard::unset("FELIX_CP_URL"),
+        EnvGuard::set("FELIX_CONTROLPLANE_URL", "http://127.0.0.1:1"),
+        EnvGuard::set("FELIX_DURABLE_STORAGE_DIR", data.to_str().expect("utf-8")),
+    ]
+}
+
+/// Wait until the broker `handle` runs has opened every store on `data`.
+async fn await_opened(data: &std::path::Path, handle: &mut tokio::task::JoinHandle<Result<()>>) {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
+    // The counters open last.
+    while !data.join("counters").is_dir() {
+        if handle.is_finished() {
+            panic!("the broker stopped while starting: {:?}", handle.await);
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "the broker never opened its storage"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    if handle.is_finished() {
+        panic!("the broker stopped after opening: {:?}", handle.await);
+    }
+}
+
+/// The data directory's own files a start writes: the run record, the run
+/// token and the storage id.
+fn run_files(data: &std::path::Path) -> Vec<(&'static str, Vec<u8>)> {
+    [
+        felix_storage::run_state::FILE_NAME,
+        felix_storage::run_state::witness::TOKEN_FILE_NAME,
+        felix_storage::storage_identity::FILE_NAME,
+    ]
+    .into_iter()
+    .map(|name| (name, std::fs::read(data.join(name)).expect(name)))
+    .collect()
+}
+
+/// **A second broker on a running broker's data directory is refused before
+/// it writes anything there** (#3250). Without the lock on the root it
+/// begins a run under the first: it rewrites the run record and the run
+/// token, and may rotate the storage id, before any log refuses it.
+#[tokio::test]
+#[serial_test::serial]
+async fn a_second_broker_on_the_data_directory_is_refused_before_it_writes() -> Result<()> {
+    let data = tempfile::tempdir()?;
+    let env = standalone_durable(data.path(), free_tcp());
+    let (stop_first, stopped) = tokio::sync::oneshot::channel();
+    let mut first = tokio::spawn(run_with_shutdown(async {
+        let _ = stopped.await;
+    }));
+    await_opened(data.path(), &mut first).await;
+    let before = run_files(data.path());
+
+    // Its own ports, so only the directory is shared.
+    let _metrics = EnvGuard::set("FELIX_BROKER_METRICS_BIND", &free_tcp().to_string());
+    let second = tokio::time::timeout(
+        Duration::from_secs(10),
+        run_with_shutdown(std::future::pending::<()>()),
+    )
+    .await;
+    assert_eq!(
+        run_files(data.path()),
+        before,
+        "the second broker wrote the first one's run files"
+    );
+    let err = second
+        .expect("the second broker started on the directory")
+        .expect_err("the second broker started on the directory");
+    let text = format!("{err:#}");
+    assert!(
+        text.contains(&data.path().display().to_string())
+            && text.contains("another broker process"),
+        "{text}"
+    );
+
+    let _ = stop_first.send(());
+    tokio::time::timeout(Duration::from_secs(10), first).await???;
+    drop(env);
+    Ok(())
+}
+
+/// **A broker restarts in this process on the directory a stopped one left**:
+/// the lock goes with the run, not with the process, so the many tests and
+/// the simulator that restart a broker in place are not kept out.
+#[tokio::test]
+#[serial_test::serial]
+async fn a_broker_restarts_in_process_after_a_clean_stop() -> Result<()> {
+    let data = tempfile::tempdir()?;
+    let mut ids = Vec::new();
+    for _ in 0..2 {
+        let _env = standalone_durable(data.path(), free_tcp());
+        let (stop, stopped) = tokio::sync::oneshot::channel();
+        let mut run = tokio::spawn(run_with_shutdown(async {
+            let _ = stopped.await;
+        }));
+        await_opened(data.path(), &mut run).await;
+        ids.push(std::fs::read(
+            data.path().join(felix_storage::storage_identity::FILE_NAME),
+        )?);
+        let _ = stop.send(());
+        tokio::time::timeout(Duration::from_secs(10), run).await???;
+    }
+    assert_eq!(ids[0], ids[1], "a clean stop kept the storage id");
+    Ok(())
+}
+
+/// **A start that fails after storage opened lets the data directory go
+/// only once it has stopped everything and closed storage** (#3250). Its
+/// QUIC port is taken, which fails the start after storage and the Raft
+/// shards are up. By the time it returns the stop is recorded as
+/// clean, so nothing under the root is still being written, and a restart in
+/// this process takes the directory and keeps its storage id.
+#[tokio::test]
+#[serial_test::serial]
+async fn a_start_that_fails_after_storage_opened_lets_go_once_stopped() -> Result<()> {
+    let data = tempfile::tempdir()?;
+    let taken = std::net::UdpSocket::bind("127.0.0.1:0")?;
+    let env = standalone_durable(data.path(), free_tcp());
+    let _quic = EnvGuard::set("FELIX_QUIC_BIND", &taken.local_addr()?.to_string());
+    let failed = tokio::time::timeout(
+        Duration::from_secs(20),
+        run_with_shutdown(std::future::pending::<()>()),
+    )
+    .await
+    .expect("the start neither failed nor stopped");
+    let err = failed.expect_err("a broker started on a taken QUIC port");
+    assert!(format!("{err:#}").contains("bind QUIC listener"), "{err:#}");
+
+    let id = felix_storage::storage_identity::load(data.path())?.expect("a storage id");
+    assert_eq!(
+        felix_storage::run_state::read(data.path(), id)?,
+        felix_storage::run_state::LastRun::Clean,
+        "the failed start returned before it closed storage and recorded the stop"
+    );
+
+    drop(taken);
+    drop(env);
+    let _env = standalone_durable(data.path(), free_tcp());
+    let (stop, stopped) = tokio::sync::oneshot::channel();
+    let mut again = tokio::spawn(run_with_shutdown(async {
+        let _ = stopped.await;
+    }));
+    await_opened(data.path(), &mut again).await;
+    assert_eq!(
+        felix_storage::storage_identity::load(data.path())?,
+        Some(id),
+        "the restart after a failed start rotated the storage id"
+    );
+    let _ = stop.send(());
+    tokio::time::timeout(Duration::from_secs(10), again).await???;
+    Ok(())
+}

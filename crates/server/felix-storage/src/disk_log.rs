@@ -77,7 +77,7 @@ pub mod switch;
 mod sync;
 
 pub use carried_floor::CarriedFloor;
-pub use dir_lock::probe as probe_dir_lock;
+pub use dir_lock::RootLock;
 pub use producers::{ForgottenCuts, ProducerSequence, UnfinishedBatch};
 #[cfg(feature = "raft")]
 pub(crate) use producers::{forgotten_file_name, snapshot_file_name as producers_file_name};

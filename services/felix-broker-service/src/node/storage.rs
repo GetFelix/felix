@@ -18,6 +18,10 @@ use crate::config::{BrokerConfig, DurableStorageConfig};
 /// the broker over them. Without durable storage everything but the cache is
 /// left out and the cache lives in memory.
 ///
+/// Durable storage comes with the lock on its root ([`lock_root`]), taken
+/// before anything read or wrote there and held by the caller for as long as
+/// the broker runs.
+///
 /// Also returns the data directory's storage id, read before the broker
 /// registers so the control plane and peers only ever see the id of the data
 /// it serves; whether this start rotated it: after a crash that may have
@@ -25,31 +29,24 @@ use crate::config::{BrokerConfig, DurableStorageConfig};
 /// control plane's record of this node, names a later incarnation than the
 /// one the directory recorded; whether `registered` names another
 /// storage id; and what the directory kept of its ballots ([`Kept`]).
-pub(crate) fn open(
-    config: &BrokerConfig,
-    registered: Option<&Registered>,
-) -> Result<(Broker, Option<DurableStorage>, StorageId, bool, bool, Kept)> {
-    open_with(config, DurableStorageConfig::from_env()?, registered)
-}
-
-/// [`open`] with the durable settings given rather than read from the
-/// environment.
 pub(crate) fn open_with(
     config: &BrokerConfig,
-    durable_config: Option<DurableStorageConfig>,
+    durable: Option<(DurableStorageConfig, &felix_storage::disk_log::RootLock)>,
     registered: Option<&Registered>,
 ) -> Result<(Broker, Option<DurableStorage>, StorageId, bool, bool, Kept)> {
     // Test-only: the cluster harness's power loss. Armed before any store
     // opens, since the model takes what is already on disk as durable.
     #[cfg(debug_assertions)]
     felix_storage::fault::arm_power_loss_from_env().context("arm the simulated power loss")?;
-    // Logs open lazily, so without this a filesystem that cannot lock a
-    // directory lets the broker become ready and then fails every shard.
-    // Only a probe: a second broker on the root is caught per log (#3250).
-    if let Some(durable) = &durable_config {
-        felix_storage::disk_log::probe_dir_lock(&durable.root)
-            .context("check that the data directory can be locked")?;
+    if let Some((durable, lock)) = &durable {
+        anyhow::ensure!(
+            lock.dir() == durable.root,
+            "{} is opened under the lock on {}",
+            durable.root.display(),
+            lock.dir().display()
+        );
     }
+    let durable_config = durable.map(|(durable, _)| durable);
     // Before any store opens: a store's recovery is the first write of this
     // run, and the record that a run is under way must already be on disk.
     let (storage_id, unclean, replaced, kept) = match &durable_config {
@@ -189,6 +186,16 @@ pub(crate) fn open_with(
         None => broker,
     };
     Ok((broker, durable_storage, storage_id, unclean, replaced, kept))
+}
+
+/// Lock the data directory at `root` for this process, creating it if it is
+/// not there. Taken before anything reads or writes there: a second broker
+/// on the directory would otherwise write its run record, and may rotate the
+/// storage id, under the first. A filesystem that cannot lock a directory
+/// fails here too, so the broker does not start on it.
+pub(crate) fn lock_root(root: &Path) -> Result<felix_storage::disk_log::RootLock> {
+    felix_storage::disk_log::RootLock::take(root)
+        .with_context(|| format!("lock the data directory {}", root.display()))
 }
 
 /// Start a run on `root` and say what it started under: the storage id,

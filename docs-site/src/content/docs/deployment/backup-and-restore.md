@@ -300,7 +300,9 @@ data directories only while the broker is stopped.
 ## Restoring a standalone broker
 
 A broker with no `FELIX_NODE_ID` keeps everything in its one data directory,
-so its backup is a copy of that directory, taken with the broker stopped.
+so its backup is a copy of that directory, taken with the broker stopped. A
+copy taken while it runs is not a consistent point: its files are copied at
+different moments, and copying takes no lock, so nothing refuses it.
 
 1. Stop the broker.
 2. Replace its whole `FELIX_DURABLE_STORAGE_DIR` with the copy.
@@ -312,6 +314,10 @@ so its backup is a copy of that directory, taken with the broker stopped.
    ```bash
    felix-broker rotate-storage-id --dir /var/lib/felix
    ```
+
+   Both tools lock the data directory, as a running broker does, so either
+   one refuses to run while a broker still holds it, with an error naming
+   the directory.
 
 4. Start the broker.
 

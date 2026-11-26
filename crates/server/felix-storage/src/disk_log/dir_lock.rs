@@ -1,7 +1,8 @@
 //! The lock on a log's directory: one open log at a time, across processes
 //! and within one. Every open takes it, so two brokers on one data
 //! directory, or a broker and `felix-log-tool`, never both write, cut or
-//! rotate a log.
+//! rotate a log. [`RootLock`] is the same lock on a broker's data directory,
+//! held for as long as the broker runs on it.
 //!
 //! An exclusive `flock` on the directory itself, so no file is added to it
 //! and no segment file is touched. The kernel ties the lock to the open
@@ -72,12 +73,46 @@ impl DirLock {
     }
 }
 
-/// Take and let go of the lock on `dir`, creating it if it is not there: a
-/// start's check that the filesystem can lock a directory, so a broker on
-/// one that cannot fails before it is ready rather than at each log's open.
-pub fn probe(dir: &Path) -> io::Result<()> {
-    crate::io::create_dir_all_durable(dir)?;
-    DirLock::take(dir).map(drop)
+/// The lock on a broker's data directory, for as long as the broker runs on
+/// it. It covers the directory's own files (the run record, the storage id,
+/// the marks), which no log's lock does, so a second broker is refused
+/// before it reads or writes any of them. Given up when dropped, and by the
+/// kernel when the process dies. Nothing is written for it.
+#[derive(Debug)]
+pub struct RootLock {
+    dir: PathBuf,
+    _lock: DirLock,
+}
+
+impl RootLock {
+    /// Lock the data directory `dir`, creating it if it is not there. Never
+    /// waits: a directory another broker holds is refused with
+    /// [`io::ErrorKind::ResourceBusy`], and a filesystem that cannot lock a
+    /// directory with an error naming it.
+    pub fn take(dir: &Path) -> io::Result<Self> {
+        crate::io::create_dir_all_durable(dir)?;
+        let lock = DirLock::take(dir).map_err(|err| match err.kind() {
+            io::ErrorKind::ResourceBusy => io::Error::new(
+                err.kind(),
+                format!(
+                    "{}: another broker process holds this data directory (or a \
+                     `felix-broker restore-point` or `rotate-storage-id` run does). \
+                     Stop it first, or give this broker a directory of its own",
+                    dir.display()
+                ),
+            ),
+            _ => err,
+        })?;
+        Ok(Self {
+            dir: dir.to_path_buf(),
+            _lock: lock,
+        })
+    }
+
+    /// The directory this holds.
+    pub fn dir(&self) -> &Path {
+        &self.dir
+    }
 }
 
 /// Give up every claim below `root`, for a simulated crash: the logs open

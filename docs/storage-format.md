@@ -771,11 +771,12 @@ in eight ways:
   open fails with "resource busy" and names the directory, whether it
   comes from the same process, another process,
   `felix-log-tool`, or through a symlink. The holder is not named: `flock`
-  does not record one. A second broker on the same data directory is
-  refused at the first log it opens, but the data directory's own files
-  (the run record, the storage id and the marks) are not covered by these
-  locks: the second broker writes its run record and may rotate the storage
-  id under the first before any log refuses it (#3250). A Raft copy's
+  does not record one. The data directory's own files (the run
+  record, the storage id, the marks) are covered by a lock of the same kind
+  on the data directory, which a broker takes before it reads or writes
+  anything there and holds for as long as it runs, so a second broker on
+  the same directory is refused at startup, before it writes anything.
+  `felix-broker restore-point` and `rotate-storage-id` take it too. A Raft copy's
   directory is
   locked before its copy file and marks are judged, and stays locked through
   a rotation: the new directory is locked as soon as the old one is renamed
@@ -791,7 +792,7 @@ in eight ways:
   it up. The directory is opened close-on-exec, so a child process never
   inherits the lock. On Linux NFS, `flock` is emulated with byte-range
   locks, which a directory cannot take, so the open fails there, and a
-  broker checks for this at startup and does not start. Other
+  broker fails to lock its data directory at startup and does not start. Other
   network filesystems may grant the lock per host, so nothing keeps two
   hosts on one share apart: keep the data directory on a local disk. On a
   platform without `flock` the claim is kept in the process, as on the
