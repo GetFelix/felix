@@ -7228,7 +7228,8 @@ for the written acknowledgement. The proposal extends it to the commit.
 `flushed` keeps meaning a real fsync, because three things read it as
 one: the root's log mark (an unsynced id would read as a restore after a
 power cut), a `Leader` write on a stream that fsyncs, and the snapshot
-rule below.
+rule below. It rises when the log's durable bound covers the entry, raised
+by the sync itself, so the append does not hand the wait to a task.
 
 Each follower answers an append by its own mode. Every leader asks for
 the written report (`await_quorum_ack`, `Request::Written`) once a

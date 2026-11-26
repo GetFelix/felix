@@ -8,7 +8,7 @@ use openraft::storage::{IOFlushed, RaftLogStorage};
 use openraft::type_config::TypeConfigExt;
 
 use super::*;
-use crate::raft_log::{reserved, state_file};
+use crate::raft_log::{LogPoint, reserved, state_file};
 
 type Raft = RaftLog<Types, Codec>;
 
@@ -309,7 +309,12 @@ async fn queued_under_marks(
     append(&mut raft, vec![normal(1, 1, "a")])
         .await
         .expect("append");
-    assert!(!raft.shared.flushes.is_empty(), "the flushes are queued");
+    // An exact mark queues them for the flush task; a batched one leaves
+    // them for the sync to raise.
+    assert!(
+        !raft.shared.flushes.is_empty() || raft.shared.waits_for_sync(),
+        "the flushes are queued"
+    );
     raft
 }
 
@@ -367,4 +372,126 @@ async fn draining_before_the_close_flushes_every_queued_append() {
         assert!(!log.is_poisoned(), "{mode:?}");
         assert!(!crate::disk_log::durable_mark::left_poisoned(log.dir()).expect("look"));
     }
+}
+
+const WRITTEN_MODES: [FsyncMode; 2] = [
+    FsyncMode::None,
+    // Long enough that only the explicit sync below covers the appends.
+    FsyncMode::Periodic {
+        interval: Duration::from_secs(3600),
+    },
+];
+
+/// **A written-commit append hands nothing to the flush task.** The sync
+/// that covers it raises `flushed` on its own thread, so an append costs
+/// no wake of another task, and `flushed` has moved when the sync returns.
+#[tokio::test]
+async fn a_written_commit_append_wakes_no_flush_task() {
+    for mode in WRITTEN_MODES {
+        let root = tempdir().expect("dir");
+        begin(root.path(), true);
+        let mut raft = open_under(root.path(), mode).expect("open");
+        for index in 0..5 {
+            append(&mut raft, vec![normal(1, index, "a")])
+                .await
+                .expect("append");
+        }
+        assert_eq!(raft.shared.flushes.pushed(), 0, "{mode:?}: no task woken");
+        assert_eq!(raft.positions().borrow().flushed, None, "{mode:?}");
+        raft.disk_log().sync().await.expect("sync");
+        assert_eq!(
+            raft.positions().borrow().flushed,
+            Some(LogPoint { term: 1, index: 4 }),
+            "{mode:?}: the sync raised it"
+        );
+        append(&mut raft, vec![normal(1, 5, "b")])
+            .await
+            .expect("append");
+        assert_eq!(
+            raft.positions().borrow().flushed,
+            Some(LogPoint { term: 1, index: 4 }),
+            "{mode:?}: not before its sync"
+        );
+        raft.disk_log().sync().await.expect("sync");
+        assert_eq!(
+            raft.positions().borrow().flushed,
+            Some(LogPoint { term: 1, index: 5 }),
+            "{mode:?}"
+        );
+    }
+}
+
+/// **What the callback sees is the same in every mode.** Under `OnCommit`
+/// it fires once `flushed` covers the entry; under written commit it fires
+/// at the write, with `written` there and `flushed` behind until a sync.
+#[tokio::test]
+async fn the_callback_and_flushed_keep_their_order_in_every_mode() {
+    let last = Some(LogPoint { term: 1, index: 1 });
+    for (relaxed, mode) in [
+        (false, FsyncMode::OnCommit),
+        (true, FsyncMode::OnCommit),
+        (true, WRITTEN_MODES[0]),
+        (true, WRITTEN_MODES[1]),
+    ] {
+        let root = tempdir().expect("dir");
+        begin(root.path(), relaxed);
+        let mut raft = open_under(root.path(), mode).expect("open");
+        append(&mut raft, vec![blank(1, 0), normal(1, 1, "a")])
+            .await
+            .expect("append");
+        let at = *raft.positions().borrow();
+        assert_eq!(at.written, last, "{mode:?}");
+        if mode == FsyncMode::OnCommit {
+            assert_eq!(at.flushed, last, "{mode:?}: flushed before the callback");
+        } else {
+            assert_eq!(at.flushed, None, "{mode:?}: the callback did not wait");
+            raft.disk_log().sync().await.expect("sync");
+            let mut positions = raft.positions();
+            tokio::time::timeout(BOUND, positions.wait_for(|at| at.flushed == last))
+                .await
+                .expect("flushed follows the sync")
+                .expect("open");
+        }
+    }
+}
+
+/// **The periodic sync raises `flushed` with no call from Raft.**
+#[tokio::test]
+async fn a_periodic_sync_raises_flushed() {
+    let root = tempdir().expect("dir");
+    begin(root.path(), true);
+    let mode = FsyncMode::Periodic {
+        interval: Duration::from_millis(20),
+    };
+    let mut raft = open_under(root.path(), mode).expect("open");
+    append(&mut raft, vec![blank(1, 0), normal(1, 1, "a")])
+        .await
+        .expect("append");
+    let mut positions = raft.positions();
+    tokio::time::timeout(
+        BOUND,
+        positions.wait_for(|at| at.flushed.is_some_and(|at| at.index == 1)),
+    )
+    .await
+    .expect("flushed follows the periodic sync")
+    .expect("open");
+    assert_eq!(raft.shared.flushes.pushed(), 0);
+}
+
+/// **A stopped log never raises `flushed` past what a sync covered.**
+#[tokio::test]
+async fn a_poisoned_written_commit_log_leaves_flushed_where_it_was() {
+    let root = tempdir().expect("dir");
+    begin(root.path(), true);
+    let mut raft = open_under(root.path(), FsyncMode::None).expect("open");
+    append(&mut raft, vec![blank(1, 0), normal(1, 1, "a")])
+        .await
+        .expect("append");
+    raft.disk_log().poison("test".to_string());
+    assert!(
+        raft.disk_log().sync().await.is_err(),
+        "a stopped log syncs nothing"
+    );
+    assert_eq!(raft.positions().borrow().flushed, None);
+    assert!(raft.disk_log().is_poisoned());
 }
