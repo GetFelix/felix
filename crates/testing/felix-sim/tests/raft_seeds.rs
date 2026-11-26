@@ -111,13 +111,20 @@ fn run_checked(
     disks: Disks,
     leader_change: bool,
 ) -> Result<RaftOutcome, String> {
-    let config = RaftSimConfig {
-        clocks,
-        disks,
-        leader_change,
-        ..RaftSimConfig::default()
-    };
-    let shards = config.shards;
+    checked(
+        seed,
+        RaftSimConfig {
+            clocks,
+            disks,
+            leader_change,
+            ..RaftSimConfig::default()
+        },
+    )
+}
+
+/// [`run_checked`] with the whole config.
+fn checked(seed: u64, config: RaftSimConfig) -> Result<RaftOutcome, String> {
+    let (clocks, disks, shards) = (config.clocks, config.disks, config.shards);
     let outcome = run_seed(seed, config);
     println!("{outcome}");
     let why = if outcome.passed() {
@@ -408,4 +415,49 @@ fn raft_seeds() {
         failures.len(),
         failures.join("\n")
     );
+}
+
+/// Seed 1 with a leader change and majority relaxed cuts, on runtime seeds
+/// 76 and 94. A placement hand-over opened term 6 after the final log was
+/// read, and the run judged that open against the older log (#3126).
+#[test]
+#[cfg_attr(
+    not(tokio_unstable),
+    ignore = "needs RUSTFLAGS=\"--cfg tokio_unstable\" for a seeded select!"
+)]
+fn raft_seed_1_opens_after_the_final_read() {
+    for runtime_seed in [76, 94] {
+        let config = RaftSimConfig {
+            disks: Disks::MajorityCutRelaxed,
+            runtime_seed: Some(runtime_seed),
+            ..RaftSimConfig::default()
+        };
+        if let Err(failure) = checked(1, config) {
+            panic!("runtime seed {runtime_seed}: {failure}");
+        }
+    }
+}
+
+/// Seed `FELIX_SIM_SEED` (default 1) with majority relaxed cuts, once per
+/// runtime seed: `FELIX_SIM_RUNTIME_SEEDS` of them from
+/// `FELIX_SIM_RUNTIME_SEED_START`. Reaches interleavings that a seed alone
+/// does not.
+#[test]
+#[ignore = "a search over runtime seeds; run with --cfg tokio_unstable"]
+fn raft_runtime_seeds() {
+    let start = env("FELIX_SIM_RUNTIME_SEED_START", 0);
+    let count = env("FELIX_SIM_RUNTIME_SEEDS", 1);
+    let seed = env("FELIX_SIM_SEED", 1);
+    let mut failures = Vec::new();
+    for runtime_seed in start..start + count {
+        let config = RaftSimConfig {
+            disks: Disks::MajorityCutRelaxed,
+            runtime_seed: Some(runtime_seed),
+            ..RaftSimConfig::default()
+        };
+        if let Err(failure) = checked(seed, config) {
+            failures.push(format!("runtime seed {runtime_seed}: {failure}"));
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
 }

@@ -18,6 +18,7 @@ fn judged(opens: &[Open], led: &[(u64, usize)], committed: &[u64]) -> Vec<String
         led: &led,
         committed: &committed,
         read: &BTreeMap::new(),
+        before_read: &BTreeMap::new(),
     };
     judge(opens, &seen)
 }
@@ -54,12 +55,39 @@ fn opening_a_term_whose_blank_never_committed_is_a_finding() {
     assert!(findings[0].contains("blank entry was never committed"));
 }
 
+/// The final log is held to the opens before it was read: one before it
+/// with no entry in it is a finding, and one after it is judged on the other
+/// rules only, since its entry cannot be in a log read before it (#3126).
+#[test]
+fn only_opens_before_the_final_read_are_judged_against_it() {
+    let committed = BTreeMap::from([(0, BTreeSet::from([1, 5]))]);
+    let judged = |opens: &[Open], before: usize| {
+        let seen = Seen {
+            led: &BTreeMap::new(),
+            committed: &committed,
+            read: &BTreeMap::new(),
+            before_read: &BTreeMap::from([(0, before)]),
+        };
+        judge(opens, &seen)
+    };
+    let before = judged(&[open(0, 5), open(1, 6)], 2);
+    assert_eq!(before.len(), 1, "{before:?}");
+    assert!(
+        before[0].starts_with("t/ns/s0: b2 opened term 6, and the final log holds no entry"),
+        "{before:?}"
+    );
+    assert!(judged(&[open(0, 5), open(1, 6)], 1).is_empty());
+    let twice = judged(&[open(0, 5), open(1, 6), open(2, 6)], 1);
+    assert_eq!(twice, ["t/ns/s0: b2 and b3 both opened term 6"]);
+}
+
 #[test]
 fn a_shard_without_a_final_log_is_not_judged_on_it() {
     let seen = Seen {
         led: &BTreeMap::new(),
         committed: &BTreeMap::new(),
         read: &BTreeMap::new(),
+        before_read: &BTreeMap::new(),
     };
     assert!(judge(&[open(0, 2)], &seen).is_empty());
 }
@@ -92,6 +120,7 @@ fn a_missing_term_names_where_the_log_was_read_and_who_holds_the_term() {
             led: &BTreeMap::new(),
             committed: &committed,
             read: &BTreeMap::from([(0, read)]),
+            before_read: &BTreeMap::new(),
         };
         judge(&[open(0, 6)], &seen).remove(0)
     };
