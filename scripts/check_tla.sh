@@ -121,6 +121,7 @@ module_of() {
     FelixRaftReads*) echo FelixRaftReads ;;
     FelixRaftSessions*) echo FelixRaftSessions ;;
     FelixRaftStreamPurge*) echo FelixRaftStreamPurge ;;
+    FelixRaftElect*) echo FelixRaftElect ;;
     FelixRaft*) echo FelixRaft ;;
     FelixShardMoveGiveUp*) echo FelixShardMoveGiveUp ;;
     *) echo "no module for configuration $1" >&2; exit 1 ;;
@@ -247,6 +248,12 @@ expectations=(
   "FelixRaftReachInstallCrash violates NeverCrashesMidInstall"
   "FelixRaftReachSnapshotReplace violates NeverReplacesSnapshot"
   "FelixRaftReachDeliverFailover violates NeverDeliversAcrossFailover"
+  "FelixRaftElectLive pass"
+  "FelixRaftElectLiveFaults pass"
+  "FelixRaftElectLiveSlack pass"
+  "FelixRaftElectLiveFaultsSlack pass"
+  "FelixRaftElectLiveSplits violates liveness"
+  "FelixRaftElectLiveNoOpen violates liveness"
   "FelixRaftMembership pass"
   "FelixRaftMembershipFailover pass"
   "FelixRaftMembershipSkipJoint violates OneLeaderPerTerm"
