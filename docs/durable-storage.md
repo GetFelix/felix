@@ -1983,11 +1983,23 @@ directory, before it reads or writes anything there, so a second broker
 pointed at the same directory stops at startup, before it is ready, with an
 error that names the directory and says another broker process holds it.
 It never gets as far as writing its run record or rotating the storage id
-under the first. The broker lets go of it when its run ends: after the
-drain has closed every store and recorded the stop, on a startup error, or
-when a test drops the running broker. Tasks the broker spawned never hold
-it, so a broker stopped and started again in the same process is not kept
-out by one that outlived its run. A simulated broker holds it the same way.
+under the first. The broker lets go of it only once its storage is shut
+down, whichever way the run ends: after the drain, or after a start that
+failed once storage was open (a listener port already taken, say). Before
+letting go it stops every task that can write under the directory, the
+Raft members, the restore gate, cache expiry and, on a late failure, the
+listeners, membership and the catalog sync, then closes storage and records
+the stop. A start that failed this way returns only after all of that, so a
+broker started again in the same process finds the directory free and its
+stop recorded as clean. A running broker dropped without stopping closes
+on a task of its own, and if that cannot finish the lock stays held until
+the process exits. A simulated broker holds the lock too.
+
+Two directories a broker uses outside its data directory are not locked,
+because they are shared: the offload directory
+(`FELIX_DURABLE_OFFLOAD_DIR`), an archive several brokers may write to, and
+the run witness directory under `/dev/shm`, which every broker on the
+machine uses.
 
 `felix-broker restore-point` and `felix-broker rotate-storage-id` take the
 same lock and hold it until they finish, so each is refused while a broker

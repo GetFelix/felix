@@ -300,7 +300,9 @@ data directories only while the broker is stopped.
 ## Restoring a standalone broker
 
 A broker with no `FELIX_NODE_ID` keeps everything in its one data directory,
-so its backup is a copy of that directory, taken with the broker stopped.
+so its backup is a copy of that directory, taken with the broker stopped. A
+copy taken while it runs is not a consistent point: its files are copied at
+different moments, and copying takes no lock, so nothing refuses it.
 
 1. Stop the broker.
 2. Replace its whole `FELIX_DURABLE_STORAGE_DIR` with the copy.
