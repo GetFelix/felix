@@ -8,6 +8,11 @@ name: Instructions per message
 # Not part of `CI ok`: whether it blocks merges is a repository setting.
 # A pull request runs it only when it touches the broker's hot-path code.
 # Otherwise it runs on workflow_dispatch only; there is no main or schedule run.
+#
+# Every rep runs on a fresh broker and b1 is paced at a fixed rate, so a job
+# takes about the same time on every run: roughly 70 minutes on aarch64 and 55
+# on x86_64, half of each spent building. A new baseline is the median of five
+# dispatched runs of one commit (see scripts/perf/ipm-baseline.toml).
 
 on:
   pull_request:
@@ -104,4 +109,6 @@ jobs:
           if-no-files-found: warn
 
       - name: Compare with the baseline
-        run: python3 scripts/perf/ipm_gate.py check ipm-result.json
+        run: |
+          python3 -m unittest discover -s scripts/perf -p 'test_ipm_gate.py'
+          python3 scripts/perf/ipm_gate.py check ipm-result.json

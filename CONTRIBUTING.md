@@ -158,14 +158,38 @@ filler that restates what was just said.
   nightly or dispatch); runs on main are never cancelled.
 - The `Instructions per message` workflow counts the CPU instructions the
   broker retires per acknowledged message (a durable Raft broker with periodic
-  fsync, 256 B, acked, 48 keys over 48 shards, batch 1 and 64, each cell on
-  a broker of its own) and fails when a cell is more than
-  3% over `scripts/perf/ipm-baseline.toml`. The broker runs under callgrind,
-  since hosted runners expose no hardware counters, so only user-space
-  instructions are counted, less the idle broker's per-second cost. If the extra cost is deliberate, run
-  `python3 scripts/perf/ipm_gate.py update <ipm-result.json>` (the result is
-  an artifact of the run, one per architecture) and commit the baseline with a
-  sentence on what the instructions buy. A toolchain bump updates it the same way.
+  fsync, 256 B, acked, 48 keys over 48 shards, batch 1 and 64) and fails when a
+  cell is more than 3% over `scripts/perf/ipm-baseline.toml`. The broker runs
+  under callgrind, since hosted runners expose no hardware counters, so only
+  user-space instructions are counted, less the idle broker's per-second cost.
+  - Each cell runs five reps, each on a fresh broker with a fresh data
+    directory, and reports the median rep with the spread. A broker that runs
+    for a long time under callgrind gets slower, so a rep on it would cost
+    more than a rep on a fresh one.
+  - Under callgrind the broker runs hundreds of times slower than native while
+    its timers fire in real time, so its per-second work (timers, heartbeats,
+    polling) is a large share of what it executes. Taking the idle rate off
+    does not remove all of it: a broker under load does more per second than
+    an idle one. So `b1` is paced at a fixed rate for a fixed 300 s (20 msg/s
+    on aarch64, 100 msg/s on x86_64, both well under what the slowest runner
+    sustains), and its figure includes the same amount of per-second work in
+    every rep and every run. `b64` is not paced: its reps are short and
+    per-second work is a small part of them.
+  - What it cannot see: kernel time, time spent waiting on the disk or the
+    network, and a change that only makes per-second work cheaper or costlier
+    shows up in `b1` as if it were per-message cost. Pacing also dilutes `b1`:
+    about a third of its figure is per-second work, so a per-message cost has
+    to grow by about 4.5% to move it 3%.
+  - If a rep cannot hold its pace (it issued more than 3% off the rate, or ran
+    more than 3% over 300 s), or unpaced reps slow down one after another, the
+    run fails as a measurement failure, not a regression. Rerun it.
+  - If the extra cost is deliberate, dispatch the workflow five times on the
+    PR's head commit and run `python3 scripts/perf/ipm_gate.py update` with
+    the five `ipm-result.json` artifacts (one per architecture per run). It
+    writes the median of the five runs. Commit the baseline with a sentence on
+    what the instructions buy. A toolchain bump updates it the same way. A
+    single run is never a baseline: the figure moves by a few tenths of a
+    percent to a percent or two with the runner it lands on.
 
 ### How pull request CI picks its jobs
 
