@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795656741539,
+  "lastUpdate": 1795657680655,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -89100,6 +89100,72 @@ window.BENCHMARK_DATA = {
             "range": "998.05",
             "unit": "us",
             "extra": "trials: 5\nmedian: 515.00\nmean: 1055.80\nstdev: 998.05\ncv: 94.53%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "5eb61ab362c56b1d3c37d51ff683a9d918a2a7dc",
+          "message": "test(cluster): kcat reads every shard from its leader on Raft too (#2991) (#3206)\n\nSplit the kcat leader test: the read-every-partition half has no engine\nguard and runs on Raft and hybrid, asking Metadata again until the elected\nleader agrees with placement's owner. The follow-a-moved-shard half keeps\nits guard.\n\nSpec-Unaffected: test-only change, no protocol or state-machine behaviour",
+          "timestamp": "2026-11-25T17:28:18-08:00",
+          "tree_id": "5fda444de7ea3777530e0647ff421e8ca7674f68",
+          "url": "https://github.com/GetFelix/felix/commit/5eb61ab362c56b1d3c37d51ff683a9d918a2a7dc"
+        },
+        "date": 1795657667193,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 96,
+            "range": "0.45",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 96.00\nmean: 95.80\nstdev: 0.45\ncv: 0.47%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 141,
+            "range": "15.58",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 141.00\nmean: 147.40\nstdev: 15.58\ncv: 10.57%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 660,
+            "range": "1036.66",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 660.00\nmean: 970.00\nstdev: 1036.66\ncv: 106.87%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 134,
+            "range": "1.41",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 134.00\nmean: 134.00\nstdev: 1.41\ncv: 1.06%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 280,
+            "range": "7.57",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 280.00\nmean: 277.60\nstdev: 7.57\ncv: 2.73%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 1364,
+            "range": "752.98",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 1364.00\nmean: 1583.60\nstdev: 752.98\ncv: 47.55%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
