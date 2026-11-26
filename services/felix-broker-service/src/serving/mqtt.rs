@@ -120,16 +120,12 @@ impl Authenticator for BrokerMqttAuth {
     }
 }
 
-/// `principal`, ending when `revocable` does: closed then, and refused a
-/// packet that arrives after it.
+/// `principal`, ending when `revocable` does.
 fn ending_with(principal: Principal, revocable: Revocable) -> Principal {
-    let watched = revocable.clone();
-    principal
-        .with_ended_check(move || revocable.is_revoked())
-        .with_revocation(move || {
-            let watched = watched.clone();
-            Box::pin(async move { watched.revoked().await })
-        })
+    principal.with_revocation(move || {
+        let revocable = revocable.clone();
+        Box::pin(async move { revocable.revoked().await })
+    })
 }
 
 /// A bound MQTT listener, not yet accepting.

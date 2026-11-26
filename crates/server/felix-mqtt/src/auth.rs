@@ -38,7 +38,6 @@ pub trait Authenticator: Send + Sync {
 }
 
 type RevokedFn = dyn Fn() -> Pin<Box<dyn Future<Output = ()> + Send>> + Send + Sync;
-type EndedFn = dyn Fn() -> bool + Send + Sync;
 
 /// An authenticated connection's tenant, what it may do, and how long the
 /// credential behind it lasts.
@@ -48,7 +47,6 @@ pub struct Principal {
     access: Access,
     expires_at: Option<i64>,
     revoked: Option<Arc<RevokedFn>>,
-    ended: Option<Arc<EndedFn>>,
     credential: Option<Credential>,
 }
 
@@ -106,7 +104,6 @@ impl Principal {
             access: Access::Token(None),
             expires_at: None,
             revoked: None,
-            ended: None,
             credential: None,
         }
     }
@@ -140,17 +137,6 @@ impl Principal {
         F: Fn() -> Pin<Box<dyn Future<Output = ()> + Send>> + Send + Sync + 'static,
     {
         self.revoked = Some(Arc::new(revoked));
-        self
-    }
-
-    /// `ended` says, without waiting, whether the credential has been revoked
-    /// or reached its end. The connection checks it before serving each
-    /// packet, so one that arrives before the close fires is not served.
-    pub fn with_ended_check<F>(mut self, ended: F) -> Self
-    where
-        F: Fn() -> bool + Send + Sync + 'static,
-    {
-        self.ended = Some(Arc::new(ended));
         self
     }
 
@@ -206,20 +192,10 @@ impl Principal {
         self.expires_at
     }
 
-    /// Why the credential is over now, if it is: `token_expired` once its
-    /// expiry has passed, `revoked` once the check given to
-    /// [`Self::with_ended_check`] says so.
-    pub(crate) fn ended(&self) -> Option<&'static str> {
-        if self
-            .expires_at
-            .is_some_and(|at| felix_common::clock::until_unix(at).is_zero())
-        {
-            return Some("token_expired");
-        }
-        self.ended
-            .as_ref()
-            .is_some_and(|ended| ended())
-            .then_some("revoked")
+    /// Whether anything can end this principal: an expiry or a revocation to
+    /// watch.
+    pub(crate) fn may_end(&self) -> bool {
+        self.expires_at.is_some() || self.revoked.is_some()
     }
 
     /// Resolves when the credential is revoked; never, if it has no

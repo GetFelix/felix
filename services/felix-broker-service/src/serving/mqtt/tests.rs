@@ -345,13 +345,21 @@ where
     ) && reply == [0xD0, 0x00]
 }
 
-/// On the anonymous dev switch, a connection whose client presented a
-/// certificate closes at its `notAfter`, as an authenticated one does, and is
-/// not served after it. One without a certificate stays open.
-#[tokio::test]
-async fn an_anonymous_connection_closes_when_its_client_certificate_expires() {
-    // Long enough for both handshakes and a first ping under CI load.
-    let not_after = unix_now() + 4;
+/// A listener on the anonymous dev switch, with a client that presented a
+/// certificate ending at `not_after` and one that presented none, both
+/// connected and answered once.
+struct AnonymousPair {
+    running: Running,
+    with_cert: tokio_rustls::client::TlsStream<TcpStream>,
+    bare: tokio_rustls::client::TlsStream<TcpStream>,
+    not_after: i64,
+}
+
+/// [`AnonymousPair`] with a certificate `lifetime_secs` long, or `None` when
+/// setting up did not finish a second before the certificate ended: a slow
+/// runner, not the behaviour under test.
+async fn anonymous_pair(lifetime_secs: i64) -> Option<AnonymousPair> {
+    let not_after = unix_now() + lifetime_secs;
     let pki = pki(not_after);
     let mut roots = rustls::RootCertStore::empty();
     roots.add(pki.ca.clone()).expect("root");
@@ -393,28 +401,63 @@ async fn an_anonymous_connection_closes_when_its_client_certificate_expires() {
         });
         let addr = running.addr;
         async move {
-            let socket = TcpStream::connect(addr).await.expect("connect");
+            let socket = TcpStream::connect(addr).await.ok()?;
             let mut tls = tokio_rustls::TlsConnector::from(client)
                 .connect("localhost".try_into().expect("name"), socket)
                 .await
-                .expect("handshake");
-            tls.write_all(&anonymous_connect()).await.expect("connect");
+                .ok()?;
+            tls.write_all(&anonymous_connect()).await.ok()?;
             let mut ack = [0u8; 4];
-            tls.read_exact(&mut ack).await.expect("connack");
-            assert_eq!(ack, [0x20, 0x02, 0x00, 0x00], "accepted");
-            tls
+            tls.read_exact(&mut ack).await.ok()?;
+            (ack == [0x20, 0x02, 0x00, 0x00]).then_some(tls)
         }
     };
     let mut with_cert = connect(true).await;
-    let mut bare = connect(false).await;
-    assert!(answers_ping(&mut with_cert).await, "served before expiry");
+    let bare = connect(false).await;
+    let answered = match &mut with_cert {
+        Some(stream) => answers_ping(stream).await,
+        None => false,
+    };
+    if !answered || unix_now() >= not_after - 1 {
+        running.stop().await;
+        return None;
+    }
+    Some(AnonymousPair {
+        running,
+        with_cert: with_cert.expect("connected"),
+        bare: bare.expect("a connection without a certificate is accepted"),
+        not_after,
+    })
+}
+
+/// On the anonymous dev switch, a connection whose client presented a
+/// certificate closes at its `notAfter`, as an authenticated one does, and is
+/// not served after it. One without a certificate stays open.
+#[tokio::test]
+async fn an_anonymous_connection_closes_when_its_client_certificate_expires() {
+    // Short, to keep the test quick; longer only if setting up outlasts it.
+    let mut pair = None;
+    for lifetime_secs in [4, 15, 60] {
+        pair = anonymous_pair(lifetime_secs).await;
+        if pair.is_some() {
+            break;
+        }
+    }
+    let AnonymousPair {
+        running,
+        mut with_cert,
+        mut bare,
+        not_after,
+    } = pair.expect("set up before the certificate ended");
     assert!(
         answers_ping(&mut bare).await,
         "served without a certificate"
     );
 
+    // Generous: the close is due at `not_after`, the bound only stops a hang.
+    let wait = Duration::from_secs(u64::try_from(not_after - unix_now()).unwrap_or(0) + 30);
     let mut byte = [0u8; 1];
-    let closed = tokio::time::timeout(Duration::from_secs(15), with_cert.read(&mut byte)).await;
+    let closed = tokio::time::timeout(wait, with_cert.read(&mut byte)).await;
     assert!(
         matches!(closed, Ok(Ok(0)) | Ok(Err(_))),
         "a connection with a client certificate outlived its notAfter: {closed:?}"
