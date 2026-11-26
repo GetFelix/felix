@@ -153,9 +153,10 @@ fn offsets_after_an_abandon_are_above_every_offset_the_lost_group_gave_out() {
             given: first,
         })
     );
-    // A clock that moved on puts the next epoch on the line again.
+    // A clock that moved on puts the next epoch on the line again, once the
+    // line is a full gap past the first epoch's start.
     let ahead = AbandonEpochStart {
-        planned_at_millis: start.planned_at_millis + 1,
+        planned_at_millis: start.planned_at_millis + GAP_MILLIS + 1,
         ..behind.clone()
     };
     let third = later
@@ -163,7 +164,89 @@ fn offsets_after_an_abandon_are_above_every_offset_the_lost_group_gave_out() {
         .expect("second abandon");
     let bases = &third.raft_bases.as_ref().unwrap().bases;
     assert_eq!(bases.len(), 2);
-    assert_eq!(bases[1].first_index, first + RESTORE_OFFSETS_PER_MILLI);
+    assert_eq!(
+        bases[1].first_index,
+        first + MIN_OFFSET_GAP + RESTORE_OFFSETS_PER_MILLI
+    );
+}
+
+/// Milliseconds of time line in `MIN_OFFSET_GAP`: 2^18, about 262 s.
+const GAP_MILLIS: u64 = MIN_OFFSET_GAP / RESTORE_OFFSETS_PER_MILLI;
+
+/// The first epoch abandoned on a clock running ten seconds ahead, then
+/// the shard set up for a second abandon.
+fn abandoned_ahead() -> (ShardAssignment, AbandonEpochStart, u64) {
+    let shard = stranded();
+    let mut first = start(&shard);
+    first.planned_at_millis += 10_000;
+    let mut next = shard.abandon_epoch(&first, &set(&["a"])).expect("abandon");
+    let index = next.raft_bases.as_ref().unwrap().bases[0].first_index;
+    next.placed.as_mut().unwrap().brokers = set(&["b"]);
+    let second = AbandonEpochStart {
+        expected_epoch: 1,
+        expected_generation: next.generation,
+        leader: "c".to_string(),
+        ..start(&shard)
+    };
+    (next, second, index)
+}
+
+/// The first epoch was started by a clock ten seconds ahead; the second is
+/// asked 10.001 s later on a correct one. Its line is 2^14 above the first
+/// index, while the first epoch may have acknowledged a million offsets
+/// above it at 100k a second. Refused.
+#[test]
+fn an_abandon_just_above_a_skewed_first_index_is_refused() {
+    let (shard, mut second, first) = abandoned_ahead();
+    let asked = second.planned_at_millis;
+    second.planned_at_millis = asked + 10_001;
+    let line = first + RESTORE_OFFSETS_PER_MILLI;
+    let acknowledged = 100 * 10_001;
+    assert!(line < first + acknowledged);
+    assert_eq!(
+        shard.abandon_epoch(&second, &set(&["a", "b"])),
+        Err(AbandonError::LineBehind { line, given: first })
+    );
+    // Exactly a gap above is still refused.
+    second.planned_at_millis = asked + 10_000 + GAP_MILLIS;
+    assert_eq!(
+        shard.abandon_epoch(&second, &set(&["a", "b"])),
+        Err(AbandonError::LineBehind {
+            line: first + MIN_OFFSET_GAP,
+            given: first,
+        })
+    );
+}
+
+/// A line more than a full gap above the earlier first index is taken, and
+/// the next epoch starts on the line.
+#[test]
+fn an_abandon_a_full_gap_above_the_earlier_epoch_starts_on_the_line() {
+    let (shard, mut second, first) = abandoned_ahead();
+    second.planned_at_millis += 10_000 + GAP_MILLIS + 1;
+    let line = RESTORE_OFFSETS_PER_MILLI * second.planned_at_millis + DEFAULT_OFFSET_GAP;
+    assert_eq!(line, first + MIN_OFFSET_GAP + RESTORE_OFFSETS_PER_MILLI);
+    let next = shard
+        .abandon_epoch(&second, &set(&["a", "b"]))
+        .expect("abandon");
+    assert_eq!(next.raft_bases.as_ref().unwrap().bases[1].first_index, line);
+}
+
+/// The floor needs the same full gap below the line.
+#[test]
+fn an_abandon_is_refused_until_the_line_is_a_gap_above_the_floor() {
+    let mut shard = stranded();
+    let at = start(&shard);
+    let line = RESTORE_OFFSETS_PER_MILLI * at.planned_at_millis + DEFAULT_OFFSET_GAP;
+    let floor = line - MIN_OFFSET_GAP;
+    shard.raft_floor.as_mut().unwrap().offset_floor = floor;
+    assert_eq!(
+        shard.abandon_epoch(&at, &set(&["a"])),
+        Err(AbandonError::LineBehind { line, given: floor })
+    );
+    shard.raft_floor.as_mut().unwrap().offset_floor = floor - 1;
+    let next = shard.abandon_epoch(&at, &set(&["a"])).expect("abandon");
+    assert_eq!(next.raft_bases.as_ref().unwrap().bases[0].first_index, line);
 }
 
 /// A floor at or above the line says the clock is behind too: refused

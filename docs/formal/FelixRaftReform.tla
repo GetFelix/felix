@@ -1023,9 +1023,10 @@ Line ==
                 \cup {Len(m.log) : m \in msgs} \cup {0})
 
 \* An epoch's first index is one past its padded base. The code starts on
-\* the line and refuses unless the line is above the floor and every earlier
-\* first index, which a clock that is not behind always gives; the Max
-\* stands in for that here, since Line is not a clock and cannot run behind.
+\* the line and refuses unless it is a full gap above the floor and every
+\* earlier first index. The model assumes the control-plane clocks agree,
+\* so the line is never behind, and does not check that refusal; the Max
+\* only keeps the index above both.
 AbandonFirst ==
     IF Abandon = "floor" THEN cpFloor.i + 1
     ELSE Max(Line, Max(cpFloor.i + 1, MaxOf({Len(f.base) + 2 : f \in forms} \cup {0})))

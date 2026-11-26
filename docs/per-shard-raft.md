@@ -1608,13 +1608,37 @@ group gave out stay given out.
 The floor alone is not enough: a leader reports it at most once a second,
 and not at all while it cannot reach the control plane, so the lost copy
 may have acknowledged offsets above it. The time line covers those, as for
-a restore. It does not when this control plane's clock is behind the one
-that started an earlier epoch on the line, after a restore or an earlier
-abandon: that epoch's first index can then be above the line, and nothing
-bounds what it gave out since its last report. So the abandon is refused
-(`abandon_refused`) while the line is not above the offset floor and every
-earlier epoch's first index. Fix the clock, or wait for it to pass, and ask
-again.
+a restore, but only once it is well past the lost epoch's start. Being just
+above an earlier epoch's first index is not enough: if the clock that
+planned that epoch ran 10 s ahead and the abandon comes 10.001 s later on
+a correct clock, the line is 1 ms (16,384 offsets) above that first index,
+while at 100k records a second the epoch may have acknowledged a million.
+
+So the abandon is refused (`abandon_refused`) until the line is more than
+`MIN_OFFSET_GAP` (2^32) above the offset floor and every earlier epoch's
+first index. The line gains 2^14 offsets a millisecond, so that gap is
+2^18 ms, about 262 s, of line. Why it is enough: say the earlier epoch's
+clock ran `D` ahead and the abandon comes `E` after that epoch began. The
+line is then `2^14 (E - D)` above its first index, and the epoch can have
+acknowledged at most `rate x E` above it. Once `E - D` is at least 2^18 ms
+and `D` is at most 2^18 ms, `2^14 (E - D) >= rate x E` for any rate up to
+half the slope, 8,192 offsets a millisecond (about 8M a second), the same
+bound a restore assumes.
+
+That needs two things:
+
+- **The control-plane clocks agree within about four minutes** (2^18 ms).
+  A clock further ahead than that when it planned an epoch can leave the
+  line, a full gap later, below offsets that epoch acknowledged.
+- **The earlier epoch's gap is no larger than the abandon's.** An abandon
+  always uses `DEFAULT_OFFSET_GAP` (2^40). A restore planned with a larger
+  `offset_gap` starts further above the line, and a later abandon then
+  passes the check while sitting closer to that epoch's real start.
+
+In practice: an abandon asked within about four and a half minutes of the
+last epoch's start is refused, longer if the clock that started it ran
+ahead. Ask again once that has passed; if it is still refused, check the
+control-plane clocks.
 
 The new epoch is a group of one, whatever the stream's replication factor:
 the abandon places only the new leader. A Quorum publish is then

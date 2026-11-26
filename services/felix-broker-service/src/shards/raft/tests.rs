@@ -420,8 +420,10 @@ async fn a_copy_without_an_epoch_file_counts_only_at_epoch_zero() {
     .await;
     assert_eq!(shards.held_copies().len(), 1);
 
+    // Bases that kept the log, so the member is not left behind.
     let mut reformed = assigned(orders.clone(), INCARNATION);
     reformed.placed = Some(crate::shards::watch::PlacedEpoch { epoch: 1 });
+    reformed.raft_bases = Some(reformed_once());
     shards.take(&mut assignments([reformed])).await;
     assert!(shards.runtime.status(&orders).is_some(), "still open");
     assert!(
@@ -598,10 +600,9 @@ async fn a_copy_of_an_abandoned_epoch_does_not_lead_when_it_returns() {
     abandoned_copy_returns(1).await;
 }
 
-/// After a restart, the same with a record whose bases do not cover its
-/// epoch: they cannot say the later epochs kept the copy's log, so it is
-/// not opened. A member already open at an unknown epoch stays open
-/// (`a_copy_without_an_epoch_file_counts_only_at_epoch_zero`).
+/// The same with a record whose bases do not cover its epoch: they cannot
+/// say the later epochs kept the copy's log, so an open member is closed
+/// and a restarted one is not opened.
 #[tokio::test]
 async fn a_copy_behind_a_record_with_short_bases_does_not_lead() {
     abandoned_copy_returns(2).await;
@@ -639,13 +640,11 @@ async fn abandoned_copy_returns(epoch: u64) {
     });
     // Still open when the record moves on, as on a broker cut off while
     // the operator abandoned the group.
-    if epoch == 1 {
-        shards.take(&mut assignments([abandoned.clone()])).await;
-        assert!(
-            shards.runtime.status(&orders).is_none(),
-            "the old epoch's member stayed open"
-        );
-    }
+    shards.take(&mut assignments([abandoned.clone()])).await;
+    assert!(
+        shards.runtime.status(&orders).is_none(),
+        "the old epoch's member stayed open"
+    );
     shards.shutdown().await;
     drop(shards);
     drop(broker);
@@ -1723,6 +1722,7 @@ async fn a_member_the_copy_id_report_leaves_out_is_still_in_a_backup_point() {
 
     let mut reformed = assigned(orders.clone(), INCARNATION);
     reformed.placed = Some(crate::shards::watch::PlacedEpoch { epoch: 1 });
+    reformed.raft_bases = Some(reformed_once());
     shards.take(&mut assignments([reformed])).await;
     assert!(shards.held_copies().is_empty(), "an unproven epoch");
     let [read] = shards.backup_members().try_into().expect("listed");

@@ -58,29 +58,29 @@ pub(crate) enum AbandonError {
     #[error("every offset is taken")]
     NoIndexLeft,
     #[error(
-        "the restore time line at this control plane's clock ({line}) is not above index \
-         {given}, which the group's offset floor or an earlier epoch already reached; check \
-         the clock and ask again"
+        "the restore time line at this control plane's clock ({line}) is not {MIN_OFFSET_GAP} \
+         above index {given}, which the group's offset floor or an earlier epoch already \
+         reached; ask again once the line has passed it, about 4.5 minutes after the last \
+         epoch began, and check the clock if it does not"
     )]
     LineBehind { line: u64, given: u64 },
 }
 
 impl ShardAssignment {
     /// The first index an abandon gives the next epoch: the restore time
-    /// line plus the gap. Refused unless that is above the offset floor, the
-    /// last committed index any leader reported and every earlier epoch's
-    /// first index.
+    /// line plus the gap. Refused unless that is more than `MIN_OFFSET_GAP`
+    /// above the offset floor, the last committed index any leader reported
+    /// and every earlier epoch's first index.
     ///
-    /// The floor alone is not enough: a leader reports it at most once a
-    /// second, and not at all while it cannot reach the control plane, so
-    /// the lost copy may have acknowledged offsets above it. The time line
-    /// grows faster than any shard gives out offsets, so it covers those
-    /// (`docs/per-shard-raft.md`, "A restore from a backup point is a
-    /// re-form"), but only while this clock is not behind the one that
-    /// started an earlier epoch on the line. A floor or first index at or
-    /// above the line says it is. Starting just above them would then reuse
-    /// what the lost epoch acknowledged since its last report, and no gap
-    /// bounds that: the leader may not have reported for as long as it ran.
+    /// The floor and first indexes say nothing of what the lost epoch
+    /// acknowledged since: its leader reports at most once a second, and not
+    /// at all while it cannot reach the control plane. Being just above an
+    /// earlier first index is not enough either, since the clock that set it
+    /// may have run ahead. The line gains 2^14 offsets a millisecond, more
+    /// than twice any shard's rate, so a full gap (2^32, about 262 s of line)
+    /// above the earlier epoch's start covers all it can have acknowledged,
+    /// provided the control-plane clocks agree within that span.
+    /// `docs/per-shard-raft.md`, "Abandoning a lost group".
     pub(crate) fn abandon_first_index(
         &self,
         start: &AbandonEpochStart,
@@ -106,7 +106,9 @@ impl ShardAssignment {
             .map(|base| base.first_index)
             .max();
         match floor.max(earlier) {
-            Some(given) if line <= given => Err(AbandonError::LineBehind { line, given }),
+            Some(given) if line <= given.saturating_add(MIN_OFFSET_GAP) => {
+                Err(AbandonError::LineBehind { line, given })
+            }
             _ => Ok(line),
         }
     }

@@ -1678,15 +1678,15 @@ impl EngineShards for RaftShards {
                 open.iter()
                     .filter(|(key, member)| {
                         fed.get(*key).is_some_and(|(assignment, _)| {
+                            // The same test as the open, short bases included,
+                            // so a member the open would refuse is not kept.
                             member.incarnation == assignment.incarnation
-                                && assignment.epoch_bases().is_some_and(|bases| {
-                                    epochs.get(*key).is_some_and(|epoch| {
-                                        left_behind(
-                                            assignment.group_epoch(),
-                                            Some(&bases),
-                                            epoch.unwrap_or(0),
-                                        )
-                                    })
+                                && epochs.get(*key).is_some_and(|epoch| {
+                                    left_behind(
+                                        assignment.group_epoch(),
+                                        assignment.epoch_bases().as_deref(),
+                                        epoch.unwrap_or(0),
+                                    )
                                 })
                         })
                     })

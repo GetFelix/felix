@@ -3316,10 +3316,11 @@ written with an empty base on one live broker, its first index above the
 floor, every earlier epoch's first index and the restore time line. The
 time line is an oracle here, above every offset given out so far;
 `FelixRaftRestoreRepeated.tla` checks the clock argument behind it. So this
-model cannot see a planning clock that runs behind the one that started an
-earlier epoch on the line; the code refuses the abandon then, and a test
-covers it
-(`offsets_after_an_abandon_are_above_every_offset_the_lost_group_gave_out`). Only
+model assumes the control-plane clocks agree and does not check the
+refusal: the code refuses the abandon until the line is a full gap (2^32)
+above the floor and every earlier first index, which covers clocks that
+agree within about four minutes, and unit tests cover it
+(`an_abandon_just_above_a_skewed_first_index_is_refused`). Only
 the blank copy the epoch names as its voter starts it, at the first index,
 and a copy behind an abandoned epoch never opens. A broker declared dead
 can come back with its copy (`Comeback`). Each other value drops one rule:

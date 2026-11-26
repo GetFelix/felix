@@ -227,8 +227,10 @@ pub(crate) async fn cancel_shard_move(
 /// - 409 on Raft: `not_declared_dead` while a broker placed in the group's
 ///   epoch is not declared dead, `abandon_unsupported` until the fleet
 ///   finalizes `raft_abandon`, and `abandon_refused` when the store refuses
-///   the write (the shard moved on, or the control plane's clock puts the
-///   time line at or below an index the group already reached).
+///   the write (the shard moved on, or the time line is not yet a full
+///   `MIN_OFFSET_GAP` above the offset floor and the last epoch's start,
+///   which takes about four and a half minutes after that epoch began when
+///   the control-plane clocks agree, longer if its clock ran ahead).
 pub(crate) async fn abandon_shard_log(
     State(state): State<AppState>,
     headers: HeaderMap,
