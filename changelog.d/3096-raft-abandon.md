@@ -1,0 +1,1 @@
+- Raft: `POST /v1/placement/abandon` on a Raft shard is decided as one `AbandonRaftEpoch` command (metadata level 56), refused until every broker placed in the group epoch is declared dead and the fleet finalizes `raft_abandon`. A broker no longer forms a group past epoch 0 from index 0. (#3096)

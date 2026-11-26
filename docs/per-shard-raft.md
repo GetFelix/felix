@@ -1583,6 +1583,33 @@ which can be one. The same holds for a switch that started with two voters.
 The control plane is on this path. It already is for placement, and a
 group that needs re-forming is not serving.
 
+### Abandoning a lost group
+
+A re-form starts from a surviving copy. When every copy is gone, for
+example an RF 1 shard whose only broker lost its disk, an operator can
+give the log up instead: `POST /v1/placement/abandon/{tenant}/{ns}/{stream}/{shard}`.
+Every record the group held is lost, acknowledged ones included.
+
+The call is refused until every broker placed in the group's epoch is
+declared dead (`not_declared_dead`). A broker that is only down may come
+back with acknowledged records, and then a re-form is the way. It is also
+refused until the fleet finalizes `raft_abandon`, which no build reports
+yet (`abandon_unsupported`).
+
+The control plane writes the abandon as one compare and swap,
+`AbandonRaftEpoch` at metadata level 56. It checks the incarnation, epoch
+and generation, checks the dead set again, places the shard on one live
+broker at the next generation and epoch, and appends an empty base whose
+first index is above the offset floor, above every earlier epoch's first
+index, and on the restore time line (`2^14 x` the planning time in
+milliseconds, plus the gap). The floor alone is not enough: a leader reports
+it at most once a second. The offset floor is kept, so offsets the lost
+group gave out stay given out.
+
+A broker never forms a group past epoch 0 from index 0, since forming
+writes the group's first entries there. A blank copy of an abandoned epoch
+must start at the epoch's first index instead.
+
 ### Writing through openraft
 
 Decided (issue #2167): in 0.8 a write goes through openraft's
