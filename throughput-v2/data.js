@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795694328179,
+  "lastUpdate": 1795695739529,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -71396,6 +71396,58 @@ window.BENCHMARK_DATA = {
             "range": "7823.58",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 806911.09\nmean: 808378.90\nstdev: 7823.58\ncv: 0.97%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "9b919465fc6e93981e59e4fb17726337ae47b158",
+          "message": "formal(raft): election liveness, a leader is elected, stays and opens (#2258) (#3265)\n\n* test(sim): no Raft offset is delivered as two values or at a blank entry (#2258)\n\nThe Raft simulation judged each delivery against the final log only up to\nthe final read. Deliveries are now also compared with each other, so two\nsubscribers handed different records at one offset is a finding past the\nfinal read and on a list with no final read. That is the subscriber half of\nthe duplicate-offset nemesis.\n\nThe judgement moves into raft/deliveries.rs with unit tests over hand-built\ndeliveries, including one at a blank entry's offset, which is the Raft check\nfor routing/generation_start.rs: the blank of a term takes no offset a\nconsumer sees.\n\nSpec-Unaffected: simulator checker only; no modelled code changes\n\n* test(cluster): failover heal runs on Raft with no flag (#2258)\n\nOn Raft the broker to kill is the one the groups elected, read from each\nmember's report, since placement's assigned leader is only a hint there. No\nfleet feature is finalized and FELIX_INTERNAL_ELECTION is not set. The\nelection variant is the hybrid's switch and skips on Raft, where the other\nvariant is the same test.\n\nSpec-Unaffected: cluster test only; no modelled code changes\n\n* docs(replication): the coverage hand-off says where each Raft check is (#2258)\n\nRows the tables still called Missing have Raft checks on main: the cluster\nharness runs Raft by default, so the history checks, rule 21 by term and the\nelection nemesis run on Raft, and the wiped-copy and deposed-leader read and\ngroup-ack tests run there too. The blank-entry row is held by the\nsimulator's delivery check, and failover heal is ported on this branch.\nWhat waits on another issue is marked Blocked with the issue.\n\nSpec-Unaffected: docs only\n\n* formal(raft): election liveness, a leader is elected and opens (#2258)\n\nFelixRaftElect.tla checks ElectionSettles and EventuallyServes as temporal\nproperties under weak fairness: pre-vote, the leader lease, leader restore,\ncrashes and cuts that stop, and at most Splits timeouts while a round is\nopen. FelixRaftElectLiveSplits drops the randomised timeout and\nFelixRaftElectLiveNoOpen drops the commit's fairness; both must fail.\n\nSpec-Unaffected: new module, no existing spec changed\n\n* docs(formal): Raft election liveness in the README and the hand-off (#2258)\n\nThe What-is-checked row for ElectionSettles cited FelixShardElectLive.cfg,\ndeleted with the hybrid; it now names FelixRaftElect. Evidence lines for the\nnew configurations.\n\n* formal(raft): quantify the election properties over Servers (#2258)\n\nTLC expands a quantifier in a temporal property over its bound before it\nhas a state, so a bound of Healthy failed at startup.\n\n* formal(raft): keep the election properties' predicates out of TLC's inlining (#2258)\n\nTLC inlines a temporal property's operators and evaluates a part whose body\nlooks constant with no state; Quorum(Healthy) failed that way.\n\n* formal(raft): find the healthy majority without Cardinality (#2258)\n\nSANY gives Cardinality of a state-level set level 0, so TLC evaluated\nMajorityHealthy before it had a state.\n\n* formal(raft): two-fault election liveness runs with eight terms (#2258)\n\nAt six terms TLC found a behaviour that ran out of terms: a pre-vote that\npassed before a new leader's heartbeat arrived stood and deposed that leader,\nand the last candidate had the shorter log. That is the bound, not a livelock.\n\n* formal(raft): state why two faults need at most eight terms (#2258)\n\n* formal(raft): check that the election models never reach their last term (#2258)\n\nTermsLeft holds with one term of slack, so the MaxTerm guards never\ndisable a step and the liveness verdicts hold with terms unbounded.\nA witness shows two faults do reach the eighth term. The Splits = 1\nassumption says what it excludes.\n\n* docs(formal): what the Raft election liveness checks prove, and within which bounds (#2258)\n\n* formal(raft): the two-fault election run checks TermsLeft itself; the term count is an upper bound (#2258)",
+          "timestamp": "2026-11-26T04:15:12-08:00",
+          "tree_id": "e2a8077ecef5b6e857a4801e414bd81b5e6f50e9",
+          "url": "https://github.com/GetFelix/felix/commit/9b919465fc6e93981e59e4fb17726337ae47b158"
+        },
+        "date": 1795695738660,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 344953.23,
+            "range": "9763.71",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 344953.23\nmean: 343035.05\nstdev: 9763.71\ncv: 2.85%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 344953.23,
+            "range": "9763.71",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 344953.23\nmean: 343035.05\nstdev: 9763.71\ncv: 2.85%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 79539.14,
+            "range": "602.82",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 79539.14\nmean: 79294.22\nstdev: 602.82\ncv: 0.76%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 795391.43,
+            "range": "6028.22",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 795391.43\nmean: 792942.22\nstdev: 6028.22\ncv: 0.76%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
