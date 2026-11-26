@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795649651076,
+  "lastUpdate": 1795656745412,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -70096,6 +70096,58 @@ window.BENCHMARK_DATA = {
             "range": "73740.29",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1566797.12\nmean: 1536884.30\nstdev: 73740.29\ncv: 4.80%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "5ebd39d0fab846e5e7d9466ee9fa464df61dd1ea",
+          "message": "fix(raft): a shard copy stopped by a storage error is reported, and /ready stays up (#2300) (#3188)\n\n* fix(raft): report a shard copy a storage error stopped, and keep /ready up (#2300)\n\nA Raft copy whose log is poisoned already stops alone: its core stops,\nthe role watcher deposes it, the feed pass closes it and reopens it under\na new copy id. The broker said nothing about it, though: requests got\n\"still opening the shard\" and /ready answered 503 for the whole broker.\n\n- RaftShards records each stop (term and error) until the copy hears a\n  leader again or the shard leaves, and sets\n  felix_broker_raft_shards_stopped_on_storage_error.\n- shard_inspect carries raft.stopped { term, error }, and a raft view\n  with role \"stopped\" while the copy is closed.\n- A request that would be refused as NotReady is refused with\n  Reason::CopyStopped (wire reason not_ready) naming the error.\n- PoisonedLog says whether the log is a Raft log; /ready ignores those.\n  Hybrid logs and failed node records still answer 503.\n\nSpec-Unaffected: reporting and readiness only; no change to what a copy votes, writes or acknowledges.\n\n* fix(raft): keep the storage error out of a stopped copy's refusal (#2300)\n\nThe error from the storage layer can name the broker's data paths and\nsegments, so a client refused for a stopped copy is told only that it\nstopped. The error stays in the broker log and in shard_inspect, which\nneeds node.view:cluster:*.\n\nTests pin that a write for a stopped copy is refused at once and not held\nfor a takeover, that a subscribe gets the same fixed refusal, and that the\nreport clears when the copy reopens and leads, or reopens rotated and\nhears the leader once the group takes it in.\n\nSpec-Unaffected: reporting and refusal text only; no change to Raft or storage behaviour",
+          "timestamp": "2026-11-26T01:15:33Z",
+          "tree_id": "606d8b8bdf0307a20b72d24d87039b47a4c800e5",
+          "url": "https://github.com/GetFelix/felix/commit/5ebd39d0fab846e5e7d9466ee9fa464df61dd1ea"
+        },
+        "date": 1795656744916,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 478873.21,
+            "range": "25245.53",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 478873.21\nmean: 474372.16\nstdev: 25245.53\ncv: 5.32%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 478873.21,
+            "range": "25245.53",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 478873.21\nmean: 474372.16\nstdev: 25245.53\ncv: 5.32%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 121695.74,
+            "range": "4035.11",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 121695.74\nmean: 119385.98\nstdev: 4035.11\ncv: 3.38%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1216957.36,
+            "range": "40351.07",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1216957.36\nmean: 1193859.79\nstdev: 40351.07\ncv: 3.38%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
