@@ -36,9 +36,19 @@ struct Calls {
     placement_incarnation: Option<u64>,
     /// The feed head an answer carries when the beat asks for it.
     assignment_seq: Option<u64>,
+    /// When set, registrations carry this `registered_at_millis`, and a beat
+    /// that sends it back from an incarnation in `ahead_of_record` is told
+    /// to register again, as one from above a restored record is.
+    registered_at_millis: Option<u64>,
+    ahead_of_record: BTreeSet<u64>,
 }
 
 type Shared = Arc<Mutex<Calls>>;
+
+/// The `registered_at_millis` the last heartbeat sent.
+fn body_at(calls: &Calls) -> Option<u64> {
+    calls.heartbeat_bodies.last()?["registered_at_millis"].as_u64()
+}
 
 fn stub_control_plane(state: Shared) -> axum::Router {
     axum::Router::new()
@@ -46,17 +56,22 @@ fn stub_control_plane(state: Shared) -> axum::Router {
             "/v1/nodes",
             post(
                 |State(state): State<Shared>, Json(body): Json<serde_json::Value>| async move {
-                    let (incarnation, fleet, interval) = {
+                    let (incarnation, fleet, interval, at) = {
                         let mut calls = state.lock().expect("lock");
                         calls.registrations.push(body);
                         (
                             calls.registrations.len() as u64 - 1,
                             calls.fleet_features.clone(),
                             calls.heartbeat_interval_ms.unwrap_or(20),
+                            calls.registered_at_millis,
                         )
                     };
+                    let mut status = json!({ "incarnation": incarnation, "lifecycle": "live" });
+                    if let Some(at) = at {
+                        status["registered_at_millis"] = at.into();
+                    }
                     Json(json!({
-                        "node": { "status": { "incarnation": incarnation, "lifecycle": "live" } },
+                        "node": { "status": status },
                         "heartbeat_interval_ms": interval,
                         "expiry_timeout_ms": 60,
                         "fleet_features": fleet,
@@ -111,6 +126,12 @@ fn stub_control_plane(state: Shared) -> axum::Router {
                     });
                     if let Some(told) = calls.placement_incarnation {
                         answer["placement_incarnation"] = told.into();
+                    }
+                    if calls.registered_at_millis.is_some()
+                        && body_at(&calls) == calls.registered_at_millis
+                        && calls.ahead_of_record.contains(&incarnation)
+                    {
+                        answer["register_again"] = true.into();
                     }
                     if let Some(seq) = calls.assignment_seq
                         && calls.heartbeat_bodies.last().expect("pushed")["want_assignment_seq"]
@@ -1083,6 +1104,143 @@ async fn a_broker_marked_down_registers_again_and_resumes_heartbeating() {
         felix_storage::run_state::Recorded::At(1),
         "each registration is recorded in the data directory",
     );
+
+    let _ = stop.send(());
+    let _ = handle.await;
+}
+
+/// A control plane restored from a backup older than this broker's last
+/// registration holds a lower incarnation, and asks the broker to register
+/// again. It does, and keeps its lease the whole time: the answer that asked
+/// renewed it, and a registration never surrenders it.
+#[tokio::test]
+async fn a_broker_ahead_of_a_restored_record_registers_again_holding_its_lease() {
+    let calls: Shared = Arc::new(Mutex::new(Calls {
+        registered_at_millis: Some(1_700_000_000_000),
+        ahead_of_record: BTreeSet::from([0]),
+        ..Calls::default()
+    }));
+    let (base_url, stop, handle) = serve(Arc::clone(&calls)).await;
+    let client = build_test_client().expect("client");
+    let serving = CancellationToken::new();
+    serving.cancel();
+    let shutdown = CancellationToken::new();
+    let lease = Arc::new(crate::cluster::lease::LeaseState::new(Duration::from_secs(
+        30,
+    )));
+    let data = tempfile::tempdir().expect("tempdir");
+
+    let task = spawn(
+        link(&client, &base_url),
+        config(),
+        crate::cluster::credential::NodeCredential::new("a-node-token"),
+        serving,
+        shutdown.clone(),
+        Arc::clone(&lease),
+        Arc::new(felix_common::fleet::FleetGate::new(Vec::<String>::new())),
+        Arc::default(),
+        Arc::default(),
+        tokio::sync::watch::channel(None).0,
+        None,
+        Some(data.path().to_path_buf()),
+        None,
+        Default::default(),
+    );
+
+    // Valid from the first answer on, and never invalid after it.
+    let mut held_since_first = false;
+    for _ in 0..500 {
+        let valid = lease.is_valid_now();
+        assert!(
+            !held_since_first || valid,
+            "the lease lapsed during the re-registration",
+        );
+        held_since_first |= valid;
+        let beats_at_new = calls
+            .lock()
+            .expect("lock")
+            .heartbeats
+            .iter()
+            .filter(|at| **at == 1)
+            .count();
+        if beats_at_new >= 3 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    shutdown.cancel();
+    task.handle.await.expect("membership task");
+
+    {
+        let calls = calls.lock().expect("lock");
+        assert_eq!(
+            calls.registrations.len(),
+            2,
+            "expected one registration after being asked: {:?}",
+            calls.heartbeats,
+        );
+        assert!(
+            calls.heartbeats.iter().filter(|at| **at == 1).count() >= 3,
+            "heartbeats should carry the new incarnation: {:?}",
+            calls.heartbeats,
+        );
+        assert!(
+            calls
+                .heartbeat_bodies
+                .iter()
+                .all(|body| body["registered_at_millis"] == 1_700_000_000_000u64),
+            "every beat offers the field",
+        );
+    }
+    assert!(lease.is_valid_now(), "the lease is still held");
+    assert!(!task.fatal.is_cancelled());
+    assert_eq!(
+        felix_storage::run_state::read_registration(data.path()).expect("read"),
+        felix_storage::run_state::Recorded::At(1),
+    );
+
+    let _ = stop.send(());
+    let _ = handle.await;
+}
+
+/// A control plane that gave no registration time hears no
+/// `registered_at_millis`, so the beat is the body it always was.
+#[tokio::test]
+async fn a_beat_offers_register_again_only_with_a_registration_time() {
+    let calls: Shared = Arc::default();
+    let (base_url, stop, handle) = serve(Arc::clone(&calls)).await;
+    let client = build_test_client().expect("client");
+    let serving = CancellationToken::new();
+    serving.cancel();
+    let shutdown = CancellationToken::new();
+    let task = spawn(
+        link(&client, &base_url),
+        config(),
+        crate::cluster::credential::NodeCredential::new("a-node-token"),
+        serving,
+        shutdown.clone(),
+        Arc::new(crate::cluster::lease::LeaseState::new(Duration::from_secs(
+            30,
+        ))),
+        Arc::new(felix_common::fleet::FleetGate::new(Vec::<String>::new())),
+        Arc::default(),
+        Arc::default(),
+        tokio::sync::watch::channel(None).0,
+        None,
+        None,
+        None,
+        Default::default(),
+    );
+    for _ in 0..300 {
+        if !calls.lock().expect("lock").heartbeats.is_empty() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    shutdown.cancel();
+    task.handle.await.expect("membership task");
+    let calls = calls.lock().expect("lock");
+    assert_eq!(calls.heartbeat_bodies[0], json!({ "incarnation": 0 }));
 
     let _ = stop.send(());
     let _ = handle.await;

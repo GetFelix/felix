@@ -155,6 +155,17 @@ pub(crate) async fn report_health(
         }
     };
 
+    // Computed from the record and the beat, so nothing is stored. A beat
+    // can be above the record only when the record lost registrations, as a
+    // restore does: the broker's acknowledgements are not the record's
+    // process's until it registers again. The registration time must be the
+    // record's, so a process of a node deleted and added again since is not
+    // asked to take the new record over. Only a live node: registering sets
+    // it live, which would undo a drain.
+    let register_again = request.registered_at_millis == Some(node.status.registered_at_millis)
+        && request.incarnation > node.status.incarnation
+        && node.status.lifecycle == crate::model::NodeLifecycle::Live;
+
     Ok(Json(NodeHeartbeatResponse {
         node_id: node.node_id,
         lifecycle: node.status.lifecycle,
@@ -163,6 +174,7 @@ pub(crate) async fn report_health(
         fleet_features,
         assignment_seq,
         placement_incarnation,
+        register_again,
     }))
 }
 

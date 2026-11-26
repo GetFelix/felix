@@ -129,6 +129,11 @@ any log. See
    `metadata_version` is the assignment change sequence the point was read
    against.
 
+A broker still running when the control plane's metadata is restored needs
+no restart, even if it registered after the backup was taken. Its next
+heartbeat answer asks it to register again, and it does without giving up
+its lease. A broker that is draining is not asked while the drain lasts.
+
 ## Restoring
 
 On the default engine, stop the broker, put its copied shard directories under

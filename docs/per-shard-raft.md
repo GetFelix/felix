@@ -5919,12 +5919,15 @@ what stops that.
   (2^20) above is refused and logged: the gap counts restores the backup
   missed, and the bound keeps a broker from walking the incarnation to its
   limit.
-- **A broker a restore rewound has to restart.** A restore puts back each
+- **A broker a restore rewound registers again.** A restore puts back each
   node record's incarnation as the backup held it. A broker that registered
   after the backup keeps beating under its newer incarnation, which the
   control plane accepts, but its acknowledgements are not from the record's
-  process and are dropped. Nothing tells it to register again yet, so the
-  gate stays shut until an operator restarts it.
+  process and are dropped. The heartbeat answer to such a beat carries
+  `register_again: true`, and the broker registers again without giving up
+  its lease. The new registration takes the record's next incarnation, so
+  only acknowledgements that process reports count. See "Registering again
+  after a restore" in `docs/control-plane.md`.
 - **Nothing goes out until every broker has.** `placement_acked_by` holds
   only while every broker named has acknowledged exactly the current
   incarnation (the model's `AllAcked`). A broker that never reported counts
