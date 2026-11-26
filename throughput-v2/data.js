@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795695739529,
+  "lastUpdate": 1795696323152,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -71448,6 +71448,58 @@ window.BENCHMARK_DATA = {
             "range": "6028.22",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 795391.43\nmean: 792942.22\nstdev: 6028.22\ncv: 0.76%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "a6928053e9105d3b8d776b7a0a80de2d80c7b56d",
+          "message": "formal(raft): the standalone self re-form is checked through a second relaxed crash (#3048) (#3264)\n\nFelixRaftReformAloneTwoCuts gives the group of one two power cuts, two\nre-forms and three plans, so a cut can fall between the plan, the stop,\nthe epoch write and the start, or after a finished re-form. It holds the\nsame checks as FelixRaftReformAlone. Two witnesses show the bounds reach\nthe cases: a second re-form after a finished one that keeps an epoch-1\nrecord (NeverReformsAloneTwice), and a cut between the epoch write and\nthe start that the group recovers from (NeverRecoversFromCutBeforeStart).\n\nThe model and the README now document the existing Alone configs and the\none place the model differs from the broker: after a cut between the write\nand the start the model re-forms once more, where the broker replaces its\nunstarted plan under the same epoch.",
+          "timestamp": "2026-11-26T04:15:17-08:00",
+          "tree_id": "8efed367b27e33c87eb80a035560f08e6db90482",
+          "url": "https://github.com/GetFelix/felix/commit/a6928053e9105d3b8d776b7a0a80de2d80c7b56d"
+        },
+        "date": 1795696322111,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 362258.9,
+            "range": "7947.41",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 362258.90\nmean: 359080.62\nstdev: 7947.41\ncv: 2.21%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 362258.9,
+            "range": "7947.41",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 362258.90\nmean: 359080.62\nstdev: 7947.41\ncv: 2.21%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 81942.19,
+            "range": "4835.34",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 81942.19\nmean: 79986.60\nstdev: 4835.34\ncv: 6.05%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 819421.91,
+            "range": "48353.39",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 819421.91\nmean: 799865.94\nstdev: 48353.39\ncv: 6.05%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
