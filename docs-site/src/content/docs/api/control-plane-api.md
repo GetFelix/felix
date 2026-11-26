@@ -471,7 +471,9 @@ and `not_a_member` while the destination is still being added. A one-member
 group first grows to its leader and the destination; placement drops the old
 broker once the destination votes. Moving it back to the old broker before
 then is answered with step `raft_move_undone`, and is 409 `member_down` once
-the destination votes and is not serving. Under `replica_election`, a start is
+the destination votes and is not serving. A start on an in-memory stream's
+shard names the destination its owner in one write, answered with step
+`owner_replaced`; the new owner starts empty. Under `replica_election`, a start is
 409 `set_change_pending` while a cut-over's change of replica set waits for
 the leader to report it on both sets; a cancel drops that change and keeps
 the old set (`pending_set_cancelled`).

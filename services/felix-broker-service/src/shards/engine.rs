@@ -857,6 +857,11 @@ impl Engine for StreamEngine {
         generation: u64,
         timeout: Duration,
     ) -> anyhow::Result<()> {
+        // An in-memory publish takes no offset, so there is nothing to
+        // commit: it was acknowledged when it was enqueued.
+        if outcome.offsets.is_none() {
+            return Ok(());
+        }
         self.hybrid
             .await_commit(handle, shard, outcome, generation, timeout)
             .await

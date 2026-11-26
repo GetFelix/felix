@@ -7,7 +7,9 @@
 //! [`routing`] answers the question every publish asks first: is this shard
 //! mine, should it be forwarded, or can nobody serve it right now?
 //! `engine` is which replication engine a shard's writes go to, and `raft`
-//! holds this broker's Raft members of the shards a group runs.
+//! holds this broker's Raft members of the shards a group runs. `memory`
+//! serves the in-memory stream shards no group runs, on a broker whose
+//! durable shards run on Raft.
 //!
 //! [`ShardKey`] and [`ShardKind`] are re-exported here because all three use
 //! them; they are defined in `felix-replication`, which keys on them too.
@@ -16,6 +18,7 @@ mod confirmed;
 mod engine;
 pub(crate) mod engine_match;
 pub mod lifecycle;
+pub(crate) mod memory;
 #[cfg(feature = "raft")]
 pub(crate) mod raft;
 pub mod routing;

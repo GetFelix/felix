@@ -1415,7 +1415,7 @@ async fn a_snapshot_this_member_cannot_read_is_refused_and_it_keeps_running() {
     let snapshot = snapshot.expect("snapshot");
     // What a later build's format looks like to this one.
     let mut newer = snapshot.snapshot.bytes.to_vec();
-    newer[0] = 2;
+    newer[0] = 3;
     let leads = LeaderIdOf::<ShardTypes>::new(leading.status().term, leader.clone());
     let vote = <VoteOf<ShardTypes> as RaftVote>::from_leader_id(leads, true);
     let request = RaftRequest {

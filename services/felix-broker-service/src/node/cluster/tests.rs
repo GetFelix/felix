@@ -423,7 +423,14 @@ impl shard_routing::EngineShards for HoldsOne {
         vec![shard_routing::BackupMember {
             key: self.0.clone(),
             incarnation: 1,
+            member: felix_replication::raft::MemberId::new("broker-a", 1),
             term: 7,
+            voter_sets: vec![
+                ["broker-a", "broker-b", "broker-c"]
+                    .map(|broker| felix_replication::raft::MemberId::new(broker, 1))
+                    .into(),
+            ],
+            membership_at: Some(felix_replication::raft::LogPoint { term: 6, index: 3 }),
             committed_end: None,
             end_term: None,
         }]
@@ -516,5 +523,11 @@ async fn the_backup_endpoint_sees_the_members_behind_the_engine_check() {
     assert_eq!(members.len(), 1, "{answer}");
     assert_eq!(members[0]["name"], "orders");
     assert_eq!(members[0]["term"], 7);
+    assert_eq!(
+        members[0]["member"],
+        serde_json::json!({ "broker": "broker-a", "copy": 1 })
+    );
+    assert_eq!(members[0]["voters"][0].as_array().map(Vec::len), Some(3));
+    assert_eq!(members[0]["membership_at"], serde_json::json!([6, 3]));
     shutdown.cancel();
 }

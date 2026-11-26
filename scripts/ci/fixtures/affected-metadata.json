@@ -781,6 +781,10 @@
      "path": "services/felix-controlplane-service"
     },
     {
+     "name": "felix-cluster",
+     "path": "crates/testing/felix-cluster"
+    },
+    {
      "name": "felix-loadgen",
      "path": "crates/testing/felix-loadgen"
     },

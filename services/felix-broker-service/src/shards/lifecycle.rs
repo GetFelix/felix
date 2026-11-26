@@ -74,7 +74,7 @@ impl WarnThrottle {
     }
 }
 
-const QUIESCE_BOUND: std::time::Duration = std::time::Duration::from_secs(2);
+pub(crate) const QUIESCE_BOUND: std::time::Duration = std::time::Duration::from_secs(2);
 
 /// Where this broker is with one shard.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -1090,13 +1090,19 @@ pub trait ShardStore: Send + Sync {
 
 /// Where a reader of a shard this broker stopped serving resumes: nowhere
 /// named, so the client finds the shard again through its entry broker.
-fn no_owner(generation: u64) -> felix_broker::ShardHandoff {
+pub(crate) fn no_owner(generation: u64) -> felix_broker::ShardHandoff {
     felix_broker::ShardHandoff {
         node_id: None,
         addr: None,
         generation,
     }
 }
+
+/// The round a leadership check confirms by right now, if the fleet reads by
+/// round. Asked at each check: the fleet can start reading by round at any
+/// time.
+pub(crate) type Rounds =
+    Arc<dyn Fn() -> Option<Arc<dyn felix_replication::quorum::LeadershipCheck>> + Send + Sync>;
 
 /// Ends the readers of a released shard, for the stores that serve them.
 #[derive(Clone)]
@@ -1146,13 +1152,18 @@ impl ShardReaders {
     /// a shard ended for silence, lease or no lease, and the first one
     /// confirmed admits its readers again.
     ///
+    /// `rounds` is the round those checks confirm by, when the fleet has
+    /// one. The shards in `memory` never go on without the lease: their
+    /// readers end at every lapse.
+    ///
     /// [`ShardFence::sessions_lease_free`]: fence::ShardFence::sessions_lease_free
     /// [`ShardFence::depose`]: fence::ShardFence::depose
-    pub async fn watch_leadership(
+    pub(crate) async fn watch_leadership(
         self,
         fence: Arc<fence::ShardFence>,
-        marks: Arc<felix_replication::quorum::QuorumMarks>,
+        rounds: Option<Rounds>,
         lifecycle: Arc<tokio::sync::Mutex<ShardLifecycle>>,
+        memory: Option<Arc<crate::shards::memory::MemoryShards>>,
         shutdown: tokio_util::sync::CancellationToken,
     ) {
         let Some(lease) = fence.lease().cloned() else {
@@ -1168,14 +1179,16 @@ impl ShardReaders {
             tokio::select! {
                 _ = shutdown.cancelled() => return,
                 _ = lease.lapsed() => {
-                    let led: Vec<(ShardKey, u64)> = {
+                    let mut led: Vec<(ShardKey, u64)> = {
                         let lifecycle = lifecycle.lock().await;
                         lifecycle
                             .active()
                             .filter_map(|key| Some((key.clone(), lifecycle.generation(key)?)))
                             .collect()
                     };
-                    let mut led = led;
+                    if let Some(memory) = &memory {
+                        led.extend(memory.servable());
+                    }
                     led.sort();
                     let now = tokio::time::Instant::now();
                     for (key, generation) in led {
@@ -1211,7 +1224,8 @@ impl ShardReaders {
                     if lease.is_valid_now() {
                         unleased.clear();
                     }
-                    self.probe(&fence, &marks, &mut unleased, &mut unheard, lease.usable())
+                    let check = rounds.as_ref().and_then(|rounds| rounds());
+                    self.probe(&fence, check, &mut unleased, &mut unheard, lease.usable())
                         .await;
                 }
             }
@@ -1226,12 +1240,12 @@ impl ShardReaders {
     async fn probe(
         &self,
         fence: &fence::ShardFence,
-        marks: &felix_replication::quorum::QuorumMarks,
+        check: Option<Arc<dyn felix_replication::quorum::LeadershipCheck>>,
         unleased: &mut HashMap<ShardKey, (u64, tokio::time::Instant)>,
         unheard: &mut HashMap<ShardKey, u64>,
         silence: std::time::Duration,
     ) {
-        let check = marks.reads_by_round();
+        let check = check.as_ref();
         let mut probed: Vec<(ShardKey, u64)> = unleased
             .iter()
             .map(|(key, (generation, _))| (key.clone(), *generation))
@@ -1274,7 +1288,7 @@ impl ShardReaders {
 
     /// Forget the consumer groups' in-flight state for a stream shard, so it
     /// is rebuilt from the cursors that came back with the shard.
-    async fn begin_term(&self, key: &ShardKey) {
+    pub(crate) async fn begin_term(&self, key: &ShardKey) {
         if key.kind != ShardKind::Stream {
             return;
         }
@@ -1326,7 +1340,7 @@ impl ShardReaders {
     }
 
     /// Close everything the broker holds open for the shard.
-    async fn close(
+    pub(crate) async fn close(
         &self,
         key: &ShardKey,
         handoff: Option<felix_broker::ShardHandoff>,
