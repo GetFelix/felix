@@ -1010,10 +1010,11 @@ async fn a_new_cluster_with_an_older_broker_stays_unfinalized() {
     assert_eq!(enabled, serde_json::json!([]));
 }
 
-/// **A cluster with streams is not new.** Upgraded from a release before
-/// incarnations, it keeps finalizing to the operator.
+/// **Streams created before the first broker do not make a cluster old**,
+/// as a seed job that runs before the brokers come up does. The first
+/// registration answers with the new-cluster set (#1774).
 #[tokio::test]
-async fn a_store_with_streams_is_not_finalized_on_registration() {
+async fn a_store_seeded_before_its_first_broker_is_finalized_on_registration() {
     let store = store();
     let token = fleet_token(&store).await;
     scope(&store).await;
@@ -1021,6 +1022,38 @@ async fn a_store_with_streams_is_not_finalized_on_registration() {
     let app = app_with(Arc::clone(&store)).await;
 
     let enabled = register_current(&app, &token, "broker-a", 7001).await;
+    assert_eq!(enabled, serde_json::json!(NEW_CLUSTER));
+}
+
+/// **A cluster that placed a shard is not new**: a broker may hold its data,
+/// so finalizing stays the operator's.
+#[tokio::test]
+async fn a_store_that_placed_a_shard_is_not_finalized_on_registration() {
+    let store = store();
+    let token = fleet_token(&store).await;
+    scope(&store).await;
+    store.create_stream(orders()).await.expect("create");
+    store
+        .register_node(node("broker-a"))
+        .await
+        .expect("earlier broker");
+    let assignment = serde_json::from_value(serde_json::json!({
+        "tenant_id": "t1",
+        "namespace": "ns",
+        "stream": "orders",
+        "shard": 0,
+        "leader": "broker-a",
+        "generation": 0,
+        "state": "assigning",
+    }))
+    .expect("assignment");
+    store
+        .put_shard_assignment(assignment)
+        .await
+        .expect("placed");
+    let app = app_with(Arc::clone(&store)).await;
+
+    let enabled = register_current(&app, &token, "broker-b", 7002).await;
     assert_eq!(enabled, serde_json::json!([]));
 }
 
