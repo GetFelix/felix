@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795719656722,
+  "lastUpdate": 1795722376992,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -71968,6 +71968,58 @@ window.BENCHMARK_DATA = {
             "range": "154699.76",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1570686.44\nmean: 1531406.63\nstdev: 154699.76\ncv: 10.10%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "306f5083e58cf9426bf8f2c68df7b3d608504e1a",
+          "message": "fix(raft): a purge inside the log waits on no flush and unlinks behind (#3263) (#3268)\n\n* test(raft): reproduce a leader core stall behind a purge's flush (#3263)\n\nopenraft runs a leader's log purge on its core. RaftLog::purge first\ndrains flushes, which on a written-commit log forces a sync under the\nlog's flush lock, the lock a periodic fsync holds for as long as it\ntakes. A purge that meets a slow fsync stops the core's heartbeats and\nwrites for that long; the leader's lease runs out and its write fails.\n\nThe ignored test holds the leader's flushes for 3 s after asking for a\npurge with one follower cut off and measures the longest core answer\n(3.01 s, 3 runs of 3). The control does the same without the purge and\nthe core answers within 2 ms.\n\nSpec-Unaffected: test only; no product change\n\n* wip(raft): a purge inside the log waits on no flush and unlinks behind (#3263)\n\nSpec-Unaffected: WIP; see the final commit\n\n* wip(raft): docs, changelog, unlinks refused once closed (#3263)\n\nSpec-Unaffected: WIP\n\n* wip(raft): no removal at open; adapt purge pass test (#3263)\n\nSpec-Unaffected: WIP\n\n* fix(raft): a purge inside the log waits on no flush and unlinks behind (#3263)\n\nopenraft runs a leader's purge on its core, and runs a held purge when a\nreplication stream to a member going away fails. RaftLog::purge first\ndrained the flush queue, which on a written-commit log forces a sync under\nthe flush lock the periodic fsync holds. On a slow disk the leader stopped\nheartbeating and writing until the fsync ended, lost its lease and timed\npublishes out.\n\nA purge that ends inside the log now writes its purged id, synced, and\nreturns; its sealed segments are unlinked behind it, oldest first, each\nunlink synced. Only a purge that empties the log, or a hidden purge,\nstill drains: those drop records a queued flush waits on. A truncation\nthat cuts nothing no longer drains. A paged read restarts when the first\nindex moves, so it never returns a purged entry whose segment is still on\ndisk. A head removal refuses to unlink once the log is closed. A Raft log\ncall that outlasts a heartbeat is counted in\nfelix_storage_raft_log_slow_calls_total and warned about.\n\nSpec-Unaffected: the logical purge (purged id durable, log starts after it) is unchanged; only the unlink of records that are already no entries moves behind the call, which FelixRaftStreamPurge and FelixRaft do not model\n\n* fix(storage): a failed head unlink stops the log before a reset can leave a gap (#3263)\n\nSpec-Unaffected: storage-local failure handling; no modelled Raft step changes\n\n* docs(raft): leftovers below the purged id are removed by the next purge; a failed unlink stops the log (#3263)\n\nSpec-Unaffected: docs and a drop order in the background removal\n\n* test(storage): a stop after the unlink now stops the offloading log (#3263)\n\nSpec-Unaffected: test expectation for storage-local failure handling\n\n* test(storage): the power-loss offload test expects the log stopped by its last unlink stop\n\nSpec-Unaffected: test only\n\n* fix(raft): a trim's floor check waits for pending trims to apply\n\nA majority can commit a head trim before the leader's own log syncs it,\nand the floor applies on the leader only after that sync. A lower\nconditional trim checked in between read the old floor and was written\ninstead of answered as a no-op, which is what Python conformance hit.\npropose_trim_at and propose_trim_below now wait for pending trims first,\nas reads already do.\n\nSpec-Unaffected: broker-side request check, no change to replicated log or apply behaviour",
+          "timestamp": "2026-11-26T19:36:32Z",
+          "tree_id": "39ce09e2263ce2961c70b9e6ebea2d58314c08c1",
+          "url": "https://github.com/GetFelix/felix/commit/306f5083e58cf9426bf8f2c68df7b3d608504e1a"
+        },
+        "date": 1795722375929,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 360268.18,
+            "range": "10998.31",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 360268.18\nmean: 355052.16\nstdev: 10998.31\ncv: 3.10%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 360268.18,
+            "range": "10998.31",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 360268.18\nmean: 355052.16\nstdev: 10998.31\ncv: 3.10%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 81493.64,
+            "range": "278.39",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 81493.64\nmean: 81359.44\nstdev: 278.39\ncv: 0.34%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 814936.38,
+            "range": "2783.94",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 814936.38\nmean: 813594.40\nstdev: 2783.94\ncv: 0.34%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
