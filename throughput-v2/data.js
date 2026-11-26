@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795663746749,
+  "lastUpdate": 1795666312620,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -70512,6 +70512,58 @@ window.BENCHMARK_DATA = {
             "range": "59551.42",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1213101.57\nmean: 1183263.49\nstdev: 59551.42\ncv: 5.03%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "cbe94c95e211e83e9eb61fc6e84f534b33d58f28",
+          "message": "fix(storage): a held kept copy is reported with both reservations (#2744) (#3208)\n\nReclaim held a kept shard copy whose raft-reserved was above the current\ncopy's without logging it or keeping either value, so the recovery step\nfor a damaged kept raft-reserved could not be checked. Each held copy now\ncarries the kept and current reservations (a Raft index, absent, or\nunreadable), every held line logs them, and the doc step says to delete\nthe damaged file only when the current value is at or above the kept\none, else to start the copy over. When a copy is held does not change.\n\nSpec-Unaffected: reporting and docs only; hold and reclaim decisions are unchanged",
+          "timestamp": "2026-11-25T20:01:54-08:00",
+          "tree_id": "7523a6b8969065c3184d5a90acb835b19135003e",
+          "url": "https://github.com/GetFelix/felix/commit/cbe94c95e211e83e9eb61fc6e84f534b33d58f28"
+        },
+        "date": 1795666311669,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 541461.14,
+            "range": "25488.47",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 541461.14\nmean: 532987.05\nstdev: 25488.47\ncv: 4.78%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 541461.14,
+            "range": "25488.47",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 541461.14\nmean: 532987.05\nstdev: 25488.47\ncv: 4.78%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 122350.01,
+            "range": "1242.19",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 122350.01\nmean: 121653.82\nstdev: 1242.19\ncv: 1.02%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1223500.06,
+            "range": "12421.85",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1223500.06\nmean: 1216538.21\nstdev: 12421.85\ncv: 1.02%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
