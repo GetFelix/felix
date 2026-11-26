@@ -101,9 +101,9 @@ shared modules here, so this is a refactor, not a file delete.
 | `store/contract/suspicions.rs` | 42 | Deleted |
 | `store/contract/replica_reports.rs`, `api/nodes/reports.rs` | 1,433 | Part. Tails, ballots and refusals go. A report of who leads each shard stays |
 | `cluster/placement/replica_positions.rs`, `caught_up.rs`, `progress.rs`, `restore.rs` | 1,985 | Part. Vouching and seat fences go. Catch-up is read from the leader's report |
-| `model/shard.rs`, `store/contract/shards.rs`, `cluster/placement/moves.rs`, `plan.rs`, `decision.rs`, `reconciler.rs` | | Part. The assigned leader, the generation bump, `pending_set`, ballots and the promote step go. The replica set, its version and the move plan stay |
+| `model/shard.rs`, `store/contract/shards.rs`, `cluster/placement/moves.rs`, `plan.rs`, `decision.rs`, `reconciler.rs` | | Part. The assigned leader, the generation bump, `pending_set`, ballots and the promote step go for durable shards. In-memory shards keep the assigned leader and the bump. The replica set, its version and the move plan stay |
 | `store/raft/command.rs`, `store/raft/soft_state.rs` | | Part. See "Control-plane log" under Upgrade |
-| `cluster/placement/rendezvous.rs`, `zones.rs`, `leadership.rs`, `operator.rs`, `wakes.rs` | | Kept |
+| `cluster/placement/rendezvous.rs`, `zones.rs`, `leadership.rs`, `operator.rs`, `wakes.rs`, `in_memory.rs` | | Kept |
 
 REST routes removed: `/v1/nodes/{node_id}/replica-status` and
 `/v1/shard-assignments/confirmed`. Moves, placement, the assignment watch,
@@ -255,7 +255,7 @@ Today a Raft broker serves one on the hybrid path, end to end:
 | Publish and fanout | `publish_in_memory` and the broker's fanout. A `Leader` stream is acknowledged on enqueue. A `Quorum` stream takes the other branch of `publish_in_memory`, whose ack passes `Hybrid::await_commit`, which returns at once with no offsets | Only the `Quorum` branch's `await_commit` call |
 | Idempotent sequences | The stream's `ProducerTable`, in memory, empty on a new owner | No |
 | Caches without logs | Not reachable on a Raft broker: durable storage always opens a `LogCache` | n/a |
-| Control plane | Not `raft_step` (`on_raft` needs durable). `readmit` and `move_step` while the owner lives; `promote` on hybrid catch-up reports, or a fresh `choose`, when it is lost. Every write bumps the generation | `promote`, catch-up and reports are. The assigned leader and the bump are not |
+| Control plane | Its own step, `cluster/placement/in_memory.rs` (#3066): one owner from `choose` and no followers, kept while it is live, placed again in the same pass when it is down, gone, draining, internal or outside the stream's region. An operator move is one write. No replica report is read. Every owner change is a new assignment at the next generation | No |
 
 The design, in three issues that block the deletion:
 
@@ -266,10 +266,14 @@ The design, in three issues that block the deletion:
    `close_stream_shard`. The lease gate, `watch_leadership` and
    `close_stream_shard` stay; the watch drops `QuorumMarks` and ends the
    readers of these shards too. Blocks #2259 and #2260.
-2. **Control plane (#3066).** In-memory shards get their own placement step:
-   one owner from `choose`, placed again at once on loss or drain, a new
-   generation on every owner change. They keep the assigned leader and the
-   bump that #2262 removes for durable shards. Blocks #2262.
+2. **Control plane (#3066, done).** In-memory shards have their own
+   placement step, `cluster/placement/in_memory.rs`: one owner from
+   `choose`, placed again at once on loss or drain, a new generation on every
+   owner change. The step is taken only by a stream the catalog lists as not
+   durable, so a durable shard, or one whose stream record is missing, never
+   reaches it. They keep the assigned leader and the bump that #2262 removes
+   for durable shards, and #2262 can delete `promote`, `readmit`, catch-up
+   and replica reports without touching them.
 3. **Brokers without a disk (#3067).** A broker with a node id and no
    `FELIX_DURABLE_STORAGE_DIR` is refused at start today. It may start, run
    no Raft groups, say so when it registers, and the control plane places

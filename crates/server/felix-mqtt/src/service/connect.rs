@@ -178,9 +178,19 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> Connection<S> {
             if connect.password.is_some() {
                 return Err((ReasonCode::BadUserNameOrPassword, "auth_failed"));
             }
-            return match &shared.settings.anonymous_tenant {
-                Some(tenant) => Ok(Principal::anonymous(tenant.clone())),
-                None => Err((ReasonCode::NotAuthorized, "auth_required")),
+            let Some(tenant) = &shared.settings.anonymous_tenant else {
+                return Err((ReasonCode::NotAuthorized, "auth_required"));
+            };
+            // A client certificate still bounds the connection.
+            return match shared.auth.anonymous(tenant, peer_certs) {
+                Ok(principal) => Ok(principal),
+                Err(AuthError::Rejected(reason)) => {
+                    tracing::debug!(reason = %reason, "mqtt anonymous client certificate refused");
+                    Err((ReasonCode::NotAuthorized, "auth_failed"))
+                }
+                Err(AuthError::Unavailable) => {
+                    Err((ReasonCode::ServerUnavailable, "auth_unavailable"))
+                }
             };
         };
         let token = password

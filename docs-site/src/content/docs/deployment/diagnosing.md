@@ -249,13 +249,13 @@ Placement replaces a copy that stays halted past `FELIX_SHARD_RESTORE_AFTER_MS`.
 **What you see.** Publishes to a `Quorum` stream fail with `quorum_timeout`:
 
 ```
-the batch is durable here but did not reach a majority within 5s
+the batch did not reach a majority within 5s
 ```
 
 Felix does not refuse a `Quorum` publish up front when it cannot reach a
 majority. The leader writes it, ships it, and waits up to
 `FELIX_PUBLISH_QUORUM_TIMEOUT_MS` (default `5000`) for a majority to hold it.
-The retry class is `outcome_unknown`: the record is on the leader and may yet
+The retry class is `outcome_unknown`: the record may be on the leader and may yet
 reach a majority, so a retry can write it twice unless the producer is
 idempotent. `leadership_lost` is the same outcome when the leader changed
 during the wait. `felix_broker_publish_quorum_failed_total{reason}` counts

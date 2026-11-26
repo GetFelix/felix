@@ -1,3 +1,5 @@
+use std::future::Future;
+use std::pin::Pin;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
@@ -104,11 +106,48 @@ impl Writes for FakeWrites {
     }
 }
 
+/// A credential's end that a test sets. Unlike a bare `Notify`, setting it
+/// before anyone waits is not lost.
+#[derive(Default)]
+struct Ending {
+    ended: AtomicBool,
+    notify: Notify,
+}
+
+impl Ending {
+    fn end(&self) {
+        self.ended.store(true, Ordering::SeqCst);
+        self.notify.notify_waiters();
+    }
+
+    async fn wait(&self) {
+        let notified = self.notify.notified();
+        tokio::pin!(notified);
+        notified.as_mut().enable();
+        if !self.ended.load(Ordering::SeqCst) {
+            notified.await;
+        }
+    }
+
+    fn revocation(
+        self: &Arc<Self>,
+    ) -> impl Fn() -> Pin<Box<dyn Future<Output = ()> + Send>> + Send + Sync + 'static {
+        let ending = Arc::clone(self);
+        move || {
+            let ending = Arc::clone(&ending);
+            Box::pin(async move { ending.wait().await })
+        }
+    }
+}
+
 /// Accepts the token `good` for tenant `acme`, says `down` is unavailable, and
 /// rejects everything else.
+///
+/// On the anonymous switch, a client that presented `bad-cert` is refused,
+/// and any other certificate ends with `revoke`.
 struct FakeAuth {
     expires_at: Option<i64>,
-    revoke: Arc<Notify>,
+    revoke: Arc<Ending>,
 }
 
 #[async_trait]
@@ -121,13 +160,9 @@ impl Authenticator for FakeAuth {
     ) -> Result<Principal, AuthError> {
         match (tenant_id, token) {
             ("acme", "good") => {
-                let revoke = Arc::clone(&self.revoke);
                 let mut principal = Principal::anonymous("acme")
                     .with_credential(crate::Credential::new(token))
-                    .with_revocation(move || {
-                        let revoke = Arc::clone(&revoke);
-                        Box::pin(async move { revoke.notified().await })
-                    });
+                    .with_revocation(self.revoke.revocation());
                 if let Some(at) = self.expires_at {
                     principal = principal.with_expiry(at);
                 }
@@ -144,6 +179,15 @@ impl Authenticator for FakeAuth {
             (_, "down") => Err(AuthError::Unavailable),
             (_, "slow") => std::future::pending().await,
             _ => Err(AuthError::Rejected("no".into())),
+        }
+    }
+
+    fn anonymous(&self, tenant_id: &str, peer_certs: &[Vec<u8>]) -> Result<Principal, AuthError> {
+        let principal = Principal::anonymous(tenant_id);
+        match peer_certs.first().map(Vec::as_slice) {
+            None => Ok(principal),
+            Some(b"bad-cert") => Err(AuthError::Rejected("certificate".into())),
+            Some(_) => Ok(principal.with_revocation(self.revoke.revocation())),
         }
     }
 }
@@ -201,7 +245,7 @@ impl Client {
 struct Harness {
     client: Client,
     shutdown: CancellationToken,
-    revoke: Arc<Notify>,
+    revoke: Arc<Ending>,
     writes: Arc<FakeWrites>,
 }
 
@@ -219,8 +263,19 @@ fn start_full(
     writes: Arc<FakeWrites>,
     reads: Option<Arc<dyn crate::read::Reads>>,
 ) -> Harness {
+    start_presenting(settings, expires_at, writes, reads, Vec::new())
+}
+
+/// [`start_full`], for a client that presented `peer_certs` over TLS.
+fn start_presenting(
+    settings: Settings,
+    expires_at: Option<i64>,
+    writes: Arc<FakeWrites>,
+    reads: Option<Arc<dyn crate::read::Reads>>,
+    peer_certs: Vec<Vec<u8>>,
+) -> Harness {
     let (client_io, server_io) = duplex(64 * 1024);
-    let revoke = Arc::new(Notify::new());
+    let revoke = Arc::new(Ending::default());
     let service = MqttService::new(
         Arc::new(FakeAuth {
             expires_at,
@@ -239,7 +294,7 @@ fn start_full(
     let flag = Arc::clone(&ended);
     let token = shutdown.clone();
     tokio::spawn(async move {
-        service.serve_connection(server_io, Vec::new(), token).await;
+        service.serve_connection(server_io, peer_certs, token).await;
         flag.store(true, Ordering::SeqCst);
     });
     Harness {
@@ -384,6 +439,157 @@ async fn anonymous_tenant_admits_only_connections_without_credentials() {
         connack(h.client.recv().await).reason,
         ReasonCode::BadUserNameOrPassword
     );
+}
+
+/// On the anonymous switch, a connection whose client presented a
+/// certificate is closed when the certificate ends. A certificate the broker
+/// refuses is refused at `CONNECT`, and a connection with none stays open.
+#[tokio::test(start_paused = true)]
+async fn an_anonymous_connection_ends_with_its_client_certificate() {
+    let mut bare = anonymous_connected(None, None).await;
+    let mut idle = anonymous_connected(Some(b"leaf"), None).await;
+
+    idle.revoke.end();
+    assert!(
+        matches!(
+            idle.client.recv().await,
+            Some(Packet::Disconnect(d)) if d.reason == ReasonCode::NotAuthorized
+        ),
+        "an idle connection outlived its certificate"
+    );
+
+    bare.client.send(Packet::PingReq, Version::V5).await;
+    assert!(
+        matches!(bare.client.recv().await, Some(Packet::PingResp)),
+        "no certificate: still served"
+    );
+
+    let mut refused = start_presenting(
+        anonymous_settings(),
+        None,
+        FakeWrites::new(),
+        None,
+        vec![b"bad-cert".to_vec()],
+    );
+    refused.client.version = Some(Version::V5);
+    refused
+        .client
+        .send(Packet::Connect(anonymous_connect()), Version::V5)
+        .await;
+    assert_eq!(
+        connack(refused.client.recv().await).reason,
+        ReasonCode::NotAuthorized
+    );
+    assert!(refused.client.closed().await);
+}
+
+/// Packets already read are served without the close being looked at, so a
+/// packet behind one that was still being handled when the certificate ended
+/// is refused, not served.
+#[tokio::test(start_paused = true)]
+async fn a_packet_read_before_the_end_is_not_served_after_it() {
+    let reads = Arc::new(GatedReads::default());
+    let mut h = anonymous_connected(Some(b"leaf"), Some(Arc::clone(&reads) as _)).await;
+
+    // One write: a SUBSCRIBE that waits on its shard's tail, then a ping.
+    let mut both = BytesMut::new();
+    Packet::Subscribe(Subscribe {
+        packet_id: 1,
+        filters: vec![SubscribeFilter::new(
+            Utf8::new("plant/a").unwrap(),
+            QoS::AtMostOnce,
+        )],
+        properties: Properties::default(),
+    })
+    .encode(Version::V5, &mut both)
+    .unwrap();
+    Packet::PingReq.encode(Version::V5, &mut both).unwrap();
+    h.client.raw(&both).await;
+    reads.entered.notified().await;
+
+    h.revoke.end();
+    // Let the end be seen before the SUBSCRIBE finishes.
+    for _ in 0..8 {
+        tokio::task::yield_now().await;
+    }
+    reads.go.add_permits(1);
+
+    let mut served_ping = false;
+    while let Some(packet) = h.client.recv().await {
+        served_ping |= matches!(packet, Packet::PingResp);
+    }
+    assert!(!served_ping, "served a packet after the certificate ended");
+}
+
+fn anonymous_settings() -> Settings {
+    Settings {
+        anonymous_tenant: Some("acme".into()),
+        ..Settings::default()
+    }
+}
+
+fn anonymous_connect() -> Connect {
+    Connect {
+        username: None,
+        password: None,
+        ..connect(Version::V5)
+    }
+}
+
+/// A 5.0 client connected on the anonymous switch, presenting `cert`.
+async fn anonymous_connected(
+    cert: Option<&[u8]>,
+    reads: Option<Arc<dyn crate::read::Reads>>,
+) -> Harness {
+    let certs = cert.map(|cert| vec![cert.to_vec()]).unwrap_or_default();
+    let mut h = start_presenting(anonymous_settings(), None, FakeWrites::new(), reads, certs);
+    h.client.version = Some(Version::V5);
+    h.client
+        .send(Packet::Connect(anonymous_connect()), Version::V5)
+        .await;
+    assert_eq!(connack(h.client.recv().await).reason, ReasonCode::Success);
+    h
+}
+
+/// Holds every `tail` until `go` has a permit, and serves no records.
+struct GatedReads {
+    entered: Notify,
+    go: tokio::sync::Semaphore,
+}
+
+impl Default for GatedReads {
+    fn default() -> Self {
+        Self {
+            entered: Notify::new(),
+            go: tokio::sync::Semaphore::new(0),
+        }
+    }
+}
+
+#[async_trait]
+impl crate::read::Reads for GatedReads {
+    fn shard_count(&self, _: &str, _: &str, _: &str) -> u32 {
+        1
+    }
+
+    async fn tail(&self, _: &str, _: &str, _: &str, _: u32) -> Result<u64, crate::read::ReadError> {
+        self.entered.notify_one();
+        self.go.acquire().await.unwrap().forget();
+        Err(crate::read::ReadError::Unavailable)
+    }
+
+    async fn read(
+        &self,
+        _: &str,
+        _: &str,
+        _: &str,
+        _: u32,
+        _: u64,
+        _: usize,
+        _: Duration,
+    ) -> Result<crate::read::ReadPage, crate::read::ReadError> {
+        std::future::pending().await
+    }
 }
 
 #[tokio::test(start_paused = true)]
@@ -657,8 +863,7 @@ async fn connection_ends_when_the_token_expires() {
 #[tokio::test(start_paused = true)]
 async fn connection_ends_when_the_credential_is_revoked() {
     let mut h = connected(Version::V5).await;
-    tokio::task::yield_now().await;
-    h.revoke.notify_waiters();
+    h.revoke.end();
     assert!(matches!(
         h.client.recv().await,
         Some(Packet::Disconnect(d)) if d.reason == ReasonCode::NotAuthorized

@@ -672,8 +672,8 @@ jobs:
 
   # Durable stream shards on Raft, across broker processes. The harness runs
   # the prebuilt broker beside the test binary, so this job builds it with the
-  # `raft` feature, which no other job's broker has. Not in `ci-ok`'s needs:
-  # it reports, and does not gate a merge yet.
+  # `raft` feature, which no other job's broker has. Required by `ci-ok`:
+  # Raft is the default engine, so a failure here is a real regression.
   cluster-raft:
     name: Cluster tests (Raft shards)
     needs: changes
@@ -1468,7 +1468,7 @@ jobs:
   ci-ok:
     name: CI ok
     if: always()
-    needs: [changes, images, compose, test, sim, cluster, checks, docs-evidence, docs-site, chart, python, typescript, dotnet, spec-pairing, formal-plan, formal, formal-heavy, fuzz]
+    needs: [changes, images, compose, test, sim, cluster, cluster-raft, checks, docs-evidence, docs-site, chart, python, typescript, dotnet, spec-pairing, formal-plan, formal, formal-heavy, fuzz]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
