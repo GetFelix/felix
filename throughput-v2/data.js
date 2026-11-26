@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795698797571,
+  "lastUpdate": 1795700639324,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -71552,6 +71552,58 @@ window.BENCHMARK_DATA = {
             "range": "12489.00",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 803221.54\nmean: 804080.56\nstdev: 12489.00\ncv: 1.55%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "e0a131811677aa5ff42878cb4b7ed2b4aa9c1981",
+          "message": "perf(broker): plain publishes queued on a Raft shard's lane are one proposal (#2936) (#3236)\n\n* perf(raft): merge queued publishes on a lane into one proposal (#2936)\n\nWIP: not yet tested.\n\nSpec-Unaffected: the models are per record; the proposer already merges batches into one write\n\n* test(raft): format the merged-proposal tests\n\nSpec-Unaffected: tests only\n\n* test(raft): a merged batch that cannot commit leaves every member unknown (#2936)\n\nSpec-Unaffected: a test and a doc sentence\n\n* test(raft): drop clones clippy flags in the merged deadline tests (#2936)\n\nSpec-Unaffected: tests only\n\n* test(raft): merged members timed out by their sweeps hear the quorum wait's error (#2936)\n\nSpec-Unaffected: tests only\n\n* docs(raft): a merged batch keeps one bound per publish (#2936)\n\nSpec-Unaffected: docs and changelog only\n\n* fix(raft): a merged proposal keeps its payloads and holds one group (#2936)\n\nThe merge with #3233 left main's `std::mem::take(&mut job.payloads)` after\nthe merged batch was built, so a proposal went out with no records. It is\nremoved; the merged payloads are what is proposed. The connection-line\npath passes no lane and no group, as before.\n\nA merged proposal uses the group the lane found for its first publish,\nfor all its members; a test counts the lookups.\n\nSpec-Unaffected: resolves the merge with #3233; who holds the group handle and which records a merged proposal carries are what #3233 and #2936 already reviewed",
+          "timestamp": "2026-11-26T05:38:10-08:00",
+          "tree_id": "019f281ad0b97b6e883f2ab53a3f935186951bb4",
+          "url": "https://github.com/GetFelix/felix/commit/e0a131811677aa5ff42878cb4b7ed2b4aa9c1981"
+        },
+        "date": 1795700638594,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 468052.06,
+            "range": "20107.10",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 468052.06\nmean: 470111.32\nstdev: 20107.10\ncv: 4.28%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 468052.06,
+            "range": "20107.10",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 468052.06\nmean: 470111.32\nstdev: 20107.10\ncv: 4.28%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 112085.84,
+            "range": "1128.21",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 112085.84\nmean: 111846.57\nstdev: 1128.21\ncv: 1.01%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1120858.4,
+            "range": "11282.08",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1120858.40\nmean: 1118465.72\nstdev: 11282.08\ncv: 1.01%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
