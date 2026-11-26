@@ -401,6 +401,7 @@ where
     // registered earlier would have its shard 0 opened by the broker itself,
     // beside the log its Raft member opens.
     if shard_engine == crate::config::ShardEngine::Raft {
+        startup::refuse_logless_cache(&broker)?;
         crate::shards::routing::leave_stores_to_engines(&broker);
     }
     #[cfg(feature = "raft")]

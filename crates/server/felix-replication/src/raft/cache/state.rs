@@ -7,6 +7,7 @@ use bytes::Bytes;
 
 use super::layers::{Delta, Layers, Tables};
 use super::recent::{Change, MARK_MICROS, Recent, WINDOW_MICROS};
+use super::size::{self, Bound};
 use super::{CacheCommand, Condition, Request};
 
 /// A key's value. Its version is the index of the put that wrote it.
@@ -43,6 +44,11 @@ pub(crate) enum Answer {
     /// the floor rule (an entry's floor is the lowest sequence it has no
     /// answer for), a request below the floor was applied earlier.
     Forgotten,
+    /// A put or an add that would have taken the group's values and
+    /// counters past their [`Bound`]. Nothing was written, and a retry
+    /// gets this answer too. Deletes and expiries free value bytes;
+    /// counter bytes are never freed (#3243).
+    Full,
 }
 
 /// What one producer's applied requests answered.
@@ -127,6 +133,15 @@ pub(crate) struct CacheState {
     /// function of the applied entries, so it is in the snapshot: a member
     /// that opens from one inside a mark's life records from there.
     pub(super) marked_until: u64,
+    /// The snapshot bytes of every value and counter held, expired values
+    /// included.
+    data: u64,
+    /// The part of `data` that is values expired by `swept`.
+    expired: u64,
+    /// Values that expire at or before this are counted in `expired`.
+    /// Stamps never go back, so each value is swept in once.
+    swept: u64,
+    bound: Bound,
 }
 
 /// A snapshot cut holds `base`, so apply writes to `delta` until the delta
@@ -319,9 +334,55 @@ impl CacheState {
         }
     }
 
+    /// Whether a write that would add `grows` bytes of values or counters
+    /// and drop `shrinks` takes them past the bound. Judged on what is
+    /// unexpired at `stamp`, as every write sees it: a member that restored
+    /// a snapshot that left an expired value out judges like one that
+    /// still holds it.
+    fn full(&mut self, stamp: u64, grows: u64, shrinks: u64) -> bool {
+        if grows <= shrinks {
+            return false;
+        }
+        // Most writes are far under the bound and need no sweep.
+        if self.data + grows - shrinks <= self.bound.0 {
+            return false;
+        }
+        self.sweep(stamp);
+        self.data - self.expired + grows - shrinks > self.bound.0
+    }
+
+    /// Count in `expired` every value that expires after `swept` and by
+    /// `stamp`.
+    fn sweep(&mut self, stamp: u64) {
+        if stamp <= self.swept {
+            return;
+        }
+        let maps = self.view();
+        let swept: u64 = maps
+            .expiring_between(self.swept, stamp)
+            .filter_map(|(_, key)| Some(size::entry(key, maps.entry(key)?.value.len())))
+            .sum();
+        self.expired += swept;
+        self.swept = stamp;
+    }
+
+    /// The bytes of `key`'s value, if it has one unexpired at `at`.
+    fn live_size(&self, key: &str, at: u64) -> u64 {
+        self.entry(key)
+            .filter(|entry| entry.live(at))
+            .map_or(0, |entry| size::entry(key, entry.value.len()))
+    }
+
     fn write(&mut self, index: u64, stamp: u64, command: &CacheCommand) -> Answer {
         match command {
             CacheCommand::Add { key, delta, .. } => {
+                let grows = match self.view().counter(key) {
+                    Some(_) => 0,
+                    None => size::counter(key),
+                };
+                if self.full(stamp, grows, 0) {
+                    return Answer::Full;
+                }
                 let sum = self.counter_mut(key);
                 *sum = sum.saturating_add(*delta);
                 Answer::Sum(*sum)
@@ -341,6 +402,10 @@ impl CacheState {
                 };
                 if !holds {
                     return Answer::Refused { version: here };
+                }
+                let shrinks = self.live_size(key, stamp);
+                if self.full(stamp, size::entry(key, value.len()), shrinks) {
+                    return Answer::Full;
                 }
                 self.put(
                     key,
@@ -372,8 +437,25 @@ impl CacheState {
         }
     }
 
+    /// Count `cost` bytes of a value that expires at `at` coming or going.
+    fn account(&mut self, cost: u64, at: u64, comes: bool) {
+        let expired = at != 0 && at <= self.swept;
+        if comes {
+            self.data += cost;
+            self.expired += if expired { cost } else { 0 };
+        } else {
+            self.data -= cost;
+            self.expired -= if expired { cost } else { 0 };
+        }
+    }
+
     /// Set `key` to `entry`, replacing any value it had, in one lookup.
     fn put(&mut self, key: &str, entry: Entry) {
+        if let Some(old) = self.entry(key) {
+            let (cost, at) = (size::entry(key, old.value.len()), old.expires_at);
+            self.account(cost, at, false);
+        }
+        self.account(size::entry(key, entry.value.len()), entry.expires_at, true);
         if let Some(layered) = &mut self.layered {
             return layered.put(key, entry);
         }
@@ -403,6 +485,10 @@ impl CacheState {
     }
 
     fn remove(&mut self, key: &str) {
+        if let Some(old) = self.entry(key) {
+            let (cost, at) = (size::entry(key, old.value.len()), old.expires_at);
+            self.account(cost, at, false);
+        }
         if let Some(layered) = &mut self.layered {
             return layered.remove(key);
         }
@@ -417,6 +503,9 @@ impl CacheState {
     }
 
     fn counter_mut(&mut self, key: &str) -> &mut i64 {
+        if self.view().counter(key).is_none() {
+            self.data += size::counter(key);
+        }
         match &mut self.layered {
             None => self.tables.counters.entry(key.to_owned()).or_default(),
             Some(layered) => layered.counter_mut(key),
@@ -441,7 +530,13 @@ impl CacheState {
     }
 
     pub(super) fn from_tables(time: u64, tables: Tables) -> Self {
-        Self {
+        let values = tables.entries.iter();
+        let counters = tables.counters.keys();
+        let data = values
+            .map(|(key, entry)| size::entry(key, entry.value.len()))
+            .chain(counters.map(|key| size::counter(key)))
+            .sum();
+        let mut state = Self {
             time,
             applied: 0,
             next_expiry: tables.expiring.first().map(|(at, _)| *at),
@@ -450,7 +545,28 @@ impl CacheState {
             recent: None,
             watched_until: 0,
             marked_until: 0,
-        }
+            data,
+            expired: 0,
+            swept: 0,
+            bound: Bound::default(),
+        };
+        state.sweep(time);
+        state
+    }
+
+    /// This state judged by `bound` instead of the constant one, for tests
+    /// that cannot fill a gigabyte.
+    #[cfg(test)]
+    pub(crate) fn bounded(mut self, bound: Bound) -> Self {
+        self.bound = bound;
+        self
+    }
+
+    /// The snapshot bytes of the values and counters held, expired values
+    /// included.
+    #[cfg(test)]
+    pub(crate) fn data(&self) -> u64 {
+        self.data
     }
 
     /// The state as it is now, for a snapshot. It takes no copy: the maps

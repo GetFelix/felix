@@ -23,6 +23,9 @@ pub(crate) const TENANT_QUOTA_REASON: &str = "tenant_quota";
 /// `detail.reason` on an `overloaded` refusal because the publish queue had
 /// no room for the tenant.
 pub(crate) const QUEUE_FULL_REASON: &str = "publish_queue_full";
+/// `detail.reason` on a `limit_exceeded` refusal of a cache put or counter
+/// add because the cache shard's state is at its bound.
+pub(crate) const CACHE_FULL_REASON: &str = "cache_full";
 /// What a publish refused for a full queue is told to wait. Room comes back as
 /// fast as claims run, so the hint is short; it is there so a client backs off
 /// at all rather than resending into the same full queue.
@@ -75,6 +78,14 @@ impl ClientError {
 
     pub(crate) fn limit_exceeded(message: impl Into<String>) -> Self {
         Self::new(ErrorCode::LimitExceeded, message)
+    }
+
+    /// A cache put or counter add refused because its shard holds as much
+    /// as one can; nothing was written. `limit_exceeded` and `fatal`: the
+    /// same write fails the same way until deletes or expiries of values
+    /// free room (counters are never freed, #3243), which an older client already treats as a refusal, not an outage.
+    pub(crate) fn cache_full(message: impl Into<String>) -> Self {
+        Self::limit_exceeded(message).with_reason(CACHE_FULL_REASON)
     }
 
     pub(crate) fn draining(message: impl Into<String>) -> Self {
@@ -350,6 +361,7 @@ impl ClientError {
                 // The owner checks the client's own credential on a forward.
                 Some(Internal::Unauthorized) => Self::forbidden(message),
                 Some(Internal::StorageFailed) => Self::new(ErrorCode::Storage, message),
+                Some(Internal::CacheFull) => Self::cache_full(message),
                 // Only a sequenced forward is answered with it, and
                 // `forward_publish` reports that as indeterminate.
                 Some(Internal::LeadershipLost) => Self::new(ErrorCode::Unacknowledged, message),

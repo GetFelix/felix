@@ -260,6 +260,32 @@ impl<'a> Layers<'a> {
         .map(|(member, _, _)| member)
     }
 
+    /// Every entry that expires after `after` and by `through`, in no
+    /// particular order.
+    pub(super) fn expiring_between(
+        &self,
+        after: u64,
+        through: u64,
+    ) -> impl Iterator<Item = &'a (u64, String)> + use<'a> {
+        // By time alone: the empty key is the least at each time.
+        let from = Bound::Included((after.saturating_add(1), String::new()));
+        let to = match through.checked_add(1) {
+            Some(next) => Bound::Excluded((next, String::new())),
+            None => Bound::Unbounded,
+        };
+        let range = (from, to);
+        let delta = self.delta;
+        let base = self
+            .base
+            .expiring
+            .range::<(u64, String), _>(range.clone())
+            .filter(move |member| delta.is_none_or(|delta| !delta.expired.contains(*member)));
+        let added = delta
+            .into_iter()
+            .flat_map(move |delta| delta.expiring.range::<(u64, String), _>(range.clone()));
+        base.chain(added)
+    }
+
     pub(super) fn counter(&self, key: &str) -> Option<i64> {
         self.delta
             .and_then(|delta| delta.counters.get(key))

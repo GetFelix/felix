@@ -890,6 +890,11 @@ registered, run by a workflow, nor listed there.
 | `FelixRaftCacheTrimRetireLocal.cfg` | the leader forgets a retired producer itself, with no entry | violate `MembersAgree` |
 | `FelixRaftCacheTrimFloorPastUnanswered.cfg` | the producer sends its own sequence as the floor, past a request it has no answer for | violate `ForgetsOnlyDone`: that request commits later and is answered "forgotten", never applied |
 | `FelixRaftCacheTrimNoFloorClamp.cfg` | the producer sends its sequence plus one as the floor and apply does not clamp it to the entry's sequence | violate `ForgetsOnlyDone`: the first copy drops its own answer, and a retry that commits before the answer reaches the producer is answered "forgotten" |
+| `FelixRaftCacheFull.cfg` | the state bound (issue #2460): a bound of one, an add, a delete and a put, four proposals with retries, one leader change, one crash, one snapshot. The second of the add and the put answers "full", and a retry after the delete gets the same answer | pass `FullFinal`, `SumExact`, `AnswersKept` |
+| `FelixRaftCacheFullSnapshot.cfg` | the bound with a snapshot that holds live records only: an expiring put and an add, clocks 0..1, one crash, one snapshot. A member that restored the snapshot and one that replayed the log judge the add the same | pass `MembersAgree`, `ProjectionIsFold` |
+| `FelixRaftCacheFullNotRecorded.cfg` | a "full" answer is not kept | violate `FullFinal`: a retry after the delete applies the add its first commit refused |
+| `FelixRaftCacheFullSnapshotRawSize.cfg` | the bound counts an expired record no expiry delete removed yet | violate `MembersAgree`: the member that replayed the log answers "full", the one that restored the snapshot applies the add |
+| `FelixRaftCacheFullReachFull.cfg` | witness: a write is answered "full" | violate `NeverFull` |
 | `FelixRaftCacheTrimReachForgotten.cfg` | witness: a late copy below the floor answers "forgotten" | violate `NeverForgotten` |
 | `FelixRaftCacheTrimReachRetryAboveFloor.cfg` | witness: a retry commits after the floor passed the other request and keeps its answer | violate `NeverRetryAboveFloor` |
 | `FelixRaftCacheTrimReachRetryAfterRetire.cfg` | witness: a late copy commits after the retire entry | violate `NeverRetryAfterRetire` |

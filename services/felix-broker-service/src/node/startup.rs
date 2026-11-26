@@ -67,6 +67,23 @@ pub(super) fn refuse_hybrid_data(root: &std::path::Path) -> Result<()> {
     Ok(())
 }
 
+/// Refuse a Raft start whose broker has durable storage but a cache store
+/// with no logs. Every cache of a cluster is a Raft group on a log, and a
+/// broker with a disk is given cache shards, so its cache cannot stay in
+/// memory. A broker with no durable storage is not refused: it routes caches
+/// to the group.
+pub(super) fn refuse_logless_cache(broker: &felix_broker::Broker) -> Result<()> {
+    if broker.durable_storage().is_some() && broker.cache().as_log_cache().is_none() {
+        anyhow::bail!(
+            "this broker runs its shards on Raft and has durable storage \
+             (FELIX_DURABLE_STORAGE_DIR), but its cache store keeps no logs. A Raft \
+             cluster has no in-memory cache: open the cache on the durable storage \
+             root, or unset FELIX_DURABLE_STORAGE_DIR to run a broker without a disk"
+        );
+    }
+    Ok(())
+}
+
 /// Open storage and the broker over it.
 pub(super) fn open_storage(
     config: &BrokerConfig,

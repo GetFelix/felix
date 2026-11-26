@@ -607,7 +607,11 @@ transport as snapshot messages, one piece each, and follows the same rules
 in its own way (`raft/install.rs`):
 
 - **Cap.** Every piece names the whole snapshot's size. One over 1 GiB is
-  refused at its first piece.
+  refused at its first piece. The leader checks first and does not send
+  one over the cap: it counts and logs it instead of retrying a send that
+  cannot land. A group's state is bounded under the cap, so only a group
+  already past the bound builds one ([per-shard Raft](per-shard-raft.md),
+  "How big a cache group gets").
 - **One install.** A member holds one incoming snapshot. A first piece
   replaces what is held when its sender's vote is the same or newer, and is
   refused otherwise. A piece that does not follow the last one kept is
