@@ -90,7 +90,7 @@ where
             return Ok(());
         }
         shared.check_held(stored).await?;
-        shared.remove_through(stored).await
+        shared.remove_through(stored, false).await
     }
 }
 
@@ -134,8 +134,10 @@ impl<K> Shared<K> {
     }
 
     /// Purge through `purged` on disk: the id first, then the segments.
-    /// The caller has waited for every append's callback.
-    pub(super) async fn remove_through(&self, purged: Purged) -> io::Result<()> {
+    /// With `behind`, the segments are unlinked behind the caller unless the
+    /// purge empties the log, which resets it here. The caller of a purge
+    /// that may empty the log has waited for every append's callback.
+    pub(super) async fn remove_through(&self, purged: Purged, behind: bool) -> io::Result<()> {
         let log = &self.log;
         let dir = log.dir().to_path_buf();
         // Refused once closed: the directory may already be another log's.
@@ -160,6 +162,10 @@ impl<K> Shared<K> {
         if first >= log.tail_offset().await.map_err(io_error)? {
             log.reset_to(first).await.map_err(io_error)
         } else {
+            if behind {
+                self.removals.behind(log, first);
+                return Ok(());
+            }
             log.trim_before(first).await.map(drop).map_err(io_error)
         }
     }
@@ -195,7 +201,7 @@ impl<K> Shared<K> {
             if removable != target {
                 self.check_held(removable).await?;
             }
-            self.remove_through(removable).await?;
+            self.remove_through(removable, false).await?;
         }
         let mut bounds = self.bounds.lock();
         bounds.hidden = bounds
@@ -239,7 +245,7 @@ impl<K> Shared<K> {
             })?;
         if let Some(purge) = purge {
             self.check_held(purge).await?;
-            self.remove_through(purge).await?;
+            self.remove_through(purge, false).await?;
         }
         if first > log.tail_offset().await.map_err(io_error)? {
             log.reset_to(first).await.map_err(io_error)?;

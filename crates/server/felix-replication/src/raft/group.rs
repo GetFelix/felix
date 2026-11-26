@@ -805,6 +805,13 @@ impl Group {
         // snapshot plus the log above it. Either way nothing can rebuild
         // what a purge past the snapshot would drop.
         log.purge_within(&snapshots)?;
+        // What a crash left of an earlier purge's removal.
+        if let Err(err) = log.remove_purged().await {
+            tracing::warn!(group = %id, member = %member, error = %err, "could not remove a purged log's segments; the next purge retries");
+        }
+        // openraft makes these calls on its core: one that outlasts a
+        // heartbeat stops the member's heartbeats (#3263).
+        log.warn_slow_calls(Duration::from_millis(timers.heartbeat));
         let copy_id = marks.as_ref().map(|(marks, _)| marks.copy());
         let root = marks.as_ref().map(|(marks, _)| marks.mark_log().clone());
         if let Some((marks, mode)) = marks {

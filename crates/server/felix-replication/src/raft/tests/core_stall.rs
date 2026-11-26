@@ -117,14 +117,12 @@ async fn a_slow_flush_alone_leaves_a_written_commit_leader_answering() {
     cluster.stop().await;
 }
 
-/// **A purge waits on the flush lock on the core** (`RaftLog::purge` ->
-/// `drain_flushes` -> `DiskLog::sync`). openraft runs a leader's purge on
+/// **A purge does not wait on the flush lock on the core** (#3263). openraft runs a leader's purge on
 /// the core, and holds one back while a replication stream reads the range,
 /// so a purge asked for while a follower is going away runs when that
-/// follower's stream fails. Fails on main: the core answers nothing, and no
-/// write commits, until the flush is let go.
+/// follower's stream fails. A purge inside the log must not wait on the
+/// flush: the core keeps answering and a write commits.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[ignore = "#3263: reproduces the leader core stall; fails until the purge's wait is off the core"]
 async fn a_leader_core_keeps_answering_while_a_purge_waits_on_a_slow_flush() {
     let mut cluster = Cluster::new(true);
     let (leader, raft, log, last) = slow_leader(&mut cluster).await;
@@ -152,6 +150,11 @@ async fn a_leader_core_keeps_answering_while_a_purge_waits_on_a_slow_flush() {
         commit.0 < Duration::from_millis(500) && commit.1.is_none(),
         "a write: {commit:?}"
     );
+    let deadline = Instant::now() + PATIENCE;
+    while cluster.purged(&leader.broker, 0) < Some(last / 2) {
+        assert!(Instant::now() < deadline, "the purge never ran");
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
     cluster.net.cut.lock().clear();
     cluster.stop().await;
 }

@@ -38,10 +38,12 @@ pub(crate) mod held;
 mod hide;
 pub(crate) mod purged;
 mod reader;
+mod removal;
 pub(crate) mod reserved;
 pub(crate) mod snapshot;
 mod synced;
 pub(crate) use crate::state_file;
+mod slow;
 mod tail_cache;
 #[cfg(test)]
 pub(crate) mod tests;
@@ -186,6 +188,11 @@ struct Shared<K> {
     /// Appends whose callback has not fired. A truncation waits for it to
     /// empty.
     flushes: FlushQueue,
+    /// Purged segments still to unlink, behind the purges that asked.
+    removals: removal::Removals,
+    /// Times each of openraft's calls once [`RaftLog::warn_slow_calls`] set
+    /// a threshold.
+    slow: slow::SlowCalls,
     /// Written-commit appends that wait for nothing but a sync to raise
     /// `flushed`.
     synced: synced::Synced,
@@ -378,6 +385,8 @@ where
                     }),
                     covering: std::sync::OnceLock::new(),
                     flushes: FlushQueue::default(),
+                    removals: removal::Removals::default(),
+                    slow: slow::SlowCalls::default(),
                     synced: synced::Synced::new(told),
                     tail: Tail::new(budget),
                     #[cfg(test)]
@@ -488,12 +497,42 @@ where
     }
 
     /// Wait until every append's callback has fired, syncing the log first
-    /// when it commits on a written majority. Call once the member has
-    /// stopped and before closing the log: a flush still queued at the close
-    /// would otherwise end with [`crate::StorageError::Closed`] instead of
-    /// its real result.
+    /// when it commits on a written majority, and until every purge's
+    /// segment removal has finished. Call once the member has stopped and
+    /// before closing the log: a flush still queued at the close would
+    /// otherwise end with [`crate::StorageError::Closed`] instead of its real
+    /// result, and a removal would be left for the next open.
     pub async fn drain_flushes(&self) -> io::Result<()> {
-        self.shared.drain_flushes().await
+        self.shared.drain_flushes().await?;
+        self.shared.removals.settled().await;
+        Ok(())
+    }
+
+    /// Unlink the sealed segments wholly at or below the purged id, which a
+    /// crash during a purge's removal leaves behind. Call at open, before
+    /// the log is handed to Raft.
+    pub async fn remove_purged(&self) -> io::Result<()> {
+        let Some(purged) = self.shared.bounds.lock().on_disk else {
+            return Ok(());
+        };
+        let first = purged.index + 1;
+        if first >= self.shared.log.tail_now() {
+            return Ok(());
+        }
+        self.shared
+            .log
+            .trim_before(first)
+            .await
+            .map(drop)
+            .map_err(writer::io_error)
+    }
+
+    /// Warn, at most every ten seconds, and count in
+    /// `felix_storage_raft_log_slow_calls_total`, each call openraft makes
+    /// into this log that takes longer than `threshold`. The first call sets
+    /// it; a later one is ignored.
+    pub fn warn_slow_calls(&self, threshold: std::time::Duration) {
+        self.shared.slow.set(threshold);
     }
 
     /// The log underneath.
