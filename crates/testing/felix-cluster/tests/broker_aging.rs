@@ -282,3 +282,191 @@ async fn broker_aging_under_one_record_publishes() {
         );
     }
 }
+
+/// `Anonymous` and `Rss` from /proc/<pid>/smaps_rollup, the thread count and
+/// open descriptors, in KiB and counts.
+fn proc_detail(pid: u32) -> serde_json::Value {
+    let field = |text: &str, name: &str| -> u64 {
+        text.lines()
+            .find(|line| line.starts_with(name))
+            .and_then(|line| line.split_whitespace().nth(1)?.parse().ok())
+            .unwrap_or(0)
+    };
+    let rollup = std::fs::read_to_string(format!("/proc/{pid}/smaps_rollup")).unwrap_or_default();
+    let status = std::fs::read_to_string(format!("/proc/{pid}/status")).unwrap_or_default();
+    let fds = std::fs::read_dir(format!("/proc/{pid}/fd")).map_or(0, |dir| dir.count());
+    serde_json::json!({
+        "anon_mib": field(&rollup, "Anonymous:") as f64 / 1024.0,
+        "threads": field(&status, "Threads:"),
+        "fds": fds,
+    })
+}
+
+/// The newest jemalloc totals line the broker printed (`stats_interval`),
+/// reading `log` from `offset` on. Returns allocated, active, resident,
+/// retained in MiB.
+fn jemalloc_totals(log: &Path, offset: &mut u64) -> Option<serde_json::Value> {
+    use std::io::{Read, Seek, SeekFrom};
+    let mut file = std::fs::File::open(log).ok()?;
+    file.seek(SeekFrom::Start(*offset)).ok()?;
+    let mut text = String::new();
+    let read = file.read_to_string(&mut text).ok()?;
+    *offset += read as u64;
+    let line = text
+        .lines()
+        .rev()
+        .find(|line| line.starts_with("Allocated:"))?;
+    let mut out = serde_json::Map::new();
+    for part in line.split(',') {
+        let mut words = part.split(':');
+        let (Some(key), Some(value)) = (words.next(), words.next()) else {
+            continue;
+        };
+        if let Ok(bytes) = value.trim().parse::<f64>() {
+            out.insert(
+                format!("{}_mib", key.trim().to_lowercase()),
+                (bytes / 1048576.0).into(),
+            );
+        }
+    }
+    Some(out.into())
+}
+
+fn disk_free_gib(path: &Path) -> f64 {
+    let Ok(c_path) = std::ffi::CString::new(path.as_os_str().as_encoded_bytes()) else {
+        return 0.0;
+    };
+    // SAFETY: statvfs writes into the zeroed struct we own.
+    unsafe {
+        let mut stat: libc::statvfs = std::mem::zeroed();
+        if libc::statvfs(c_path.as_ptr(), &mut stat) != 0 {
+            return 0.0;
+        }
+        stat.f_bavail as f64 * stat.f_frsize as f64 / (1u64 << 30) as f64
+    }
+}
+
+fn dir_bytes(dir: &Path) -> u64 {
+    std::fs::read_dir(dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|entry| match entry.file_type() {
+            Ok(kind) if kind.is_dir() => dir_bytes(&entry.path()),
+            Ok(_) => entry.metadata().map_or(0, |meta| meta.len()),
+            Err(_) => 0,
+        })
+        .sum()
+}
+
+/// A long soak: one RF 1 broker, two publishers at `FELIX_SOAK_RATE` msg/s
+/// each. One keeps its connection for the whole soak; the other reconnects
+/// every minute, so a per-connection leak shows as growth that the long-lived
+/// half alone would not cause. Stops early, cleanly, when the disk runs low.
+#[tokio::test(flavor = "multi_thread")]
+#[serial]
+#[ignore = "runs for hours; run by the Broker aging workflow"]
+async fn broker_soak_one_record_publishes() {
+    let dir = PathBuf::from(std::env::var("FELIX_AGING_DIR").expect("set FELIX_AGING_DIR"));
+    std::fs::create_dir_all(&dir).expect("create FELIX_AGING_DIR");
+    let minutes = env_usize("FELIX_AGING_MINUTES", 240);
+    let rate = env_usize("FELIX_SOAK_RATE", 2500) as u64;
+    let mut broker_env = vec![(
+        "FELIX_DURABLE_FSYNC_MODE".to_string(),
+        "periodic".to_string(),
+    )];
+    // The broker alone gets these, so only its allocator is swapped.
+    for (from, to) in [
+        ("FELIX_SOAK_BROKER_LD_PRELOAD", "LD_PRELOAD"),
+        ("FELIX_SOAK_BROKER_MALLOC_CONF", "MALLOC_CONF"),
+    ] {
+        if let Ok(value) = std::env::var(from) {
+            broker_env.push((to.to_string(), value));
+        }
+    }
+    let cluster = Cluster::start(ClusterConfig {
+        nodes: 1,
+        streams: vec![StreamSpec::new(STREAM, SHARDS)],
+        broker_env,
+        sync_interval_ms: 2000,
+        node_expiry: Duration::from_secs(15),
+        ..Default::default()
+    })
+    .await
+    .expect("start cluster");
+    cluster
+        .await_raft_leaders_placed(Duration::from_secs(120))
+        .await
+        .expect("leaders placed");
+    let cluster = std::sync::Arc::new(cluster);
+    let node = &cluster.nodes[0];
+    let pid = node.pid().expect("broker pid");
+    let data_dir = node.data_dir.clone();
+    let log = data_dir.join("broker.log");
+    let http = reqwest::Client::new();
+
+    // The long-lived publisher: one loadgen run for the whole soak.
+    let long_secs = minutes as u64 * 60 + 30;
+    let long_cluster = std::sync::Arc::clone(&cluster);
+    let long = tokio::spawn(async move { run_ingest(&long_cluster, long_secs, Some(rate)).await });
+
+    let mut last_cpu = proc_sample(pid).0;
+    let mut last_messages = cluster
+        .metric(&node.node_id, "felix_tenant_published_messages_total")
+        .await
+        .ok()
+        .flatten()
+        .unwrap_or(0.0);
+    let mut log_offset = 0u64;
+    let mut short_acked = 0u64;
+    let mut series = Vec::new();
+    for minute in 1..=minutes {
+        let started = Instant::now();
+        let (acked, _, row) = run_ingest(&cluster, 60, Some(rate))
+            .await
+            .expect("reconnecting loadgen");
+        short_acked += acked;
+        let wall = started.elapsed().as_secs_f64();
+        let (cpu, rss_kib) = proc_sample(pid);
+        let messages = cluster
+            .metric(&node.node_id, "felix_tenant_published_messages_total")
+            .await
+            .ok()
+            .flatten()
+            .unwrap_or(last_messages);
+        let entry = serde_json::json!({
+            "minute": minute,
+            "msg_s": (messages - last_messages) / wall,
+            "total_messages": messages,
+            "short_acked": short_acked,
+            "short_failed": row["failed_sends"],
+            "rss_mib": rss_kib as f64 / 1024.0,
+            "cpu_pct": (cpu - last_cpu) / wall * 100.0,
+            "proc": proc_detail(pid),
+            "jemalloc": jemalloc_totals(&log, &mut log_offset),
+            "data_gib": dir_bytes(&data_dir) as f64 / (1u64 << 30) as f64,
+            "disk_free_gib": disk_free_gib(&data_dir),
+            "long_publisher_running": !long.is_finished(),
+        });
+        last_cpu = cpu;
+        last_messages = messages;
+        write(
+            &dir,
+            &format!("metrics-n0-m{minute:03}.txt"),
+            &scrape(&http, node.metrics_addr).await,
+        );
+        eprintln!("SOAK {entry}");
+        let low_disk = entry["disk_free_gib"].as_f64().unwrap_or(0.0) < 4.0;
+        series.push(entry);
+        write(
+            &dir,
+            "series.json",
+            &serde_json::to_string_pretty(&series).unwrap(),
+        );
+        if low_disk {
+            eprintln!("SOAK stopping early: disk low");
+            break;
+        }
+    }
+    long.abort();
+}

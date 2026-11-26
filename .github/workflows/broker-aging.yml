@@ -9,7 +9,7 @@ on:
     inputs:
       minutes:
         description: "Minutes of load per job"
-        default: "40"
+        default: "240"
   push:
     branches: [diag/broker-aging-3203]
 
@@ -24,38 +24,35 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  aging:
-    name: Aging ${{ matrix.arch }} ${{ matrix.mode }}
+  # Four-hour soak: is the creep after the tail cache fills live heap or
+  # allocator retention, per record, per connection or per second? Runs once
+  # on the system allocator (RSS and anonymous memory) and once with
+  # jemalloc preloaded, which prints allocated/active/resident totals.
+  soak:
+    name: Soak ${{ matrix.arch }} ${{ matrix.allocator }}
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 120
+    timeout-minutes: 330
     strategy:
       fail-fast: false
       matrix:
         runner: [ubuntu-latest, ubuntu-24.04-arm]
-        mode: [rf1-flat, rf1-paced100, rf3-flat, rf1-idle-callgrind]
+        allocator: [glibc, jemalloc]
         include:
           - runner: ubuntu-latest
             arch: x86_64
           - runner: ubuntu-24.04-arm
             arch: aarch64
-          - mode: rf1-flat
-            rf: "1"
-            rate: ""
-          - mode: rf1-paced100
-            rf: "1"
-            rate: "100"
-          - mode: rf3-flat
-            rf: "3"
-            rate: ""
-          - mode: rf1-idle-callgrind
-            rf: "1"
-            rate: "0"
-            callgrind: true
     steps:
       - name: Checkout
         uses: actions/checkout@v7
         with:
           persist-credentials: false
+
+      # Four hours of records need room.
+      - name: Free disk
+        run: |
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache/CodeQL || true
+          df -h "$RUNNER_TEMP"
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
@@ -67,11 +64,12 @@ jobs:
         with:
           cache-on-failure: true
 
-      - name: Install valgrind
-        if: matrix.callgrind
+      - name: Install jemalloc
+        if: matrix.allocator == 'jemalloc'
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y -qq valgrind
+          sudo apt-get install -y -qq libjemalloc2
+          ls /usr/lib/*-linux-gnu/libjemalloc.so.2
 
       - name: Build
         run: |
@@ -81,24 +79,23 @@ jobs:
 
       - name: Run
         run: |
-          mkdir -p "$RUNNER_TEMP/aging" "$RUNNER_TEMP/cg"
+          mkdir -p "$RUNNER_TEMP/aging"
           export FELIX_AGING_DIR="$RUNNER_TEMP/aging"
-          export FELIX_AGING_MINUTES="${{ inputs.minutes || '40' }}"
-          export FELIX_AGING_RF="${{ matrix.rf }}"
-          if [ -n "${{ matrix.rate }}" ]; then export FELIX_AGING_RATE="${{ matrix.rate }}"; fi
-          if [ "${{ matrix.callgrind }}" = "true" ]; then
-            export FELIX_TEST_TIMEOUT_SCALE=10
-            export FELIX_BROKER_WRAPPER="valgrind --tool=callgrind --fair-sched=yes --callgrind-out-file=$RUNNER_TEMP/cg/cg.%p"
-            export FELIX_AGING_CALLGRIND_DIR="$RUNNER_TEMP/cg"
+          export FELIX_AGING_MINUTES="${{ inputs.minutes || '240' }}"
+          if [ "${{ matrix.allocator }}" = "jemalloc" ]; then
+            # The test hands these to the broker only. Stats every 1 GiB
+            # allocated, totals and merged arenas only.
+            export FELIX_SOAK_BROKER_LD_PRELOAD="$(ls /usr/lib/*-linux-gnu/libjemalloc.so.2)"
+            export FELIX_SOAK_BROKER_MALLOC_CONF="stats_interval:1073741824,stats_interval_opts:gdablxe"
           fi
           cargo test --locked --release -p felix-cluster --test broker_aging \
-            -- --ignored --nocapture 2>&1 | tee "$RUNNER_TEMP/aging/log.txt" | grep --line-buffered '^AGING\|panicked\|error'
-          cp "$RUNNER_TEMP/aging/series.json" series.json
+            broker_soak_one_record_publishes -- --ignored --nocapture 2>&1 \
+            | tee "$RUNNER_TEMP/aging/log.txt" | grep --line-buffered '^SOAK\|panicked\|error'
 
       - name: Upload
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: aging-${{ matrix.arch }}-${{ matrix.mode }}
+          name: soak-${{ matrix.arch }}-${{ matrix.allocator }}
           path: ${{ runner.temp }}/aging
           if-no-files-found: warn
