@@ -1,7 +1,7 @@
 //! The lock on a log's directory: one open log at a time, across processes
-//! and within one. Every open takes it, and so does the root of a
-//! [`crate::DiskLogProvider`], so two brokers on one data directory, or a
-//! broker and `felix-log-tool`, never both write, cut or rotate a log.
+//! and within one. Every open takes it, so two brokers on one data
+//! directory, or a broker and `felix-log-tool`, never both write, cut or
+//! rotate a log.
 //!
 //! An exclusive `flock` on the directory itself, so no file is added to it
 //! and no segment file is touched. The kernel ties the lock to the open

@@ -1937,8 +1937,7 @@ opening runs recovery, which cuts a torn tail. So each one takes the log
 directory's lock and is refused on a directory a running broker holds, with
 an error that names it. Stop the broker first, or use `felixctl data inspect`,
 which only reads. Two brokers pointed at one data directory are refused the
-same way: the second stops at startup when it finds the stream root locked.
-The lock is a `flock` that goes away with its holder, so a crash leaves no
+same way: the second fails at the first log it opens. The lock is a `flock` that goes away with its holder, so a crash leaves no
 stale lock behind. See "One open at a time" in `docs/storage-format.md`.
 
 A filesystem that cannot lock a directory refuses every log on it: stream,
