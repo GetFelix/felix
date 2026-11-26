@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795690907273,
+  "lastUpdate": 1795693908784,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -90552,6 +90552,72 @@ window.BENCHMARK_DATA = {
             "range": "165.15",
             "unit": "us",
             "extra": "trials: 5\nmedian: 942.00\nmean: 923.60\nstdev: 165.15\ncv: 17.88%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "df2ebc58cf6d785ac3f2767171cbd23e9da0d536",
+          "message": "perf(broker): a Raft publish looks its group up once and holds it (#3233) (#3253)\n\n* fix(raft): a publish refused before it is appended is answered at once (#3199)\n\nA batch the Raft leader refuses before writing any of it (lease lapsed,\nor no longer leading the term) was answered only at its delivery turn,\nbehind every earlier batch. If an earlier batch was acknowledged on the\nlease and never settled, the publisher waited out the answer timeout and\nwas told quorum_timeout (\"durable here\"), outcome unknown, for a batch\nthat was never written.\n\nThe engine now marks such a failure ProposalFailed::refused, and\nProposedPublish answers it through a channel as soon as the engine\nrefuses. The batch still takes its turn on a task, pushes its gap and\nsettles in hand-over order, so delivery order and the stall bound are\nunchanged. A failure with no record known written but not known refused\nstill waits for its turn.\n\nQuorumError::TimedOut no longer claims the batch is durable here.\n\nSpec-Unaffected: only when the publisher hears a not-appended refusal moves; log order, offsets and delivery order are unchanged\n\n* perf(raft): arm no per-publish timer for a QUIC publish (#3225)\n\nWIP: tests and docs to follow.\n\nSpec-Unaffected: only which timer bounds the publisher's wait moves; log order, offsets, commit and delivery are unchanged\n\n* test(raft): count per-publish timers and bound every path's answer (#3225)\n\nA QUIC publish acked to a client on Raft armed two timers (the answer\ndeadline and the settle loop's commit wait); it now arms none. The\nquorum wait's deadline is answered by the control stream's ack sweep with\nthe same quorum_timeout error. Docs and changelog follow.\n\nSpec-Unaffected: only which timer bounds the publisher's wait moves; log order, offsets, commit and delivery are unchanged\n\n* perf(raft): look a publish's shard group up once (#3233)\n\nA publish on a Raft shard looked its group up in the registry at every\nstep: the lane's engine check, the service's, the skip claim, the\nproposal, the lease answer and the commit wait. Each is a read lock and a\nhash of the three-string shard key. The publish now finds the group once\nand carries it, and the proposer closure no longer clones the shard key.\n\nA group held past a close or a re-form refuses as a lookup finding no\ngroup would: the registry marks it released under its own lock before\nanyone can open the shard again, and every step checks that mark.\n\nSpec-Unaffected: who holds the group handle changes; no ordering, ack or\ntiming the model checks moves.\n\n* perf(raft): copy no shard key or publisher only to pass them on (#3233)\n\nThe QUIC lane cloned the shard key, three strings, to log the answer of\na job it moves into the answer task anyway; the task now reads the key\nfrom the job. A batch's publisher was cloned into every record and then\ndropped; the last record now takes it, so a batch of one copies nothing.\n\nThe payload and attribution copies stay: one is what the broker keeps\nfor delivery, the other goes to the group thread for the log.\n\nSpec-Unaffected: no ordering, ack or timing changes.\n\n* perf(raft): answer a batch of one record without a shared tally (#3233)\n\nEach batch's records were counted in an Arc<Mutex<Tally>> holding a Vec\nof answers, so a lone publish paid two allocations and a lock to learn\nthe one answer it had. A batch of one is now answered by its record's\nresponder directly, with the same answer a count of one gives. Batches\nof several still share a tally.\n\nSpec-Unaffected: the answer and when it is sent are unchanged.\n\n* docs(raft): a publish looks its shard group up once (#3233)\n\nSpec-Unaffected: docs and changelog only.\n\n* refactor(raft): drop await_commit_unbounded, the held-group wait replaced its last caller (#3233)",
+          "timestamp": "2026-11-26T03:44:33-08:00",
+          "tree_id": "c04996a868690ff105f5e73958b4252ece337955",
+          "url": "https://github.com/GetFelix/felix/commit/df2ebc58cf6d785ac3f2767171cbd23e9da0d536"
+        },
+        "date": 1795693897214,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 71,
+            "range": "0.55",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 71.00\nmean: 70.60\nstdev: 0.55\ncv: 0.78%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1018-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 125,
+            "range": "2.59",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 125.00\nmean: 124.20\nstdev: 2.59\ncv: 2.08%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1018-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 154,
+            "range": "6.35",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 154.00\nmean: 155.40\nstdev: 6.35\ncv: 4.09%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1018-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 86,
+            "range": "0.55",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 86.00\nmean: 86.40\nstdev: 0.55\ncv: 0.63%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1018-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 184,
+            "range": "15.74",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 184.00\nmean: 192.80\nstdev: 15.74\ncv: 8.16%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1018-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 634,
+            "range": "1026.94",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 634.00\nmean: 1067.40\nstdev: 1026.94\ncv: 96.21%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1018-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
