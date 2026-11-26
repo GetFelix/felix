@@ -31,6 +31,17 @@
 //! - `b1` is paced at a fixed rate for a fixed time, so its per-second work is
 //!   a constant that is part of the baseline. A rep that could not hold the
 //!   pace is a failed measurement, not a regression.
+//!
+//! Each fresh broker gets an unmeasured, unpaced warm-up of a fixed number of
+//! messages before counting starts, the same in every rep and every run. It
+//! takes start-up work (connections, first allocations, the first appends to
+//! each shard) out of the count. It does not fill the broker's caches, and
+//! nothing short of hours under callgrind would: the Raft tail cache keeps 4
+//! MiB per log and the replay ring 1024 records per shard, while a whole `b1`
+//! rep writes about 200 records per shard on aarch64 (700 on x86_64) and a
+//! `b64` rep about 8,300 records, some 2.5 MiB, per shard. So every rep counts
+//! caches still growing toward their caps, except `b64`'s replay ring, which
+//! fills during its warm-up. The baseline includes that growth.
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
