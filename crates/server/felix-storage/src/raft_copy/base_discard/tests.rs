@@ -25,6 +25,7 @@ async fn adopted() -> tempfile::TempDir {
     .await
     .expect("store");
     raft.disk_log().close().await.expect("close");
+    crate::raft_log::adopted::store(dir.path()).expect("mark");
     dir
 }
 
@@ -59,6 +60,7 @@ async fn a_requested_discard_empties_the_copy_at_its_next_open() {
     );
     assert!(super::super::start::adopt_pending(dir.path()).is_ok());
     assert_eq!(segment_bytes(dir.path()), 0);
+    assert!(!crate::raft_log::adopted::held(dir.path()).expect("mark"));
     assert!(!dir.path().join(DISCARD).exists());
     assert!(
         !discard_pending(dir.path()).expect("again"),

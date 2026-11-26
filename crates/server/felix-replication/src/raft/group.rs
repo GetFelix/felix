@@ -1903,9 +1903,12 @@ impl Group {
                 .ok()?
                 .ok()??;
         let last = base.base_last?;
-        let mut reader = self.log.reader();
-        let entries = reader
-            .limited_get_log_entries(last.index, last.index.saturating_add(2))
+        // Below what openraft is shown: an adopted base is hidden from it
+        // until this install.
+        let entries = self
+            .log
+            .reader()
+            .base_page(last.index, last.index.saturating_add(2))
             .await
             .ok()?;
         let [entry] = entries.as_slice() else {
@@ -1913,7 +1916,7 @@ impl Group {
         };
         (entry.log_id.index == last.index && entry.log_id.leader_id.term == last.term).then(|| {
             HeldBase {
-                first: (self.log.first_index_reader())(),
+                first: self.log.disk_log().base_offset(),
                 last: last.index,
                 first_index: base.first_index,
             }

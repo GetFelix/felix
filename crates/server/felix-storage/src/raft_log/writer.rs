@@ -228,6 +228,14 @@ where
             return Ok(());
         }
         let first = earlier.first().map_or(batch.first, |batch| batch.first);
+        // openraft is shown no entry until the gap snapshot installs, and
+        // the install's purge runs before any later append.
+        if shared.bounds.lock().shown_from.is_some() {
+            return Err(invalid(format!(
+                "{}: an append at index {first} before a snapshot installed over the adopted base",
+                log.label()
+            )));
+        }
 
         let tail = match shared.hides() {
             Some(snapshots) => {
@@ -511,6 +519,17 @@ where
             index,
             generation: generation_of(term)?,
         };
+        if shared
+            .bounds
+            .lock()
+            .shown_from
+            .is_some_and(|end| index.saturating_add(1) < end)
+        {
+            return Err(invalid(format!(
+                "{}: asked to purge through index {index}, inside the adopted base",
+                log.label()
+            )));
+        }
         if let Some(snapshots) = shared.hides() {
             return shared.purge_hiding(snapshots, purged).await;
         }

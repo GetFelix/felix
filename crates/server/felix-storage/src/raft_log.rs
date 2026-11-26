@@ -32,6 +32,7 @@
 //!
 //! openraft types stay inside this module and the engine that drives it.
 
+pub(crate) mod adopted;
 mod codec;
 mod flush_queue;
 pub(crate) mod held;
@@ -351,6 +352,13 @@ where
             )));
         }
         let purged = purged::load(log.dir())?;
+        // The purged id the install wrote ends an adopted base's hiding;
+        // a crash before the mark went leaves it behind.
+        let adopted = adopted::held(log.dir())?;
+        if adopted && purged.is_some() {
+            adopted::remove(log.dir())?;
+        }
+        let shown_from = (adopted && purged.is_none()).then(|| log.tail_now());
         let mut reserved = reserved::load(log.dir())?;
         // Raft counts every entry it finds at start as flushed, so the
         // reservation covers them before the log is handed over, in every
@@ -383,6 +391,7 @@ where
                     bounds: parking_lot::Mutex::new(Bounds {
                         on_disk: purged,
                         hidden: None,
+                        shown_from,
                     }),
                     covering: std::sync::OnceLock::new(),
                     flushes: FlushQueue::default(),
@@ -682,13 +691,16 @@ impl<K> Shared<K> {
 
     /// The index of the first entry the log holds or will hold: one past the
     /// purged id, or where the oldest segment starts when nothing was
-    /// purged. Records below it are never read as entries.
+    /// purged, and never below an adopted base's end. Records below it are
+    /// never read as entries.
     fn first_index(&self) -> Offset {
         let base = self.log.base_offset();
-        match self.bounds.lock().purged() {
+        let bounds = self.bounds.lock();
+        let first = match bounds.purged() {
             Some(purged) => base.max(purged.index + 1),
             None => base,
-        }
+        };
+        first.max(bounds.shown_from.unwrap_or(0))
     }
 
     fn purged_id<C>(&self) -> io::Result<Option<LogIdOf<C>>>

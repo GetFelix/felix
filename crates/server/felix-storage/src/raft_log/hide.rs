@@ -46,6 +46,10 @@ pub(super) struct Bounds {
     pub(super) on_disk: Option<Purged>,
     /// Always past `on_disk`.
     pub(super) hidden: Option<Purged>,
+    /// The end of an adopted base no snapshot has installed over
+    /// ([`super::adopted`]): no entry below it is shown. Only while nothing
+    /// is purged.
+    pub(super) shown_from: Option<Offset>,
 }
 
 impl Bounds {
@@ -166,10 +170,18 @@ impl<K> Shared<K> {
             )));
         }
         let dir = log.dir().to_path_buf();
+        let adopted = self.bounds.lock().shown_from.is_some();
         // Refused once closed: the directory may already be another log's.
         let writer = log.clone();
         felix_common::blocking::spawn(move || {
-            writer.write_while_open(|| purged::store(&dir, &purged))
+            writer.write_while_open(|| {
+                purged::store(&dir, &purged)?;
+                // After the id: the base is never shown without it.
+                if adopted {
+                    super::adopted::remove(&dir)?;
+                }
+                Ok(())
+            })
         })
         .await
         .map_err(io::Error::other)?
@@ -177,6 +189,7 @@ impl<K> Shared<K> {
         {
             let mut bounds = self.bounds.lock();
             bounds.on_disk = Some(purged);
+            bounds.shown_from = None;
             if bounds
                 .hidden
                 .is_some_and(|hidden| hidden.index <= purged.index)

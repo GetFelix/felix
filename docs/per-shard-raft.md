@@ -1634,10 +1634,19 @@ refuses it and gets the records first:
    opens it again. The open renames the staged segments into the empty
    log under a marker, so a crash leaves the copy blank or rolls forward.
    A copy that took a snapshot or entries in the meantime caught up
-   another way, and its staged log is discarded instead.
+   another way, and its staged log is discarded instead. The adopted log
+   is marked `raft-base-adopted`, and while that mark is there Raft is
+   shown an empty log: no entry, no last log id, no purged id, as on a
+   blank learner. Raft cannot append to, truncate or purge into the base,
+   and the learner reports nothing from it in an election. The mark is on
+   disk, so a restart before the install keeps the base hidden.
 4. **The gap snapshot installs over the base.** It now skips only the
    gap, so the learner takes it, acknowledges it, and the leader appends
-   the epoch from the first index and promotes the learner.
+   the epoch from the first index and promotes the learner. The install's
+   purge through the gap's end writes the purged id with the base kept
+   below it, then drops the mark: from there the copy looks like a
+   re-formed voter. A base pulled from a floor above 0 works the same
+   way, and the learner keeps the floor the snapshot carries.
 
 Before it holds the base, a learner installs no gap snapshot, is not
 promoted, does not vote, serves no reads and counts toward no commit.
@@ -1660,11 +1669,6 @@ does not reset it. After that the learner keeps its base, logs once at
 `warn` that it gave up copying the base for this epoch, and the refusal
 warning repeats until an operator looks.
 
-Not yet working: a stream trimmed before its re-form. The learner pulls
-the base from the floor, but a log that starts above index 0 with no
-purged id below it does not open, so the learner stays a learner. It
-loses nothing and serves nothing; the shard stays under-replicated.
-
 A head trim inside the base does not free a re-formed voter's disk. Its
 purged id sits at the gap's end, so a purge at or below it removes
 nothing, and the base's segments stay until the floor passes the gap and
@@ -1674,6 +1678,7 @@ new learner could then never install it.
 
 > `services/felix-broker-service/src/shards/raft/tests/reform.rs`,
 > `a_re_formed_stream_learner_pulls_its_base_and_joins`,
+> `a_learner_of_a_stream_trimmed_before_its_re_form_joins`,
 > `a_learner_without_its_base_never_joins`,
 > `a_learner_abandons_a_voter_serving_another_history` and
 > `a_learner_caught_up_by_a_snapshot_mid_pull_drops_the_pull`

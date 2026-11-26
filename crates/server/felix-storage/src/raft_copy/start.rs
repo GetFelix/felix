@@ -676,6 +676,7 @@ pub(super) fn empty_log(dir: &Path) -> io::Result<()> {
             // Derived from the records, so it goes with them.
             || name == crate::disk_log::producers_file_name()
             || name.starts_with(crate::raft_log::purged::FILE_NAME)
+            || name.starts_with(crate::raft_log::adopted::FILE_NAME)
             || name.starts_with(crate::raft_log::snapshot::FILE_NAME);
         if log_file {
             crate::fs::remove_file(&path)?;
@@ -778,6 +779,8 @@ pub fn adopt_staged(
         crate::io::sync_dir(dir)?;
         step()?;
     }
+    // Before any segment is in, so openraft is never shown the base.
+    crate::raft_log::adopted::store(dir)?;
     if crate::fs::try_exists(&staging)? {
         for entry in crate::fs::read_dir(&staging)? {
             let name = entry?.file_name();
@@ -828,7 +831,8 @@ fn holds_nothing(dir: &Path) -> io::Result<bool> {
 ///
 /// An adopted copy's saved commit is 0, so it applies nothing, head trims
 /// included, until the gap snapshot installs; that install raises its
-/// floor to the one the snapshot carries in one step.
+/// floor to the one the snapshot carries in one step. Until then its log
+/// shows openraft no entry ([`crate::raft_log::adopted`]).
 pub(crate) fn adopt_pending(dir: &Path) -> io::Result<bool> {
     // A base asked to be dropped goes before anything staged is looked at,
     // so the copy is blank for the next pull.

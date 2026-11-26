@@ -84,6 +84,7 @@ a segment, should be rejected on its first four bytes rather than misparsed.
     replica-set                              ← the replicas this one counts, and the set it is leaving
     engine                                   ← only in a Raft shard's directory: which engine writes it
     raft-purged                              ← a Raft log's last purged id
+    raft-base-adopted                        ← empty; a pulled re-form base Raft is not shown until its gap snapshot installs
     raft-reserved                            ← a Raft copy's reserved index, once it took one
     raft-reserved-carried                    ← empty; a rotation carried raft-reserved in
     raft-epoch                               ← a Raft copy's group epoch, once a re-form started one

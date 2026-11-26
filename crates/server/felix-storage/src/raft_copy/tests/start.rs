@@ -1045,6 +1045,12 @@ async fn an_open_adopts_a_staged_base_or_rolls_its_adoption_forward() {
         opened.log.close().await.expect("close");
         assert!(!dir.join(ADOPTING).exists(), "{case}");
         assert!(!dir.join(STAGING_DIR).exists(), "{case}");
+        // Hidden from openraft until the gap snapshot installs.
+        assert_eq!(
+            crate::raft_log::adopted::held(&dir).expect("mark"),
+            held > 0,
+            "{case}"
+        );
     }
 }
 

@@ -504,7 +504,6 @@ async fn a_re_formed_stream_learner_pulls_its_base_and_joins() {
 /// serves what the leader serves, and takes a later trim as the leader
 /// does.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[ignore = "a base adopted from a floor above 0 does not open: openraft reads index 0 (#3005)"]
 async fn a_learner_of_a_stream_trimmed_before_its_re_form_joins() {
     let orders = key("orders", 0);
     let re = re_formed_trimmed(&orders, true).await;
