@@ -18,6 +18,7 @@ use tempfile::{TempDir, tempdir};
 
 use super::codec::{ShardCodec, StoredMembership};
 use super::network::Request;
+use super::reach::CEILING;
 use super::types::{Command, Membership, ShardTypes};
 use super::*;
 use crate::{ShardKey, ShardKind};
@@ -3393,13 +3394,14 @@ async fn an_idle_group_catches_a_broker_up_within_about_a_heartbeat_of_it_coming
     cluster.stop().await;
 }
 
-/// A broker back from a restart opens its groups in two waves. Its first
-/// answers end the early wave's backoff, but the late wave's members are
-/// not open yet and refuse, so each is retried on its own member's first
-/// answer. Each opens just after its fourth refused append, when
-/// openraft's delays alone would make it wait a second more (#2543).
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_group_that_opens_late_after_a_restart_commits_within_about_a_heartbeat() {
+/// How long a group's first write takes to commit after its late members
+/// open. A broker back from a restart opens its groups in two waves. Its
+/// first answers end the early wave's backoff, but the late wave's members
+/// are not open yet and refuse, so each is retried on its own member's first
+/// answer. Each opens just after its fourth refused append, when openraft's
+/// delays alone would make it wait a second more (#2543). `wake` off leaves
+/// the retry to those delays.
+async fn late_open_to_first_commit(wake: bool) -> Duration {
     let patient = RuntimeConfig {
         election_min: Duration::from_secs(10),
         election_max: Duration::from_secs(20),
@@ -3413,6 +3415,11 @@ async fn a_group_that_opens_late_after_a_restart_commits_within_about_a_heartbea
     }
     let leader = cluster.elected(0).await;
     assert_eq!(leader.broker, cluster.elected(1).await.broker);
+    cluster
+        .runtime(&leader.broker)
+        .reach()
+        .no_wake
+        .store(!wake, std::sync::atomic::Ordering::Relaxed);
 
     for broker in BROKERS.iter().filter(|broker| **broker != &*leader.broker) {
         cluster.net.heal_after.lock().insert((*broker).into(), 4);
@@ -3455,17 +3462,34 @@ async fn a_group_that_opens_late_after_a_restart_commits_within_about_a_heartbea
     }
     let opened = cluster.net.opened.lock().expect("a late member opened");
     let took = opened.elapsed();
-    eprintln!("late open to first commit: {took:?}");
     assert_eq!(
         leader,
         cluster.elected(1).await,
         "this measured an election"
     );
-    assert!(
-        took < Duration::from_millis(900),
-        "the late wave's first commit took {took:?}"
-    );
     cluster.stop().await;
+    took
+}
+
+/// The late wave commits as its members open, not when openraft's backoff
+/// next fires. The backoff is a timer of about `CEILING`, so the same run
+/// without the wake is the yardstick: a busy runner stretches both runs, and
+/// an absolute bound under `CEILING` cannot tell a slow runner from a
+/// missing wake.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_group_that_opens_late_after_a_restart_commits_within_about_a_heartbeat() {
+    let without = late_open_to_first_commit(false).await;
+    let with = late_open_to_first_commit(true).await;
+    eprintln!("late open to first commit: {with:?} with the wake, {without:?} without it");
+    // A timer never fires early, so the control did wait out the backoff.
+    assert!(
+        without >= CEILING * 9 / 10,
+        "without the wake it took {without:?}, so the comparison measures nothing"
+    );
+    assert!(
+        with + CEILING / 4 < without,
+        "the late wave's first commit took {with:?} with the wake and {without:?} without it"
+    );
 }
 
 /// Calls to a follower that answers every other call after its deadline,
