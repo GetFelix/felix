@@ -2536,7 +2536,11 @@ impl Group {
         let cache = self.cache.as_ref()?;
         self.watch_signal.saw();
         self.signal_watched();
-        let state = cache.read();
+        // Record from the edge, read under the same lock, so a resume at or
+        // past it is a replay even when the mark it just asked for lands
+        // before the handler would read the edge again.
+        let mut state = cache.write();
+        state.watch_ended((self.clock)());
         Some((state.applied() + 1, state.recent_since(from, keep)))
     }
 

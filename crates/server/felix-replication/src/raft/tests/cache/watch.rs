@@ -870,3 +870,40 @@ fn a_snapshot_carries_the_mark() {
     let restored = CacheState::restore(&Bytes::from(old), true).expect("version 1");
     assert_eq!(restored, unmarked);
 }
+
+/// **A resume at the edge of a member that kept nothing is replayed, not
+/// resnapshotted**, though entries land after it: the probe starts recording
+/// at the edge it reads, so the mark the resume asks for, or a put, cannot
+/// move the edge past an offset that missed no change.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_resume_at_the_edge_is_replayed_though_entries_land_after_it() {
+    let (mut cluster, _recorders) = unwatched_cluster().await;
+    let now = wall_clock();
+    let first = write(&cluster, now, put("k", b"one", 1)).await;
+    cluster.committed_everywhere(N, first).await;
+    let (engine, _) = leading(&cluster).await;
+    let edge = engine
+        .cache_replay(&shard(N), first + 1, &|_| true)
+        .expect("a cache group");
+    assert_eq!(edge.tail, first + 1);
+    assert_eq!(
+        replayed_offsets(&edge),
+        Some(vec![]),
+        "resnapshotted at the edge"
+    );
+    let next = write(&cluster, now + 1, put("k", b"two", 2)).await;
+    cluster.committed_everywhere(N, next).await;
+    let again = engine
+        .cache_replay(&shard(N), first + 1, &|_| true)
+        .expect("a cache group");
+    assert_eq!(replayed_offsets(&again), Some(vec![next]));
+    assert!(
+        engine
+            .cache_replay(&shard(N), first, &|_| true)
+            .expect("a cache group")
+            .changes
+            .is_none(),
+        "below where it began"
+    );
+    cluster.stop().await;
+}

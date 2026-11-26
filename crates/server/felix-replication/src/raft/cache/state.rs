@@ -571,8 +571,8 @@ impl CacheState {
         self.recent.as_ref()?.since(from, keep)
     }
 
-    /// A watch of this shard here ended at `now`: record from the live edge
-    /// on, for a window, so its resume can be replayed.
+    /// A watch of this shard here ended, or resumes, at `now`: record from
+    /// the live edge on, for a window, so a resume can be replayed.
     pub(crate) fn watch_ended(&mut self, now: u64) {
         self.watched_until = self.watched_until.max(now.saturating_add(WINDOW_MICROS));
         if self.recent.is_none() {
