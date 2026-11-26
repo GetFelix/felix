@@ -708,6 +708,46 @@ fn an_audit_record_is_refused_below_level_49() {
     assert_eq!(settle_for_level(&record, level), Ok(None));
 }
 
+/// A group of one's self re-form is refused below level 55 for the same
+/// reason: an older member would keep the old epoch where the others start
+/// the next one.
+#[test]
+fn a_self_reform_epoch_start_is_refused_below_level_55() {
+    let record = encode_command(&MetaCommand::StartAloneEpoch {
+        key: crate::model::ShardKey {
+            tenant_id: "t".to_string(),
+            namespace: "n".to_string(),
+            stream: "s".to_string(),
+            shard: 0,
+            kind: crate::model::ShardKind::Stream,
+        },
+        node_id: "a".to_string(),
+        start: crate::model::ReformEpochStart {
+            incarnation: 1,
+            expected_epoch: 0,
+            planned_floor: None,
+            base: crate::model::RaftEpochBase {
+                base_last: None,
+                first_index: 1,
+            },
+            voters: [("a".to_string(), 7)].into(),
+            dead: Default::default(),
+            starts: Default::default(),
+        },
+    });
+    assert_eq!(op_of(&record).as_deref(), Some(REFORM_ALONE_OP));
+    assert!(depends_on_level(&record));
+    let refused = settle_for_level(&record, 54).expect_err("below the level");
+    assert!(
+        matches!(
+            decode_result(&refused),
+            Ok(Err(MetaError::Conflict(message))) if message.contains("self re-form")
+        ),
+        "{refused:?}"
+    );
+    assert_eq!(settle_for_level(&record, 55), Ok(None));
+}
+
 /// A re-form's epoch write is refused below level 51: an older member would
 /// refuse the entry as unknown and keep the old epoch while the others start
 /// the next one, and the brokers would then run two different groups.
