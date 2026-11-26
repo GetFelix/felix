@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795649647723,
+  "lastUpdate": 1795656741539,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -89034,6 +89034,72 @@ window.BENCHMARK_DATA = {
             "range": "90.82",
             "unit": "us",
             "extra": "trials: 5\nmedian: 288.00\nmean: 330.40\nstdev: 90.82\ncv: 27.49%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "5ebd39d0fab846e5e7d9466ee9fa464df61dd1ea",
+          "message": "fix(raft): a shard copy stopped by a storage error is reported, and /ready stays up (#2300) (#3188)\n\n* fix(raft): report a shard copy a storage error stopped, and keep /ready up (#2300)\n\nA Raft copy whose log is poisoned already stops alone: its core stops,\nthe role watcher deposes it, the feed pass closes it and reopens it under\na new copy id. The broker said nothing about it, though: requests got\n\"still opening the shard\" and /ready answered 503 for the whole broker.\n\n- RaftShards records each stop (term and error) until the copy hears a\n  leader again or the shard leaves, and sets\n  felix_broker_raft_shards_stopped_on_storage_error.\n- shard_inspect carries raft.stopped { term, error }, and a raft view\n  with role \"stopped\" while the copy is closed.\n- A request that would be refused as NotReady is refused with\n  Reason::CopyStopped (wire reason not_ready) naming the error.\n- PoisonedLog says whether the log is a Raft log; /ready ignores those.\n  Hybrid logs and failed node records still answer 503.\n\nSpec-Unaffected: reporting and readiness only; no change to what a copy votes, writes or acknowledges.\n\n* fix(raft): keep the storage error out of a stopped copy's refusal (#2300)\n\nThe error from the storage layer can name the broker's data paths and\nsegments, so a client refused for a stopped copy is told only that it\nstopped. The error stays in the broker log and in shard_inspect, which\nneeds node.view:cluster:*.\n\nTests pin that a write for a stopped copy is refused at once and not held\nfor a takeover, that a subscribe gets the same fixed refusal, and that the\nreport clears when the copy reopens and leads, or reopens rotated and\nhears the leader once the group takes it in.\n\nSpec-Unaffected: reporting and refusal text only; no change to Raft or storage behaviour",
+          "timestamp": "2026-11-26T01:15:33Z",
+          "tree_id": "606d8b8bdf0307a20b72d24d87039b47a4c800e5",
+          "url": "https://github.com/GetFelix/felix/commit/5ebd39d0fab846e5e7d9466ee9fa464df61dd1ea"
+        },
+        "date": 1795656719809,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 71,
+            "range": "0.55",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 71.00\nmean: 71.40\nstdev: 0.55\ncv: 0.77%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 125,
+            "range": "2.19",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 125.00\nmean: 124.60\nstdev: 2.19\ncv: 1.76%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 151,
+            "range": "13.46",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 151.00\nmean: 157.20\nstdev: 13.46\ncv: 8.56%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 88,
+            "range": "1.10",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 88.00\nmean: 87.80\nstdev: 1.10\ncv: 1.25%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 200,
+            "range": "24.63",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 200.00\nmean: 199.40\nstdev: 24.63\ncv: 12.35%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 515,
+            "range": "998.05",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 515.00\nmean: 1055.80\nstdev: 998.05\ncv: 94.53%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
