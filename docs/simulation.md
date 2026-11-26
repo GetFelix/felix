@@ -634,9 +634,12 @@ What a seed checks:
   open the engine reports, so none is missed. At the instant of the open, a
   majority must have flushed an entry of that term. After the final read, no term
   may have two openers, the watch must not have seen another member lead an
-  opened term, and the final log must hold an entry of every opened term: a
-  leader writes its blank entry first, so a committed blank leaves its term
-  in the log for good (`felix-sim/src/raft/opens.rs`). This is a safety
+  opened term, and the final log must hold an entry of every term opened
+  before it was read: a leader writes its blank entry first, so a committed
+  blank leaves its term in the log for good (`felix-sim/src/raft/opens.rs`).
+  The members keep running until the run ends, so a placement hand-over can
+  open a later term after the read. That open is held to the other rules but
+  not to a log read before it existed (#3126). This is a safety
   check, not a wait: a committed entry missing from the log a leader serves
   is lost. The finding names the member the log was read from, the term it
   led, and the members whose logs still hold an entry of the missing term. It also gives each member's last term and index and whether it led at read time, so a hand-over between the opens and the read shows. A log that cannot be read to its end is a finding of its own, and that shard's terms are not judged, so a failed read never looks like a missing entry.
@@ -845,6 +848,19 @@ tests that run a whole seed (`every_power_mode_cuts_and_passes` and the
 others in `felix-sim/src/raft/tests.rs`) are built without it in the
 workspace test and coverage jobs, so a failure there names a seed that will
 not replay the run: seed 1 gave 32 different trace hashes in 32 plain runs.
+
+To replay an interleaving like that, `RaftSimConfig::runtime_seed` seeds
+`select!` with a number of its own instead of the run's seed.
+`raft_runtime_seeds` (ignored) runs seed `FELIX_SIM_SEED` with majority
+relaxed cuts once per runtime seed, `FELIX_SIM_RUNTIME_SEEDS` of them from
+`FELIX_SIM_RUNTIME_SEED_START`, and lists the ones that failed. Runtime seeds
+76 and 94 under seed 1 are what showed #3126, pinned in
+`raft_seed_1_opens_after_the_final_read`:
+
+```bash
+RUSTFLAGS="--cfg tokio_unstable" FELIX_SIM_RUNTIME_SEED_START=0 FELIX_SIM_RUNTIME_SEEDS=200 \
+  cargo test -p felix-sim --test raft_seeds -- --ignored --exact raft_runtime_seeds --nocapture
+```
 
 Each run prints a trace hash: one number over the faults, every operation,
 every delivery, the final reads and the findings. Two runs with the same hash
