@@ -88,6 +88,7 @@ pub const IMPLEMENTED: &[FleetFeature] = &[
     RAFT_FOLLOWER_READ,
     RAFT_WRITTEN_COMMIT,
     RAFT_CONDITIONAL_BATCHES,
+    RAFT_ALONE_REFORM,
 ];
 
 /// A leader writes a generation-start record whenever it starts leading a
@@ -212,6 +213,15 @@ pub const RAFT_CONSUMER_GROUPS: FleetFeature = FleetFeature::new("raft_consumer_
 /// kind a build that predates this refuses. So it waits for the whole fleet.
 /// Until it is finalized such a publish is refused. See `docs/per-shard-raft.md` ("Conditional publishes").
 pub const RAFT_CONDITIONAL_BATCHES: FleetFeature = FleetFeature::new("raft_conditional_batches");
+
+/// A broker holding the only copy of a replication factor 1 Raft group
+/// re-forms it itself after a machine crash that rotated its storage id,
+/// asking the control plane to record the next epoch in one checked command
+/// (`StartAloneEpoch`, metadata level 55) that a build before it refuses.
+/// So it waits for the whole fleet. Until it is finalized such a group stays
+/// not ready, as before. See `docs/per-shard-raft.md` ("A standalone broker
+/// re-forms itself").
+pub const RAFT_ALONE_REFORM: FleetFeature = FleetFeature::new("raft_alone_reform");
 
 /// A stream shard on the Raft engine frees the disk below its head trim: a
 /// member writes a stream snapshot at a point below its floor and purges its

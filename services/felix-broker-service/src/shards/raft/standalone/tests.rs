@@ -18,29 +18,34 @@ use crate::shards::routing::{Dispatch, StreamEngine, dispatch};
 pub(crate) fn standalone(
     broker: &Arc<Broker>,
 ) -> (Arc<RaftShards>, Arc<StreamEngine>, CancellationToken) {
+    let (shards, engine) = members(broker, Arc::new(fleet_of_one()));
+    let stop = CancellationToken::new();
+    tokio::spawn(run(Arc::clone(&shards), Arc::clone(broker), stop.clone()));
+    (shards, engine, stop)
+}
+
+/// [`standalone`]'s shards on `fleet`, fed by nobody: the caller hands
+/// them assignments, as a cluster's watch does.
+pub(in crate::shards::raft) fn members(
+    broker: &Arc<Broker>,
+    fleet: Arc<felix_common::fleet::FleetGate>,
+) -> (Arc<RaftShards>, Arc<StreamEngine>) {
     let runtime =
         GroupRuntime::start(LOCAL_MEMBER, Default::default(), Arc::new(NoPeers)).expect("runtime");
-    let shards = RaftShards::new(
-        Arc::clone(broker),
-        runtime,
-        LOCAL_MEMBER.to_string(),
-        Arc::new(fleet_of_one()),
-    );
+    let shards = RaftShards::new(Arc::clone(broker), runtime, LOCAL_MEMBER.to_string(), fleet);
     let engine = Arc::new(StreamEngine::default());
     engine.set_raft(Arc::clone(&shards));
     broker.set_read_bounds(Arc::new(felix_replication::engine::CommittedReads::new(
         Arc::clone(&engine),
     )));
     open_root(broker, &shards);
-    let stop = CancellationToken::new();
-    tokio::spawn(run(Arc::clone(&shards), Arc::clone(broker), stop.clone()));
-    (shards, engine, stop)
+    (shards, engine)
 }
 
 /// Publish `payloads` to `orders` shard 0 the way the publish path does:
 /// routed by `resolve_route` with no ingress router, then proposed to the
 /// group at the term routing answered.
-pub(super) async fn publish(
+pub(in crate::shards::raft) async fn publish(
     broker: &Broker,
     engine: &StreamEngine,
     payloads: &[&'static [u8]],
@@ -89,7 +94,7 @@ pub(super) async fn publish(
     offset.expect("an offset")
 }
 
-pub(super) async fn led(shards: &Arc<RaftShards>) -> u64 {
+pub(in crate::shards::raft) async fn led(shards: &Arc<RaftShards>) -> u64 {
     let orders = key("orders", 0);
     until("the standalone group to be led", || {
         shards.leading(&orders).is_some()
@@ -193,5 +198,5 @@ fn a_fleet_of_one_has_every_raft_feature() {
     assert!(gate.supports(fleet::RAFT_CONDITIONAL_BATCHES));
 }
 
-mod reform;
+pub(in crate::shards::raft) mod reform;
 mod serving;

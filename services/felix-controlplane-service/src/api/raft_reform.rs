@@ -15,6 +15,7 @@ use super::AppState;
 use super::error::{ApiError, api_conflict, api_internal, api_not_found, api_validation_error};
 use crate::auth::bearer::require_cluster_action;
 use crate::auth::rbac::authorize::ACTION_NODE_MANAGE;
+use crate::model::{ReformEpochStart, ShardAssignment};
 use crate::store::StoreError;
 use crate::store::reform::{MAX_BATCH, ReformReply, ReformRequest};
 
@@ -180,6 +181,44 @@ pub(crate) async fn reports(
     }
 }
 
+#[utoipa::path(
+    post,
+    path = "/v1/nodes/{node_id}/reform/alone",
+    tag = "nodes",
+    params(("node_id" = String, Path, description = "Broker node identifier")),
+    request_body = ReformAloneRequest,
+    responses(
+        (status = 200, description = "The shard as written, with its next epoch", body = ShardAssignment),
+        (status = 404, description = "No such shard"),
+        (status = 409, description = "The group is not alone on this broker, or the plan is stale")
+    )
+)]
+/// A broker's request to start the next epoch of a replication factor 1
+/// group it holds the only copy of. Requires `node.manage` on the node, as
+/// the node's own credential holds, or on `cluster:*`: an operator with that
+/// scope can already run a full re-form, and the command still checks the
+/// group is alone on `node_id`. The control plane starts the epoch only if the shard is placed, seeded and
+/// ordered on this broker alone, with no set change or move in flight and
+/// the epoch the plan was made at; any other state answers 409 and changes
+/// nothing. A request already written answers the shard as it is.
+pub(crate) async fn start_alone(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(node_id): Path<String>,
+    Json(request): Json<ReformAloneRequest>,
+) -> Result<Json<ShardAssignment>, ApiError> {
+    super::nodes::require_node_manage(&state, &headers, &node_id).await?;
+    match state
+        .store
+        .start_alone_epoch(&request.key, &node_id, request.start)
+        .await
+    {
+        Ok(assignment) => Ok(Json(assignment)),
+        Err(StoreError::NotFound(_)) => Err(api_not_found("shard assignment not found")),
+        Err(err) => Err(refused(err)),
+    }
+}
+
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct CreateReformPlanRequest {
     pub scope: ReformScope,
@@ -214,6 +253,14 @@ pub struct ReformSurveysResponse {
 #[derive(Debug, Deserialize, ToSchema)]
 pub struct ReformReportsRequest {
     pub reports: Vec<ReformAnswer>,
+}
+
+#[derive(Debug, Deserialize, Serialize, ToSchema)]
+pub struct ReformAloneRequest {
+    pub key: crate::model::ShardKey,
+    /// The plan the broker made with the alone rules: its voters, starts
+    /// and dead set name this broker only.
+    pub start: ReformEpochStart,
 }
 
 #[derive(Debug, Serialize, Deserialize, ToSchema)]

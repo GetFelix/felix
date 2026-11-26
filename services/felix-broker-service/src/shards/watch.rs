@@ -128,6 +128,10 @@ pub struct ShardAssignment {
     /// end. Absent from a control plane that predates it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub raft_seed: Option<RaftVoters>,
+    /// The floor a leader last reported. A group of one's re-form reads it
+    /// for the plan's floor bound.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub raft_floor: Option<RaftFloor>,
     /// Why the control plane named this leader, when a move it tracks did:
     /// `operator` for an operator's move. Absent otherwise, and from a
     /// control plane that predates it, which reads as placement's own.
@@ -135,11 +139,25 @@ pub struct ShardAssignment {
     pub move_reason: Option<String>,
 }
 
-/// The epoch half of the control plane's record of the brokers placed in
-/// a shard's group epoch. The brokers it lists are not read here.
-#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
+/// The control plane's record of the brokers placed in a shard's group
+/// epoch. Only a group of one reads the brokers, to see it is alone.
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Eq)]
 pub struct PlacedEpoch {
     pub epoch: u64,
+    /// Empty from a control plane that does not send them, which no group
+    /// of one reads as alone.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeSet::is_empty")]
+    pub brokers: std::collections::BTreeSet<String>,
+}
+
+/// The floor a leader last reported for a group, as the control plane's
+/// re-form checks it.
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
+pub struct RaftFloor {
+    pub incarnation: u64,
+    pub offset_floor: u64,
+    pub epoch: u64,
+    pub index: u64,
 }
 
 /// The stream incarnation and group epoch of a Raft group the control
@@ -230,7 +248,7 @@ impl ShardAssignment {
     /// recorded at this incarnation: only a re-form adds one, so 0 means
     /// the group never re-formed as far as the record knows (#2882).
     pub fn group_epoch(&self) -> u64 {
-        match self.placed {
+        match &self.placed {
             Some(placed) => placed.epoch,
             None => self
                 .incarnation_bases()
@@ -357,6 +375,7 @@ impl PreviousSet {
             raft_voters: None,
             raft_bases: None,
             raft_seed: None,
+            raft_floor: None,
             move_reason: None,
             placed: None,
         }
