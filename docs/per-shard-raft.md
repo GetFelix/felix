@@ -5182,8 +5182,8 @@ later by no report a Raft shard sends:
 **What placement does with a Raft shard.** On a cluster whose
 `shard_engine` is `raft`, the control plane leaves a durable stream's group
 alone and names the member it wants leading. It changes a placed shard's
-set only by the one-member swaps below, and drops the copy a move from an
-older control plane added:
+set only by the one-member swaps and additions below, and drops the copy a
+move from an older control plane added:
 
 - A balance pass, a drain and an operator move each name another member of
   the set as leader, in one write that changes only `leader`. Nothing is
@@ -5202,6 +5202,29 @@ older control plane added:
   set and every other member is serving, so the group's leader adds the new
   member as a learner and then changes the voters (see "Membership"). A lost
   member goes first. With no such node the set stays and the shard waits.
+- A set with fewer members than the replication factor is topped up
+  (`raft_top_up`). An abandon leaves a set like this, since it places the
+  leader alone, and so does a shard placed while too few brokers were live.
+  Each write adds one live broker from outside the set, under the same
+  checks as a follower replacement and from the same budget. The new member
+  joins as a learner and votes once it has caught up, and the next is added
+  only after that, so the voters the leader reported always hold at least
+  half of the next set. Until the set is full, a `Quorum` write is
+  acknowledged by a majority of the voters it has, not of its factor. With
+  no broker outside the set the shard stays short and shows as
+  under-replicated.
+- On the way from one copy to three the group has two voters and needs
+  both. If the second copy's broker goes down before the third votes, the
+  shard takes no writes until that broker is back or an operator re-forms
+  the group without it ("Re-forming a group"): replacing the down member is
+  a joint change that needs its vote as well. Two voters are never less
+  durable than one, so the top-up still adds one copy at a time.
+- The replication count counts copies the group reports voting. A stream
+  learner a re-form started cannot catch up across the re-form's gap yet
+  (#3005), so a re-formed stream group stays below its factor, shows as
+  under-replicated, and waits each pass for its group to report voters
+  that keep a majority of the next set. Only that shard's leader balance
+  stops; the rest of the pass goes on.
 - A balance pass gives a seat to a live broker outside the set when it
   leads two fewer than the shard's leader and no member does (#3113). A
   broker a drain swapped out of every set, then restarted, is that broker:
