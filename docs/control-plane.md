@@ -182,13 +182,59 @@ Four rules, each of which exists for a reason:
   would report a dead incarnation as live.
 - **A heartbeat never revives a `down` node.** It proves a process is running,
   not that it still owns the identity. A broker that reads `"lifecycle": "down"`
-  must register again before it is eligible for placement.
+  must register again before it is eligible for placement. One that reads
+  `"register_again": true` registers again too, keeping its lease (see
+  "Registering again after a restore" below).
 - **A heartbeat publishes no change.** Heartbeats arrive per node per interval;
   putting each in the changefeed would evict every real membership change from
   the retention window. Only the lifecycle move that expiry causes is published.
 
 Requires `node.manage` over the node being reported; see
 [Authorizing membership writes](#authorizing-membership-writes).
+
+#### Registering again after a restore
+
+A restore of a backup taken before a broker last registered puts back an
+older node record, at incarnation N, while the broker runs as N' above it.
+Its beats are accepted, since they are not older than the record, but what
+it reports is not from the record's process: its placement
+acknowledgements and Raft copy ids are dropped, and placement's gate stays
+shut for it. So the answer tells it to register again.
+
+A broker offers this by sending `"registered_at_millis"` from its
+registration in every heartbeat. The answer carries `"register_again": true`
+when all of these hold, and leaves the field out otherwise:
+
+- the beat's `incarnation` is above the record's;
+- its `registered_at_millis` is the record's, so a process of a node that
+  was deleted and added again since is never asked to take the new record
+  over;
+- the node is `live`. Registering sets a node live, which would undo a
+  drain.
+
+The answer is computed from the record and the beat, so nothing new is
+stored. A broker that sends no `registered_at_millis` gets the answer it
+always did, byte for byte. It also grants nothing: the beat needs
+`node.manage` over the node, which is what registering needs, so a caller
+able to get the answer could already register. A beat below the record is
+refused with 409 before the answer is built, so a late or replayed beat of
+an earlier process is never asked.
+
+The broker waits one heartbeat interval and registers, as a restart would,
+but stays up. It keeps its lease: the answer that asked was a live one and
+renewed it, and a registration never touches it. The registration is held
+to the same checks as any other and takes the record's next incarnation,
+N + 1, which may be below N'. Only acknowledgements the N + 1 process
+reports count, since the gate counts an acknowledgement only from the
+record's incarnation, so nothing reported under N, or before the restore,
+counts for it. Raft copy ids carry the registration and are sent again by
+the broker until a target names them, so they land after it. The root
+sequence and Raft floors carry no node incarnation and are not affected.
+
+Two cases are not asked: a draining broker above its record, until the drain
+is cancelled, and a broker whose node was deleted and added again since the
+backup. Each stays uncounted until it registers for another reason, such as
+a restart.
 
 ### Fleet features
 
