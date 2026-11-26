@@ -19,6 +19,8 @@
 pub(crate) mod group;
 mod upgraded;
 
+pub use upgraded::record_a_served_shard;
+
 use std::sync::Arc;
 use std::time::Duration;
 

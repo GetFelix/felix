@@ -51,9 +51,6 @@ async fn start_with_env(
         proxy_links: true,
         broker_env,
         inherit_output: std::env::var("FELIX_TEST_BROKER_OUTPUT").is_ok(),
-        // The hybrid fleet these were written for has exactly the features
-        // below finalized; a Raft one comes up new.
-        upgraded_fleet: !felix_cluster::suite_runs_on_raft(),
         ..Default::default()
     })
     .await

@@ -1324,7 +1324,7 @@ async fn a_consumer_group_on_a_raft_shard_is_refused_until_the_fleet_finalizes_i
     }
     // A new cluster finalizes the feature itself.
     let cluster = Cluster::start(ClusterConfig {
-        upgraded_fleet: true,
+        upgraded_fleet: Some(true),
         ..raft_cluster()
     })
     .await

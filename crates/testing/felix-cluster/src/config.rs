@@ -91,10 +91,13 @@ pub struct ClusterConfig {
     pub pending_raft_hand_overs: bool,
     /// Start as a fleet upgraded from a release before its features existed,
     /// so the control plane finalizes none of them at the first registration
-    /// and every one is the test's to finalize. Off by default: the cluster
-    /// comes up new, with the new-cluster features finalized (#1774). Only a
-    /// test of what a fleet refuses before a finalize wants it.
-    pub upgraded_fleet: bool,
+    /// and every one is the test's to finalize. `Some(false)` asks for a new
+    /// cluster, with the new-cluster features finalized (#1774).
+    ///
+    /// `None`, the default, decides by engine. A Raft cluster comes up new.
+    /// A hybrid one comes up as it did before that rule, upgraded whenever
+    /// streams or caches are seeded, because its tests predate the rule.
+    pub upgraded_fleet: Option<bool>,
 }
 
 impl Default for ClusterConfig {
@@ -122,7 +125,7 @@ impl Default for ClusterConfig {
             node_expiry: Duration::from_secs(1),
             control_plane_engine: None,
             pending_raft_hand_overs: false,
-            upgraded_fleet: false,
+            upgraded_fleet: None,
         }
     }
 }
@@ -156,6 +159,14 @@ impl ClusterConfig {
     /// The hybrid has no hand-over: placement's owner serves from the start.
     pub(crate) fn awaits_placed_raft_leaders(&self) -> bool {
         self.raft_brokers() && !self.pending_raft_hand_overs
+    }
+
+    /// Whether the start leaves the history of an upgraded fleet in the store
+    /// (see [`ClusterConfig::upgraded_fleet`]).
+    pub(crate) fn starts_upgraded(&self) -> bool {
+        self.upgraded_fleet.unwrap_or_else(|| {
+            !self.raft_brokers() && !(self.streams.is_empty() && self.caches.is_empty())
+        })
     }
 
     fn named_engine(&self) -> Option<&str> {

@@ -517,7 +517,7 @@ async fn seed_metadata(
 
     // Before any broker registers: the first registration is where a new
     // cluster finalizes its features.
-    if config.upgraded_fleet {
+    if config.starts_upgraded() {
         control_plane
             .record_a_served_shard(&config.tenant_id)
             .await

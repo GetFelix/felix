@@ -25,9 +25,6 @@ async fn start(features: &[&str]) -> Cluster {
             "2000".to_string(),
         )],
         inherit_output: std::env::var("FELIX_TEST_BROKER_OUTPUT").is_ok(),
-        // The hybrid fleet these were written for has exactly `features`
-        // finalized; a Raft one comes up new.
-        upgraded_fleet: !felix_cluster::suite_runs_on_raft(),
         ..Default::default()
     })
     .await
