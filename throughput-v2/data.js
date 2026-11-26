@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795693912578,
+  "lastUpdate": 1795694328179,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -71344,6 +71344,58 @@ window.BENCHMARK_DATA = {
             "range": "53037.54",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1246238.20\nmean: 1224914.37\nstdev: 53037.54\ncv: 4.33%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1018-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "79bc1bd720d4b86e6826602d7c5ec3f8c17f6199",
+          "message": "fix(raft): the peer handshake states the Raft layouts a broker reads (#2551) (#3262)\n\n* wip(wire): HelloOk can carry the Raft layouts a peer reads (#2551)\n\nSpec-Unaffected: wire encoding of the peer handshake; no model covers it\n\n* wip(replication): Raft senders check the layouts a peer states (#2551)\n\nSpec-Unaffected: wire encoding of the peer handshake; no model covers it\n\n* wip(replication): Raft senders check the layouts a peer states (#2551)\n\nSpec-Unaffected: wire encoding of the peer handshake; no model covers it\n\n* docs: Raft layouts in the peer handshake, mixed layouts in an upgrade (#2551)\n\nSpec-Unaffected: docs and changelog for the peer handshake; no model covers it\n\n* fix(replication): Raft layout docs say what the handshake does today (#2551)\n\nDocs and changelog describe one layout per build and a refusal before\nsending, not a negotiation. A test holds LAYOUTS to what the encoders\nwrite and expect_layout reads. RaftOffer sits above PeerRequester's docs,\nand the refusal metric says a refused batch counts once.\n\nSpec-Unaffected: wire encoding of the peer handshake; no model covers it",
+          "timestamp": "2026-11-26T03:45:36-08:00",
+          "tree_id": "4a49efae48f813f47cd537651d3eaed320cbeedd",
+          "url": "https://github.com/GetFelix/felix/commit/79bc1bd720d4b86e6826602d7c5ec3f8c17f6199"
+        },
+        "date": 1795694327444,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 358420.86,
+            "range": "7402.28",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 358420.86\nmean: 360048.21\nstdev: 7402.28\ncv: 2.06%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 358420.86,
+            "range": "7402.28",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 358420.86\nmean: 360048.21\nstdev: 7402.28\ncv: 2.06%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 80691.11,
+            "range": "782.36",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 80691.11\nmean: 80837.89\nstdev: 782.36\ncv: 0.97%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 806911.09,
+            "range": "7823.58",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 806911.09\nmean: 808378.90\nstdev: 7823.58\ncv: 0.97%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
