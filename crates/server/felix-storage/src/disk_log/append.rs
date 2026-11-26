@@ -605,16 +605,18 @@ impl LogInner {
         let weak = Arc::downgrade(&self);
         drop(self);
         felix_common::blocking::spawn(move || {
-            let Some(inner) = weak.upgrade() else {
-                return;
-            };
             #[cfg(test)]
             {
-                let hold = inner.hold_next_extension.lock().take();
+                let hold = weak
+                    .upgrade()
+                    .and_then(|inner| inner.hold_next_extension.lock().take());
                 if let Some(release) = hold {
                     let _ = release.recv();
                 }
             }
+            let Some(inner) = weak.upgrade() else {
+                return;
+            };
             let extending = inner.extending.read();
             if inner.segments.read().check_open().is_err() {
                 #[cfg(test)]

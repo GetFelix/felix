@@ -155,6 +155,69 @@ async fn a_stream_log_reopens_at_once_after_a_close_under_load() {
     }
 }
 
+/// A shutdown lets go of the directory as a close does: a broker stopping
+/// calls it, and the next open in this process must not find the directory
+/// held by clones of the old log, which can no longer write.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_stream_log_reopens_after_a_shutdown_with_clones_alive() {
+    let dir = tempdir().expect("tempdir");
+    let open = || DiskLog::open(dir.path(), "t/ns/orders/0", config(FsyncMode::OnCommit));
+    let mut clones = Vec::new();
+    for round in 0..20u64 {
+        let log = open().unwrap_or_else(|err| panic!("round {round}: {err}"));
+        log.append(&records(&["one"])).await.expect("append");
+        clones.push(log.clone());
+        log.shutdown().await.expect("shutdown");
+        drop(log);
+    }
+    for clone in &clones {
+        assert!(
+            matches!(
+                clone.append(&records(&["late"])).await,
+                Err(StorageError::Closed(_))
+            ),
+            "a clone wrote after its log was shut down"
+        );
+    }
+    let log = open().expect("open");
+    assert_eq!(log.tail_offset().await.expect("tail"), 20);
+    log.close().await.expect("close");
+}
+
+/// A task holding the only handle is aborted while a reservation extension
+/// it started is still parked: the extension must not keep the directory,
+/// so the next open finds it free.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_aborted_task_with_an_extension_in_flight_lets_go_of_the_directory() {
+    let dir = tempdir().expect("tempdir");
+    let config = LogConfig {
+        preallocate_segments: true,
+        ..config(FsyncMode::None)
+    };
+    let log = DiskLog::open(dir.path(), "t/ns/orders/0", config.clone()).expect("open");
+    let (release, held) = std::sync::mpsc::channel();
+    *log.inner.hold_next_extension.lock() = Some(held);
+    let (parked_tx, parked) = tokio::sync::oneshot::channel();
+    let task = tokio::spawn(async move {
+        let payload = "x".repeat(64 * 1024);
+        while log.inner.hold_next_extension.lock().is_some() {
+            log.append(&records(&[payload.as_str()]))
+                .await
+                .expect("append");
+        }
+        let _ = parked_tx.send(());
+        std::future::pending::<()>().await;
+        drop(log);
+    });
+    parked.await.expect("an extension parked");
+    task.abort();
+    assert!(task.await.expect_err("aborted").is_cancelled());
+    let reopened = DiskLog::open(dir.path(), "t/ns/orders/0", config);
+    drop(release);
+    let reopened = reopened.expect("reopen after the task was aborted");
+    reopened.close().await.expect("close");
+}
+
 const CHILD_DIR: &str = "FELIX_TEST_DIR_LOCK_CHILD";
 
 /// Run by [`a_holder_that_dies_without_closing_does_not_block_the_next_open`]

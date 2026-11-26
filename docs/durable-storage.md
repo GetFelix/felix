@@ -1935,8 +1935,15 @@ felix-log-tool bench  --dir /tmp/bench --records 20000 --concurrency 8 --fsync o
 Every log directory has a lock: an exclusive `flock` on the directory
 itself. Whatever writes inside a log directory holds it while it writes:
 
-- an open log, from its open until it is closed. Stream, cache, counter,
-  dead-letter and Raft logs all take it, before recovery looks at the tail.
+- an open log, from its open until it is closed or shut down. Stream,
+  cache, counter, dead-letter and Raft logs all take it, before recovery
+  looks at the tail. A close or a shutdown lets go of it before it
+  returns, whatever clones of the log are still alive: those clones can no
+  longer write. A log that is only dropped lets go when its last clone goes
+  and any file work it started (a roll, a flush, a read) has finished; a
+  reservation extension still running does not hold it. A broker stopping,
+  a shard closing and a store shutting down all close their logs, so an
+  open in the same process right after never finds the directory busy.
 - a Raft copy's open, from the first look at its copy file through any
   rotation into the open log.
 - a re-form's stop, its start, and a group of one's re-form, from the

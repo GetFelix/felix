@@ -216,11 +216,13 @@ impl DiskLog {
     /// [`FsyncMode::Periodic`], which needs a background timer; the other
     /// policies have no such requirement.
     ///
-    /// The log locks `dir` until it is closed or its last clone is dropped.
-    /// Another open of the directory, from this process or another, fails
-    /// with [`std::io::ErrorKind::ResourceBusy`] meanwhile. The lock goes with the process. To reopen in the same
-    /// process, close the log first: a dropped clone can live on for a moment
-    /// in a background task.
+    /// The log locks `dir` until [`Self::close`] or [`Self::shutdown`]
+    /// returns, or its last clone is dropped. Another open of the directory,
+    /// from this process or another, fails with
+    /// [`std::io::ErrorKind::ResourceBusy`] meanwhile. The lock goes with the
+    /// process. To reopen in the same process, close or shut down the log
+    /// first: after a drop, a roll or flush already running holds it until it
+    /// finishes.
     pub fn open(
         dir: impl Into<PathBuf>,
         label: impl Into<String>,
@@ -1277,8 +1279,8 @@ impl DiskLog {
     /// further change to the files, from this handle or any clone of it.
     ///
     /// For a shard this broker no longer holds: once this returns, another
-    /// `DiskLog` may be opened over the same directory, and a Raft log has
-    /// let go of its lock on it. Reads, appends and
+    /// `DiskLog` may be opened over the same directory: the lock on it is
+    /// let go, whatever clones are still alive. Reads, appends and
     /// flushes through an old handle fail with [`StorageError::Closed`]. The
     /// sealed segments' files are released at once; the active segment's
     /// when the last handle is dropped.
@@ -1380,6 +1382,17 @@ impl DiskLog {
     /// clone of this log is closed.
     pub async fn shutdown(&self) -> Result<()> {
         self.close().await
+    }
+
+    /// Everything a shutdown flushes, leaving the log open: for a test that
+    /// copies a live log's files as a clean stop would leave them.
+    #[cfg(test)]
+    pub(crate) async fn flush_as_if_stopping(&self) -> Result<()> {
+        self.stop_background().await?;
+        self.persist_replica_state().await?;
+        self.sync().await?;
+        self.inner.mark.sync()?;
+        Ok(())
     }
 
     /// Stop the timers and wait out a rollover in flight.

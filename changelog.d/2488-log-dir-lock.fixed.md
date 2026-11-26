@@ -11,8 +11,10 @@
   each log as it opens, not at startup, and the data directory's own files
   (the run record, the storage id and the marks) are not locked, so a second
   broker may write its run record and rotate the storage id under the first
-  before a log refuses it (#3250). The lock goes with the
-  process, so a crash leaves nothing to clean up (#2488).
+  before a log refuses it (#3250). A close or a shutdown of a log lets go
+  of the lock before it returns, so a broker stopped in the same process
+  can be started again at once. The lock goes with the process, so a crash
+  leaves nothing to clean up (#2488).
 - Behaviour change: a broker whose data directory is on a filesystem that
   cannot lock a directory, such as NFS on Linux, no longer starts. It checks
   the lock at startup, before it is ready, and the error names the directory

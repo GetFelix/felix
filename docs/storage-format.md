@@ -765,8 +765,9 @@ in eight ways:
   `restore_to` saves the generation of the entry it lowers the offset to.
 - **One open at a time.** Every open of a log, stream or Raft, takes an
   exclusive, non-blocking `flock` on the log's directory before recovery
-  looks at it, and holds it until the log is closed or its last clone is
-  dropped. A second open fails with "resource busy" and names the
+  looks at it, and holds it until the log is closed or shut down, whatever
+  clones of it are still alive, or until its last clone is dropped and the
+  file work it started (a roll, a flush, a read) has finished. A second open fails with "resource busy" and names the
   directory, whether it comes from the same process, another process,
   `felix-log-tool`, or through a symlink. The holder is not named: `flock`
   does not record one. A second broker on the same data directory is
