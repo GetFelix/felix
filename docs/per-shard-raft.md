@@ -702,9 +702,11 @@ cannot be read, a delete failed) is not retried until the next open. Deleting
 a stream deletes the kept copies of that stream's incarnation too, even when
 the live directory is gone.
 
-A Raft log saves its committed index behind the commit, at most once a
-second, because a save is a file create, two fsyncs and a rename that the
-log's own fsyncs would queue behind. The last commit before a group goes idle
+A Raft log saves its committed index behind the commit, in every fsync mode,
+at most once a second, because a save is a file create, two fsyncs and a
+rename that the log's own fsyncs would queue behind, and openraft waits for
+`save_committed` to return before it applies. A clean close writes the last
+index saved. The last commit before a group goes idle
 is saved within that second, so a kept directory waits at most that long on
 the save.
 
