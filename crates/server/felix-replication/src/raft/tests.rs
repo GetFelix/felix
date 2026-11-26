@@ -260,7 +260,9 @@ fn sender(request: &Request) -> Option<&str> {
         Request::Vote(rpc) | Request::PreVote(rpc) => &rpc.vote,
         Request::Snapshot { vote, .. } => vote,
         Request::TransferLeader(_) => return None,
-        Request::Written { from, .. } => return Some(&from.broker),
+        Request::Written { from, .. } | Request::BasePull { from, .. } => {
+            return Some(&from.broker);
+        }
         Request::ReadIndex | Request::Watched => return None,
     };
     Some(&vote.leader_id().node_id().broker)

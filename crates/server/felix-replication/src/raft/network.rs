@@ -19,7 +19,7 @@ use openraft::raft::{
     AppendEntriesRequest, AppendError, AppendResult, SnapshotResponse, TransferLeaderRequest,
     TransferLeaderResponse, VoteRequest, VoteResponse,
 };
-use openraft::type_config::alias::{SnapshotMetaOf, SnapshotOf, VoteOf};
+use openraft::type_config::alias::{EntryOf, SnapshotMetaOf, SnapshotOf, VoteOf};
 use openraft::{Config, EntryPayload};
 use openraft_multi::{GroupNetworkAdapter, GroupRouter};
 
@@ -106,6 +106,15 @@ pub(crate) enum Request {
     /// A member serving a cache watch asking its leader to append a
     /// [`super::cache::CacheCommand::Watched`], so every member records.
     Watched,
+    /// A learner of a re-formed stream, `from`, asking a voter for the base
+    /// entries from `start`, at most `max_bytes` and `max_count` of them.
+    /// Sent only to a peer that offered `RAFT_BASE_PULL`.
+    BasePull {
+        from: MemberId,
+        start: u64,
+        max_bytes: u32,
+        max_count: u32,
+    },
 }
 
 impl RaftRequest {
@@ -137,6 +146,7 @@ impl fmt::Debug for RaftRequest {
             Request::Written { .. } => "written",
             Request::ReadIndex => "read-index",
             Request::Watched => "watched",
+            Request::BasePull { .. } => "base-pull",
         };
         write!(f, "{kind} for {} of {}", self.to, self.group)
     }
@@ -160,6 +170,12 @@ pub(crate) enum Reply {
     },
     /// A watched ask was taken. Whether a mark follows shows in the log.
     Watched,
+    /// Base entries from the asked start, in order, and the voter's first
+    /// index. Empty when that index is above the start.
+    Base {
+        floor: u64,
+        entries: Vec<EntryOf<ShardTypes>>,
+    },
 }
 
 /// Why a message got no answer. Raft treats each the same way: the member
@@ -268,7 +284,7 @@ impl RaftTransport for AgreeingPeers {
                 return Err(Refused::Unreachable("no peer to lead".into()));
             }
             Request::Written { .. } => Reply::Written,
-            Request::ReadIndex | Request::Watched => {
+            Request::ReadIndex | Request::Watched | Request::BasePull { .. } => {
                 return Err(Refused::Unreachable("no peer leads".into()));
             }
         }))
@@ -479,7 +495,8 @@ pub(crate) fn named(reply: &Reply, pre_vote: bool) -> Option<u64> {
         | Reply::TransferLeader(_)
         | Reply::Written
         | Reply::ReadIndex { .. }
-        | Reply::Watched => None,
+        | Reply::Watched
+        | Reply::Base { .. } => None,
     }
 }
 

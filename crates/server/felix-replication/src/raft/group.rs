@@ -1668,7 +1668,8 @@ impl Group {
             Request::Snapshot { .. }
             | Request::Written { .. }
             | Request::ReadIndex
-            | Request::Watched => false,
+            | Request::Watched
+            | Request::BasePull { .. } => false,
         };
         if held && asks {
             // Dropped, not refused: the candidate asks again at its next
@@ -1812,7 +1813,47 @@ impl Group {
                 self.mark_watched();
                 Ok(Reply::Watched)
             }
+            Request::BasePull {
+                from,
+                start,
+                max_bytes,
+                max_count,
+            } => self.serve_base(&from, start, max_bytes, max_count).await,
         }
+    }
+
+    /// A chunk of this copy's re-form base for the learner `from`. Read
+    /// from the log alone, so it waits on no apply, publish or flush.
+    async fn serve_base(
+        &self,
+        from: &MemberId,
+        start: u64,
+        max_bytes: u32,
+        max_count: u32,
+    ) -> Result<Reply, Refused> {
+        if self.id.shard.kind != ShardKind::Stream {
+            return Err(Refused::Unreachable(
+                "only a stream group serves a base".into(),
+            ));
+        }
+        let dir = self.log.disk_log().dir().to_path_buf();
+        let base =
+            felix_common::blocking::spawn(move || felix_storage::raft_copy::latest_base(&dir))
+                .await
+                .map_err(|err| Refused::Unreachable(err.to_string()))?
+                .map_err(|err| Refused::Unreachable(err.to_string()))?;
+        let first = (self.log.first_index_reader())();
+        let mut reader = self.log.reader();
+        let chunk = super::base_pull::serve(&mut reader, first, base, start, max_bytes, max_count)
+            .await
+            .map_err(|why| {
+                tracing::warn!(group = %self.id, member = %self.member, learner = %from, start, "refused a base pull: {why}");
+                Refused::Unreachable(why)
+            })?;
+        Ok(Reply::Base {
+            floor: chunk.floor,
+            entries: chunk.entries,
+        })
     }
 
     /// Queue `batch` behind every batch queued before it and answer where

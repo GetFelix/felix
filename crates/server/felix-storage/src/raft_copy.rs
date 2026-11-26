@@ -122,6 +122,12 @@ pub fn group_epoch(dir: &Path) -> std::io::Result<Option<u64>> {
     Ok(epoch_file::load(dir)?.map(|file| file.epoch()))
 }
 
+/// The base the copy in `dir` started its latest epoch from, `None` at
+/// epoch 0. A voter serves a learner's pull of the base from it.
+pub fn latest_base(dir: &Path) -> std::io::Result<Option<EpochBase>> {
+    Ok(epoch_file::load(dir)?.and_then(|file| file.bases.last().copied()))
+}
+
 /// A saved vote as the marks keep it: the generation (term plus one), the
 /// leader it names and whether it is committed. Generation 0 with no leader
 /// is no vote.
