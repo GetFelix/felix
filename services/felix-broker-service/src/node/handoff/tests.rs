@@ -40,6 +40,7 @@ fn assignment(shard: u32, leader: &str, generation: u64) -> ShardAssignment {
         raft_voters: None,
         raft_bases: None,
         raft_seed: None,
+        raft_floor: None,
         move_reason: None,
         placed: None,
     }

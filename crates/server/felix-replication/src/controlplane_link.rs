@@ -143,6 +143,17 @@ pub trait ControlPlaneLink: Send + Sync + 'static {
         body: &serde_json::Value,
     ) -> impl Future<Output = Result<LinkResponse>> + Send;
 
+    /// `POST /v1/nodes/{node_id}/reform/alone`: the broker holding the only
+    /// copy of a group of one asks for its next epoch. The body is
+    /// `{"key": <shard key>, "start": <plan>}`; the answer is the shard as
+    /// written, or 409 when the group is not alone or the plan is stale.
+    fn reform_alone(
+        &self,
+        bearer: Option<&str>,
+        node_id: &str,
+        body: &serde_json::Value,
+    ) -> impl Future<Output = Result<LinkResponse>> + Send;
+
     /// `GET /v1/shard-assignments/confirmed` for `key`, abandoned after
     /// `timeout`.
     fn confirmed_assignment(
@@ -429,6 +440,19 @@ impl ControlPlaneLink for HttpControlPlaneLink {
         let request = self
             .client
             .post(self.url(&format!("/v1/nodes/{node_id}/reform/reports")))
+            .json(body);
+        finish(bearer_if(request, bearer)).await
+    }
+
+    async fn reform_alone(
+        &self,
+        bearer: Option<&str>,
+        node_id: &str,
+        body: &serde_json::Value,
+    ) -> Result<LinkResponse> {
+        let request = self
+            .client
+            .post(self.url(&format!("/v1/nodes/{node_id}/reform/alone")))
             .json(body);
         finish(bearer_if(request, bearer)).await
     }

@@ -890,6 +890,21 @@ impl ControlPlaneLink for SimLink {
         .await
     }
 
+    async fn reform_alone(
+        &self,
+        _bearer: Option<&str>,
+        node_id: &str,
+        body: &serde_json::Value,
+    ) -> Result<LinkResponse> {
+        self.call(
+            Method::POST,
+            &format!("/v1/nodes/{node_id}/reform/alone"),
+            Some(body.clone()),
+            None,
+        )
+        .await
+    }
+
     async fn reform_reports(
         &self,
         _bearer: Option<&str>,

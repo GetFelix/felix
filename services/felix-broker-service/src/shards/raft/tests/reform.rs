@@ -121,7 +121,10 @@ async fn stop_and_plan(
 /// `placed` with the record the epoch write leaves: epoch 1, its base and
 /// first index, and the plan's voters as its seed.
 pub(super) fn next_epoch(mut placed: ShardAssignment, view: &PlanView) -> ShardAssignment {
-    placed.placed = Some(PlacedEpoch { epoch: 1 });
+    placed.placed = Some(PlacedEpoch {
+        epoch: 1,
+        ..Default::default()
+    });
     placed.raft_bases = Some(RaftBases {
         incarnation: INCARNATION,
         bases: vec![RaftEpochBase {
