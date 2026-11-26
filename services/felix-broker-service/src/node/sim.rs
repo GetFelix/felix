@@ -164,6 +164,7 @@ pub struct OpenedBroker<L> {
     cluster: Option<cluster::ShardState>,
     broker: Arc<Broker>,
     durable_storage: Option<DurableStorage>,
+    root_lock: felix_storage::disk_log::RootLock,
     storage_id: felix_storage::StorageId,
     unclean: Option<Arc<replication::unclean::UncleanStart>>,
     lease: Arc<LeaseState>,
@@ -199,6 +200,7 @@ pub struct SimBroker {
     membership: Option<MembershipTask>,
     shutdown: CancellationToken,
     tasks: Vec<JoinHandle<()>>,
+    _root_lock: felix_storage::disk_log::RootLock,
 }
 
 /// What a broker believes about one shard, read without waiting on anything,
@@ -262,6 +264,10 @@ impl SimBroker {
         link: L,
         catalog: CatalogFetcher,
     ) -> Result<OpenedBroker<L>> {
+        // First, as the node takes it. Given up when the broker is dropped
+        // or crashed, and by `sim_fs::process_died` for a simulated tree.
+        let durable = config.durable_config();
+        let root_lock = super::storage::lock_root(&durable.root)?;
         let broker_config = config.broker_config();
         let peer = broker_config
             .peer_transport
@@ -290,7 +296,7 @@ impl SimBroker {
             unclean,
         } = startup::open_broker(
             &broker_config,
-            Some(config.durable_config()),
+            Some((durable, &root_lock)),
             registered.as_ref(),
             &cluster,
             &fleet,
@@ -325,6 +331,7 @@ impl SimBroker {
         let handler = Arc::new(handler);
         let (registered, registered_watch) = tokio::sync::watch::channel(None);
         Ok(OpenedBroker {
+            root_lock,
             capabilities: peer.capabilities(),
             outgoing: peer.outgoing_capabilities(),
             config: broker_config,
@@ -390,6 +397,7 @@ impl<L: ControlPlaneLink + Clone> OpenedBroker<L> {
             cluster,
             broker,
             durable_storage,
+            root_lock,
             storage_id,
             unclean,
             lease,
@@ -537,6 +545,7 @@ impl<L: ControlPlaneLink + Clone> OpenedBroker<L> {
             membership,
             shutdown,
             tasks,
+            _root_lock: root_lock,
         }
     }
 }

@@ -25,7 +25,7 @@ pub(super) struct Opened {
 
 /// The broker over its opened storage, before it is wired to the fleet.
 pub(super) struct Stored {
-    pub(super) broker: Broker,
+    pub(super) broker: Arc<Broker>,
     pub(super) durable_storage: Option<DurableStorage>,
     pub(super) storage_id: felix_storage::StorageId,
     /// Set after a start that may have cost acknowledged records.
@@ -35,12 +35,6 @@ pub(super) struct Stored {
     pub(super) replaced_storage: bool,
     /// What the directory kept of the ballots it took.
     pub(super) kept: storage::Kept,
-    /// The directory's record of trusted and doubted copies, which outlives
-    /// the process. `None` without a durable directory.
-    pub(super) copy_trust: Option<Arc<felix_storage::run_state::copy_trust::CopyTrust>>,
-    /// The ids this directory had before a crash rotated them away, keeping
-    /// its ballots.
-    pub(super) rotated_ids: Vec<felix_storage::StorageId>,
 }
 
 /// Refuse a standalone start on Raft over a data root the hybrid engine
@@ -93,31 +87,18 @@ pub(super) fn refuse_logless_cache(
 /// Open storage and the broker over it.
 pub(super) fn open_storage(
     config: &BrokerConfig,
-    durable: Option<DurableStorageConfig>,
+    durable: Option<(DurableStorageConfig, &felix_storage::disk_log::RootLock)>,
     registered: Option<&Registered>,
 ) -> Result<Stored> {
-    let root = durable.as_ref().map(|durable| durable.root.clone());
     let (broker, durable_storage, storage_id, unclean, replaced_storage, kept) =
         storage::open_with(config, durable, registered)?;
-    // Read after the run began, which distrusts every copy when it rotated
-    // the id. Live, so a rotation later in the run distrusts them here too.
-    let copy_trust = root
-        .as_ref()
-        .map(|root| felix_storage::run_state::copy_trust::CopyTrust::open_live(root))
-        .transpose()?;
-    let rotated_ids = match &root {
-        Some(root) => felix_storage::run_state::rotated_ids(root)?,
-        None => Vec::new(),
-    };
     Ok(Stored {
-        broker,
+        broker: Arc::new(broker),
         durable_storage,
         storage_id,
         unclean,
         replaced_storage,
         kept,
-        copy_trust,
-        rotated_ids,
     })
 }
 
@@ -126,7 +107,7 @@ pub(super) fn open_storage(
 #[cfg(feature = "sim")]
 pub(super) async fn open_broker(
     config: &BrokerConfig,
-    durable: Option<DurableStorageConfig>,
+    durable: Option<(DurableStorageConfig, &felix_storage::disk_log::RootLock)>,
     registered: Option<&Registered>,
     cluster: &Option<ShardState>,
     fleet: &Arc<felix_common::fleet::FleetGate>,
@@ -156,9 +137,22 @@ pub(super) async fn wire_broker(
         unclean,
         replaced_storage,
         kept,
-        copy_trust,
-        rotated_ids,
     } = stored;
+    let root = durable_storage
+        .as_ref()
+        .map(|storage| storage.root().to_path_buf());
+    // Read after the run began, which distrusts every copy when it rotated
+    // the id. Live, so a rotation later in the run distrusts them here too.
+    let copy_trust = root
+        .as_ref()
+        .map(|root| felix_storage::run_state::copy_trust::CopyTrust::open_live(root))
+        .transpose()?;
+    // The ids this directory had before a crash rotated them away, keeping
+    // its ballots.
+    let rotated_ids = match &root {
+        Some(root) => felix_storage::run_state::rotated_ids(root)?,
+        None => Vec::new(),
+    };
     let ingress_router = cluster
         .as_ref()
         .map(|(_, ingress, _, _)| Arc::clone(ingress));
@@ -304,7 +298,7 @@ pub(super) async fn wire_broker(
         )));
     }
     Ok(Opened {
-        broker: Arc::new(broker),
+        broker,
         durable_storage,
         storage_id,
         unclean,

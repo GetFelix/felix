@@ -92,6 +92,10 @@ pub struct RaftSimConfig {
     /// Isolate a leader once early so every seed moves leadership. Off for
     /// the pinned seeds, whose regressions depend on their original schedule.
     pub leader_change: bool,
+    /// Seeds the runtime's `select!` order with this instead of the seed,
+    /// under `--cfg tokio_unstable`. Replays an interleaving that a loaded
+    /// or coverage run found but the seed alone does not reach.
+    pub runtime_seed: Option<u64>,
 }
 
 /// What happens to the members' disks while the faults run.
@@ -172,6 +176,7 @@ impl Default for RaftSimConfig {
             disks: Disks::Off,
             ignored_flushes: false,
             leader_change: true,
+            runtime_seed: None,
         }
     }
 }
@@ -343,7 +348,9 @@ pub fn run_seed(seed: u64, config: RaftSimConfig) -> RaftOutcome {
     let mut builder = tokio::runtime::Builder::new_current_thread();
     builder.enable_all().start_paused(true);
     #[cfg(tokio_unstable)]
-    builder.rng_seed(tokio::runtime::RngSeed::from_bytes(&seed.to_le_bytes()));
+    builder.rng_seed(tokio::runtime::RngSeed::from_bytes(
+        &config.runtime_seed.unwrap_or(seed).to_le_bytes(),
+    ));
     // openraft's election timeouts come from this thread's draws.
     let _draws = felix_replication::raft::seed_timers(seed);
     // The engine's maps take their hash keys from this, so they walk in the
@@ -747,6 +754,9 @@ struct Sim {
     /// Per shard: where that log was read, and which members hold an
     /// entry of each term, for a finding about a term missing from it.
     final_log_read: Mutex<BTreeMap<u32, opens::Read>>,
+    /// Per shard: how many opens the run had reported when that log was
+    /// read. Only those are judged against it.
+    opens_before_final_log: Mutex<BTreeMap<u32, usize>>,
     /// Per shard: the term of the leader `recover` wrote through.
     recovered: Mutex<BTreeMap<u32, u64>>,
     /// What the run is doing, for the finding of a run that never ends.
@@ -1044,6 +1054,7 @@ impl Sim {
             terms_seen: Mutex::new(BTreeMap::new()),
             committed_terms: Mutex::new(BTreeMap::new()),
             final_log_read: Mutex::new(BTreeMap::new()),
+            opens_before_final_log: Mutex::new(BTreeMap::new()),
             recovered: Mutex::new(BTreeMap::new()),
             phase: Mutex::new("starting"),
             next_value: AtomicU64::new(1),
@@ -1459,10 +1470,12 @@ impl Sim {
         let led = self.led.lock().clone();
         let committed = self.committed_terms.lock().clone();
         let read = self.final_log_read.lock().clone();
+        let before_read = self.opens_before_final_log.lock().clone();
         let seen = opens::Seen {
             led: &led,
             committed: &committed,
             read: &read,
+            before_read: &before_read,
         };
         for finding in self
             .opens
@@ -2520,9 +2533,18 @@ impl Sim {
     /// for `opens::judge`. A log that cannot be read to its end is a finding,
     /// and the shard is left unjudged: a short log would read as a missing
     /// term.
+    ///
+    /// The members keep running until the run ends, and a placement
+    /// hand-over can open a later term after this read (#3126). So the opens
+    /// are counted here, with the bound and the term and no await between
+    /// them and the leader's choice, and only those are judged against this
+    /// log. The members' commit state goes with their groups at shutdown, so
+    /// the read cannot wait for that instead.
     async fn record_final_log(&self, shard: u32, leader: usize) {
         let at = self.at(leader);
+        let opens_before = self.opens.len();
         let bound = at.engine.read_bound(&key(shard)).unwrap_or(0);
+        let term = at.runtime.status(&key(shard)).map_or(0, |s| s.term);
         let terms = match records_below(leader, &at, shard, bound).await {
             Ok(records) => records
                 .into_values()
@@ -2554,8 +2576,10 @@ impl Sim {
                 leader: self.leader(shard) == Some(member),
             });
         }
-        let term = at.runtime.status(&key(shard)).map_or(0, |s| s.term);
         self.committed_terms.lock().insert(shard, terms);
+        self.opens_before_final_log
+            .lock()
+            .insert(shard, opens_before);
         let read = opens::Read {
             from: leader,
             term,
