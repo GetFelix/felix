@@ -467,7 +467,7 @@ async fn a_quorum_acknowledged_cache_write_survives_its_leader() {
 #[tokio::test]
 async fn a_quorum_cache_placed_short_takes_writes_after_a_broker_dies() {
     if felix_cluster::skip_on_raft_until(
-        3030,
+        3285,
         "a shard placed short is held unformed on Raft, so the start never takes a publish",
     ) {
         return;
@@ -556,7 +556,7 @@ async fn a_quorum_cache_placed_short_takes_writes_after_a_broker_dies() {
 #[tokio::test]
 async fn shards_placed_on_one_broker_reach_their_factor_once_more_join() {
     if felix_cluster::skip_on_raft_until(
-        3030,
+        3285,
         "a shard placed short is held unformed on Raft, so the start never takes a publish",
     ) {
         return;
@@ -623,7 +623,7 @@ async fn shards_placed_on_one_broker_reach_their_factor_once_more_join() {
 #[tokio::test]
 async fn a_deposed_cache_leader_rejoins_after_a_failover() {
     if felix_cluster::skip_on_raft_until(
-        3030,
+        3286,
         "the rejoin wait reads a hybrid replica report and the hybrid halted metric",
     ) {
         return;
