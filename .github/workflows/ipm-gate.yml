@@ -66,6 +66,10 @@ on:
         description: "Diagnostic: runner architecture (both, aarch64, x86_64)"
         type: string
         default: "both"
+      warmup:
+        description: "Diagnostic A/B: measure and discard an idle cell of each size with the first arm before the passes"
+        type: boolean
+        default: true
 
 concurrency:
   group: ipm-${{ github.ref }}-${{ github.event_name == 'workflow_dispatch' && github.run_id || '' }}
@@ -133,6 +137,7 @@ jobs:
           RECORD_ARMS: ${{ inputs.record_arms }}
           PASSES: ${{ inputs.passes || '2' }}
           CELLS: ${{ inputs.cells }}
+          WARMUP: ${{ inputs.warmup }}
         run: |
           sudo apt-get install -y -qq linux-tools-common "linux-tools-$(uname -r)" || sudo apt-get install -y -qq linux-tools-azure || true
           sudo sysctl -w kernel.perf_event_paranoid=-1
@@ -171,6 +176,16 @@ jobs:
           }
           for arm in $ARMS; do build_arm "${arm%%:*}" release; done
           for arm in $RECORD_ARMS; do build_arm "${arm%%:*}" diag; done
+          # The first cell a job measures reads a long window and a low cost
+          # per message, so a throwaway idle cell takes that slot.
+          if [ "$WARMUP" = true ] && [ -n "$ARMS" ]; then
+            first_arm=${ARMS%% *}
+            use_arm release "$first_arm"
+            mkdir -p prof/warmup
+            FELIX_IPM_CELLS=rf1_idle,rf3_idle FELIX_TEST_SHARD_ENGINE="$(engine "$first_arm")" FELIX_IPM_REOPEN="$(reopen "$first_arm")" \
+              FELIX_PROF_RECORD=0 FELIX_PROF_DIR="$RUNNER_TEMP/perf-rel" FELIX_IPM_OUT="$PWD/prof/warmup/warmup.json" \
+              run_test > prof/warmup/warmup.log || true
+          fi
           for pass in $(seq 1 "$PASSES"); do
             for arm in $ARMS; do
               use_arm release "$arm"
