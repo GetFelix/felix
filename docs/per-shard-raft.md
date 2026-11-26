@@ -2061,7 +2061,10 @@ publish cannot fail its neighbours.
 > `a_refused_merged_proposal_fails_every_publish_in_it`,
 > `a_cancelled_publisher_keeps_its_place_in_the_merge`,
 > `an_idempotent_batch_is_never_merged`,
-> `a_merged_batch_that_cannot_commit_leaves_every_member_unknown` and
+> `a_merged_batch_that_cannot_commit_leaves_every_member_unknown`,
+> `a_mixed_merged_proposal_keeps_one_bound_per_member`,
+> `an_all_bounded_merged_proposal_drops_the_engine_deadline`,
+> `merged_members_timed_out_by_their_sweeps_are_each_answered_once` and
 > `a_shared_raft_error_keeps_its_class_for_every_member`.
 
 **A token never leaves the broker.** The codec does not encode it, and the
@@ -3722,6 +3725,14 @@ been had it waited for the write.
   also runs the longer ack timeout, so it arms no timer of its own.
   Idempotent, forwarded, direct, Kafka and MQTT publishes, and those
   acknowledged on enqueue, keep a timer per publish for it.
+- A merged batch (see "Publishes queued on one lane are one proposal")
+  arms no timer only if every publish in it is such a QUIC ack. Then each
+  one's deadline goes into its own control stream's sweep. If any publish
+  in it is not, none is put in a sweep and the batch keeps one timer, which
+  answers them all. Every publish in the batch has exactly one bound, and
+  either way a timeout is `quorum_timeout`, outcome unknown. A sweep answers
+  only its own publish, and the batch's later commit answers none of them
+  again.
 - A batch whose `await_commit` fails because this broker stopped leading,
   or the group stopped, is never delivered: a deposed leader's record may
   have been replaced. It may also have committed, so in its place in the

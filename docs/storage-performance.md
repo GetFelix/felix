@@ -317,7 +317,9 @@ graph LR
   `Unacknowledged`, and its late result is discarded. A publish to a Raft
   shard also gets the quorum wait's deadline in a second queue of the same
   sweep, which wakes for it when it passes, so the client hears
-  `quorum_timeout` on time without a timer per publish.
+  `quorum_timeout` on time without a timer per publish. Publishes merged
+  into one Raft proposal skip the timer only when every one of them is
+  bounded this way; otherwise the proposal keeps one timer for all of them.
 - An answer is sent once the batch is durable under the stream's fsync mode
   and in the replay ring, and before the batch is fanned out
   (`complete_publish_answering`). It never precedes durability. A `Quorum`
