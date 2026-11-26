@@ -4,11 +4,13 @@
 //! and "Write fence, leases and read bound under Raft".
 
 use std::future::Future;
+use std::sync::Arc;
 use std::time::Duration;
 
 use bytes::Bytes;
 
 use super::cache::{Answer, CacheCommand};
+use super::group::Group;
 use super::propose::{self, AckAt, Batch, Heard, Unacknowledged};
 use super::runtime::GroupRuntime;
 use crate::ShardKey;
@@ -86,12 +88,20 @@ impl RaftEngine {
         batch: Batch,
         heard: Heard,
     ) -> impl Future<Output = Result<Written, Unacknowledged>> + Send + use<> {
-        let proposed = self
-            .runtime
-            .group(shard)
-            .map(|group| group.propose(batch, heard))
-            .ok_or_else(|| propose::lost(NO_GROUP));
-        async move { proposed?.await }
+        propose_to(self.runtime.group(shard).as_ref(), batch, heard)
+    }
+
+    /// `shard`'s group, looked up once for a write that uses it at every
+    /// step. See [`held`].
+    pub(crate) fn looked_up(&self, shard: &ShardKey) -> Option<Arc<Group>> {
+        self.runtime.group(shard)
+    }
+
+    /// How many times a shard was looked up in this engine's registry.
+    /// Not an API: tests count lookups per publish with it.
+    #[cfg(any(test, feature = "testing"))]
+    pub fn lookups(&self) -> u64 {
+        self.runtime.lookups()
     }
 
     /// How many stream batches `shard`'s group on this broker was handed.
@@ -126,10 +136,7 @@ impl RaftEngine {
         shard: &ShardKey,
         written: Written,
     ) -> Result<(), CommitError> {
-        let group = self.runtime.group(shard);
-        group
-            .ok_or_else(|| propose::lost(NO_GROUP))?
-            .admit_local_ack_of(written)
+        admit_local_ack_on(self.runtime.group(shard).as_ref(), written)
     }
 
     /// The acknowledgement of a `Leader` write that [`Self::propose`]
@@ -176,22 +183,6 @@ impl RaftEngine {
         async move { committed?.await }
     }
 
-    /// [`Self::await_commit`] with no deadline. It still ends when this
-    /// broker stops leading the term that wrote `written`, or the shard's
-    /// member here stops or closes.
-    pub(crate) fn await_commit_unbounded(
-        &self,
-        shard: &ShardKey,
-        written: Written,
-    ) -> impl Future<Output = Result<(), CommitError>> + Send + use<> {
-        let committed = self
-            .runtime
-            .group(shard)
-            .map(|group| group.await_commit_within(written, None))
-            .ok_or_else(|| propose::lost(NO_GROUP));
-        async move { committed?.await }
-    }
-
     /// Wait until a `Quorum` write of `written`, as [`Self::propose`]
     /// returned it, may be acknowledged. `ack` is the batch's.
     ///
@@ -217,12 +208,7 @@ impl RaftEngine {
         ack: AckAt,
         timeout: Duration,
     ) -> impl Future<Output = Result<(), CommitError>> + Send + use<> {
-        let acked = self
-            .runtime
-            .group(shard)
-            .map(|group| group.await_quorum(written, ack, timeout))
-            .ok_or_else(|| propose::lost(NO_GROUP));
-        async move { acked?.await }
+        await_quorum_on(self.runtime.group(shard).as_ref(), written, ack, timeout)
     }
 
     /// One past the highest offset this broker knows committed, for every
@@ -412,12 +398,6 @@ impl RaftEngine {
         Some(self.runtime.group(shard)?.commits())
     }
 
-    /// Hold `shard`'s skip counts for a batch about to be proposed, so its
-    /// publisher can ask [`Self::skipped_before`] after the commit.
-    pub(crate) fn claim_skips(&self, shard: &ShardKey) -> Option<super::commit::SkipClaim> {
-        Some(self.runtime.group(shard)?.claim_skips())
-    }
-
     /// Commit a cache write on this leader and return what it answered
     /// when it was first applied. A retry of the same request gets that
     /// answer and is not applied again. `ttl` is in microseconds and only
@@ -551,4 +531,60 @@ impl RaftEngine {
     pub fn open_term(&self, shard: &ShardKey) -> Option<u64> {
         self.runtime.group(shard)?.open_term()
     }
+}
+
+/// `group` as a write looked it up, while the registry still holds it
+/// open. A group closed or replaced since refuses here as a lookup finding
+/// none would, so a write that started on one member never reaches, or is
+/// answered by, another.
+fn held(group: Option<&Arc<Group>>) -> Result<&Arc<Group>, CommitError> {
+    group
+        .filter(|group| group.held())
+        .ok_or_else(|| propose::lost(NO_GROUP))
+}
+
+/// [`RaftEngine::propose_reaching`] on a group already looked up.
+pub(crate) fn propose_to(
+    group: Option<&Arc<Group>>,
+    batch: Batch,
+    heard: Heard,
+) -> impl Future<Output = Result<Written, Unacknowledged>> + Send + use<> {
+    let proposed = held(group).map(|group| group.propose(batch, heard));
+    async move { proposed?.await }
+}
+
+/// [`RaftEngine::admit_local_ack_of`] on a group already looked up.
+pub(crate) fn admit_local_ack_on(
+    group: Option<&Arc<Group>>,
+    written: Written,
+) -> Result<(), CommitError> {
+    held(group)?.admit_local_ack_of(written)
+}
+
+/// [`RaftEngine::await_commit`] on a group already looked up, with no
+/// deadline. It still ends when the member stops leading the term that
+/// wrote `written`, or stops or closes.
+pub(crate) fn await_commit_on(
+    group: Option<&Arc<Group>>,
+    written: Written,
+) -> impl Future<Output = Result<(), CommitError>> + Send + use<> {
+    let committed = held(group).map(|group| group.await_commit_within(written, None));
+    async move { committed?.await }
+}
+
+/// [`RaftEngine::await_quorum_ack`] on a group already looked up.
+pub(crate) fn await_quorum_on(
+    group: Option<&Arc<Group>>,
+    written: Written,
+    ack: AckAt,
+    timeout: Duration,
+) -> impl Future<Output = Result<(), CommitError>> + Send + use<> {
+    let acked = held(group).map(|group| group.await_quorum(written, ack, timeout));
+    async move { acked?.await }
+}
+
+/// Hold the group's skip counts for a batch about to be proposed, so its
+/// publisher can count the skips below it after the commit.
+pub(crate) fn claim_skips_on(group: Option<&Arc<Group>>) -> Option<super::commit::SkipClaim> {
+    held(group).ok().map(|group| group.claim_skips())
 }

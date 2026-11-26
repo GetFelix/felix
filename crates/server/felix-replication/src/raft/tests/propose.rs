@@ -810,6 +810,53 @@ fn a_call_cut_short_answers_every_batch_as_stopped() {
     }
 }
 
+/// **A batch of one record is answered by its record's responder alone**,
+/// with no counter shared behind a lock: that is one lock and two
+/// allocations fewer for a lone publish. Its answer is the one a shared
+/// count of one would give, and a batch of several still shares one.
+#[tokio::test]
+async fn a_batch_of_one_record_shares_no_tally() {
+    use openraft::raft::ClientWriteResponse;
+    use openraft::raft::responder::Responder;
+    let (one, one_told) = oneshot::channel();
+    let (two, two_told) = oneshot::channel();
+    let (dropped, dropped_told) = oneshot::channel();
+    let responders = respond(vec![(1, one), (2, two), (1, dropped)], true);
+    let shared: Vec<bool> = responders.iter().map(|r| r.shares_a_tally()).collect();
+    assert_eq!(shared, [false, true, true, false]);
+    let applied = |index| {
+        Ok(ClientWriteResponse::<ShardTypes> {
+            log_id: LogIdOf::<ShardTypes>::new(3.into(), index),
+            data: super::super::types::Applied,
+            membership: None,
+        })
+    };
+    let mut responders = responders.into_iter();
+    for index in 7..10 {
+        let responder = responders.next().expect("a responder");
+        responder.on_complete(applied(index));
+    }
+    drop(responders);
+    let at = |index| LogPoint { term: 3, index };
+    let span = |first, last| Span {
+        first: at(first),
+        last: at(last),
+    };
+    assert_eq!(one_told.await.expect("told"), Ok(span(7, 7)));
+    assert_eq!(two_told.await.expect("told"), Ok(span(8, 9)));
+    let told = dropped_told.await.expect("told");
+    assert!(
+        matches!(
+            told,
+            Err(Unacknowledged {
+                error: CommitError::LeadershipLost { detail, .. },
+                written_end: None,
+            }) if detail == "the shard's group stopped"
+        ),
+        "{told:?}"
+    );
+}
+
 /// A batch with a record written and a record not written is told so, not
 /// that nothing was written, and the batch behind it gets its own answer.
 #[tokio::test]
