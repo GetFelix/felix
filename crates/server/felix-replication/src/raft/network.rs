@@ -628,7 +628,7 @@ pub(crate) struct Network {
     pub(crate) group: GroupId,
     /// [`super::RuntimeConfig::commit_hold`], on the runtime's grid.
     pub(crate) commit_hold: Hold,
-    /// Shared with the group, which ends holds for readers on followers.
+    /// What each follower's two clients share.
     pub(crate) links: Arc<Links>,
 }
 

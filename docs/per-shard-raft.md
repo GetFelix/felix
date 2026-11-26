@@ -2879,6 +2879,12 @@ carries entries never waits.
   silent for one window past the latest answer is answered *slow*, which the
   leader counts as not answered, with the broker up. A failure for one
   group's heartbeat is that group's alone.
+- **Cheap when alone.** The heartbeat that opens a window waits it out
+  itself. If nothing joined, it sends itself, with no task; a batch that
+  others joined goes on a task of its own, so a caller that stops waiting
+  takes no one else's heartbeat with it.
+- **Held commits ride along.** A commit-only append whose hold ended goes
+  through the same window ("A commit goes on the next append").
 - **Off.** `beat_window` zero sends each heartbeat on its own. It must be
   shorter than `heartbeat`; the runtime refuses a config where it is not.
 
@@ -2922,10 +2928,33 @@ sends one append at a time to a follower, so the next write's append waited
 for the answer to it.
 
 Felix's client to each follower (`raft/network/client.rs`) holds such an
-append for up to `RuntimeConfig::commit_hold`, 1 ms by default and always
-shorter than the heartbeat. If the leader's next append to that follower comes
-in that time, it goes instead, and the held one is never sent. Otherwise the
-held one goes as it was.
+append, set by `RuntimeConfig::commit_hold` (20 ms by default, always
+shorter than the heartbeat). If the leader's next append to that follower
+comes in that time, it goes instead, and the held one is never sent. An
+append that carries entries never waits.
+
+A hold does not run for a fixed time from its commit. It ends on a grid
+of 20 ms steps that every group on the broker shares, at the first grid
+point at least one step away, so between 20 and 40 ms after the commit.
+The held appends of all the groups whose holds end on the same point leave
+together, and the heartbeat batcher ("Heartbeats sent together") puts all
+of them for one follower's broker in one message. A broker whose groups
+commit a thousand times a second sends each follower's broker about 50 such
+messages a second, not one per commit.
+
+Two things end a hold early:
+
+- A heartbeat to the same follower. The heartbeat already carries the
+  commit index, and the held append goes in the same batch, so it costs no
+  message of its own.
+- The end of the stream: openraft ends it when the leader stops or loses
+  its leadership, and the held append goes at once.
+
+A read on a follower does not wait for the hold. It asks the leader for a
+read index, and the leader confirms it with a heartbeat round to every
+follower (openraft's `ReadIndex` takes a fresh round each time). That
+round's heartbeat carries the commit, so the follower has it about when it
+has the answer.
 
 ```mermaid
 sequenceDiagram
@@ -2934,7 +2963,7 @@ sequenceDiagram
     L->>F: append entry 6, commit 5
     F-->>L: ok through 6
     Note over L: 6 commits. The commit-only append is held.
-    Note over L: The next write arrives within 1 ms.
+    Note over L: The next write arrives within the hold.
     L->>F: append entry 7, commit 6
     F-->>L: ok through 7, which answers both
 ```
@@ -2948,20 +2977,26 @@ time, which openraft takes before the request leaves. A held append that goes
 out alone is credited from when openraft built it, which is earlier than it
 left, so the lease errs short.
 
-What waits on it. A follower learns a commit up to the hold later when no
-write follows it; tokio's timer fires on whole milliseconds, so the default
-hold lasts 1 to 2 ms. Applying on a follower, delivering to a follower's subscribers
-and serving a read on a follower wait for that. Under load the next append
-follows at once, and it no longer waits behind a commit-only append's round
-trip. A write that comes just after the hold ends does wait: the held append
-has gone out, and openraft sends one append at a time, so that write can
-take up to one follower round trip longer than without the hold. The leader's acknowledgement to a publisher, written reports, lease
-reads, elections and heartbeats do not wait on it, and heartbeats do not go
-through this path. No member applies or decides anything differently:
+What waits on it. On a quiet stream a follower learns a commit up to 41 ms
+later: two grid steps and the 1 ms heartbeat window. Applying on a follower and
+delivering to a follower's subscribers wait for that, so a subscriber
+reading from a follower gets a lone record up to 41 ms after a subscriber on
+the leader does. A read on a follower does not wait for it (above;
+`a_follower_read_right_after_a_write_is_not_held`). Under
+load the next append follows at once, and it no longer waits behind a
+commit-only append's round trip. A write that comes just after the hold ends
+does wait: the held append has gone out, and openraft sends one append at a
+time, so that write can take up to one follower round trip longer than
+without the hold. The leader's acknowledgement to a publisher at every ack
+level, written reports, lease reads, elections, leadership transfers and
+heartbeats do not wait on it. A transfer goes on its own call, and a
+placement transfer waits for the target's log to match, not for its commit.
+No member applies or decides anything differently:
 followers apply what the leader committed, only later, and Raft's safety
 never rests on how soon they hear of it. The models agree: in
 `docs/formal/FelixRaft.tla` a follower learns the commit in a step of its
-own that may come at any time.
+own that may come at any time, and `FelixRaftLease.tla` counts the hold as
+message delay, which it leaves unbounded.
 
 ## Write fence, leases and read bound under Raft
 

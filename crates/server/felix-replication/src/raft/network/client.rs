@@ -7,8 +7,8 @@
 //! and so replaces it. Holds end on a grid shared by every group on the
 //! broker, so the held appends of many groups to one follower go out at
 //! the same instant and ride one heartbeat batch (`raft/beats.rs`). A
-//! heartbeat to the follower, or a read on it waiting for the commit, ends
-//! the hold at once. See docs/per-shard-raft.md, "A commit goes on the next
+//! heartbeat to the follower ends the hold, and the held append goes in its
+//! batch. See docs/per-shard-raft.md, "A commit goes on the next
 //! append".
 
 use std::sync::Arc;
@@ -67,30 +67,15 @@ impl Hold {
 /// heartbeats, share.
 #[derive(Debug, Default)]
 pub(crate) struct Link {
-    /// The highest commit index plus one an append to the follower carried.
-    sent: AtomicU64,
-    /// The highest commit index plus one a reader on the follower waits
-    /// for. Above `sent`, a held append that carries it goes at once.
-    wanted: AtomicU64,
     /// Heartbeats sent to the follower. A held append goes with the next.
     beats: AtomicU64,
     wake: tokio::sync::Notify,
 }
 
 impl Link {
-    fn sent(&self, commit: u64) {
-        self.sent.fetch_max(commit, Ordering::AcqRel);
-    }
-
     fn beat(&self) {
         self.beats.fetch_add(1, Ordering::AcqRel);
         self.wake.notify_waiters();
-    }
-
-    /// Whether a held append that carries commit `end` must go now.
-    fn wanted_by(&self, end: u64) -> bool {
-        let wanted = self.wanted.load(Ordering::Acquire);
-        wanted > self.sent.load(Ordering::Acquire) && end >= wanted
     }
 }
 
@@ -102,21 +87,6 @@ impl Links {
     pub(crate) fn to(&self, member: &MemberId) -> Arc<Link> {
         Arc::clone(self.0.lock().entry(member.clone()).or_default())
     }
-
-    /// A reader on a follower waits for the commit index to reach `end`
-    /// (one past the last index it needs): a held append that carries it
-    /// goes to every follower now, instead of at the end of its hold.
-    pub(crate) fn want(&self, end: u64) {
-        for link in self.0.lock().values() {
-            if link.wanted.fetch_max(end, Ordering::AcqRel) < end {
-                link.wake.notify_waiters();
-            }
-        }
-    }
-}
-
-fn commit_end(append: &Append) -> u64 {
-    append.leader_commit.map_or(0, |at| at.index + 1)
 }
 
 impl RaftNetworkV2<ShardTypes> for Client {
@@ -221,9 +191,7 @@ impl<S: Stream<Item = Append> + Unpin> Appends<S> {
             tokio::pin!(woken);
             // Registered before the checks, so a wake between them is kept.
             woken.as_mut().enable();
-            if self.link.beats.load(Ordering::Acquire) != beats
-                || self.link.wanted_by(commit_end(&held))
-            {
+            if self.link.beats.load(Ordering::Acquire) != beats {
                 break;
             }
             // Dropping `input.next()` when another branch wins loses
@@ -287,7 +255,6 @@ where
             let append = appends.next().await?;
             let prev = append.prev_log_id;
             let last = append.entries.last().map(|entry| entry.log_id()).or(prev);
-            appends.link.sent(commit_end(&append));
             if beats {
                 // Before the send, so a held append joins its batch.
                 appends.link.beat();

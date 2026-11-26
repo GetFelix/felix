@@ -246,8 +246,8 @@ async fn a_write_inside_the_hold_sends_no_commit_only_message() {
         tx.unbounded_send(append(5, 5, 5)).expect("send");
         inputs.push((tx, task));
     }
-    // Well inside the hold, but past the 1 ms the hold used to be.
-    let gap = rig.hold() / 2;
+    // Inside the hold, and far past the 1 ms the hold used to be.
+    let gap = Duration::from_millis(10);
     tokio::time::sleep(gap).await;
     let wrote = tokio::time::Instant::now();
     for (tx, _) in &inputs {
@@ -342,30 +342,6 @@ async fn a_heartbeat_takes_the_held_commit_along() {
     assert_eq!(task.await.expect("stream"), 1);
 }
 
-/// **A read on a follower ends the hold.** A follower that waits to apply a
-/// read index is sent the commit that carries it at once, so the read is
-/// not held up by the hold.
-#[tokio::test(start_paused = true)]
-async fn a_read_on_a_follower_ends_the_hold_of_its_commit() {
-    let mut rig = Rig::new(1);
-    let (tx, task) = stream(rig.client(0, "b").await);
-    tx.unbounded_send(append(5, 5, 5)).expect("send");
-    tokio::time::sleep(Duration::from_millis(3)).await;
-    let asked = tokio::time::Instant::now();
-    // The read index is one past the commit.
-    rig.networks[0].links.want(6);
-    tokio::time::sleep(Duration::from_millis(2)).await;
-    let sent = rig.wire.commit_messages("b");
-    assert_eq!(sent.len(), 1, "{sent:?}");
-    assert!(sent[0].at - asked <= rig.config.beat_window);
-    // Once that commit is sent, the next one is held again.
-    tx.unbounded_send(append(5, 5, 6)).expect("send");
-    tokio::time::sleep(rig.hold() / 2).await;
-    assert_eq!(rig.wire.commit_messages("b").len(), 1);
-    drop(tx);
-    assert_eq!(task.await.expect("stream"), 2);
-}
-
 /// **A held commit holds up no shutdown, leadership loss or transfer.**
 /// openraft ends the stream's input when the leader stops or steps down,
 /// and the held append goes at once. A transfer goes on its own call and
@@ -433,4 +409,45 @@ fn the_default_hold_keeps_a_follower_within_50_ms() {
     let config = RuntimeConfig::default();
     assert!(config.commit_hold * 2 + config.beat_window <= Duration::from_millis(50));
     assert!(config.commit_hold >= Duration::from_millis(20));
+}
+
+/// **A read on a follower right after a write does not wait out the hold.**
+/// With no ticker, the only heartbeats are the ones the leader's read-index
+/// round sends, and the follower learns the commit from that round's
+/// heartbeat. The hold is long, so a read that waited for the held append
+/// would take 150 ms or more.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_follower_read_right_after_a_write_is_not_held() {
+    let config = RuntimeConfig {
+        commit_hold: Duration::from_millis(150),
+        ..timers()
+    };
+    let mut cluster = Cluster::with(config, false);
+    cluster.open(0).await;
+    cluster
+        .runtime("a")
+        .initialize(&shard(0), members())
+        .await
+        .expect("initialize");
+    let leader = cluster.elected(0).await;
+    let follower = BROKERS
+        .into_iter()
+        .find(|broker| **broker != *leader.broker)
+        .expect("a follower");
+    cluster.write(0, b"first").await;
+    // Past the first write's own commit, which may still be held.
+    tokio::time::sleep(Duration::from_millis(400)).await;
+    for _ in 0..3 {
+        cluster.write(0, b"record").await;
+        let asked = std::time::Instant::now();
+        let read = cluster.runtime(follower).read_barrier(&shard(0)).await;
+        let took = asked.elapsed();
+        assert_eq!(read, Ok(()));
+        assert!(
+            took < Duration::from_millis(100),
+            "a follower read right after a write took {took:?}"
+        );
+        tokio::time::sleep(Duration::from_millis(400)).await;
+    }
+    cluster.stop().await;
 }
