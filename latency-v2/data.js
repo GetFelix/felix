@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795687247152,
+  "lastUpdate": 1795690106583,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -90354,6 +90354,72 @@ window.BENCHMARK_DATA = {
             "range": "355.45",
             "unit": "us",
             "extra": "trials: 5\nmedian: 436.00\nmean: 620.00\nstdev: 355.45\ncv: 57.33%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "1d5e238d4de2b4f11cd777eddc52d701ecabac68",
+          "message": "feat: a broker without durable storage joins a Raft cluster for in-memory shards only (#3067) (#3252)\n\n* feat(controlplane): a node registered without durable storage holds only in-memory stream shards (#3067)\n\nPlacement keeps a node labelled felix.dev/node-storage=none out of every\ndurable stream's and cache's shard, the way a region is kept out, so one\nalready there is moved off. An operator move of such a shard onto it is\nrefused. A label edit keeps what the broker registered. The registration\nresponse says storage_placement so a diskless broker can refuse an older\ncontrol plane.\n\nSpec-Unaffected: placement eligibility and node labels; no TLA-modelled state or transition changes\n\n* feat(broker): a broker with a node id and no durable storage joins a Raft cluster (#3067)\n\nIt starts on the Raft engine and runs no group. It registers the\nfelix.dev/node-storage=none label, and refuses a control plane whose\nregistration answer lacks storage_placement, which would place durable\nshards on it. A cache's shard on such a broker goes to the Raft engine,\nwhich only routes to the group, so nothing reaches the hybrid lifecycle.\n\nSpec-Unaffected: startup engine choice, a registration label and routing intake for caches on a broker with no disk; no TLA-modelled state or transition changes\n\n* test(cluster): a broker without durable storage holds and serves only in-memory shards (#3067)\n\nSpec-Unaffected: test only\n\n* feat(controlplane): a broker without durable storage registers only at metadata level 54 (#3067)\n\nAs for the internal role: the label is something every member stores, so\na field cannot gate it. A leader below level 54 would ignore it and place\ndurable shards there, so a registration or import carrying it is held to\n54 and refused with 409 before.\n\nSpec-Unaffected: a metadata level gate on registrations; the metadata Raft spec does not model node labels\n\n* docs: brokers without durable storage in a Raft cluster (#3067)\n\nSpec-Unaffected: docs and changelog only\n\n* fix(broker): only a broker with no durable storage routes caches through Raft (#3067)\n\nA broker with storage and a cache store without logs keeps leaving its\ncaches to the hybrid, as before.\n\nSpec-Unaffected: routing intake for caches on a broker with no disk\n\n* fix(controlplane): brokers without storage are not counted for durable copies (#3067)\n\nThe stream create warning counts only brokers with durable storage, an\noperator move's zone report leaves diskless nodes out of a durable shard's\nspread, and a durable shard with only diskless nodes to use says so instead\nof NoNodeInRegion. The label level function covers both label rules.\n\nSpec-Unaffected: placement eligibility and API warnings; no TLA-modelled state",
+          "timestamp": "2026-11-26T02:37:38-08:00",
+          "tree_id": "db46adbad307dad69e07411336db458fa4e47d6f",
+          "url": "https://github.com/GetFelix/felix/commit/1d5e238d4de2b4f11cd777eddc52d701ecabac68"
+        },
+        "date": 1795690092165,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 104,
+            "range": "0.71",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 104.00\nmean: 104.00\nstdev: 0.71\ncv: 0.68%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 165,
+            "range": "18.95",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 165.00\nmean: 174.00\nstdev: 18.95\ncv: 10.89%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 204,
+            "range": "1590.39",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 204.00\nmean: 922.20\nstdev: 1590.39\ncv: 172.46%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 144,
+            "range": "4.44",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 144.00\nmean: 142.80\nstdev: 4.44\ncv: 3.11%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 293,
+            "range": "14.01",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 293.00\nmean: 288.40\nstdev: 14.01\ncv: 4.86%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 408,
+            "range": "42.05",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 408.00\nmean: 415.00\nstdev: 42.05\ncv: 10.13%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
