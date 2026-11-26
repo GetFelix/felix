@@ -1551,4 +1551,57 @@ mod engine_log {
             "joined at the start, not mid-stream"
         );
     }
+
+    /// **A follower that moved past a generation-start record with nobody
+    /// subscribed still reports it as skipped (#3223).** A subscriber joins
+    /// below the record, so the next event must say it skipped it, or the
+    /// record reads as a drop. The same holds for the run a member that
+    /// leads next reports.
+    #[tokio::test]
+    async fn a_jump_past_a_generation_start_still_reports_it_skipped() {
+        let dir = tempfile::tempdir().expect("dir");
+        let log = engine_log(dir.path(), 0).await;
+        let (broker, bound) = broker(ReadBound::Committed(0)).await;
+        let handle = open(&broker, &log).await;
+        append(&log, &["a"], 1).await;
+        assert_eq!(log.append_generation_start(2).await.expect("marker"), 1);
+        *bound.0.lock() = ReadBound::Committed(2);
+        handle.deliver_from_log().await.expect("pass");
+
+        let resumed = broker
+            .subscribe_from("t1", "ns", "orders", 0, StartPosition::Latest)
+            .await
+            .expect("subscribe");
+        assert_eq!(resumed.join.expect("durable join").start_offset, 1);
+        let (mut receiver, _guard) = resumed.subscription.into_parts();
+        append(&log, &["b"], 3).await;
+        *bound.0.lock() = ReadBound::Committed(3);
+        handle.deliver_from_log().await.expect("pass");
+        assert_eq!(batch(&mut receiver).await, (2, 1, payloads(&["b"])));
+    }
+
+    /// [`a_jump_past_a_generation_start_still_reports_it_skipped`] for the
+    /// member that leads next: its first publish reports the run.
+    #[tokio::test]
+    async fn leading_after_a_jump_reports_the_generation_start_run() {
+        let dir = tempfile::tempdir().expect("dir");
+        let log = engine_log(dir.path(), 0).await;
+        let (broker, bound) = broker(ReadBound::Committed(0)).await;
+        let handle = open(&broker, &log).await;
+        append(&log, &["a"], 1).await;
+        assert_eq!(log.append_generation_start(2).await.expect("marker"), 1);
+        *bound.0.lock() = ReadBound::Committed(2);
+        handle.deliver_from_log().await.expect("pass");
+
+        let led = broker
+            .lead_from_tail("t1", "ns", "orders", 0)
+            .await
+            .expect("lead");
+        assert!(led);
+        assert_eq!(handle.tail_seq(), 2);
+        assert_eq!(
+            handle.state.log_state.lock().generation_start_run,
+            Some((2, 1))
+        );
+    }
 }

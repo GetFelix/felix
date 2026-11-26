@@ -293,6 +293,12 @@ impl Broker {
         if tail > state.tail_seq() {
             let run = tail - log.event_end(0, tail).await?;
             state.lead_from(tail, run, || super::shard_logs::accepted_leader(&state));
+        } else if state.jumped() && tail == state.tail_seq() {
+            // An unwatched pass jumped to the tail without counting the
+            // generation-start records below it; the first publish reports them.
+            let run = tail - log.event_end(0, tail).await?;
+            state.set_generation_start_run(tail, run);
+            state.clear_jumped();
         }
         // `lead_from` leaves a stream with held batches where it is.
         if state.tail_seq() < tail {
