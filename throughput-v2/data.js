@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795663047888,
+  "lastUpdate": 1795663746749,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -70460,6 +70460,58 @@ window.BENCHMARK_DATA = {
             "range": "7446.02",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1209986.41\nmean: 1207266.75\nstdev: 7446.02\ncv: 0.62%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "d36cf3479552adda9cd484b15e2a03e874affc64",
+          "message": "test(raft): a wiped voter never votes under its old id (#2235, #1331) (#3213)\n\nThe acceptance of #1331 on a Raft shard, end to end in process: R is\nacknowledged on a and b with c lagging, b loses its data root and comes\nback under a new storage id and copy id, and with a down no leader is\nelected. Every vote asked of b's old id is refused as another copy, and\nR reads back on a and c once a returns. The test transport now records\neach vote and pre-vote with its answer.\n\nSpec-Unaffected: test and doc pointer only; no product code changes.",
+          "timestamp": "2026-11-26T03:12:11Z",
+          "tree_id": "0dee4c18c15a7ae6b6458baf6afc743206742bca",
+          "url": "https://github.com/GetFelix/felix/commit/d36cf3479552adda9cd484b15e2a03e874affc64"
+        },
+        "date": 1795663746124,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 511407.89,
+            "range": "26041.40",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 511407.89\nmean: 504406.26\nstdev: 26041.40\ncv: 5.16%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 511407.89,
+            "range": "26041.40",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 511407.89\nmean: 504406.26\nstdev: 26041.40\ncv: 5.16%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 121310.16,
+            "range": "5955.14",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 121310.16\nmean: 118326.35\nstdev: 5955.14\ncv: 5.03%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1213101.57,
+            "range": "59551.42",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1213101.57\nmean: 1183263.49\nstdev: 59551.42\ncv: 5.03%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
