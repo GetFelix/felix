@@ -1932,20 +1932,45 @@ felix-log-tool verify --dir /var/lib/felix/streams/shard --payload-bytes 128
 felix-log-tool bench  --dir /tmp/bench --records 20000 --concurrency 8 --fsync on_commit
 ```
 
+Every log directory has a lock: an exclusive `flock` on the directory
+itself. Whatever writes inside a log directory holds it while it writes:
+
+- an open log, from its open until it is closed. Stream, cache, counter,
+  dead-letter and Raft logs all take it, before recovery looks at the tail.
+- a Raft copy's open, from the first look at its copy file through any
+  rotation into the open log.
+- a re-form's stop, its start, and a group of one's re-form, from the
+  first check to the last write, including the opens they make on the way.
+- `felix-broker restore-point` cutting a Raft copy back, and an older
+  build's half-finished cache or counter compaction being settled before
+  the log opens.
+
+A second taker is refused at once with "resource busy" and the directory's
+name; nothing waits for the lock. That includes a second open in the same
+process.
+
 Every `felix-log-tool` mode opens the log for writing, `verify` included:
-opening runs recovery, which cuts a torn tail. So each one takes the log
-directory's lock and is refused on a directory a running broker holds, with
-an error that names it. Stop the broker first, or use `felixctl data inspect`,
-which only reads. Two brokers pointed at one data directory are refused the
-same way: the second fails at the first log it opens. The lock is a `flock` that goes away with its holder, so a crash leaves no
+opening runs recovery, which cuts a torn tail. So each one is refused on a
+directory a running broker holds. Stop the broker first, or use
+`felixctl data inspect`, which only reads.
+
+Two brokers pointed at one data directory are caught per log directory, as
+each opens it, not at startup. The second broker starts, and each shard it
+tries to open that the first holds fails. A lock on the whole data
+directory for the life of the process is tracked in #3250.
+
+The lock goes away with the process that holds it, so a crash leaves no
 stale lock behind. See "One open at a time" in `docs/storage-format.md`.
 
-A filesystem that cannot lock a directory refuses every log on it: stream,
-cache, counter and Raft logs alike. On Linux NFS `flock` is emulated with
-byte-range locks, which a directory cannot take, so a broker with its data
-directory there does not start. Other network filesystems may grant the lock
-on each host separately, which keeps two opens on one host apart but not two
-hosts that mount the same share. Keep the data directory on a local disk.
+Some filesystems cannot lock a directory. On Linux NFS `flock` is emulated
+with byte-range locks, which a directory cannot take, and some FUSE mounts
+do not support it. A broker checks this at startup: it takes and lets go of
+the lock on its data directory before it reports ready, and on a filesystem
+that refuses it the broker does not start. The error names the directory
+and says to keep it on a local disk. `felix-log-tool` fails the same way at
+its open. Other network filesystems may grant the lock on each host
+separately, which keeps two opens on one host apart but not two hosts that
+mount the same share. Keep the data directory on a local disk.
 
 The end-to-end demo (publish, crash, restart, recover) is:
 

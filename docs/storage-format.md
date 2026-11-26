@@ -773,7 +773,9 @@ in eight ways:
   refused at the first log it opens. A Raft copy's directory is
   locked before its copy file and marks are judged, and stays locked through
   a rotation: the new directory is locked as soon as the old one is renamed
-  into `.kept`, and the old one only lets go once it is finished with. An
+  into `.kept`, and the old one only lets go once it is finished with. A
+  stop, a re-form's start and a restore hold it from their first check to
+  their last write, through the opens they make on the way. An
   open that locks a directory a rotation renamed away in the meantime sees
   that the path now names another directory and is refused. The kernel
   releases the lock when the holder exits, so a crash leaves nothing to
@@ -782,7 +784,8 @@ in eight ways:
   filesystem the claim is kept in the process, and a simulated crash gives
   it up. The directory is opened close-on-exec, so a child process never
   inherits the lock. On Linux NFS, `flock` is emulated with byte-range
-  locks, which a directory cannot take, so the open fails there. Other
+  locks, which a directory cannot take, so the open fails there, and a
+  broker checks for this at startup and does not start. Other
   network filesystems may grant the lock per host, so nothing keeps two
   hosts on one share apart: keep the data directory on a local disk. On a
   platform without `flock` the claim is kept in the process, as on the

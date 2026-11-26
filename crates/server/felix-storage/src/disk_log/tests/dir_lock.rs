@@ -225,3 +225,22 @@ async fn a_holder_that_dies_without_closing_does_not_block_the_next_open() {
         drop(stdout);
     }
 }
+
+/// **A filesystem that cannot lock a directory fails the open with the
+/// directory's name and what to do**, not a bare OS error.
+#[test]
+fn a_lock_the_filesystem_refuses_names_the_directory() {
+    let root = tempfile::tempdir().expect("tempdir");
+    let dir = root.path().join("shard");
+    crate::fault::fail_locks_under(root.path());
+    let opened = DiskLog::open(&dir, "t/ns/s/0", config(FsyncMode::OnCommit));
+    crate::fault::stop_failing_locks_under(root.path());
+    let Err(err) = opened else {
+        panic!("opened a log the filesystem cannot lock");
+    };
+    let err = err.to_string();
+    assert!(
+        err.contains(&dir.display().to_string()) && err.contains("local disk"),
+        "{err}"
+    );
+}
