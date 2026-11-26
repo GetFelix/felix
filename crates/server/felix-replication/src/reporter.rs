@@ -57,7 +57,7 @@ pub struct Reporter {
 impl Reporter {
     /// Start the flushing task. It runs until `shutdown`, or until every
     /// `Reporter` handle is dropped.
-    pub fn spawn<L: ControlPlaneLink>(
+    pub(crate) fn spawn<L: ControlPlaneLink>(
         to: ReportTo<L>,
         shutdown: CancellationToken,
     ) -> (Self, tokio::task::JoinHandle<()>) {
@@ -83,7 +83,7 @@ impl Reporter {
 
     /// Submit `report` without waiting for it. Dropped if the queue is full:
     /// the next pass sends a fresher one, and no mark waits on this.
-    pub fn submit(&self, report: ShardReport) {
+    pub(crate) fn submit(&self, report: ShardReport) {
         let (landed, _) = oneshot::channel();
         let _ = self.tx.try_send(Pending { report, landed });
     }
@@ -193,39 +193,6 @@ pub struct ShardReport {
 }
 
 impl ShardReport {
-    /// The report for a shard of an in-memory stream led here at
-    /// `generation`: its log would be empty, so the tail is 0 and every one
-    /// of `followers` is level. `drained` once it has stopped serving for a
-    /// move and nothing is in flight. A move of the shard waits on it.
-    pub fn in_memory(
-        key: ShardKey,
-        generation: u64,
-        followers: Vec<String>,
-        drained: bool,
-        incarnation: u64,
-    ) -> Self {
-        Self {
-            key,
-            generation,
-            caught_up: followers,
-            offsets: Vec::new(),
-            tail: 0,
-            drained,
-            halted: Vec::new(),
-            counter_offsets: Vec::new(),
-            incarnation,
-            by_round: false,
-            storage_ids: Vec::new(),
-            node_incarnations: Vec::new(),
-            inherited_storage: Vec::new(),
-            given_up: false,
-            joint_start_acked: None,
-            refused: None,
-            holds_start: Vec::new(),
-            elected: None,
-        }
-    }
-
     /// This report, naming the elected leadership it is from, if any.
     pub(super) fn with_elected(
         self,

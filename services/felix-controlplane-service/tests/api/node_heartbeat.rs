@@ -1172,3 +1172,143 @@ async fn a_heartbeat_reports_the_placement_acknowledgement_and_hears_the_incarna
     let acks = store.placement_acks().await.expect("acks");
     assert_eq!(acks[0].1.incarnation, 2, "{acks:?}");
 }
+
+/// After a restore of a backup taken before the broker last registered, the
+/// record is below the running process. Only that process, sending the
+/// record's registration time, is told to register again, and its placement
+/// acknowledgements count once it has. A process below the record is
+/// refused and gains nothing, and a broker that sends no registration time
+/// gets the answer it always did.
+#[tokio::test]
+async fn a_broker_ahead_of_a_restored_record_is_told_to_register_again() {
+    let store = store();
+    store
+        .register_node(node("broker-a"))
+        .await
+        .expect("register");
+    let token = fleet_token(&store).await;
+    let send = |method: &'static str, uri: &'static str, body: serde_json::Value| {
+        let (store, token) = (Arc::clone(&store), token.clone());
+        async move {
+            let response = app_with(store)
+                .await
+                .oneshot(authed(&token, method, uri, body))
+                .await
+                .expect("request");
+            let status = response.status();
+            let body: serde_json::Value = read_json(response).await;
+            (status, body)
+        }
+    };
+    let beat = |body: serde_json::Value| send("POST", "/v1/nodes/broker-a/heartbeat", body);
+    let gate = || {
+        let store = Arc::clone(&store);
+        async move {
+            store
+                .placement_acked_by(&["broker-a".to_string()])
+                .await
+                .expect("gate")
+        }
+    };
+
+    // The backup holds the node at incarnation 0; the broker registers twice
+    // more before the restore, and runs as incarnation 2.
+    let mut backup =
+        serde_json::to_value(store.export_state().await).expect("exported state serializes");
+    for _ in 0..2 {
+        store
+            .register_node(node("broker-a"))
+            .await
+            .expect("register");
+    }
+    backup["placement_incarnation"] = 1.into();
+    store
+        .import_state(serde_json::from_value(backup).expect("state"))
+        .await
+        .expect("import");
+    assert_eq!(
+        store
+            .get_node("broker-a")
+            .await
+            .expect("node")
+            .status
+            .incarnation,
+        0
+    );
+
+    // Ahead, with the record's registration time: told, and its
+    // acknowledgement does not count yet.
+    let (status, answer) = beat(serde_json::json!({
+        "incarnation": 2,
+        "registered_at_millis": 1,
+        "placement_incarnation": 1,
+    }))
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(answer["register_again"], true, "{answer}");
+    assert!(!gate().await);
+
+    // A broker that predates the field gets today's answer.
+    let (_, answer) =
+        beat(serde_json::json!({ "incarnation": 2, "placement_incarnation": 1 })).await;
+    let mut keys: Vec<&str> = answer
+        .as_object()
+        .expect("object")
+        .keys()
+        .map(String::as_str)
+        .collect();
+    keys.sort_unstable();
+    assert_eq!(
+        keys,
+        [
+            "expiry_timeout_ms",
+            "fleet_features",
+            "heartbeat_interval_ms",
+            "lifecycle",
+            "node_id",
+            "placement_incarnation",
+        ],
+        "{answer}"
+    );
+
+    // Another registration time is another record's process: not told.
+    let (_, answer) =
+        beat(serde_json::json!({ "incarnation": 2, "registered_at_millis": 9 })).await;
+    assert!(answer.get("register_again").is_none(), "{answer}");
+
+    // The broker registers again, as incarnation 1. A late beat of the
+    // process before it is now below the record: refused, and it changes
+    // nothing.
+    store
+        .register_node(node("broker-a"))
+        .await
+        .expect("register again");
+    let (status, answer) = beat(serde_json::json!({
+        "incarnation": 0,
+        "registered_at_millis": 1,
+        "placement_incarnation": 1,
+    }))
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT, "{answer}");
+    assert!(answer.get("register_again").is_none(), "{answer}");
+    assert!(!gate().await);
+
+    // The re-registered process is not told, and its acknowledgement
+    // opens the gate.
+    let (status, answer) = beat(serde_json::json!({
+        "incarnation": 1,
+        "registered_at_millis": 1,
+        "placement_incarnation": 1,
+    }))
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(answer.get("register_again").is_none(), "{answer}");
+    assert!(gate().await);
+
+    // A draining node is not told: registering would set it live.
+    let (status, _) = send("POST", "/v1/nodes/broker-a/drain", serde_json::Value::Null).await;
+    assert_eq!(status, StatusCode::OK);
+    let (_, answer) =
+        beat(serde_json::json!({ "incarnation": 5, "registered_at_millis": 1 })).await;
+    assert!(answer.get("register_again").is_none(), "{answer}");
+}

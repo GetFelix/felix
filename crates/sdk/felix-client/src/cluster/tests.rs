@@ -136,7 +136,7 @@ fn transient_failures_are_retried() {
     for message in [
         "connection lost",
         "publish commit timeout",
-        "the batch is durable here but did not reach a majority within 5s",
+        "the batch did not reach a majority within 5s",
         "shard leadership moved before the batch could reach a quorum",
         "no peer transport: this broker cannot forward to broker-2",
         "stream orders cannot be subscribed to right now: owner unavailable",

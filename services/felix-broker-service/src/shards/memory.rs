@@ -18,14 +18,12 @@
 //! reader the generation it moved at. See `docs/hybrid-retirement.md`,
 //! "In-memory shards".
 
-use std::sync::{Arc, OnceLock};
+use std::sync::Arc;
 
 use felix_common::random::HashMap;
-use felix_replication::reporter::{Reporter, ShardReport};
 
 use super::lifecycle::fence::ShardFence;
 use super::lifecycle::{Phase, QUIESCE_BOUND, ShardReaders, no_owner};
-use super::routing::to_router_key;
 use super::watch::ShardAssignment;
 use super::{ShardKey, ShardKind};
 
@@ -40,9 +38,6 @@ pub(crate) struct MemoryShards {
     readers: ShardReaders,
     /// Shards serving here, and what they serve at.
     served: parking_lot::Mutex<HashMap<ShardKey, Served>>,
-    /// Where each pass's reports go. A move of an in-memory shard still waits
-    /// on its owner's report that it has stopped (the drained report).
-    reporter: OnceLock<Reporter>,
 }
 
 impl MemoryShards {
@@ -58,14 +53,7 @@ impl MemoryShards {
             fence,
             readers,
             served: parking_lot::Mutex::default(),
-            reporter: OnceLock::new(),
         }
-    }
-
-    /// Report each shard led here to the control plane through `reporter`.
-    /// Only the first call counts.
-    pub(crate) fn report_with(&self, reporter: Reporter) {
-        let _ = self.reporter.set(reporter);
     }
 
     /// The shards serving here and the generation each serves at.
@@ -102,7 +90,7 @@ impl MemoryShards {
     }
 
     /// Bring the shards served here in line with `assignments`, the ones
-    /// [`Self::take`] returned, then report the ones led here.
+    /// [`Self::take`] returned.
     pub(crate) async fn apply(&self, assignments: &HashMap<ShardKey, ShardAssignment>) {
         let mut keys: Vec<&ShardKey> = assignments.keys().collect();
         keys.sort();
@@ -181,7 +169,6 @@ impl MemoryShards {
         for (key, wanted) in after {
             self.open(&key, wanted).await;
         }
-        self.report(assignments);
     }
 
     /// Whether `key` is a shard of a stream registered here in memory, at
@@ -255,37 +242,6 @@ impl MemoryShards {
             generation = served.generation,
             "in-memory shard closed",
         );
-    }
-
-    /// What a replication pass over an empty log would say about each shard
-    /// led here: tail 0, every follower level, and drained once a move has
-    /// stopped its writes.
-    fn report(&self, assignments: &HashMap<ShardKey, ShardAssignment>) {
-        let Some(reporter) = self.reporter.get() else {
-            return;
-        };
-        for assignment in assignments.values() {
-            if assignment.leader != self.local {
-                continue;
-            }
-            let key = &assignment.key;
-            let followers = assignment
-                .pending_set
-                .as_ref()
-                .map_or(&assignment.replicas, |pending| &pending.replicas)
-                .iter()
-                .filter(|node| **node != self.local)
-                .cloned()
-                .collect();
-            let drained = assignment.is_draining() && self.fence.quiesced(key);
-            reporter.submit(ShardReport::in_memory(
-                to_router_key(key),
-                assignment.generation,
-                followers,
-                drained,
-                assignment.incarnation,
-            ));
-        }
     }
 }
 

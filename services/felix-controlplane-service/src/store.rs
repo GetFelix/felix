@@ -1048,6 +1048,27 @@ pub trait AuthStore: Send + Sync {
         revoked_at: i64,
     ) -> StoreResult<()>;
 
+    /// [`AuthStore::revoke_principals`] for an explicit revocation. It also
+    /// records `revoked_at` as the principals' assertion cutoff, so an IdP
+    /// token of theirs issued at or before it no longer exchanges. An RBAC
+    /// edit's revocation records none: it takes back what Felix minted, not
+    /// the IdP identity. Under Raft, below metadata level 53 it records only
+    /// the broker-token cutoff, as before.
+    async fn revoke_principals_explicitly(
+        &self,
+        tenant_id: &str,
+        principal_ids: Vec<String>,
+        revoked_at: i64,
+    ) -> StoreResult<()>;
+
+    /// Both cutoffs of `principal_id` in `tenant_id`, each counting one of
+    /// the whole tenant, read together.
+    async fn principal_cutoffs(
+        &self,
+        tenant_id: &str,
+        principal_id: &str,
+    ) -> StoreResult<PrincipalCutoffs>;
+
     /// Revocations written at or after `since`, oldest first, at most the
     /// store's change limit. Each principal appears once, at its latest
     /// revocation, so a `since` of 0 is the whole set. A `since` past the end,
@@ -1079,6 +1100,16 @@ pub trait AuthStore: Send + Sync {
         }
         Ok(cutoffs)
     }
+}
+
+/// A principal's revocation cutoffs; see [`AuthStore::principal_cutoffs`].
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct PrincipalCutoffs {
+    /// Broker tokens issued at or before it are revoked.
+    pub tokens: Option<i64>,
+    /// IdP tokens issued at or before it, plus the clock skew, do not
+    /// exchange. Only an explicit revocation sets it.
+    pub assertions: Option<i64>,
 }
 
 /// A change to a tenant's auth rules that can take rights back; see

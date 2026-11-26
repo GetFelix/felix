@@ -175,9 +175,13 @@ no vote, no log position.
 
 A member with a new id has never voted. It joins as a learner and the old
 member is removed by a membership change. This is the rule issue #1331 asks
-for, and it replaces vouching and copy trust. The copy ids of a shard
-rotate, and the directory's log is kept as plain records, in each of these
-cases:
+for, and it replaces vouching and copy trust.
+
+> `crates/server/felix-replication/src/raft/tests/identity.rs`,
+> `a_wiped_voter_never_votes_under_its_old_id_and_its_record_survives`.
+
+The copy ids of a shard rotate, and the directory's log is kept as plain
+records, in each of these cases:
 
 - The shard directory is missing or empty.
 - The storage id rotated: the data root was lost, it failed the restore
@@ -673,6 +677,9 @@ A kept directory is also held while its reservation (`raft-reserved`, see
 highest reservation into the new copy, so this holds only a directory some
 other path left uncovered, and deleting it would lose how far a re-form must
 pad.
+Each held directory is logged with both reservations, the kept one's and the
+current copy's, so an operator can check the damaged-file step in
+`docs/storage-format.md` against them.
 
 The first index comes from the running member, so a purge held only in memory
 counts. The flushed tail is read from the log's durable offset, so a copy
@@ -989,7 +996,14 @@ mechanism:
   once did for `backup_members`. The point is read only from a member serving its term
   at the newest term any member reports: a leader at an older term may be
   deposed without knowing it, and a new one knows the commit index only
-  once it has committed in its own term. The point is one past the furthest
+  once it has committed in its own term. That check means something only
+  when the answering members include a majority of each voter set of the
+  newest membership any of them reports (by its entry's log id), so the
+  collector requires one (#3179). Every answer is read after the barrier
+  and terms only grow, so that majority meets the voters that elected any
+  leader that acknowledged a write before the barrier. A joint membership
+  needs both majorities; a learner, or a copy back under a new copy id, is
+  in no voter set. A member that reports no voters counts toward none. The point is one past the furthest
   entry of that term the leader acknowledged, which is its commit index or
   past it: a `Quorum` write on a `Periodic` stream is answered on a written
   majority, and a `Leader` write on the lease, before the commit reaches
@@ -5948,12 +5962,15 @@ what stops that.
   (2^20) above is refused and logged: the gap counts restores the backup
   missed, and the bound keeps a broker from walking the incarnation to its
   limit.
-- **A broker a restore rewound has to restart.** A restore puts back each
+- **A broker a restore rewound registers again.** A restore puts back each
   node record's incarnation as the backup held it. A broker that registered
   after the backup keeps beating under its newer incarnation, which the
   control plane accepts, but its acknowledgements are not from the record's
-  process and are dropped. Nothing tells it to register again yet, so the
-  gate stays shut until an operator restarts it.
+  process and are dropped. The heartbeat answer to such a beat carries
+  `register_again: true`, and the broker registers again without giving up
+  its lease. The new registration takes the record's next incarnation, so
+  only acknowledgements that process reports count. See "Registering again
+  after a restore" in `docs/control-plane.md`.
 - **Nothing goes out until every broker has.** `placement_acked_by` holds
   only while every broker named has acknowledged exactly the current
   incarnation (the model's `AllAcked`). A broker that never reported counts
@@ -6171,41 +6188,55 @@ directory's storage id, and every Raft copy on it reopens as a new, empty
 member. In a cluster the other voters catch it up. A standalone broker's
 groups have no other voter and no control plane, so each one re-forms
 itself, before its member opens (`shards/raft/standalone.rs`,
-`CopyRoot::reform_alone` in `raft_copy/alone.rs`):
+`CopyRoot::reform_alone` in `raft_copy/alone.rs`). A data directory put
+back from a backup and passed through `felix-broker rotate-storage-id`
+re-forms the same way, in every fsync mode:
 
 1. The start reads `relaxed-crash-id` (`docs/storage-format.md`). It acts
    only when that file names the current storage id, and only on a copy
-   whose kept copies were all minted under an id a relaxed crash rotated
-   away. A clean stop, an `OnCommit` crash and an operator's rotation
-   leave no such evidence, and the copy stays as it is. The file keeps an
-   id for as long as a copy on disk was minted under it, so a shard that no
-   start opened through any number of crashes in a row is still re-formed
-   when it opens. A standalone
-   broker cannot tell a restored volume from a relaxed crash, so it
-   re-forms a restored copy from the reservation the snapshot holds. A
-   volume snapshot taken while the broker ran can therefore give out
-   offsets again; restore from a backup point instead.
+   whose kept copies were all minted under an id a relaxed crash or the
+   restore tool rotated away. A clean stop, an `OnCommit` crash and a
+   `storage-id` deleted by hand leave no such evidence, and the copy stays
+   as it is. The file keeps an id for as long as a copy on disk was minted
+   under it, so a shard that no start opened through any number of crashes
+   in a row is still re-formed when it opens.
 2. It plans the next group epoch from its kept copy with the same rule
    every re-form uses, with one difference: it keeps the copy's whole log,
    not only what the saved commit covers. The commit is saved at most once
    a second, so cutting there would drop records that were synced. The loss
-   is the unsynced tail `Periodic` already allows.
-3. The new epoch starts above every index the crashed run reserved, so no
-   offset it handed out is given out again. That holds only for the data
-   directory the crashed run used. A directory restored from a snapshot or
-   backup starts from the reservation the snapshot holds and can give out
-   offsets handed out after that point again
-   ([#3048](https://github.com/GetFelix/felix/issues/3048)), as a
-   standalone broker on the hybrid engine can.
+   is the unsynced tail `Periodic` already allows, or, after a restore,
+   what was acknowledged after the copy was taken.
+3. The new epoch starts above every index the copy reserved. After a relaxed
+   crash that is every offset the crashed run handed out. A restored copy
+   holds the reservation of the moment it was copied, which the run after
+   it may have passed, by handing out more than a reservation step or by a
+   re-form of its own. So when a restore is among the rotations since the
+   kept copy was minted, the epoch also starts no lower than the time line
+   a backup-point restore uses ("A restore from a backup point is a
+   re-form"), read from the broker's own clock. That assumes the clock at a
+   later restore is not behind the clock at an earlier one by more than the
+   offsets written in between could cover. If the clock was set back, fix
+   it, or wait until it has passed the time of the last restore, before
+   starting the broker. The tool writes
+   `restore-pending` first and removes it last, and a start that finds it
+   refuses, so a crash part way through the tool never starts the restored
+   data under its old id. A copy put back without the tool, by hand or by
+   rolling back a volume or VM snapshot, is not detected and can give out
+   offsets again ([#3048](https://github.com/GetFelix/felix/issues/3048)),
+   as a standalone broker on the hybrid engine can.
 4. The plan is written to `raft-reform-alone` and synced before the copy is
-   stopped and started in the new epoch. A crash part way resumes that plan.
-   A plan made under an older storage id, left by a second crash during the
-   re-form, is dropped and the group is planned again.
+   stopped and started in the new epoch. A crash part way resumes that plan,
+   with the first index it recorded. A plan made under an older storage id,
+   left by a second crash during the re-form, is dropped and the group is
+   planned again.
 
 The planner refuses this mode unless the group's only placed broker is this
 one and every voter set it reads names only it. `FelixRaftReform` checks it
 with `Alone`: `FelixRaftReformAlone` holds `KeptLossBound`, and
 `FelixRaftReformAloneCutToCommit`, which cuts at the saved commit, breaks it.
+`FelixRaftReform` does not model a standalone restore. Its first index is
+the rule `FelixRaftRestoreRepeated` checks with `Line`, with the broker's
+clock as the planner's.
 
 ## Cache and counters
 

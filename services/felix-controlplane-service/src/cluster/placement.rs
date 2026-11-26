@@ -29,6 +29,9 @@
 //! and on the placement token read before the pass decided, so the move
 //! limits hold however many instances write. See `docs/control-plane.md`.
 //!
+//! **In-memory shards.** No log, so none of the above: one owner, placed
+//! again in the same pass once it cannot keep the shard. See `in_memory`.
+//!
 //! **Zones.** A shard's copies are spread across the zones brokers register,
 //! and a move never narrows that spread when it can avoid it; see `zones`.
 //!
@@ -37,6 +40,7 @@
 //! foundation for a decision that has to be identical everywhere.
 mod caught_up;
 mod decision;
+mod in_memory;
 mod leadership;
 mod metrics;
 mod moves;

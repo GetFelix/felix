@@ -805,25 +805,6 @@ where
         (Some((router, ingress, lifecycle, ownership)), Some(link), storage) => {
             let readers = shard_lifecycle::ShardReaders::new(Arc::clone(broker))
                 .with_endpoints(Arc::clone(client_endpoints));
-            // Only a member reports: the reports are about shards the control
-            // plane assigned, and it has assigned none to a broker it never
-            // registered. Reports from every shard in a pass share a request;
-            // see `replication::reporter`.
-            let report_to = || {
-                config
-                    .membership
-                    .as_ref()
-                    .map(|membership| replication::reporter::ReportTo {
-                        link: link.clone(),
-                        node_id: membership.node_id.clone(),
-                        token: credential.clone().map(|credential| {
-                            Arc::new(credential) as Arc<dyn replication::reporter::Credential>
-                        }),
-                        incarnation: Arc::clone(incarnation),
-                        storage_id,
-                        held: reports_held.clone(),
-                    })
-            };
             // A Raft broker serves its in-memory stream shards on their own
             // path, with no hybrid lifecycle or replication pass.
             let memory = raft.then(|| {
@@ -833,11 +814,6 @@ where
                     Arc::clone(ingress.fence()),
                     readers.clone(),
                 ));
-                if let Some(to) = report_to() {
-                    let (reporter, _task) =
-                        replication::reporter::Reporter::spawn(to, sync_shutdown.clone());
-                    memory.report_with(reporter);
-                }
                 ingress.set_memory(Arc::clone(&memory));
                 memory
             });
@@ -981,7 +957,24 @@ where
                             halted: Arc::clone(halted_replicas),
                             status: Arc::clone(shard_status),
                         },
-                        report: report_to(),
+                        // Only a broker that is a cluster member reports: the
+                        // report is about shards the control plane assigned,
+                        // and a broker it has never registered leads none of
+                        // them. Reports from every shard in a pass share one
+                        // request; see `replication::reporter`.
+                        report: config.membership.as_ref().map(|membership| {
+                            replication::reporter::ReportTo {
+                                link: link.clone(),
+                                node_id: membership.node_id.clone(),
+                                token: credential.clone().map(|credential| {
+                                    Arc::new(credential)
+                                        as Arc<dyn replication::reporter::Credential>
+                                }),
+                                incarnation: Arc::clone(incarnation),
+                                storage_id,
+                                held: reports_held.clone(),
+                            }
+                        }),
                         interval: Duration::from_millis(config.controlplane_sync_interval_ms),
                         routes_changed,
                         rebuild: replication::RebuildPolicy {

@@ -1009,8 +1009,8 @@ pub(crate) enum QuorumWait {
 /// outcome is unknown rather than that the write failed.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum QuorumError {
-    /// No majority within the budget.
-    #[error("the {what} is durable here but did not reach a majority within {timeout:?}")]
+    /// No majority within the budget. This broker may not have written it.
+    #[error("the {what} did not reach a majority within {timeout:?}")]
     TimedOut {
         what: &'static str,
         timeout: std::time::Duration,
