@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795686152847,
+  "lastUpdate": 1795687251858,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -71084,6 +71084,58 @@ window.BENCHMARK_DATA = {
             "range": "341.41",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1189285.43\nmean: 1189339.52\nstdev: 341.41\ncv: 0.03%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "3fece0d220ead0b7c370a50a02058a3a96b3e138",
+          "message": "test(cluster): a hand-over test's warm-up no longer re-sends the same payload and counts its own duplicate (#3245) (#3251)\n\n* test(cluster): the first-term hand-over warm-up never re-sends a payload that may be written (#3245)\n\nThe warm-up publish retried with `.ok().flatten()`, so after an outcome\nunknown it sent the same bytes again and the test then counted its own\nre-send as a duplicate. Each try now sends its own payload (`{shard}/0/{try}`).\nA try left in doubt joins the set checked as held at most once, and a try\nrefused as not proposed fails the test, naming the error, if its payload\nis found held.\n\n`publish_acked` and `publish_headered` had the same retry. They now send\nagain only after a refusal that wrote nothing and panic on an answer that\nleaves the record in doubt, instead of reporting a false duplicate later.\n\nA unit test covers the classification and the held check without a cluster.\n\nSpec-Unaffected: test only\n\n* test(cluster): publishes made in a fault window record an unknown outcome instead of panicking (#3245)\n\n`publish_acked` now panics on an in-doubt answer, which is right before any\nfault and wrong after a kill, partition, move, drain or restart, where an\nunknown outcome is expected. Those callers use `publish_tried`: each try\nsends `{base}/{try}`, an in-doubt try is checked as held at most once, a\nrefused one as never held, and the acknowledged one exactly once, wherever\nthe test reads the log back. The cut-off leader test also allows a try in\ndoubt among the records nobody acknowledged.\n\nSpec-Unaffected: test only",
+          "timestamp": "2026-11-26T09:37:22Z",
+          "tree_id": "1f9c54e5a519b6c44787eca2b2302ac0d0afe129",
+          "url": "https://github.com/GetFelix/felix/commit/3fece0d220ead0b7c370a50a02058a3a96b3e138"
+        },
+        "date": 1795687251091,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 444038.36,
+            "range": "14853.95",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 444038.36\nmean: 447748.23\nstdev: 14853.95\ncv: 3.32%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 444038.36,
+            "range": "14853.95",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 444038.36\nmean: 447748.23\nstdev: 14853.95\ncv: 3.32%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 102936.49,
+            "range": "3477.51",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 102936.49\nmean: 101530.24\nstdev: 3477.51\ncv: 3.43%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1029364.89,
+            "range": "34775.17",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1029364.89\nmean: 1015302.42\nstdev: 34775.17\ncv: 3.43%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
