@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795690448727,
+  "lastUpdate": 1795690911715,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -71240,6 +71240,58 @@ window.BENCHMARK_DATA = {
             "range": "84139.63",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1190091.20\nmean: 1162900.79\nstdev: 84139.63\ncv: 7.24%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "bd3b1a4f4409fca7a6139d79704d23f4d9f1a2fc",
+          "message": "test(storage): the appends-racing-syncs test no longer waits on the disk (#3256) (#3258)\n\nIts 200-byte segments rolled on nearly every append, several fsyncs each,\nso a busy disk pushed the run past its 10 s bound, and the bound's panic\nsaid the log hung. The test now uses segments with dozens of entries (a\nfew rolls), a 45 s bound, checks the watcher's monotonicity assertion,\nand stops its syncers on every way out. within_bound passes an inner\npanic on as it was and says \"did not finish in N s\" on a timeout.\n\nSpec-Unaffected: test only",
+          "timestamp": "2026-11-26T02:53:24-08:00",
+          "tree_id": "6c0d68e170121e8f12cb80414dbfb56acf1174d1",
+          "url": "https://github.com/GetFelix/felix/commit/bd3b1a4f4409fca7a6139d79704d23f4d9f1a2fc"
+        },
+        "date": 1795690911001,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 552046.69,
+            "range": "16589.30",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 552046.69\nmean: 555416.21\nstdev: 16589.30\ncv: 2.99%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 552046.69,
+            "range": "16589.30",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 552046.69\nmean: 555416.21\nstdev: 16589.30\ncv: 2.99%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 141572.22,
+            "range": "2301.56",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 141572.22\nmean: 141575.86\nstdev: 2301.56\ncv: 1.63%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1415722.21,
+            "range": "23015.52",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1415722.21\nmean: 1415758.57\nstdev: 23015.52\ncv: 1.63%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
