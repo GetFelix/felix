@@ -75,9 +75,20 @@ impl RaftShards {
         config: &LogConfig,
     ) -> anyhow::Result<Option<ShardAssignment>> {
         let Some(writer) = self.alone_writer.get() else {
+            tracing::debug!(shard = ?key, "not re-forming alone: no control plane writer is set");
             return Ok(None);
         };
-        if !self.fleet.supports(fleet::RAFT_ALONE_REFORM) || !alone_here(&self.local, assignment) {
+        if !self.fleet.supports(fleet::RAFT_ALONE_REFORM) {
+            tracing::debug!(shard = ?key, "not re-forming alone: the fleet does not support it yet");
+            return Ok(None);
+        }
+        if let Some(why) = not_alone_here(&self.local, assignment) {
+            let only_here = assignment.replicas.iter().all(|b| *b == self.local);
+            if only_here {
+                tracing::info!(shard = ?key, why, leader = %assignment.leader, replicas = ?assignment.replicas, placed = ?assignment.placed, epoch = assignment.group_epoch(), "not re-forming alone: the assignment does not name this broker the only one of the group");
+            } else {
+                tracing::debug!(shard = ?key, why, "not re-forming alone: the group has other brokers");
+            }
             return Ok(None);
         }
         // Decided before the copy is stopped: a plan the record does not
@@ -88,11 +99,13 @@ impl RaftShards {
             .stop_alone(key, assignment, root, dir, config, &decide)
             .await?
         else {
+            tracing::debug!(shard = ?key, epoch = assignment.group_epoch(), "not re-forming alone: no re-form is owed, or the record refused the plan");
             return Ok(None);
         };
         if owed(key, &self.local, assignment, &plan) != Owed::Send {
             // The control plane already holds this plan's epoch: the start
             // reads it.
+            tracing::info!(shard = ?key, recorded = assignment.group_epoch(), planned = plan.bases.len(), "not asking the control plane to re-form: it already holds this plan's epoch");
             return Ok(None);
         }
         let epoch = plan.bases.len() as u64;
@@ -195,22 +208,44 @@ fn owed(key: &ShardKey, local: &str, a: &ShardAssignment, plan: &AlonePlan) -> O
     Owed::Refused
 }
 
-/// Whether the assignment names `local` the only broker of the shard's
-/// group: no other replica, placement, set change or move. The control
-/// plane checks this again in the same command that writes the epoch.
-fn alone_here(local: &str, a: &ShardAssignment) -> bool {
-    a.leader == local
-        && a.replicas.iter().all(|b| b == local)
-        && a.successor.is_none()
-        && a.pending_set.is_none()
-        && a.move_reason.is_none()
-        && a.state != "draining"
-        && a.placed
-            .as_ref()
-            .is_some_and(|placed| placed.brokers == BTreeSet::from([local.to_string()]))
-        && a.target
-            .as_ref()
-            .is_none_or(|target| target.members.keys().all(|b| b == local))
+/// The first condition that keeps the assignment from naming `local` the
+/// only broker of the shard's group: no other replica, placement, set change
+/// or move may hold. The control plane checks this again in the same command
+/// that writes the epoch.
+fn not_alone_here(local: &str, a: &ShardAssignment) -> Option<&'static str> {
+    if a.leader != local {
+        return Some("another broker is the leader");
+    }
+    if !a.replicas.iter().all(|b| b == local) {
+        return Some("the shard has another replica");
+    }
+    if a.successor.is_some() {
+        return Some("a successor is named");
+    }
+    if a.pending_set.is_some() {
+        return Some("a set change is pending");
+    }
+    if a.move_reason.is_some() {
+        return Some("a move is in progress");
+    }
+    if a.state == "draining" {
+        return Some("the shard is draining");
+    }
+    if !a
+        .placed
+        .as_ref()
+        .is_some_and(|placed| placed.brokers == BTreeSet::from([local.to_string()]))
+    {
+        return Some("the placed epoch does not name only this broker");
+    }
+    if !a
+        .target
+        .as_ref()
+        .is_none_or(|target| target.members.keys().all(|b| b == local))
+    {
+        return Some("the target names another broker");
+    }
+    None
 }
 
 /// The request body: the plan as the control plane's `ReformEpochStart`.
