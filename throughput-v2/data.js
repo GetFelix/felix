@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795676169685,
+  "lastUpdate": 1795680848725,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -70928,6 +70928,58 @@ window.BENCHMARK_DATA = {
             "range": "4716.19",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 816014.59\nmean: 814432.71\nstdev: 4716.19\ncv: 0.58%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "4c097c3bb3b4f67f9d15c0792b789eb75b6f7090",
+          "message": "perf(broker): a QUIC publish on Raft arms no timer of its own (#3225) (#3231)\n\n* fix(raft): a publish refused before it is appended is answered at once (#3199)\n\nA batch the Raft leader refuses before writing any of it (lease lapsed,\nor no longer leading the term) was answered only at its delivery turn,\nbehind every earlier batch. If an earlier batch was acknowledged on the\nlease and never settled, the publisher waited out the answer timeout and\nwas told quorum_timeout (\"durable here\"), outcome unknown, for a batch\nthat was never written.\n\nThe engine now marks such a failure ProposalFailed::refused, and\nProposedPublish answers it through a channel as soon as the engine\nrefuses. The batch still takes its turn on a task, pushes its gap and\nsettles in hand-over order, so delivery order and the stall bound are\nunchanged. A failure with no record known written but not known refused\nstill waits for its turn.\n\nQuorumError::TimedOut no longer claims the batch is durable here.\n\nSpec-Unaffected: only when the publisher hears a not-appended refusal moves; log order, offsets and delivery order are unchanged\n\n* perf(raft): arm no per-publish timer for a QUIC publish (#3225)\n\nWIP: tests and docs to follow.\n\nSpec-Unaffected: only which timer bounds the publisher's wait moves; log order, offsets, commit and delivery are unchanged\n\n* test(raft): count per-publish timers and bound every path's answer (#3225)\n\nA QUIC publish acked to a client on Raft armed two timers (the answer\ndeadline and the settle loop's commit wait); it now arms none. The\nquorum wait's deadline is answered by the control stream's ack sweep with\nthe same quorum_timeout error. Docs and changelog follow.\n\nSpec-Unaffected: only which timer bounds the publisher's wait moves; log order, offsets, commit and delivery are unchanged",
+          "timestamp": "2026-11-26T07:56:52Z",
+          "tree_id": "9f90a06b25ecc4d448f566ad05a5724119ce6019",
+          "url": "https://github.com/GetFelix/felix/commit/4c097c3bb3b4f67f9d15c0792b789eb75b6f7090"
+        },
+        "date": 1795680847986,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 360104.98,
+            "range": "10834.20",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 360104.98\nmean: 363458.82\nstdev: 10834.20\ncv: 2.98%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 360104.98,
+            "range": "10834.20",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 360104.98\nmean: 363458.82\nstdev: 10834.20\ncv: 2.98%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 82827.75,
+            "range": "3673.95",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 82827.75\nmean: 81068.63\nstdev: 3673.95\ncv: 4.53%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 828277.5,
+            "range": "36739.49",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 828277.50\nmean: 810686.29\nstdev: 36739.49\ncv: 4.53%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
