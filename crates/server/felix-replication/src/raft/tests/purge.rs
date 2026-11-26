@@ -8,7 +8,7 @@ use openraft::type_config::alias::{LogIdOf, SnapshotMetaOf};
 
 use super::{log_config, open_log};
 use crate::ShardKind;
-use crate::raft::group::{PurgeStep, purge_step, stream_installable};
+use crate::raft::group::{HeldBase, PurgeStep, purge_step, stream_installable};
 use crate::raft::machine::{Machine, SnapshotData};
 use crate::raft::stream_snapshot::StreamSnapshot;
 use crate::raft::types::ShardTypes;
@@ -37,10 +37,33 @@ fn snapshot(floor: u64) -> Bytes {
 /// it carries. At or above it the member would drop records still served.
 #[test]
 fn a_snapshot_at_or_above_its_own_floor_is_refused() {
-    assert!(stream_installable(&meta(3), &snapshot(4)).is_ok());
-    assert!(stream_installable(&meta(2), &snapshot(4)).is_ok());
-    assert!(stream_installable(&meta(4), &snapshot(4)).is_err());
-    assert!(stream_installable(&meta(5), &snapshot(4)).is_err());
+    assert!(stream_installable(&meta(3), &snapshot(4), None).is_ok());
+    assert!(stream_installable(&meta(2), &snapshot(4), None).is_ok());
+    assert!(stream_installable(&meta(4), &snapshot(4), None).is_err());
+    assert!(stream_installable(&meta(5), &snapshot(4), None).is_err());
+}
+
+/// A re-form's gap snapshot ends at the gap's end with a floor at or below
+/// the base. It installs only on a member whose log holds that floor
+/// through the base, and nothing above it.
+#[test]
+fn a_gap_snapshot_installs_only_over_the_held_base() {
+    // Base 0..=7, the epoch starting at 20: the gap ends at 19.
+    let held = |first| {
+        Some(HeldBase {
+            first,
+            last: 7,
+            first_index: 20,
+        })
+    };
+    assert!(stream_installable(&meta(19), &snapshot(4), None).is_err());
+    assert!(stream_installable(&meta(19), &snapshot(4), held(4)).is_ok());
+    assert!(stream_installable(&meta(19), &snapshot(4), held(0)).is_ok());
+    // A hole between the floor and the log's first entry.
+    assert!(stream_installable(&meta(19), &snapshot(4), held(5)).is_err());
+    // Not the gap's end: it would skip entries of the epoch.
+    assert!(stream_installable(&meta(20), &snapshot(4), held(4)).is_err());
+    assert!(stream_installable(&meta(18), &snapshot(4), held(4)).is_err());
 }
 
 /// A snapshot no purge wrote carries no floor, and is refused as every
@@ -48,8 +71,8 @@ fn a_snapshot_at_or_above_its_own_floor_is_refused() {
 #[test]
 fn a_snapshot_without_a_floor_is_refused() {
     let plain = StreamSnapshot::default().encode();
-    assert!(stream_installable(&meta(0), &plain).is_err());
-    assert!(stream_installable(&meta(3), b"not a snapshot").is_err());
+    assert!(stream_installable(&meta(0), &plain, None).is_err());
+    assert!(stream_installable(&meta(3), b"not a snapshot", None).is_err());
 }
 
 /// A stream shard's state machine and log over `dir`, reopened as a restart

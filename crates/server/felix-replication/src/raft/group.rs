@@ -1737,8 +1737,17 @@ impl Group {
                     }
                     Piece::Whole(snapshot) if self.id.shard.kind == ShardKind::Stream => {
                         let bytes = Bytes::from(snapshot);
-                        if let Err(why) = stream_installable(&meta, &bytes) {
-                            self.pull_base(&meta, &bytes);
+                        let mut installable = stream_installable(&meta, &bytes, None);
+                        if installable.is_err() {
+                            let held = self.held_base().await;
+                            installable = stream_installable(&meta, &bytes, held);
+                            // A copy that already holds its base is refused
+                            // for another reason; a pull would not help.
+                            if installable.is_err() && held.is_none() {
+                                self.pull_base(&meta, &bytes);
+                            }
+                        }
+                        if let Err(why) = installable {
                             tracing::error!(group = %self.id, member = %self.member, upto = ?meta.last_log_id, "refused a snapshot: {why}");
                             return Err(Refused::NoSnapshots(Box::new(Addressee {
                                 group: self.id.clone(),
@@ -1869,6 +1878,34 @@ impl Group {
             self.stop.clone(),
             format!("{} of {}", self.member, self.id),
         );
+    }
+
+    /// What this member's log holds of its copy's latest re-form base, when
+    /// it ends exactly at the base's last entry in the base's term. A learner
+    /// holds that once it has adopted a pulled base.
+    async fn held_base(&self) -> Option<HeldBase> {
+        let dir = self.log.disk_log().dir().to_path_buf();
+        let base =
+            felix_common::blocking::spawn(move || felix_storage::raft_copy::latest_base(&dir))
+                .await
+                .ok()?
+                .ok()??;
+        let last = base.base_last?;
+        let mut reader = self.log.reader();
+        let entries = reader
+            .limited_get_log_entries(last.index, last.index.saturating_add(2))
+            .await
+            .ok()?;
+        let [entry] = entries.as_slice() else {
+            return None;
+        };
+        (entry.log_id.index == last.index && entry.log_id.leader_id.term == last.term).then(|| {
+            HeldBase {
+                first: (self.log.first_index_reader())(),
+                last: last.index,
+                first_index: base.first_index,
+            }
+        })
     }
 
     /// True once this copy's re-form base is staged whole: the member must
@@ -3368,6 +3405,19 @@ pub(super) fn purge_step(snapshot: Option<u64>, purged: Option<u64>, at: u64) ->
     Some(PurgeStep::SnapshotThenPurge)
 }
 
+/// What a member's log holds of its copy's re-form base, for a gap
+/// snapshot's install: read only when the log ends exactly at the base's
+/// last entry, in the base's term, so nothing in it is above the base.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct HeldBase {
+    /// The log's first index.
+    pub(super) first: u64,
+    /// The base's last index.
+    pub(super) last: u64,
+    /// The epoch's first index: the gap runs from `last + 1` to below it.
+    pub(super) first_index: u64,
+}
+
 /// Whether a member may install the stream snapshot `bytes`: only when every
 /// entry it skips is below the floor the snapshot itself carries, so the
 /// member drops nothing a reader could still be served. The member's own
@@ -3375,9 +3425,15 @@ pub(super) fn purge_step(snapshot: Option<u64>, purged: Option<u64>, at: u64) ->
 /// records the sender still serves. A snapshot without purge floors (one no
 /// purge wrote) is never installable. See `docs/per-shard-raft.md`
 /// ("Purging below the floor").
+///
+/// The one other install is a re-form's gap snapshot, which ends at the
+/// gap's end and carries a floor at or below the base: it skips nothing
+/// still served only when the member `held` every entry from that floor
+/// through the base, and the rest up to the snapshot is the gap.
 pub(super) fn stream_installable(
     meta: &openraft::type_config::alias::SnapshotMetaOf<ShardTypes>,
     bytes: &[u8],
+    held: Option<HeldBase>,
 ) -> Result<(), String> {
     let snapshot = super::stream_snapshot::StreamSnapshot::decode(bytes)
         .map_err(|err| format!("a snapshot this member cannot read: {err}"))?;
@@ -3388,6 +3444,13 @@ pub(super) fn stream_installable(
         return Err("a stream snapshot with no last entry".into());
     };
     if last.index >= purge.floor {
+        if let Some(held) = held
+            && held.first_index.checked_sub(1) == Some(last.index)
+            && held.first <= purge.floor
+            && purge.floor <= held.last.saturating_add(1)
+        {
+            return Ok(());
+        }
         return Err(format!(
             "it ends at {} but carries floor {}, so it skips records still served",
             last.index, purge.floor
