@@ -629,6 +629,18 @@ reservation the next epoch needs.
 
 - **A new cluster** starts with it finalized.
 
+#### `raft_alone_reform`
+
+Once finalized, a broker that holds the only copy of a replication factor 1
+Raft group can re-form it itself after a machine crash that rotated its
+storage id, by asking the control plane to record the group's next epoch. The
+control plane writes it only when the group is alone on that broker, with no
+set change or move in flight. Finalizing it needs every control-plane member
+at metadata version 55. Until then such a group stays not ready after the
+crash, as before.
+
+- **A new cluster** starts with it finalized.
+
 #### `record_headers`
 
 Once finalized, a durable stream in a cluster accepts record keys and headers
