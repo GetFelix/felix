@@ -550,9 +550,9 @@ expectations=(
   "FelixRaftFormedSetEven pass"
   "FelixRaftFormedSetKeepOne violates OneGroup"
   "FelixRaftReform pass"
-  # Open (issue #3109): run 45731082140 found the violation; the rule it
-  # checks is not yet right, so it is pinned until a fix passes.
-  "FelixRaftReformLeaseTail violates LeaseAckedReformed"
+  # A leader names an allowance only after an entry of its own term; run
+  # 45743343474 found the violation without that guard.
+  "FelixRaftReformLeaseTail pass"
   "FelixRaftReformLeaseTailNoVouch violates LeaseAckedReformed"
   "FelixRaftReformLeaseTailLowestEnd violates LeaseAckedReformed"
   "FelixRaftReformLeaseTailMajorityRead violates LeaseAckedReformed"
@@ -561,6 +561,8 @@ expectations=(
   "FelixRaftReformLeaseTailFollowerReforms violates NeverReformsFollowerTail"
   "FelixRaftReformLeaseTailReachElect violates NeverElectsAfterLeaderCut"
   "FelixRaftReformLeaseTailWaits violates NeverWaitsOnHeldRecord"
+  "FelixRaftReformLeaseTailWaitsStuck pass"
+  "FelixRaftReformLeaseTailStuck violates NeverStuck"
   "FelixRaftReformTwoRotated pass"
   "FelixRaftReformTwoRotatedOffsets pass"
   "FelixRaftReformTwoRotatedOffsetsTerms pass"
@@ -1012,7 +1014,9 @@ weights=(
   "FelixRaftLeaseAllowance 9"
   "FelixRaftLeaseAllowanceRestart 40"
   "FelixRaftLeaseAllowanceUntimed 22"
-  "FelixRaftReformLeaseTail 62"
+  "FelixRaftReformLeaseTail 300"
+  "FelixRaftReformLeaseTailWaitsStuck 300"
+  "FelixRaftReformLeaseTailStuck 60"
   "FelixRaftReformLeaseTailNoVouch 24"
   "FelixRaftReformLeaseTailLowestEnd 16"
   "FelixRaftReformLeaseTailMajorityRead 14"

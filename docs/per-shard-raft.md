@@ -3545,7 +3545,11 @@ only below an allowance a majority has taken:
   heartbeats: "in this term I may answer on my lease entries below `end`".
   While writes flow it asks for its log end plus a budget (the 256 batches
   `ANSWERED_AHEAD` already allows); when nothing waits for a commit it names
-  its own log end, so an idle group owes nothing.
+  its own log end, so an idle group owes nothing. It names none until its log
+  holds the blank entry it appends on election. A follower that takes the
+  allowance then holds that entry, which sits above everything the leader was
+  elected with, so a newer allowance vouches for every entry an older one
+  did and replacing it in a store loses nothing.
 - A follower stores the allowance with the highest `seq` of the newest term it
   follows, durable before it says so (synced beside its vote mark, except on a
   relaxed run, where a power cut rotates the copy anyway), and echoes it in its

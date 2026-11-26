@@ -1185,8 +1185,16 @@ LeaseAnswer(l) ==
 
 \* The leader names an allowance: any end from its log end up to the writes
 \* the run has left. It only raises its end within a term.
+\* It names one only once its log holds an entry of its own term (in the
+\* product, the blank entry a new leader appends). A copy that stores a
+\* newer allowance took it on an append from its namer, so it holds that
+\* entry, which sits above every entry the namer was elected with. A record
+\* answered on an older lease is below an end a quorum held, so the vote
+\* rule put it in the namer's log. The newer allowance then vouches for it
+\* too, and replacing the older one in a store cannot strand it.
 NameAllowance(l) ==
     /\ LeaseAnswers /\ Leads(l) /\ names < MaxNames
+    /\ \E i \in 1..Len(log[l]) : log[l][i].e = ep[l] /\ log[l][i].t = term[l]
     /\ \E n \in Len(log[l])..(Len(log[l]) + MaxWrites - writes) :
           /\ OwnAllow(l) = NoAllow \/ n > OwnAllow(l).end
           /\ allow' = [allow EXCEPT ![l] =
@@ -1351,6 +1359,38 @@ NeverWaitsOnHeldRecord ==
           /\ \E Vs \in VoterSets(cpEpoch, R) : <<q, cid[q]>> \in Vs
           /\ HeldLow(cpEpoch, S, R) < x.i
           /\ HeldLow(cpEpoch, S, R) # HeldHigh(cpEpoch, S, R)
+
+\* The wait with three voters and one store unknown. A plan of the current
+\* epoch waits while the stores it read leave the majority-held end open.
+PlanCopies(p) == UNION {Copies(b) : b \in DOMAIN p.facts}
+PlanWaits(p) == p.e = cpEpoch /\ ~AllowKnown(p.e, DOMAIN p.facts, PlanCopies(p))
+OneUnknown(p) ==
+    \A Vs \in VoterSets(p.e, PlanCopies(p)) :
+        /\ Cardinality(Vs) = 3
+        /\ Cardinality({m \in Vs : ~StoreKnown(m, DOMAIN p.facts)}) = 1
+KnownEndsDiffer(p) ==
+    \E Vs \in VoterSets(p.e, PlanCopies(p)) :
+        \E m1, m2 \in {m \in Vs : StoreKnown(m, DOMAIN p.facts)} :
+            StoredEnd(m1, p.e) # StoredEnd(m2, p.e)
+
+\* With one store of three unknown, the re-form waits exactly when the two
+\* known stores hold different ends.
+WaitsIffKnownEndsDiffer ==
+    \A p \in plans :
+        (OneUnknown(p) /\ Cardinality(VoterSets(p.e, PlanCopies(p))) = 1)
+            => (PlanWaits(p) <=> KnownEndsDiffer(p))
+
+\* Every copy read is stopped, and no voter can lower its allowance.
+Stuck(p) ==
+    /\ PlanWaits(p) /\ OneUnknown(p)
+    /\ \A b \in DOMAIN p.facts : retired[b]
+    /\ \A v \in Brokers : ~ENABLED LowerAllowance(v)
+
+\* A stuck re-form waits in every later state: it waits forever.
+StuckWaitsForever == [][\A p \in plans : Stuck(p) => PlanWaits(p)']_vars
+
+\* Witness: a stuck re-form is reachable, with two of three stores readable.
+NeverStuck == ~\E p \in plans : Stuck(p)
 
 ElectedGroupLeftAlone ==
     [][\A b \in Brokers : (~retired[b] /\ retired'[b]) =>
