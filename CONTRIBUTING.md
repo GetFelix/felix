@@ -190,8 +190,8 @@ filler that restates what was just said.
     unpaced rep on a fast runner is shorter and picks up less per-second work
     (one x86_64 run read 1.9% under the baseline for that reason).
   - If a rep cannot hold its pace (it issued more than 3% off the rate, or ran
-    more than 3% over 300 s), or unpaced reps slow down one after another, the
-    run fails as a measurement failure, not a regression. Rerun it.
+    more than 3% over 300 s), the run fails as a measurement failure, not a
+    regression. Rerun it. The result file is still uploaded with every rep in it.
   - If the extra cost is deliberate, dispatch the workflow five times on the
     PR's head commit and run `python3 scripts/perf/ipm_gate.py update` with
     the five `ipm-result.json` artifacts (one per architecture per run). It

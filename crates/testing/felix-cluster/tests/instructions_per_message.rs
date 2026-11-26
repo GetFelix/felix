@@ -68,10 +68,6 @@ const PACED_REP: Duration = Duration::from_secs(300);
 /// before the rep is not comparable with the baseline.
 const PACE_TOLERANCE_PCT: f64 = 3.0;
 
-/// Unpaced reps that each take longer than the previous one, by this much
-/// first to last, mean state is leaking from one rep into the next.
-const CLIMB_LIMIT_PCT: f64 = 10.0;
-
 /// The `b1` pace in messages a second. The instrumented broker's capacity is
 /// what bounds it: on aarch64 it executes 14 to 19M guest instructions a
 /// second, and about 8.4M of those go to per-second work under load. 20 msg/s
@@ -401,18 +397,6 @@ fn pace_problem(rate: u64, messages: usize, rep: &Rep) -> Option<String> {
     })
 }
 
-/// Whether unpaced reps each ran longer than the one before, by more than
-/// [`CLIMB_LIMIT_PCT`] first to last: the sign of a rep inheriting state.
-fn climb_problem(secs: &[f64]) -> Option<String> {
-    let climbing = secs.len() >= 3 && secs.windows(2).all(|w| w[1] > w[0]);
-    let climb = (secs.last()? / secs.first()? - 1.0) * 100.0;
-    (climbing && climb > CLIMB_LIMIT_PCT).then(|| {
-        format!(
-            "every rep ran longer than the last ({climb:+.1}% first to last): a rep is inheriting the previous one's state"
-        )
-    })
-}
-
 fn median(values: &[f64]) -> f64 {
     let mut sorted = values.to_vec();
     sorted.sort_by(|a, b| a.total_cmp(b));
@@ -437,17 +421,12 @@ fn summarize(cell: &Cell, reps: &[Rep]) -> (serde_json::Value, Vec<String>) {
     let raw: Vec<f64> = reps.iter().map(|r| r.raw).collect();
     let secs: Vec<f64> = reps.iter().map(|r| r.secs).collect();
     let mut problems = Vec::new();
-    match cell.rate() {
-        Some(rate) => {
-            for (i, rep) in reps.iter().enumerate() {
-                if let Some(problem) = pace_problem(rate, cell.messages(), rep) {
-                    problems.push(format!("{} rep {i}: {problem}", cell.name));
-                }
-            }
-        }
-        None => {
-            if let Some(problem) = climb_problem(&secs) {
-                problems.push(format!("{}: {problem}", cell.name));
+    // An unpaced rep's duration is not checked: on fresh brokers it moves
+    // with the runner, not with state, and five reps can climb by chance.
+    if let Some(rate) = cell.rate() {
+        for (i, rep) in reps.iter().enumerate() {
+            if let Some(problem) = pace_problem(rate, cell.messages(), rep) {
+                problems.push(format!("{} rep {i}: {problem}", cell.name));
             }
         }
     }
@@ -706,12 +685,4 @@ fn a_cell_is_reported_by_its_median_rep() {
     assert_eq!(entry["user_per_message"], 3.0);
     assert_eq!(entry["user_min_per_message"], 1.0);
     assert_eq!(entry["user_spread_pct"], 400.0);
-}
-
-#[test]
-fn unpaced_reps_that_climb_are_a_failed_measurement() {
-    assert!(climb_problem(&[10.0, 11.0, 12.0, 13.0]).is_some());
-    // Slower overall but not one after another, or climbing by little.
-    assert_eq!(climb_problem(&[12.0, 10.0, 13.0, 11.0]), None);
-    assert_eq!(climb_problem(&[10.0, 10.1, 10.2, 10.3]), None);
 }

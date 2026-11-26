@@ -97,8 +97,11 @@ jobs:
             FELIX_IPM_TOOLCHAIN="$(rustc --version)" \
             FELIX_IPM_OUT="$RUNNER_TEMP/ipm-result.json" \
             cargo test --locked --release -p felix-cluster --test instructions_per_message \
-            -- --ignored --nocapture
-          cp "$RUNNER_TEMP/ipm-result.json" ipm-result.json
+            -- --ignored --nocapture || status=$?
+          # The harness writes the result before failing a measurement, and
+          # the reps in it are what says why.
+          cp "$RUNNER_TEMP/ipm-result.json" ipm-result.json || true
+          exit "${status:-0}"
 
       - name: Upload result
         if: always()
