@@ -5645,6 +5645,7 @@ before.
 | `felix_broker_raft_shards_led_off_placement` | Shards this broker leads whose placement names another leader. Above zero for long means a hand-over is held back, or placement names a broker that holds no voter of the group |
 | `felix_broker_raft_membership_steps_total{step="placed_transfer"}` | Placement transfers asked |
 | `felix_broker_raft_placed_transfers_total` | By `outcome`: `landed` (this member stopped leading), `failed` (it still led a later term), `held` (counted once per reason, `why`: `unsettled`, `lagging`, `degraded`, `budget`) |
+| `felix_broker_raft_snapshot_unsendable_total` | Cache snapshots a leader did not send because they were over the 1 GiB a member takes; each is also logged with the group and member, once a minute per member ("How big a cache group gets") |
 
 #### Where a target comes from
 
@@ -6306,6 +6307,10 @@ A cache shard's group has one log holding puts, deletes and counter deltas
   entries hold the same state whether or not they record. A build that predates the entry stops at
   it, as at any cache entry it cannot read; skipping it is never safe in
   general, so no entry kind is skipped.
+- **A group's state has a bound.** A put or an add that would take its
+  values and counters past it answers "full", writes nothing, and keeps
+  that answer like any other, so a retry is answered "full" too. Deletes
+  and expiry deletes are never refused. See "How big a cache group gets".
 
 `FelixRaftCache.tla` checks these rules (`docs/formal/README.md`, "Raft
 cache state machine").
@@ -6323,6 +6328,58 @@ no more of them than are in flight. A write that fails or whose caller gives
 up stops holding the floor. Such a write has no retry guarantee: a client that
 sends it again after an unknown outcome may apply it twice, as on the
 hybrid.
+
+### How big a cache group gets
+
+A member that is behind its leader's purge, or a new member, catches up
+only from a snapshot, and a member takes none over 1 GiB
+(`raft/install.rs`). So a cache group's state is held under that, and
+every state it reaches can be sent (`raft/cache/size.rs`):
+
+- **The bound.** Values and counters may take up to the cap less a
+  sixteenth and the snapshot's header, counted in the bytes the snapshot
+  writes for them. A put or an add that would pass it answers "full"
+  (`CacheReply::Full`), and a client is told `limit_exceeded` with
+  `detail.reason` = `cache_full` ([protocol](protocol.md), "Error
+  codes"). A put that replaces a value with one no longer, or an add to a
+  counter that exists, always fits.
+- **What counts.** A value counts only while it is unexpired at the
+  write's own stamp. A member that restored a snapshot, which left out
+  values expired at the log's time, and a member that replayed the log and
+  still holds them then judge every write the same. Judging by what is
+  held would make them disagree (`FelixRaftCacheFullSnapshotRawSize.cfg`).
+  Each member keeps a running total of what it holds and of what had
+  expired by the last stamp it judged at. A value is added to the second
+  once, as the stamps pass its expiry, so a write costs a constant amount
+  however many values it judges against.
+- **The answer is kept.** A "full" answer is kept like any other, so a
+  retry, or a copy of the write still in flight, is answered "full" even
+  after deletes free room. One that was not kept could apply after its
+  client was told it had not (`FelixRaftCacheFullNotRecorded.cfg`). A
+  retry of a write applied before the group filled still gets its own
+  answer: kept answers are looked up before the bound is judged.
+- **Deletes and expiries always apply,** so a full group can be emptied.
+- **The sixteenth left over** holds the producers' floors and kept
+  answers, which the bound does not count. Each producer keeps only the
+  answers at or above its floor. A broker writes as one producer per
+  start, whose floor follows its writes in flight, so a shard keeps about
+  as many answers as it has writes in flight, plus a floor and the
+  answers that were in flight for each broker start that wrote to it. That
+  is far under 64 MiB. A client that names its own producer id and never
+  raises its floor could fill it with refused writes; no client path
+  names one yet.
+- **The bound is a constant,** never a setting: two members with
+  different bounds would judge the same write differently.
+- **A group already past the bound** starts and serves as before. Its
+  puts and adds answer "full" until deletes and expiries bring it under,
+  and nothing it holds is dropped.
+
+The leader also checks a snapshot's size before it sends one
+(`raft/network.rs`, `full_snapshot`). One over the cap is not sent: it
+counts `felix_broker_raft_snapshot_unsendable_total` and logs a warning
+naming the group and the member, once a minute while that member stays
+behind, and openraft tries again after its backoff. Only a group already
+past the bound when it was built can have such a snapshot.
 
 ### Cache entry and snapshot bytes
 
@@ -6356,6 +6413,10 @@ A cache snapshot is version 2:
 | value count, then per value: key, version (8), expiry (8), value length (4), value | 8 + each |
 | counter count, then per counter: key, sum (8, signed) | 8 + each |
 | producer count, then per producer: id (8), floor (8), answer count (8), then per answer: sequence (8), answer tag (1), answer value (8) | 8 + each |
+
+An answer tag is 0 written, 1 removed, 2 absent, 3 refused with no
+version, 4 refused with a version, 5 a sum, 6 forgotten and 7 full. A build
+that predates tag 7 refuses a snapshot holding one.
 
 Version 1 is the same without the watched entry's end. This build still
 reads it, as a snapshot with no live watched entry, and writes only

@@ -46,3 +46,49 @@ async fn one_task_watches_for_an_idle_sender() {
     assert!(incoming.settled());
     assert!(incoming.watch());
 }
+
+/// A cache group filled to its bound builds a snapshot the cap takes,
+/// sent in pieces, and the member behind the purge installs the same state.
+#[test]
+fn a_state_at_its_bound_snapshots_and_installs() {
+    use bytes::Bytes;
+
+    use crate::raft::cache::{Answer, Bound, CacheCommand, CacheState, Condition, Request};
+    const CAP: u64 = 4096;
+    let mut state = CacheState::default().bounded(Bound::under(CAP));
+    let mut index = 0;
+    while index < 200 {
+        index += 1;
+        let put = CacheCommand::Put {
+            key: format!("key-{index}"),
+            value: Bytes::from(vec![7; 100]),
+            expires_at: 0,
+            cond: Condition::None,
+            request: Request {
+                producer: 1,
+                sequence: index,
+                floor: index,
+            },
+        };
+        if state.apply(index, 0, &put) == Some(Answer::Full) {
+            break;
+        }
+    }
+    assert!((10..200).contains(&index), "filled after {index} puts");
+    let data = state.snapshot();
+    assert!(data.len() as u64 <= CAP, "{} bytes", data.len());
+
+    let incoming = Incoming::capped(CAP);
+    let meta = SnapshotMetaOf::<ShardTypes>::default();
+    let len = data.len() as u64;
+    let mut whole = None;
+    for (n, piece) in data.chunks(1000).enumerate() {
+        match incoming.take(&vote(), &meta, len, n as u64 * 1000, piece) {
+            Ok(Piece::More) => {}
+            Ok(Piece::Whole(bytes)) => whole = Some(bytes),
+            Err(why) => panic!("refused: {why}"),
+        }
+    }
+    let installed = CacheState::restore(&Bytes::from(whole.expect("whole")), true).unwrap();
+    assert!(installed == state);
+}

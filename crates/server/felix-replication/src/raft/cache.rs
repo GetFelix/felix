@@ -11,6 +11,7 @@
 mod layers;
 mod recent;
 mod record;
+mod size;
 mod snapshot;
 mod state;
 #[cfg(test)]
@@ -25,6 +26,8 @@ use bytes::{Buf, BufMut, Bytes, BytesMut};
 pub(crate) use recent::WINDOW_MICROS;
 pub(crate) use recent::{Change, MARK_RETRY_MICROS};
 pub(crate) use record::{CacheCommand, Request};
+#[cfg(test)]
+pub(crate) use size::Bound;
 #[cfg(test)]
 pub(crate) use snapshot::{ENCODED, restores_of};
 #[cfg(test)]

@@ -1580,6 +1580,7 @@ Typed, because they need different responses:
 | `UnsupportedKind` | the responder predates the kind that was sent | do not retry with that kind; a forwarder falls back to the legacy forward kind once |
 | `StaleSet` | the responder counts a newer replica set than the sender's fence or batch named; its generation is in `expected_offset`. Sent only to a peer that offered `ELECTION` | do not retry; stop leading or standing at that set |
 | `LeadershipLost` (13) | the owner wrote a `SequencedForwardPublish` and stopped leading the shard before a majority held it. Sent only in answer to a sequenced forward (kind 52 or 64) | the batch may be in the log: report it indeterminate; the MQTT listener sends it again under the same sequence to whoever leads now |
+| `CacheFull` (14) | the owner refused a forwarded cache put or counter add because the shard's Raft group is at its state bound; nothing was written. Sent only in answer to a forwarded cache op on a Raft shard | answer the client `limit_exceeded` with `detail.reason` = `cache_full`; do not resend until deletes or expiries free room. A requester that predates the code fails to decode it and reports the op indeterminate |
 
 ### Refusal reasons
 

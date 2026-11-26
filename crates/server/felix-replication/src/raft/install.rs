@@ -1,26 +1,95 @@
-//! A cache group member's side of a snapshot that arrives in pieces: the
-//! size cap and the one install a member holds at a time. The design is in
+//! A cache group's snapshot in pieces: the size cap the builder, the
+//! sender and the receiver share, the leader's check before it sends, and
+//! the one install a member holds at a time. The design is in
 //! `docs/replication-engine.md`, "Sending a snapshot".
 
 use std::cmp::Ordering;
+use std::collections::HashMap;
 use std::time::Duration;
 
 use openraft::type_config::alias::{LogIdOf, SnapshotMetaOf, VoteOf};
 
-use super::types::ShardTypes;
+use super::types::{GroupId, MemberId, ShardTypes};
 
-/// The largest snapshot a member takes. A cache shard whose state is over
-/// this cannot bring a member that is behind its purge back.
+/// The largest snapshot a member takes. A cache group's state is bounded
+/// below this (`cache::size`), so every snapshot it builds can be sent.
 pub(crate) const MAX_SNAPSHOT_BYTES: u64 = 1 << 30;
+/// Snapshots a leader did not send because they were over the cap.
+pub(crate) const UNSENDABLE_TOTAL: &str = "felix_broker_raft_snapshot_unsendable_total";
+/// How often one member's warning is logged while it stays unsendable:
+/// openraft retries the send after each backoff.
+const WARN_EVERY: Duration = Duration::from_secs(60);
 /// A snapshot whose next piece has not come for this long is dropped.
 pub(crate) const IDLE: Duration = felix_storage::raft_log::transfer::IDLE;
 
 /// The one snapshot a member is receiving. A sender that starts again, or
 /// one with a newer vote, replaces what is held, so a leader that was
 /// deposed part way cannot hold off its successor.
-#[derive(Default)]
 pub(crate) struct Incoming {
     slot: parking_lot::Mutex<Slot>,
+    cap: u64,
+}
+
+impl Default for Incoming {
+    fn default() -> Self {
+        Self::capped(MAX_SNAPSHOT_BYTES)
+    }
+}
+
+/// The members a leader could not send a snapshot to, so each is logged
+/// once a [`WARN_EVERY`] rather than on every retry.
+pub(crate) struct Unsendable {
+    warned: parking_lot::Mutex<HashMap<(GroupId, MemberId), tokio::time::Instant>>,
+    cap: u64,
+}
+
+impl Default for Unsendable {
+    fn default() -> Self {
+        Self::capped(MAX_SNAPSHOT_BYTES)
+    }
+}
+
+impl Unsendable {
+    pub(crate) fn capped(cap: u64) -> Self {
+        Self {
+            warned: parking_lot::Mutex::default(),
+            cap,
+        }
+    }
+
+    /// Whether a snapshot of `len` bytes may go to `target`. One over the
+    /// cap would be refused at its first piece on every retry, so it is
+    /// not sent: it is counted, logged with the group and member, and
+    /// refused here. The leader tries again after a backoff, and a later
+    /// snapshot that fits goes through.
+    pub(crate) fn check(&self, group: &GroupId, target: &MemberId, len: u64) -> Result<(), String> {
+        let key = (group.clone(), target.clone());
+        let mut warned = self.warned.lock();
+        if len <= self.cap {
+            warned.remove(&key);
+            return Ok(());
+        }
+        metrics::counter!(UNSENDABLE_TOTAL).increment(1);
+        let now = tokio::time::Instant::now();
+        if warned
+            .get(&key)
+            .is_none_or(|at| now.duration_since(*at) >= WARN_EVERY)
+        {
+            warned.insert(key, now);
+            tracing::warn!(
+                group = %group,
+                member = %target,
+                bytes = len,
+                cap = self.cap,
+                "a snapshot is over the cap a member takes, so the member cannot catch up \
+                 until the group's state shrinks"
+            );
+        }
+        Err(format!(
+            "a snapshot of {len} bytes is over the cap of {} that {target} takes",
+            self.cap
+        ))
+    }
 }
 
 #[derive(Default)]
@@ -46,6 +115,13 @@ pub(crate) enum Piece {
 }
 
 impl Incoming {
+    pub(crate) fn capped(cap: u64) -> Self {
+        Self {
+            slot: parking_lot::Mutex::default(),
+            cap,
+        }
+    }
+
     /// Keep one piece. Refuses a snapshot over the cap at its first piece,
     /// a first piece from a sender ranked below the one being received,
     /// and a piece that does not follow the last one kept.
@@ -57,9 +133,10 @@ impl Incoming {
         offset: u64,
         piece: &[u8],
     ) -> Result<Piece, String> {
-        if data_len > MAX_SNAPSHOT_BYTES {
+        if data_len > self.cap {
             return Err(format!(
-                "a snapshot of {data_len} bytes is over this member's cap of {MAX_SNAPSHOT_BYTES}"
+                "a snapshot of {data_len} bytes is over this member's cap of {}",
+                self.cap
             ));
         }
         // `offset` is the sender's, so it can be anything.

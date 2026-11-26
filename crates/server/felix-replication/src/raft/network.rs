@@ -26,6 +26,7 @@ use openraft_multi::{GroupNetworkAdapter, GroupRouter};
 use felix_storage::raft_log::LogPoint;
 
 use super::group::{Pace, Sent};
+use super::install::Unsendable;
 use super::lease::Lease;
 use super::machine::SnapshotData;
 use super::reach::{Reach, Refusals, Waits};
@@ -286,6 +287,8 @@ pub(crate) struct Router {
     refusals: Arc<Refusals>,
     /// openraft's settings, for its usual retry delays.
     config: Arc<Config>,
+    /// The members a snapshot could not be sent to.
+    unsendable: Arc<Unsendable>,
     /// The broker of the one member this copy calls, when its retries may
     /// wait longer while that broker is down.
     to: Option<Arc<str>>,
@@ -313,8 +316,15 @@ impl Router {
             reach,
             refusals,
             config,
+            unsendable: Arc::default(),
             to: None,
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_unsendable(mut self, unsendable: Arc<Unsendable>) -> Self {
+        self.unsendable = unsendable;
+        self
     }
 
     /// This router, for openraft's client to `target` in `group`. A cache
@@ -567,6 +577,11 @@ impl GroupRouter<ShardTypes, GroupId> for Router {
         option: RPCOption,
     ) -> Result<SnapshotResponse<ShardTypes>, StreamingError<ShardTypes>> {
         let data = snapshot.snapshot.bytes;
+        // Checked here, not left to the member: it would refuse the first
+        // piece on every retry with nothing to say why it never catches up.
+        if let Err(why) = self.unsendable.check(&group_id, &target, data.len() as u64) {
+            return Err(Unreachable::new(&Refused::Unreachable(why)).into());
+        }
         let piece = super::wire::append_budget(option.hard_ttl());
         let sent = async {
             let mut offset = 0;

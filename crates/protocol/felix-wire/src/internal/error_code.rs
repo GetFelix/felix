@@ -54,6 +54,11 @@ pub enum ErrorCode {
     /// `PlainSequencedForwardPublish`). Not retryable as a
     /// refusal.
     LeadershipLost = 13,
+    /// The owner refused a cache put or counter add because the shard's
+    /// Raft group is at its state bound. Nothing was written. Sent only in
+    /// answer to a forwarded cache op on a Raft shard. Not retryable until
+    /// deletes or expiries free room.
+    CacheFull = 14,
 }
 
 impl ErrorCode {
@@ -73,6 +78,7 @@ impl ErrorCode {
             11 => Ok(ErrorCode::UnsupportedKind),
             12 => Ok(ErrorCode::StaleSet),
             13 => Ok(ErrorCode::LeadershipLost),
+            14 => Ok(ErrorCode::CacheFull),
             other => Err(Error::UnknownInternalErrorCode(other)),
         }
     }
