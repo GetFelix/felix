@@ -662,13 +662,16 @@ pub(crate) fn line_behind_reason(line: u64, gap: u64, given: u64) -> String {
     why
 }
 
-/// `millis` in whole seconds, minutes or hours.
+/// `millis` in whole seconds, or tenths of a minute or an hour, rounded up.
 fn about_millis(millis: u64) -> String {
-    let secs = millis.div_ceil(1000);
-    match secs {
-        0..=119 => format!("{secs} s"),
-        120..=7199 => format!("{} min", secs.div_ceil(60)),
-        _ => format!("{} h", secs.div_ceil(3600)),
+    let tenths = |unit: u64| {
+        let t = millis.div_ceil(unit / 10);
+        format!("{}.{}", t / 10, t % 10)
+    };
+    match millis {
+        0..=119_999 => format!("{} s", millis.div_ceil(1000)),
+        120_000..=7_199_999 => format!("{} min", tenths(60_000)),
+        _ => format!("{} h", tenths(3_600_000)),
     }
 }
 

@@ -435,9 +435,18 @@ pub(crate) fn restored_first(
 /// This broker's clock in Unix milliseconds; 0 before 1970, which any
 /// earlier epoch on the line refuses.
 fn now_millis() -> u64 {
-    std::time::SystemTime::now()
+    let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |now| u64::try_from(now.as_millis()).unwrap_or(u64::MAX))
+        .map_or(0, |now| u64::try_from(now.as_millis()).unwrap_or(u64::MAX));
+    #[cfg(test)]
+    let now = now.saturating_add(CLOCK_AHEAD_MILLIS.with(std::cell::Cell::get));
+    now
+}
+
+#[cfg(test)]
+thread_local! {
+    /// How far a test moves this thread's clock ahead.
+    pub(crate) static CLOCK_AHEAD_MILLIS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
 }
 
 fn new_base(view: &PlanView) -> WireBase {

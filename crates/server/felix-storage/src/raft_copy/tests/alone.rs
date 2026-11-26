@@ -521,7 +521,7 @@ fn a_restore_on_a_clock_behind_an_earlier_epoch_is_refused() {
     let earlier = line_epoch(0);
     let now = T0 - 60_000;
     let err = restored_first(3, Some(earlier), now).expect_err("refused");
-    assert!(err.contains("clears in about 6 min"), "{err}");
+    assert!(err.contains("clears in about 5.4 min"), "{err}");
     assert!(err.contains("check that this clock is not behind"), "{err}");
 }
 
@@ -619,5 +619,24 @@ async fn crashes_right_after_a_restore_re_form_and_a_second_restore_waits() {
     assert!(
         crate::raft_copy::stopped(&dir).expect("stop").is_none(),
         "a refused plan leaves the copy as it is"
+    );
+    // The next pass is refused the same way: the copy is still owed a
+    // restore's re-form, not taken for a crash's, which would start low.
+    let copies = root.open();
+    let again = reform(&copies, &dir).await.expect_err("still too soon");
+    assert!(again.to_string().contains("clears in about"), "{again}");
+    assert_eq!(group_epoch(&dir).expect("epoch"), Some(3));
+
+    // Once the clock passes the bound, the pass re-forms it on the line.
+    let ahead = MARGIN_MILLIS + 1000;
+    crate::raft_copy::alone::CLOCK_AHEAD_MILLIS.with(|clock| clock.set(ahead));
+    let copies = root.open();
+    let done = reform(&copies, &dir).await;
+    crate::raft_copy::alone::CLOCK_AHEAD_MILLIS.with(|clock| clock.set(0));
+    assert_eq!(done.expect("re-form"), Aloned::Reformed { epoch: 4 });
+    let firsts = first_indexes(&dir);
+    assert!(
+        firsts[3] > firsts[2] + crate::raft_copy::MIN_OFFSET_GAP,
+        "the retry starts on the line past the earlier epochs: {firsts:?}"
     );
 }

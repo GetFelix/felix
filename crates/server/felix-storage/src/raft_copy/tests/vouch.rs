@@ -1323,21 +1323,22 @@ fn a_restore_waits_for_the_line_to_clear_the_floor() {
 fn a_line_behind_says_how_long_to_wait() {
     use crate::raft_copy::vouch::line_behind_reason;
     let given = R * 1_800_000_000_000 + DEFAULT_OFFSET_GAP;
-    // Planned in the same millisecond as the epoch it follows: 2^18 ms.
+    // Planned in the same millisecond as the epoch it follows: 2^18 ms, the
+    // 4.4 minutes the docs give.
     let why = line_behind_reason(given, DEFAULT_OFFSET_GAP, given);
-    assert!(why.contains("clears in about 5 min"), "{why}");
+    assert!(why.contains("clears in about 4.4 min"), "{why}");
     assert!(!why.contains("default gap"), "{why}");
     assert!(!why.contains("clock"), "{why}");
     // The same moment with the smallest gap: about 37 hours, all of it the
     // gap's doing.
     let short = given - DEFAULT_OFFSET_GAP + MIN_OFFSET_GAP;
     let why = line_behind_reason(short, MIN_OFFSET_GAP, given);
-    assert!(why.contains("clears in about 38 h"), "{why}");
+    assert!(why.contains("clears in about 37.3 h"), "{why}");
     assert!(why.contains("which the default gap avoids"), "{why}");
     assert!(!why.contains("clock"), "{why}");
     // A clock an hour behind the one that planned the epoch.
     let behind = given - R * 3_600_000;
     let why = line_behind_reason(behind, DEFAULT_OFFSET_GAP, given);
-    assert!(why.contains("clears in about 65 min"), "{why}");
+    assert!(why.contains("clears in about 64.4 min"), "{why}");
     assert!(why.contains("check that this clock is not behind"), "{why}");
 }

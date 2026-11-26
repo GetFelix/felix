@@ -6475,17 +6475,30 @@ re-forms the same way, in every fsync mode:
    is. If the wait is longer than about 4.4 minutes, the clock is behind
    the one that planned the last epoch; fix it, or wait.
 
-   Why it is safe: with S at most 2^18 ms, a plan let through has
-   `E - S > 2^18 ms >= S`, so E > 2S and the line is past everything the
-   earlier epoch gave out. It assumes, as every restore does, a shard
-   that gives out at most 2^13 offsets per millisecond, and a clock that
-   is never more than about four minutes behind the one that planned an
-   earlier epoch. A clock further behind is refused for as long as it
-   reads below that epoch's plan time plus the margin, but not for the
-   whole 2S. Only restores wait: a relaxed crash's epoch starts past the
-   copy's own reservation, not on the clock, so an RF 1 shard that crashes
-   twice in a minute re-forms each time with no wait. A second restore
-   within about 4.4 minutes of the first waits out the rest of that time.
+   Why it is safe: the check sees only epochs the restored copy holds, or,
+   in a cluster, the control plane's record holds. For such an epoch, with
+   S at most 2^18 ms, a plan let through has `E - S > 2^18 ms >= S`, so
+   E > 2S and the line is past everything that epoch gave out. It assumes,
+   as every restore does, a shard that gives out at most 2^13 offsets per
+   millisecond, and a clock never more than about 4.4 minutes behind the
+   one that planned an earlier epoch. A clock further behind is refused for
+   as long as it reads below that epoch's plan time plus the margin, but
+   not for the whole 2S.
+
+   What the code does not enforce: a standalone broker restored from a
+   backup taken before its last restore's epoch has no record of that
+   epoch, so nothing refuses a plan made too soon after it. In a cluster
+   the control plane's record holds it, and a plan that does not lead to
+   that record is refused. On a standalone broker the line alone covers it
+   only when the clock has not gone back. If the clock was set back, fix
+   it, or wait until it has passed the time of the last restore, before
+   starting the broker.
+
+   Only restores wait: a relaxed crash's epoch starts past the copy's own
+   reservation, not on the clock, so an RF 1 shard that crashes twice in a
+   minute re-forms each time with no wait. A second restore within about
+   4.4 minutes of the first waits out the rest of that time.
+
    The tool writes
    `restore-pending` first and removes it last, and a start that finds it
    refuses, so a crash part way through the tool never starts the restored
