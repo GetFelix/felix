@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795669032431,
+  "lastUpdate": 1795673304975,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -89760,6 +89760,72 @@ window.BENCHMARK_DATA = {
             "range": "763.09",
             "unit": "us",
             "extra": "trials: 5\nmedian: 582.00\nmean: 935.00\nstdev: 763.09\ncv: 81.61%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "f3a6d3ef419db28774ae7b3ce5aac97dacdc263d",
+          "message": "test(cluster): two Kafka shard-move tests no longer skip on Raft (#2991) (#3217)\n\n* test(cluster): kcat reads every shard from its leader on Raft too (#2991)\n\nSplit the kcat leader test: the read-every-partition half has no engine\nguard and runs on Raft and hybrid, asking Metadata again until the elected\nleader agrees with placement's owner. The follow-a-moved-shard half keeps\nits guard.\n\nSpec-Unaffected: test-only change, no protocol or state-machine behaviour\n\n* test(cluster): try the kafka shard-move tests on Raft (#2991)\n\nDrops the shard-move skip from the kcat follow-a-move test and from the\nmove half of the idempotent Kafka producer test. Their helper steps\nplacement and waits for the new owner, which Raft moves report too\n(raft_shards.rs, a_single_copy_raft_shard_moves_with_every_acknowledged_record).\nRun on Raft in CI to judge.\n\nSpec-Unaffected: test-only change, no protocol or state-machine behaviour\n\n* test(cluster): kcat move test accepts the offset gaps a Raft move leaves (#2991)\n\nAfter a move on Raft the new records sit past blank and membership\nentries, so their offsets skip. The test now checks partition, payloads\nin publish order, strictly rising offsets above the pre-move end, and\ncompares numerically; hybrid keeps the exact contiguous offsets. The\nidempotent producer's move half is guarded again for Raft, where the move\ndid not cut over in CI (#TBD-raft-member-move-after-failover).\n\nSpec-Unaffected: test-only change, no protocol or state-machine behaviour\n\n* test(cluster): name the issue for the Raft move guard (#3234)\n\nSpec-Unaffected: test comment only",
+          "timestamp": "2026-11-26T05:59:50Z",
+          "tree_id": "99637f762f5c088e9631bd11a4e23978c3921c88",
+          "url": "https://github.com/GetFelix/felix/commit/f3a6d3ef419db28774ae7b3ce5aac97dacdc263d"
+        },
+        "date": 1795673288945,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 115,
+            "range": "2.88",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 115.00\nmean: 113.40\nstdev: 2.88\ncv: 2.54%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 169,
+            "range": "3.27",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 169.00\nmean: 167.20\nstdev: 3.27\ncv: 1.96%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 210,
+            "range": "10.12",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 210.00\nmean: 204.00\nstdev: 10.12\ncv: 4.96%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 123,
+            "range": "7.19",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 123.00\nmean: 126.20\nstdev: 7.19\ncv: 5.70%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 275,
+            "range": "174.40",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 275.00\nmean: 348.40\nstdev: 174.40\ncv: 50.06%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 580,
+            "range": "805.71",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 580.00\nmean: 871.60\nstdev: 805.71\ncv: 92.44%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
