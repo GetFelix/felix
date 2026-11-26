@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795690112672,
+  "lastUpdate": 1795690448727,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -71188,6 +71188,58 @@ window.BENCHMARK_DATA = {
             "range": "69347.66",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 980314.81\nmean: 989416.45\nstdev: 69347.66\ncv: 7.01%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "fb0da41a113d19cd7b44e539b9e40f4c0750472c",
+          "message": "fix(raft): an operator's leadership move completes while another voter is down (#3234) (#3255)\n\n* fix(raft): an operator's leader move completes with one voter down (#3234)\n\nAn operator move of a Raft shard's leader to another member of its set was\naccepted, then undone at the next placement pass while any member was down,\nand the group's leader would not hand over anyway (Held::Degraded).\n\nThe move is now marked as an operator's (move_reason operator, already a\nstored and fed field). Brokers read the mark: the group's leader hands over\nto an operator's name while the caught-up voters, itself and the target\namong them, are a majority. Placement's own names keep both holds as before.\nPlacement leaves a marked name alone until the group reports it leading\n(raft_leader_landed), or gives it up after two minutes\n(raft_leader_timed_out, back to the elected member while a member is\ndown). The move is refused with member_down when fewer than a majority of\nthe set is serving. GET /v1/shard-moves lists it with step leading.\n\nThe Kafka idempotent-producer test's move half runs on Raft again.\n\nSpec-Unaffected: FelixRaftPlacement.tla Transfer under PlacedLeaders already lets a settled leader hand over to any caught-up voter with no condition on the other voters; FelixRaftPlacementPlaced.cfg explores interleavings where the third voter takes no step.\n\n* docs, test: operator leader move needs a caught-up majority, not all voters (#3234)\n\nSpec-Unaffected: docs and test only",
+          "timestamp": "2026-11-26T02:43:44-08:00",
+          "tree_id": "72e32525d18903ec2145aa877a2f32bb9f7d4e3a",
+          "url": "https://github.com/GetFelix/felix/commit/fb0da41a113d19cd7b44e539b9e40f4c0750472c"
+        },
+        "date": 1795690448217,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 530040.97,
+            "range": "41091.01",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 530040.97\nmean: 527367.64\nstdev: 41091.01\ncv: 7.79%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 530040.97,
+            "range": "41091.01",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 530040.97\nmean: 527367.64\nstdev: 41091.01\ncv: 7.79%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 119009.12,
+            "range": "8413.96",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 119009.12\nmean: 116290.08\nstdev: 8413.96\ncv: 7.24%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1190091.2,
+            "range": "84139.63",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1190091.20\nmean: 1162900.79\nstdev: 84139.63\ncv: 7.24%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
