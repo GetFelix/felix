@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795674580234,
+  "lastUpdate": 1795674933158,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -89958,6 +89958,72 @@ window.BENCHMARK_DATA = {
             "range": "717.37",
             "unit": "us",
             "extra": "trials: 5\nmedian: 370.00\nmean: 841.60\nstdev: 717.37\ncv: 85.24%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "e7bccb23b9cc92f70e1a6345233474ee0d6fd00c",
+          "message": "test(broker): the Kafka and MQTT client matrices also run on a Raft shard (#2991) (#3214)\n\n* test(kafka): run the kcat matrix on a Raft shard too (#2991)\n\nEach of the 14 kafka_kcat tests is now one body run against two fixtures:\nthe local broker it always used (`<name>::on_a_local_broker`) and a\none-node cluster whose stream is on a Raft shard (`<name>::on_a_raft_shard`).\nThe Raft fixture reads back through a Felix client replay where the local\none reads the broker's log, and restarts its broker to switch the Kafka\nlistener to TLS or anonymous for the SASL_SSL test.\n\nThe cluster harness gains `ClusterConfig::kafka_listener` (TLS, the\nanonymous switch for the cluster's tenant, record headers),\n`Cluster::set_kafka_listener` for the next restart, and\n`BrokerNode::client_certificate`. Defaults are unchanged.\n\nSpec-Unaffected: test fixtures and harness only; no product code.\n\n* test(mqtt): run the MQTT client matrix on a Raft shard too (#2991)\n\nThe 5 mqtt_publish, 3 mqtt_subscribe and 1 mqtt_isolation tests each run\nagainst the local broker and against a one-node cluster whose stream is on\na Raft shard. Publish tests read the stream back through a Felix client\nreplay on the cluster, keys and headers included. The isolation test's\nRaft run uses a durable stream so its publishes go through the group.\n\nThe one-node Raft start, shared with the kcat matrix, moves to\ntests/support/raft_shard.rs.\n\nSpec-Unaffected: test fixtures only; no product code.\n\n* test(kafka,mqtt): engine-neutral offsets and header-free Raft fixture (#2991)\n\nOn a Raft shard the log opens with blank and membership entries that take\noffsets, so a fresh shard's first record is not at 0. The kcat bodies now\ntake the first record's offset from the fixture: the count of records before\na publish on the local broker (so its runs still assert offset 0 exactly),\nthe publish ack on a cluster, or the first stored record after a kcat\nproduce. Consume-from-offset and the fetch-wait test ask for the record after\nthe first; offset queries check latest is one past the last record and\nearliest is at or below the first.\n\nA new cluster finalizes record_headers itself, so the Raft fixture for a\ntest without headers now has its broker not report them, matching a local\nbroker that was not opted in.\n\nThe CI affected-crates fixture gains broker-service's dev-dependency on\nfelix-cluster.\n\nSpec-Unaffected: test fixtures and CI metadata only; no product code.",
+          "timestamp": "2026-11-25T22:26:04-08:00",
+          "tree_id": "f3a00f120a7dae436e3b0f0d4939ace86d89a3d1",
+          "url": "https://github.com/GetFelix/felix/commit/e7bccb23b9cc92f70e1a6345233474ee0d6fd00c"
+        },
+        "date": 1795674922325,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 69,
+            "range": "0.89",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 69.00\nmean: 69.60\nstdev: 0.89\ncv: 1.29%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 120,
+            "range": "1.41",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 120.00\nmean: 119.00\nstdev: 1.41\ncv: 1.19%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 146,
+            "range": "136.54",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 146.00\nmean: 205.80\nstdev: 136.54\ncv: 66.35%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 87,
+            "range": "0.71",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 87.00\nmean: 87.00\nstdev: 0.71\ncv: 0.81%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 184,
+            "range": "20.53",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 184.00\nmean: 193.40\nstdev: 20.53\ncv: 10.61%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 309,
+            "range": "944.41",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 309.00\nmean: 925.60\nstdev: 944.41\ncv: 102.03%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
