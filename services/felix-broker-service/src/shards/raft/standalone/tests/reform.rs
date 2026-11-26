@@ -18,17 +18,17 @@ use felix_storage::run_state::{self, BootId};
 use super::super::super::tests::{INCARNATION, broker_at};
 use super::*;
 
-const PERIODIC: FsyncMode = FsyncMode::Periodic {
+pub(in crate::shards::raft) const PERIODIC: FsyncMode = FsyncMode::Periodic {
     interval: Duration::from_millis(50),
 };
 
-fn boot(n: u8) -> Option<BootId> {
+pub(in crate::shards::raft) fn boot(n: u8) -> Option<BootId> {
     Some(BootId::from_bytes([n; 16]))
 }
 
 /// Start a run on `root` in boot `n`. Relaxed runs rotate on a crash into
 /// another boot.
-fn begin(root: &Path, relaxed: bool, n: u8) -> bool {
+pub(in crate::shards::raft) fn begin(root: &Path, relaxed: bool, n: u8) -> bool {
     let mut fresh = [n; 16];
     fresh[0] = 0xF0;
     run_state::begin(root, relaxed, None, boot(n), || false, || fresh)
@@ -36,7 +36,7 @@ fn begin(root: &Path, relaxed: bool, n: u8) -> bool {
         .rotated
 }
 
-async fn broker_in(root: &Path, fsync: FsyncMode) -> Arc<Broker> {
+pub(in crate::shards::raft) async fn broker_in(root: &Path, fsync: FsyncMode) -> Arc<Broker> {
     broker_at(root, 1, INCARNATION, ConsistencyLevel::Leader, fsync).await
 }
 
@@ -51,15 +51,15 @@ fn orders_dir(broker: &Arc<Broker>) -> std::path::PathBuf {
 
 /// What the first run left: the shard's directory, the end of what it
 /// committed, and the highest index it reserved.
-struct Written {
-    dir: std::path::PathBuf,
-    end: u64,
-    reserved: Option<u64>,
+pub(in crate::shards::raft) struct Written {
+    pub(in crate::shards::raft) dir: std::path::PathBuf,
+    pub(in crate::shards::raft) end: u64,
+    pub(in crate::shards::raft) reserved: Option<u64>,
 }
 
 /// Write `one two three`, then `four five` with the saved commit kept from
 /// before them, as a crash leaves a commit saved at most once a second.
-async fn write(root: &Path, fsync: FsyncMode) -> Written {
+pub(in crate::shards::raft) async fn write(root: &Path, fsync: FsyncMode) -> Written {
     let broker = broker_in(root, fsync).await;
     let (shards, engine, stop) = standalone(&broker);
     let orders = key("orders", 0);
@@ -114,7 +114,7 @@ async fn reopen(
     (broker, shards, engine, stop)
 }
 
-async fn payloads(broker: &Broker) -> Vec<Vec<u8>> {
+pub(in crate::shards::raft) async fn payloads(broker: &Broker) -> Vec<Vec<u8>> {
     broker
         .read_committed("t1", "ns", "orders", 0, 0, 1 << 20)
         .await
@@ -124,7 +124,7 @@ async fn payloads(broker: &Broker) -> Vec<Vec<u8>> {
         .collect()
 }
 
-fn written() -> Vec<Vec<u8>> {
+pub(in crate::shards::raft) fn written() -> Vec<Vec<u8>> {
     [&b"one"[..], b"two", b"three", b"four", b"five"]
         .iter()
         .map(|p| p.to_vec())
