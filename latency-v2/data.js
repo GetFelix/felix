@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795662486749,
+  "lastUpdate": 1795663044096,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -89430,6 +89430,72 @@ window.BENCHMARK_DATA = {
             "range": "600.75",
             "unit": "us",
             "extra": "trials: 5\nmedian: 529.00\nmean: 794.40\nstdev: 600.75\ncv: 75.62%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "6dae46ae0260c3295cbc30bcebefb8a5f179f572",
+          "message": "fix(raft): a publish refused before it is appended is answered at once (#3199) (#3209)\n\nA batch the Raft leader refuses before writing any of it (lease lapsed,\nor no longer leading the term) was answered only at its delivery turn,\nbehind every earlier batch. If an earlier batch was acknowledged on the\nlease and never settled, the publisher waited out the answer timeout and\nwas told quorum_timeout (\"durable here\"), outcome unknown, for a batch\nthat was never written.\n\nThe engine now marks such a failure ProposalFailed::refused, and\nProposedPublish answers it through a channel as soon as the engine\nrefuses. The batch still takes its turn on a task, pushes its gap and\nsettles in hand-over order, so delivery order and the stall bound are\nunchanged. A failure with no record known written but not known refused\nstill waits for its turn.\n\nQuorumError::TimedOut no longer claims the batch is durable here.\n\nSpec-Unaffected: only when the publisher hears a not-appended refusal moves; log order, offsets and delivery order are unchanged",
+          "timestamp": "2026-11-26T02:54:06Z",
+          "tree_id": "edaf9b03a3d79fc2801a4cc4cece32a47e09fa15",
+          "url": "https://github.com/GetFelix/felix/commit/6dae46ae0260c3295cbc30bcebefb8a5f179f572"
+        },
+        "date": 1795663030216,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 96,
+            "range": "1.64",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 96.00\nmean: 96.20\nstdev: 1.64\ncv: 1.71%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 130,
+            "range": "9.12",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 130.00\nmean: 134.20\nstdev: 9.12\ncv: 6.80%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 169,
+            "range": "170.36",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 169.00\nmean: 290.40\nstdev: 170.36\ncv: 58.66%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 133,
+            "range": "1.10",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 133.00\nmean: 132.20\nstdev: 1.10\ncv: 0.83%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 260,
+            "range": "7.06",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 260.00\nmean: 260.60\nstdev: 7.06\ncv: 2.71%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 391,
+            "range": "179.16",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 391.00\nmean: 468.40\nstdev: 179.16\ncv: 38.25%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
