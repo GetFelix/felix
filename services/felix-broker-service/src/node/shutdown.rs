@@ -42,6 +42,8 @@ pub(super) struct Storage {
     /// Background tasks that can write under the root (cache expiry, the
     /// Raft restore gate and reports), joined before storage closes.
     pub(super) writers: TaskTracker,
+    /// Set once the flush is done, before the stop is recorded.
+    pub(super) verdict: super::run_guard::Verdict,
 }
 
 /// Everything a running node has to stop, in the fields the drain reads.
@@ -438,6 +440,12 @@ impl Running {
                 })
                 .await;
         }
+        storage.verdict.decide(
+            !budget
+                .unfinished()
+                .iter()
+                .all(|step| NO_STORE_WRITES.contains(step)),
+        );
         // Step 3c: say the stop was clean, so the next start keeps the storage
         // id. Only when every acknowledged record is known synced: a step cut
         // short may still be writing, and a poisoned log may have dropped pages

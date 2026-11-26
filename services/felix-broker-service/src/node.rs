@@ -109,7 +109,10 @@ where
         .as_ref()
         .map(|durable| storage::lock_root(&durable.root))
         .transpose()?;
-    let mut run = run_guard::RunGuard::new(root_lock);
+    let mut run = run_guard::RunGuard::new(
+        root_lock,
+        std::time::Duration::from_millis(config.shutdown_drain_timeout_ms),
+    );
     let served = serve(&mut run, config, durable_config, metrics_handle, shutdown).await;
     run.close().await;
     served
@@ -249,6 +252,7 @@ where
         run.stop_with(token);
     }
     let connections = TaskTracker::new();
+    run.connections(&connections);
     tracing::info!(
         lanes = config.subscriber_writer_lanes.max(1),
         queue_bound = config.subscriber_lane_queue_depth.max(1),
@@ -794,13 +798,9 @@ where
             if let Some(membership) = membership {
                 run.track(membership.handle);
             }
-            run.track(tokio::spawn(async move {
-                for task in accept_tasks {
-                    let _ = task.await;
-                }
-                connections.close();
-                connections.wait().await;
-            }));
+            for task in accept_tasks {
+                run.track(task);
+            }
             return Err(err);
         }
     };
@@ -887,6 +887,7 @@ where
         storage: shutdown::Storage {
             engine_shards: raft_shards.engine_shards,
             writers: run.writers().clone(),
+            verdict: run.verdict(),
             broker: Arc::clone(&broker),
             run: durable_storage
                 .as_ref()
@@ -896,9 +897,7 @@ where
         metrics_shutdown,
     };
     let stopped = running.wait(shutdown).await;
-    let drained = running.drain(stopped).await;
-    run.drained();
-    drained
+    running.drain(stopped).await
 }
 
 /// A v9 segment, or a committed vote, is a format an older build refuses, so

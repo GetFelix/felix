@@ -442,8 +442,8 @@ async fn a_broker_restarts_in_process_after_a_clean_stop() -> Result<()> {
 
 /// **A start that fails after storage opened lets the data directory go
 /// only once it has stopped everything and closed storage** (#3250). Its
-/// QUIC port is taken, which fails the start after storage, the Raft shards
-/// and cache expiry are up. By the time it returns the stop is recorded as
+/// QUIC port is taken, which fails the start after storage and the Raft
+/// shards are up. By the time it returns the stop is recorded as
 /// clean, so nothing under the root is still being written, and a restart in
 /// this process takes the directory and keeps its storage id.
 #[tokio::test]

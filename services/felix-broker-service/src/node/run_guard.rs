@@ -6,9 +6,13 @@
 //! the lock go when the start returns would let a second broker begin a run
 //! under them. So every way out of a run goes through [`RunGuard::close`]:
 //! stop every task, close storage, record the stop, and only then release.
+//! All of that runs against one deadline; a run that does not stop in time is
+//! not recorded as clean and keeps the lock until the process exits.
 
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU8, Ordering};
+use std::time::Duration;
 
 use felix_broker::Broker;
 use felix_storage::StorageId;
@@ -31,32 +35,62 @@ pub(super) struct RunGuard {
     teardown: Option<Teardown>,
 }
 
+/// What the drain decided about the stop. Set as soon as it has flushed and
+/// before it records anything, so a teardown that runs after a drain cut off
+/// later never flushes and records again over it.
+#[derive(Clone, Default)]
+pub(super) struct Verdict(Arc<AtomicU8>);
+
+const UNDECIDED: u8 = 0;
+const SETTLED: u8 = 1;
+const CUT_SHORT: u8 = 2;
+
+impl Verdict {
+    /// The drain flushed and records the stop itself. `cut_short` when a
+    /// step that may write did not finish, so something may still be
+    /// writing and the lock is kept until the process exits.
+    pub(super) fn decide(&self, cut_short: bool) {
+        let verdict = if cut_short { CUT_SHORT } else { SETTLED };
+        self.0.store(verdict, Ordering::Release);
+    }
+
+    fn get(&self) -> u8 {
+        self.0.load(Ordering::Acquire)
+    }
+}
+
 /// What closing a run stops, in the order it stops them.
 struct Teardown {
     lock: Option<RootLock>,
     stops: Vec<CancellationToken>,
     /// Tasks that can write under the root, joined before storage closes.
     writers: TaskTracker,
+    /// The client connections, which do not stop on a token.
+    connections: Option<TaskTracker>,
     engine_shards: Option<Arc<dyn EngineShards>>,
     broker: Option<Arc<Broker>>,
     /// Where to record the stop, once storage closed.
     run: Option<(PathBuf, StorageId)>,
-    /// The drain already closed storage and recorded the stop.
-    drained: bool,
+    verdict: Verdict,
+    /// For the joins, the engine stop and the flush together.
+    deadline: Duration,
 }
 
 impl RunGuard {
-    /// Hold `lock`, or nothing for a broker without durable storage.
-    pub(super) fn new(lock: Option<RootLock>) -> Self {
+    /// Hold `lock`, or nothing for a broker without durable storage. A
+    /// close that has to stop the run itself gives it `deadline`.
+    pub(super) fn new(lock: Option<RootLock>, deadline: Duration) -> Self {
         Self {
             teardown: Some(Teardown {
                 lock,
                 stops: Vec::new(),
                 writers: TaskTracker::new(),
+                connections: None,
                 engine_shards: None,
                 broker: None,
                 run: None,
-                drained: false,
+                verdict: Verdict::default(),
+                deadline,
             }),
         }
     }
@@ -108,9 +142,18 @@ impl RunGuard {
         self.parts().engine_shards = shards;
     }
 
-    /// The drain stopped everything and closed storage.
-    pub(super) fn drained(&mut self) {
-        self.parts().drained = true;
+    /// The client connections, waited for before storage closes.
+    pub(super) fn connections(&mut self, connections: &TaskTracker) {
+        self.parts().connections = Some(connections.clone());
+    }
+
+    /// For the drain to say it has flushed and records the stop.
+    pub(super) fn verdict(&self) -> Verdict {
+        self.teardown
+            .as_ref()
+            .expect("a run guard is open until closed")
+            .verdict
+            .clone()
     }
 
     /// Stop the run and let the lock go, last.
@@ -142,8 +185,28 @@ impl Teardown {
             stop.cancel();
         }
         self.writers.close();
-        self.writers.wait().await;
-        if !self.drained {
+        if let Some(connections) = &self.connections {
+            connections.close();
+        }
+        match self.verdict.get() {
+            // The drain bounded its own joins and recorded the stop.
+            SETTLED if self.writers.is_empty() => drop(self.lock.take()),
+            UNDECIDED => self.stop_in_time().await,
+            _ => tracing::warn!(
+                "the drain was cut short; keeping the data directory locked until the process exits"
+            ),
+        }
+    }
+
+    /// Stop what is running and close storage within the deadline, then let
+    /// the lock go. Out of time, nothing is recorded, which reads as a crash
+    /// at the next start, and the lock stays until the process exits.
+    async fn stop_in_time(&mut self) {
+        let stopped = tokio::time::timeout(self.deadline, async {
+            self.writers.wait().await;
+            if let Some(connections) = &self.connections {
+                connections.wait().await;
+            }
             let engine_closed = match &self.engine_shards {
                 Some(shards) => shards.shutdown().await,
                 None => true,
@@ -158,16 +221,26 @@ impl Teardown {
                 },
                 None => true,
             };
-            // Nothing was acknowledged, so a start that closed everything
-            // stopped as cleanly as a drain does.
-            if let Some((root, id)) = &self.run {
-                if engine_closed && flushed && !felix_storage::disk_log::any_log_poisoned() {
-                    if let Err(err) = super::shutdown::record_clean_stop(root, *id) {
-                        tracing::error!(error = %err, "could not record a clean stop; the next start takes a new storage id");
-                    }
-                } else if let Err(err) = super::storage::forget_boot(root) {
-                    tracing::error!(error = %err, "could not record that the stop may have lost records");
+            engine_closed && flushed
+        })
+        .await;
+        let Ok(closed) = stopped else {
+            tracing::error!(
+                deadline_ms = self.deadline.as_millis(),
+                "the run did not stop in time; not recording a clean stop, and keeping the data \
+                 directory locked until the process exits"
+            );
+            return;
+        };
+        // Nothing was acknowledged after the last flush, so a run that closed
+        // everything stopped as cleanly as a drain does.
+        if let Some((root, id)) = &self.run {
+            if closed && !felix_storage::disk_log::any_log_poisoned() {
+                if let Err(err) = super::shutdown::record_clean_stop(root, *id) {
+                    tracing::error!(error = %err, "could not record a clean stop; the next start takes a new storage id");
                 }
+            } else if let Err(err) = super::storage::forget_boot(root) {
+                tracing::error!(error = %err, "could not record that the stop may have lost records");
             }
         }
         drop(self.lock.take());

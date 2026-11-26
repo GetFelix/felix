@@ -1993,7 +1993,12 @@ the stop. A start that failed this way returns only after all of that, so a
 broker started again in the same process finds the directory free and its
 stop recorded as clean. A running broker dropped without stopping closes
 on a task of its own, and if that cannot finish the lock stays held until
-the process exits. A simulated broker holds the lock too.
+the process exits. All of this runs against the drain timeout
+(`FELIX_SHUTDOWN_DRAIN_TIMEOUT_MS`). A task or client connection that has
+not stopped by then, or a drain step that may write and was cut short,
+means the stop is not recorded as clean, so the next start reads it as a
+crash, and the lock stays held until the process exits. The broker still
+exits on time. A simulated broker holds the lock too.
 
 Two directories a broker uses outside its data directory are not locked,
 because they are shared: the offload directory
