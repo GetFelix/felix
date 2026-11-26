@@ -139,6 +139,14 @@ impl<K> Shared<K> {
     /// that may empty the log has waited for every append's callback.
     pub(super) async fn remove_through(&self, purged: Purged, behind: bool) -> io::Result<()> {
         let log = &self.log;
+        // A stopped log refuses the reset a purge past the end needs, so it
+        // takes no new id either.
+        if log.is_poisoned() {
+            return Err(io::Error::other(format!(
+                "{}: the log is stopped",
+                log.label()
+            )));
+        }
         let dir = log.dir().to_path_buf();
         // Refused once closed: the directory may already be another log's.
         let writer = log.clone();

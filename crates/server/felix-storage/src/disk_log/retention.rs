@@ -205,23 +205,24 @@ impl LogInner {
         // next pass trims again. Oldest first, each unlink synced before
         // the next: otherwise a power loss can keep a newer unlink and undo
         // an older one, and recovery refuses the gap that leaves.
-        for descriptor in &removed {
-            remove_segment_files(&self.dir, descriptor.id)?;
-            // A removal that may come back after a crash, behind a newer
-            // one that did not, is a gap recovery refuses.
-            self.poison_on_sync_failure(
-                "a segment removal",
-                crate::io::sync_dir(&self.dir).map_err(StorageError::from),
-            )?;
-            outcome.segments_deleted += 1;
-            outcome.bytes_reclaimed += descriptor.size_bytes;
-            #[cfg(test)]
-            if let Some(offloader) = &self.offloader {
-                offloader
-                    .faults
-                    .stop(super::offload::test_hooks::Stop::Unlinked)?;
+        let unlinked = (|| -> Result<()> {
+            for descriptor in &removed {
+                remove_segment_files(&self.dir, descriptor.id)?;
+                // A removal that may come back after a crash, behind a newer
+                // one that did not, is a gap recovery refuses.
+                crate::io::sync_dir(&self.dir)?;
+                outcome.segments_deleted += 1;
+                outcome.bytes_reclaimed += descriptor.size_bytes;
+                #[cfg(test)]
+                if let Some(offloader) = &self.offloader {
+                    offloader
+                        .faults
+                        .stop(super::offload::test_hooks::Stop::Unlinked)?;
+                }
             }
-        }
+            Ok(())
+        })();
+        self.poison_on_failed_removal(unlinked)?;
         drop(manifest);
         if !removed.is_empty() {
             metrics::counter!(metrics_names::RETENTION_SEGMENTS_DELETED_TOTAL)
@@ -373,24 +374,40 @@ impl LogInner {
                 .collect();
             self.remove_head(&mut segments, &chosen)?
         };
-        for descriptor in &removed {
-            #[cfg(test)]
-            super::segments::stop_point(&self.dir)?;
-            {
-                // Not once the log is closed: the directory may already be
-                // another log's. Only the unlink holds the lock, not its sync.
-                let segments = self.segments.read();
-                segments.check_open()?;
-                remove_segment_files(&self.dir, descriptor.id)?;
+        let unlinked = (|| -> Result<()> {
+            for descriptor in &removed {
+                #[cfg(test)]
+                super::segments::stop_point(&self.dir)?;
+                {
+                    // Not once the log is closed: the directory may already be
+                    // another log's. Only the unlink holds the lock, not its sync.
+                    let segments = self.segments.read();
+                    segments.check_open()?;
+                    remove_segment_files(&self.dir, descriptor.id)?;
+                }
+                // A removal that may come back after a crash, behind a newer
+                // one that did not, is a gap recovery refuses.
+                crate::io::sync_dir(&self.dir)?;
             }
-            // A removal that may come back after a crash, behind a newer
-            // one that did not, is a gap recovery refuses.
-            self.poison_on_sync_failure(
-                "a segment removal",
-                crate::io::sync_dir(&self.dir).map_err(StorageError::from),
-            )?;
-        }
+            Ok(())
+        })();
+        self.poison_on_failed_removal(unlinked)?;
         Ok(removed)
+    }
+
+    /// Poison the log if unlinking segments already off the list failed,
+    /// unless it failed because the log closed. Their files are then on
+    /// disk but not on the list, so no later pass, truncation or reset
+    /// unlinks them, and one left beside a reset's new base is a gap
+    /// recovery refuses. Stopped, the log reopens from the files, where they
+    /// are only a longer head.
+    fn poison_on_failed_removal(&self, unlinked: Result<()>) -> Result<()> {
+        if let Err(err) = &unlinked
+            && !matches!(err, StorageError::Closed(_))
+        {
+            self.poison(format!("a segment removal failed ({err})"));
+        }
+        unlinked
     }
 
     /// Take `chosen` off the head of the list, then forget the producer
