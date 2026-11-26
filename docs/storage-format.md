@@ -770,7 +770,11 @@ in eight ways:
   directory, whether it comes from the same process, another process,
   `felix-log-tool`, or through a symlink. The holder is not named: `flock`
   does not record one. A second broker on the same data directory is
-  refused at the first log it opens. A Raft copy's directory is
+  refused at the first log it opens, but the data directory's own files
+  (the run record, the storage id and the marks) are not covered by these
+  locks: the second broker writes its run record and may rotate the storage
+  id under the first before any log refuses it (#3250). A Raft copy's
+  directory is
   locked before its copy file and marks are judged, and stays locked through
   a rotation: the new directory is locked as soon as the old one is renamed
   into `.kept`, and the old one only lets go once it is finished with. A

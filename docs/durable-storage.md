@@ -1956,8 +1956,12 @@ directory a running broker holds. Stop the broker first, or use
 
 Two brokers pointed at one data directory are caught per log directory, as
 each opens it, not at startup. The second broker starts, and each shard it
-tries to open that the first holds fails. A lock on the whole data
-directory for the life of the process is tracked in #3250.
+tries to open that the first holds fails. The data directory's own files
+(the run record, the storage id and the marks) are not covered by these
+locks: a second broker started on the same directory writes its run record
+and may rotate the storage id under the first before any log refuses it. A
+lock on the whole data directory for the life of the process is tracked in
+#3250.
 
 The lock goes away with the process that holds it, so a crash leaves no
 stale lock behind. See "One open at a time" in `docs/storage-format.md`.
