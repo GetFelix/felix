@@ -196,6 +196,18 @@ filler that restates what was just said.
     (plus 1 s for the last acks) over its time. The run fails, says which rep
     and why, and still uploads the result file with every rep in it. Rerun it.
     The result also records the runner's CPU model.
+  - If the gate is red, read which cell and why. A pace or measurement
+    failure is a bad run: rerun it. A cell over the tolerance in a run that
+    held its pace is a real cost: find what the PR added per message (look at
+    the `b64` cell first, it is the more sensitive one) and remove it, or
+    explain it and refresh the baseline as below. Do not rerun a red gate until
+    it goes green.
+  - The Raft baseline depends on how the cluster harness starts its members.
+    After a change to that harness (for example the fix that finalizes the Raft
+    features before the members open, which changes how often they fsync), the
+    old numbers are stale. Refresh with one command from a pushed branch:
+    `scripts/perf/ipm_refresh.sh <branch>`. It dispatches five runs, waits,
+    and rewrites both sections of `scripts/perf/ipm-baseline.toml`.
   - If the extra cost is deliberate, dispatch the workflow five times on the
     PR's head commit and run `python3 scripts/perf/ipm_gate.py update` with
     the five `ipm-result.json` artifacts (one per architecture per run). It
