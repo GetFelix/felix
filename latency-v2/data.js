@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795696318964,
+  "lastUpdate": 1795698791993,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -90816,6 +90816,72 @@ window.BENCHMARK_DATA = {
             "range": "890.54",
             "unit": "us",
             "extra": "trials: 5\nmedian: 556.00\nmean: 973.40\nstdev: 890.54\ncv: 91.49%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "5aa03faf65c7487336880ff1c9953316ba3e8d74",
+          "message": "fix(controlplane): a cluster with streams created before its first broker is still new (#1774) (#3260)\n\n* wip: a cluster seeded before its first broker is still new (#1774)\n\nSpec-Unaffected: control-plane new-cluster check, not modelled\n\n* test(controlplane): a seeded store is new until a shard is placed (#1774)\n\nSpec-Unaffected: control-plane new-cluster check, not modelled\n\n* docs: a cluster seeded before its brokers is new (#1774)\n\nSpec-Unaffected: docs and changelog for the control-plane new-cluster check\n\n* test(cluster): a harness cluster comes up new; upgraded_fleet starts one that is not (#1774)\n\nThe control plane now finalizes the new-cluster features at the first\nregistration even with streams seeded first, so the harness stops\nfinalizing the Raft features itself. ClusterConfig::upgraded_fleet leaves\na placed-then-removed shard in the store before any broker registers, so\nthe control plane reads the fleet as not new by its own rule. Tests of\nwhat a fleet refuses before a finalize, and the hybrid helpers that wait\nfor an exact count of finalized features, use it. Adds the written-commit\ncheck that a harness Raft member does not fsync per commit.\n\nSpec-Unaffected: test harness only\n\n* fix(controlplane): a memory store's restore raises the placement incarnation (#1774)\n\nAn operator's import into the memory store kept the backup's placement\nincarnation, so a store backed up before its first broker and restored\nafter brokers wrote data read as a new cluster and finalized at the next\nregistration. It now raises the incarnation as the Raft import does. The\nrestore tests go through a real export and import on both stores.\n\nAlso: why never_placed may read a lagging Raft replica, the history\ncampaign's lease mode starting as an upgraded fleet on the hybrid, and\ndocs on a restarted memory control plane, the broker's data-directory\nrefusal coming after registration, and the hybrid-retirement row.\n\nSpec-Unaffected: control-plane restore bookkeeping and docs; no modelled protocol changes\n\n* test(cluster,sim): hybrid clusters start upgraded by default, Raft ones new (#1774)\n\nThe hybrid is frozen and its tests predate the new-cluster rule, so a\nhybrid harness cluster with seeded streams or caches, and every simulator\nrun, leaves an upgraded fleet's history in the store before the first\nbroker registers. Raft clusters start new. ClusterConfig::upgraded_fleet\nis now Option<bool>: None decides by engine, Some asks for either.\n\nSpec-Unaffected: test harness and simulator setup only\n\n* docs: test clusters start new on Raft, upgraded on the hybrid (#1774)\n\nSpec-Unaffected: docs only\n\n* test(sim): pin the abandon shape on seed 13 (#1774)\n\nSeed 44 stopped reaching an abandon once the start records an upgraded\nfleet: any write to the store before the brokers register moves the run.\nA/B with the product change reverted showed the record alone moves it.\nSeed 13 reaches the shape and replays the same twice.\n\nSpec-Unaffected: simulator test pin only",
+          "timestamp": "2026-11-26T05:06:28-08:00",
+          "tree_id": "76c5167ce365e9be790746ef6bed4dea3222e6ea",
+          "url": "https://github.com/GetFelix/felix/commit/5aa03faf65c7487336880ff1c9953316ba3e8d74"
+        },
+        "date": 1795698775313,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 152,
+            "range": "4.72",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 152.00\nmean: 153.60\nstdev: 4.72\ncv: 3.07%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 203,
+            "range": "405.97",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 203.00\nmean: 383.80\nstdev: 405.97\ncv: 105.78%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 270,
+            "range": "542.91",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 270.00\nmean: 505.00\nstdev: 542.91\ncv: 107.51%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 200,
+            "range": "7.31",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 200.00\nmean: 203.00\nstdev: 7.31\ncv: 3.60%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 402,
+            "range": "222.42",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 402.00\nmean: 505.00\nstdev: 222.42\ncv: 44.04%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 2546,
+            "range": "1110.21",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 2546.00\nmean: 1766.60\nstdev: 1110.21\ncv: 62.84%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
