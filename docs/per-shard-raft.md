@@ -996,7 +996,14 @@ mechanism:
   once did for `backup_members`. The point is read only from a member serving its term
   at the newest term any member reports: a leader at an older term may be
   deposed without knowing it, and a new one knows the commit index only
-  once it has committed in its own term. The point is one past the furthest
+  once it has committed in its own term. That check means something only
+  when the answering members include a majority of each voter set of the
+  newest membership any of them reports (by its entry's log id), so the
+  collector requires one (#3179). Every answer is read after the barrier
+  and terms only grow, so that majority meets the voters that elected any
+  leader that acknowledged a write before the barrier. A joint membership
+  needs both majorities; a learner, or a copy back under a new copy id, is
+  in no voter set. A member that reports no voters counts toward none. The point is one past the furthest
   entry of that term the leader acknowledged, which is its commit index or
   past it: a `Quorum` write on a `Periodic` stream is answered on a written
   majority, and a `Leader` write on the lease, before the commit reaches
