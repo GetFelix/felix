@@ -16,6 +16,9 @@ type Raft = RaftLog<Types, Codec>;
 /// that waits on a write fails the timing check as well as the count.
 const SLOW_WRITE: Duration = Duration::from_secs(1);
 
+/// Entries the slow-disk test appends.
+const HELD: u64 = 1000;
+
 fn relaxed_modes() -> [(bool, FsyncMode); 2] {
     [
         (
@@ -76,7 +79,9 @@ async fn a_save_returns_at_once_and_writes_stay_bounded_on_a_slow_disk() {
         crate::run_state::begin(root.path(), relaxed, None, None, || false, || [7; 16])
             .expect("begin");
         let mut raft = open_in(root.path(), mode);
-        let entries: Vec<_> = (0..400).map(|index| normal(1, index, "a")).collect();
+        // More entries than the loop below can save: an id past the tail is
+        // lowered to the tail at open, which would hide what close wrote.
+        let entries: Vec<_> = (0..HELD).map(|index| normal(1, index, "a")).collect();
         append(&mut raft, entries).await;
         let log = raft.disk_log().clone();
         log.slow_replica_writes(SLOW_WRITE);
@@ -98,7 +103,7 @@ async fn a_save_returns_at_once_and_writes_stay_bounded_on_a_slow_disk() {
 
         // Keep moving the id for a while; the writes it causes stay bounded.
         let mut index = 20;
-        while started.elapsed() < Duration::from_millis(2500) {
+        while started.elapsed() < Duration::from_millis(2500) && index < HELD {
             raft.save_committed(Some(log_id(1, index)))
                 .await
                 .expect("save");
@@ -165,6 +170,46 @@ async fn a_crash_before_the_write_behind_reads_back_an_earlier_id() {
         assert_eq!(
             raft.read_committed().await.expect("committed"),
             Some(log_id(1, 2)),
+            "{mode:?}"
+        );
+    }
+}
+
+/// **A close writes the newest id saved, whatever write is in flight.** Every
+/// replica-state write reads memory and renames under one lock, so close's
+/// write runs after the one in flight and carries every save made meanwhile;
+/// none can land after it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_close_during_a_slow_write_writes_the_newest_id() {
+    for (relaxed, mode) in relaxed_modes() {
+        let root = tempdir().expect("dir");
+        crate::run_state::begin(root.path(), relaxed, None, None, || false, || [7; 16])
+            .expect("begin");
+        let mut raft = open_in(root.path(), mode);
+        let entries: Vec<_> = (0..=9).map(|index| normal(1, index, "a")).collect();
+        append(&mut raft, entries).await;
+        let log = raft.disk_log().clone();
+        log.slow_replica_writes(Duration::from_millis(500));
+        raft.save_committed(Some(log_id(1, 2))).await.expect("save");
+        // The write behind has read index 2 and is stalled before its rename.
+        while log.replica_writes() == 0 {
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+        for index in 3..=7 {
+            raft.save_committed(Some(log_id(1, index)))
+                .await
+                .expect("save");
+        }
+        log.close().await.expect("close");
+        assert_eq!(on_disk(&raft), 8, "{mode:?}: close wrote the newest id");
+        // Nothing still running writes an older one over it.
+        tokio::time::sleep(Duration::from_millis(1200)).await;
+        assert_eq!(on_disk(&raft), 8, "{mode:?}: an older write landed last");
+        drop((raft, log));
+        let mut raft = open_in(root.path(), mode);
+        assert_eq!(
+            raft.read_committed().await.expect("committed"),
+            Some(log_id(1, 7)),
             "{mode:?}"
         );
     }
