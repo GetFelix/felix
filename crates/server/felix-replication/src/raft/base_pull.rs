@@ -14,7 +14,6 @@ use async_trait::async_trait;
 use felix_storage::log::LogConfig;
 use felix_storage::raft_copy::{BaseCheck, EpochBase, EpochLogId, Staging, discard_staged};
 use felix_storage::raft_log::LogReader;
-use openraft::storage::RaftLogReader;
 use openraft::type_config::alias::EntryOf;
 
 use super::codec::ShardCodec;
@@ -83,7 +82,7 @@ pub(crate) async fn serve(
     'pages: while next <= end {
         // One page a read, so a chunk never holds much past its budget.
         let page = reader
-            .limited_get_log_entries(next, end + 1)
+            .base_page(next, end + 1)
             .await
             .map_err(|err: io::Error| err.to_string())?;
         if page.is_empty() {
@@ -317,11 +316,28 @@ impl ChunkSource for TransportSource {
 pub(crate) struct PullState {
     running: AtomicBool,
     staged: AtomicBool,
+    /// Set once the member took a snapshot or entries: it is no longer
+    /// blank, so a staged base must never replace its log.
+    abandoned: AtomicBool,
+    cancel: CancellationToken,
 }
 
 impl PullState {
     pub(crate) fn staged(&self) -> bool {
-        self.staged.load(Ordering::Acquire)
+        self.staged.load(Ordering::Acquire) && !self.abandoned.load(Ordering::Acquire)
+    }
+
+    /// The member caught up another way: stop any pull and never start or
+    /// signal one again. A staging log left behind is discarded by the
+    /// next open, which adopts only into a copy that holds nothing.
+    pub(crate) fn abandon(&self) {
+        if !self.abandoned.swap(true, Ordering::AcqRel) {
+            self.cancel.cancel();
+        }
+    }
+
+    fn abandoned(&self) -> bool {
+        self.abandoned.load(Ordering::Acquire)
     }
 }
 
@@ -340,13 +356,14 @@ pub(crate) fn spawn(
     stop: CancellationToken,
     label: String,
 ) {
-    if state.staged() || state.running.swap(true, Ordering::AcqRel) {
+    if state.abandoned() || state.staged() || state.running.swap(true, Ordering::AcqRel) {
         return;
     }
     runtime.spawn(async move {
         let pulled = tokio::select! {
             biased;
             () = stop.cancelled() => None,
+            () = state.cancel.cancelled() => None,
             pulled = async {
                 let base = {
                     let copy = copy.clone();
@@ -362,8 +379,15 @@ pub(crate) fn spawn(
         };
         match pulled {
             Some(Ok(Pulled::Staged(last))) => {
-                tracing::info!(member = %label, base = last.index, "staged a re-formed stream's base; the member reopens to adopt it");
                 state.staged.store(true, Ordering::Release);
+                // Checked after the store, so an abandon on either side of
+                // it leaves nothing signalled.
+                if state.abandoned() {
+                    state.staged.store(false, Ordering::Release);
+                    discard_quietly(&copy, &label).await;
+                } else {
+                    tracing::info!(member = %label, base = last.index, "staged a re-formed stream's base; the member reopens to adopt it");
+                }
             }
             Some(Ok(Pulled::BelowFloor { floor })) => {
                 tracing::warn!(member = %label, floor, "the voters' floor is past the re-form base; nothing to pull");
@@ -374,10 +398,19 @@ pub(crate) fn spawn(
             Some(Err(err)) => {
                 tracing::warn!(member = %label, error = %err, "a base pull failed; the next refused snapshot tries again");
             }
-            None => {}
+            None => discard_quietly(&copy, &label).await,
         }
         state.running.store(false, Ordering::Release);
     });
+}
+
+/// Drop a staging log the member will never adopt.
+async fn discard_quietly(copy: &Path, label: &str) {
+    let copy = copy.to_path_buf();
+    let discarded = felix_common::blocking::spawn(move || discard_staged(&copy)).await;
+    if let Err(err) = discarded.map_err(io::Error::other).and_then(|done| done) {
+        tracing::warn!(member = %label, error = %err, "could not discard a staged base; the next open does");
+    }
 }
 
 fn wall_clock_micros() -> u64 {

@@ -1689,9 +1689,14 @@ impl Group {
         match body {
             Request::Append(rpc) => {
                 self.lease.named(term_of(&rpc.vote));
-                self.raft
-                    .append_entries(rpc)
-                    .await
+                let entries = !rpc.entries.is_empty();
+                let answer = self.raft.append_entries(rpc).await;
+                // A member that took entries is no longer blank: a base it
+                // pulled must not replace them.
+                if entries && matches!(answer, Ok(Ok(_))) {
+                    self.base_pull.abandon();
+                }
+                answer
                     .map(Reply::Append)
                     .map_err(|err| stopped(err.to_string()))
             }
@@ -1759,6 +1764,9 @@ impl Group {
                             restored: None,
                         };
                         self.hold.vote_may_change(Some(&vote));
+                        // Before the install, so a pull finishing under it
+                        // never signals a base to adopt over it.
+                        self.base_pull.abandon();
                         self.raft
                             .install_full_snapshot(vote, Snapshot { meta, snapshot })
                             .await
@@ -1846,13 +1854,12 @@ impl Group {
         meta: &openraft::type_config::alias::SnapshotMetaOf<ShardTypes>,
         bytes: &[u8],
     ) {
-        let Some(floor) = super::stream_snapshot::StreamSnapshot::decode(bytes)
-            .ok()
-            .and_then(|snapshot| snapshot.purge)
-            .map(|purge| purge.floor)
-        else {
+        // No floor means the stream was never trimmed: the base starts at
+        // the log's start, and a voter's chunk raises it to what it serves.
+        let Ok(snapshot) = super::stream_snapshot::StreamSnapshot::decode(bytes) else {
             return;
         };
+        let floor = snapshot.purge.map_or(0, |purge| purge.floor);
         let voters: Vec<MemberId> = meta
             .last_membership
             .membership()
@@ -1934,9 +1941,10 @@ impl Group {
                 .await
                 .map_err(|err| Refused::Unreachable(err.to_string()))?
                 .map_err(|err| Refused::Unreachable(err.to_string()))?;
-        let first = self.log.first_index_reader();
+        // The oldest entry on disk, not the log's first index: a re-formed
+        // voter's purged id sits at the gap's end, with the base below it.
         let disk = self.log.disk_log().clone();
-        let floor = move |base: u64| first().max(disk.floor_as_of(base));
+        let floor = move |base: u64| disk.base_offset().max(disk.floor_as_of(base));
         let mut reader = self.log.reader();
         let chunk = super::base_pull::serve(&mut reader, floor, base, start, max_bytes, max_count)
             .await
@@ -3437,20 +3445,23 @@ pub(super) fn stream_installable(
 ) -> Result<(), String> {
     let snapshot = super::stream_snapshot::StreamSnapshot::decode(bytes)
         .map_err(|err| format!("a snapshot this member cannot read: {err}"))?;
-    let Some(purge) = snapshot.purge else {
-        return Err("taking it would purge records this member was not sent".into());
-    };
     let Some(last) = meta.last_log_id.as_ref() else {
         return Err("a stream snapshot with no last entry".into());
     };
+    // A gap snapshot of a stream never trimmed carries no floor: its base
+    // runs from the start of the log.
+    let floor = snapshot.purge.as_ref().map_or(0, |purge| purge.floor);
+    if let Some(held) = held
+        && held.first_index.checked_sub(1) == Some(last.index)
+        && held.first <= floor
+        && floor <= held.last.saturating_add(1)
+    {
+        return Ok(());
+    }
+    let Some(purge) = snapshot.purge else {
+        return Err("taking it would purge records this member was not sent".into());
+    };
     if last.index >= purge.floor {
-        if let Some(held) = held
-            && held.first_index.checked_sub(1) == Some(last.index)
-            && held.first <= purge.floor
-            && purge.floor <= held.last.saturating_add(1)
-        {
-            return Ok(());
-        }
         return Err(format!(
             "it ends at {} but carries floor {}, so it skips records still served",
             last.index, purge.floor

@@ -764,7 +764,9 @@ pub fn adopt_staged(
     let staging = super::staging::staging_dir(dir);
     let marker = dir.join(ADOPTING);
     if !crate::fs::try_exists(&marker)? {
-        if super::staging::staged(dir)? != Some(base) {
+        // A copy that took a snapshot or entries since the pull began has
+        // caught up another way, and may hold acknowledged records.
+        if super::staging::staged(dir)? != Some(base) || !holds_nothing(dir)? {
             super::staging::discard(dir)?;
             return Ok(false);
         }
@@ -792,6 +794,29 @@ pub fn adopt_staged(
     }
     crate::fs::remove_file(&marker)?;
     crate::io::sync_dir(dir)?;
+    Ok(true)
+}
+
+/// Whether `dir`'s log holds no record, purged id or snapshot: the blank
+/// copy a pulled base may replace.
+fn holds_nothing(dir: &Path) -> io::Result<bool> {
+    for entry in crate::fs::read_dir(dir)? {
+        let entry = entry?;
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else {
+            continue;
+        };
+        if name.starts_with(crate::raft_log::purged::FILE_NAME)
+            || name.starts_with(crate::raft_log::snapshot::FILE_NAME)
+        {
+            return Ok(false);
+        }
+        if parse_segment_file_name(name).is_some()
+            && crate::fs::metadata(entry.path())?.len() > crate::segment::format::SEGMENT_HEADER_LEN
+        {
+            return Ok(false);
+        }
+    }
     Ok(true)
 }
 

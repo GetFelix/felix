@@ -2232,6 +2232,12 @@ pub(crate) struct Loopback {
     pub(crate) muted: parking_lot::Mutex<std::collections::HashSet<String>>,
     /// Requests that reached each broker's runtime and were answered.
     answered: parking_lot::Mutex<HashMap<String, u64>>,
+    /// Brokers that answer no learner's base pull.
+    pub(crate) no_base: parking_lot::Mutex<std::collections::HashSet<String>>,
+    /// Brokers whose base chunks come back from another history.
+    pub(crate) bent_base: parking_lot::Mutex<std::collections::HashSet<String>>,
+    /// Base pulls sent to each broker.
+    pub(crate) bases_asked: parking_lot::Mutex<HashMap<String, u64>>,
 }
 
 /// One broker's way onto a [`Loopback`], so the net knows who sent what.
@@ -2280,7 +2286,23 @@ impl RaftTransport for Loopback {
             self.cut.lock().insert(to.clone());
         }
         let unheard = request.carries_entries() && self.unheard.lock().contains(&to);
+        let base = request.asks_for_base();
+        if base {
+            *self.bases_asked.lock().entry(to.clone()).or_default() += 1;
+        }
+        if base && self.no_base.lock().contains(&to) {
+            return Err(Refused::Unreachable(format!("broker {to} serves no base")));
+        }
         let runtime = self.runtimes.lock().get(&to).cloned();
+        if base && let Some(runtime) = &runtime {
+            let mut reply = runtime.handle_unchecked(request).await;
+            if let Ok(reply) = &mut reply
+                && self.bent_base.lock().contains(&to)
+            {
+                reply.bend_base();
+            }
+            return reply;
+        }
         match runtime {
             Some(runtime) if unheard => {
                 let _ = runtime.handle_unchecked(request).await;

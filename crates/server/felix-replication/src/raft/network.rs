@@ -133,6 +133,13 @@ impl RaftRequest {
     pub fn carries_entries(&self) -> bool {
         matches!(&self.body, Request::Append(append) if !append.entries.is_empty())
     }
+
+    /// Whether this is a learner asking a voter for its re-form base, for a
+    /// test network that holds those back.
+    #[cfg(feature = "testing")]
+    pub fn asks_for_base(&self) -> bool {
+        matches!(self.body, Request::BasePull { .. })
+    }
 }
 
 impl fmt::Debug for RaftRequest {
@@ -154,6 +161,19 @@ impl fmt::Debug for RaftRequest {
 
 /// The answer to a [`RaftRequest`].
 pub struct RaftReply(pub(crate) Reply);
+
+impl RaftReply {
+    /// Give every entry of a base chunk the next term, as a voter of
+    /// another history would serve it, for a test network.
+    #[cfg(feature = "testing")]
+    pub fn bend_base(&mut self) {
+        if let Reply::Base { entries, .. } = &mut self.0 {
+            for entry in entries {
+                entry.log_id.leader_id.term += 1;
+            }
+        }
+    }
+}
 
 pub(crate) enum Reply {
     Append(AppendResult<ShardTypes>),

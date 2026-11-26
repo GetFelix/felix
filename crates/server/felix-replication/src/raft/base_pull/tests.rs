@@ -6,7 +6,7 @@ use felix_storage::log::{FsyncMode, LogConfig};
 use felix_storage::raft_copy::{EpochBase, EpochLogId};
 use felix_storage::raft_log::RaftLog;
 use openraft::entry::RaftEntry;
-use openraft::storage::{IOFlushed, RaftLogStorage};
+use openraft::storage::{IOFlushed, RaftLogReader, RaftLogStorage};
 use openraft::type_config::TypeConfigExt;
 use openraft::type_config::alias::{CommittedLeaderIdOf, EntryOf, LogIdOf};
 
