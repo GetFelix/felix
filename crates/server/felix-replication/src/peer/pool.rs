@@ -233,6 +233,12 @@ impl PeerPool {
         &self.known
     }
 
+    /// Peers the pool holds an entry for.
+    #[cfg(test)]
+    pub(crate) fn peer_count(&self) -> usize {
+        self.peers.lock().len()
+    }
+
     /// Live connections across all peers. Test and metrics surface.
     #[cfg(test)]
     pub(crate) async fn connection_count(&self) -> usize {
@@ -340,12 +346,19 @@ impl PeerPool {
 
     fn peer(&self, node_id: &str) -> Arc<Peer> {
         let mut peers = self.peers.lock();
-        Arc::clone(peers.entry(node_id.to_string()).or_insert_with(|| {
-            Arc::new(Peer::new(
-                node_id.to_string(),
-                self.config.max_inflight_per_peer,
-            ))
-        }))
+        // A borrowed lookup: the hit path, taken for every request, must not
+        // allocate a key.
+        if let Some(peer) = peers.get(node_id) {
+            return Arc::clone(peer);
+        }
+        #[cfg(test)]
+        KEY_ALLOCATIONS.with(|count| count.set(count.get() + 1));
+        let peer = Arc::new(Peer::new(
+            node_id.to_string(),
+            self.config.max_inflight_per_peer,
+        ));
+        peers.insert(node_id.to_string(), Arc::clone(&peer));
+        peer
     }
 
     /// Close connections that have gone unused, and republish the gauges.
@@ -368,7 +381,7 @@ impl PeerPool {
         });
     }
 
-    async fn reap(&self) {
+    pub(crate) async fn reap(&self) {
         let peers: Vec<_> = self
             .peers
             .lock()
@@ -791,6 +804,12 @@ fn message_capability(message: &InternalMessage) -> Option<PeerCapabilities> {
         }
         ReplicaLog::Stream | ReplicaLog::Cache => base,
     })
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Peer keys allocated on this thread: one per miss, none per hit.
+    pub(crate) static KEY_ALLOCATIONS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
 #[cfg(test)]
