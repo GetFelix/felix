@@ -393,7 +393,6 @@ impl ShardAssignment {
 
 mod abandon;
 pub use abandon::AbandonEpochStart;
-pub(crate) use abandon::AbandonError;
 
 #[cfg(test)]
 mod tests;

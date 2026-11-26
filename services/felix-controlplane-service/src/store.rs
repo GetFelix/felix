@@ -774,6 +774,29 @@ pub trait ControlPlaneStore: Send + Sync {
         ))
     }
 
+    /// Give up the log of `key`'s Raft group and start its next epoch empty
+    /// on `start.leader`, by compare and swap on the incarnation, epoch and
+    /// generation, and answer the shard as written. Every broker placed in
+    /// the epoch must be in `start.dead`. The new assignment, the next
+    /// `placed` record and the empty base with its first index land in one
+    /// write, before any broker can start the epoch.
+    ///
+    /// A request the shard already holds the result of answers the record
+    /// without a second write. [`StoreError::Conflict`] when a placed broker
+    /// is not declared dead, when the shard moved past the request, and on
+    /// a Raft store below metadata level 56. See `docs/per-shard-raft.md`,
+    /// "Abandoning a lost group".
+    async fn abandon_raft_epoch(
+        &self,
+        key: &ShardKey,
+        start: crate::model::AbandonEpochStart,
+    ) -> StoreResult<ShardAssignment> {
+        let _ = (key, start);
+        Err(StoreError::Conflict(
+            "this store does not abandon Raft groups".to_string(),
+        ))
+    }
+
     /// The identity the metadata group recorded at formation. The default is
     /// a backend with no group, which forgets everything at restart.
     async fn group_identity(&self) -> StoreResult<identity::GroupIdentity> {

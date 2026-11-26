@@ -27,7 +27,6 @@ pub use node::{
     NodeSpec, NodeStatus, NodeSuspicion, NodeValidationError, PlacementAck, RootSequence,
 };
 pub use shard::AbandonEpochStart;
-pub(crate) use shard::AbandonError;
 pub use shard::{
     ElectedLeader, HaltedCopy, MoveReason, PendingSet, PlacedInEpoch, RaftBases, RaftEpochBase,
     RaftFloor, RaftFloorError, RaftFloorReport, RaftFormed, RaftLeader, RaftLogId, RaftOrdered,

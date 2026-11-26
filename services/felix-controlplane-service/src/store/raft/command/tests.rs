@@ -708,6 +708,42 @@ fn an_audit_record_is_refused_below_level_49() {
     assert_eq!(settle_for_level(&record, level), Ok(None));
 }
 
+/// An abandon's epoch write is refused below level 56: an older member would
+/// refuse the entry as unknown and keep the lost epoch while the others start
+/// the next.
+#[test]
+fn an_abandon_epoch_start_is_refused_below_level_56() {
+    let record = encode_command(&MetaCommand::AbandonRaftEpoch {
+        key: crate::model::ShardKey {
+            tenant_id: "t".to_string(),
+            namespace: "n".to_string(),
+            stream: "s".to_string(),
+            shard: 0,
+            kind: crate::model::ShardKind::Stream,
+        },
+        start: crate::model::AbandonEpochStart {
+            incarnation: 1,
+            expected_epoch: 0,
+            expected_generation: 1,
+            leader: "b".to_string(),
+            dead: ["a".to_string()].into(),
+            planned_at_millis: 1,
+            offset_gap: 1 << 40,
+        },
+    });
+    assert_eq!(op_of(&record).as_deref(), Some(ABANDON_EPOCH_OP));
+    assert!(depends_on_level(&record));
+    let refused = settle_for_level(&record, 55).expect_err("below the level");
+    assert!(
+        matches!(
+            decode_result(&refused),
+            Ok(Err(MetaError::Conflict(message))) if message.contains("abandon")
+        ),
+        "{refused:?}"
+    );
+    assert_eq!(settle_for_level(&record, 56), Ok(None));
+}
+
 /// A re-form's epoch write is refused below level 51: an older member would
 /// refuse the entry as unknown and keep the old epoch while the others start
 /// the next one, and the brokers would then run two different groups.

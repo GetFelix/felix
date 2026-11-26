@@ -56,7 +56,7 @@ pub const COMMAND_VERSION: u16 = 1;
 /// it the next level and raises this, so nothing proposes it until every
 /// member runs that release. New fields get their level in `fields.txt`.
 /// Never lower it: members report it, and the group's level is the minimum.
-pub const METADATA_VERSION: u16 = 54;
+pub const METADATA_VERSION: u16 = 56;
 
 /// The metadata level whose members' placement acts on the internal node
 /// role ([`MetaCommand::label_level`]).
@@ -648,6 +648,12 @@ pub enum MetaCommand {
         key: ShardKey,
         start: crate::model::ReformEpochStart,
     },
+    /// Give up a lost Raft group's log and start its next epoch empty
+    /// ([`crate::store::ControlPlaneStore::abandon_raft_epoch`]). Level 56.
+    AbandonRaftEpoch {
+        key: ShardKey,
+        start: crate::model::AbandonEpochStart,
+    },
     /// Order the seal that starts a shard's switch to Raft
     /// ([`crate::store::ControlPlaneStore::seal_shard`]). Level 34.
     SealShard {
@@ -814,6 +820,9 @@ impl MetaCommand {
             // A member before level 51 would refuse the entry and keep the
             // old epoch where the others start the next one.
             Self::StartReformedEpoch { .. } => 51,
+            // A member before level 56 would refuse the entry and keep the
+            // lost epoch where the others start the next one.
+            Self::AbandonRaftEpoch { .. } => 56,
             // Listed, not a wildcard: a new variant must pick its level.
             Self::CreateTenant { .. }
             | Self::DeleteTenant { .. }
@@ -1200,6 +1209,8 @@ pub fn settle_for_level(command: &[u8], level: u16) -> Result<Option<Vec<u8>>, V
             "an audit record"
         } else if gated == REFORM_EPOCH_OP {
             "a Raft group's re-form"
+        } else if gated == ABANDON_EPOCH_OP {
+            "a Raft group's abandon"
         } else {
             "a shard's switch to Raft"
         };
@@ -1365,6 +1376,9 @@ const RECORD_AUDIT_OP: &str = "record_audit";
 /// A re-form's epoch compare and swap, by op.
 const REFORM_EPOCH_OP: &str = "start_reformed_epoch";
 
+/// An abandon's epoch compare and swap, by op.
+const ABANDON_EPOCH_OP: &str = "abandon_raft_epoch";
+
 /// Whether `op` is refused below its level and otherwise appended as sent.
 fn is_gated(op: &str) -> bool {
     SWITCH_OPS.contains(&op)
@@ -1373,6 +1387,7 @@ fn is_gated(op: &str) -> bool {
         || op == DECLARE_DEAD_OP
         || op == RECORD_AUDIT_OP
         || op == REFORM_EPOCH_OP
+        || op == ABANDON_EPOCH_OP
 }
 
 /// A command's op. Decoded owned, so an escaped spelling still counts.
