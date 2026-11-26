@@ -501,30 +501,11 @@ where
     /// segment removal has finished. Call once the member has stopped and
     /// before closing the log: a flush still queued at the close would
     /// otherwise end with [`crate::StorageError::Closed`] instead of its real
-    /// result, and a removal would be left for the next open.
+    /// result, and a removal would be left for the next purge.
     pub async fn drain_flushes(&self) -> io::Result<()> {
         self.shared.drain_flushes().await?;
         self.shared.removals.settled().await;
         Ok(())
-    }
-
-    /// Unlink the sealed segments wholly at or below the purged id, which a
-    /// crash during a purge's removal leaves behind. Call at open, before
-    /// the log is handed to Raft.
-    pub async fn remove_purged(&self) -> io::Result<()> {
-        let Some(purged) = self.shared.bounds.lock().on_disk else {
-            return Ok(());
-        };
-        let first = purged.index + 1;
-        if first >= self.shared.log.tail_now() {
-            return Ok(());
-        }
-        self.shared
-            .log
-            .trim_before(first)
-            .await
-            .map(drop)
-            .map_err(writer::io_error)
     }
 
     /// Warn, at most every ten seconds, and count in

@@ -5,9 +5,9 @@
 //! made durable before the next, one removal at a time. Until then they hold
 //! only records below the log's first index, which no read returns as
 //! entries, so a removal a crash cut short leaves a longer log and never a
-//! gap. The next purge, or [`RaftLog::remove_purged`] at open, finishes it.
-//!
-//! [`RaftLog::remove_purged`]: super::RaftLog::remove_purged
+//! gap. The next purge finishes it. An open does not: a re-formed or
+//! switched copy keeps its base's records below its purged id on purpose,
+//! and an open cannot tell those from a removal's leftovers.
 
 use std::sync::Arc;
 

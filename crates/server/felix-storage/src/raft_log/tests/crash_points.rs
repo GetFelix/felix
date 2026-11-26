@@ -484,8 +484,8 @@ pub(super) fn wholly_below(raft: &RaftLog<Types, Codec>, first: u64) -> usize {
 /// A purge returns once its id is on disk, and its removal runs behind it.
 /// The removal is stopped before its first unlink, after each one, and not
 /// at all, then the power cut. What reopens starts right after the purged
-/// id with every later entry and no gap, and the open's removal finishes
-/// what the crash left (#3263).
+/// id with every later entry and no gap, and the next purge's removal
+/// finishes what the crash left (#3263).
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_cut_at_each_step_of_a_purges_removal_leaves_the_log_after_its_id() {
     const PURGED: u64 = 60;
@@ -530,11 +530,14 @@ async fn a_cut_at_each_step_of_a_purges_removal_leaves_the_log_after_its_id() {
                 written[PURGED as usize + 1..],
                 "{at}: what follows the purged id"
             );
-            raft.remove_purged().await.expect("remove at open");
+            raft.purge(entry(PURGED + 10).log_id)
+                .await
+                .expect("the next purge");
+            raft.drain_flushes().await.expect("drain");
             assert_eq!(
-                wholly_below(&raft, PURGED + 1),
+                wholly_below(&raft, PURGED + 11),
                 0,
-                "{at}: the open left purged segments"
+                "{at}: the next purge left purged segments"
             );
             let next = normal(1_000, 90, "after the cut");
             append_flushed(&mut raft, std::slice::from_ref(&next)).await;
@@ -544,7 +547,7 @@ async fn a_cut_at_each_step_of_a_purges_removal_leaves_the_log_after_its_id() {
             let reopened = all(&raft).await.expect("read");
             assert_eq!(
                 reopened.first(),
-                Some(&written[PURGED as usize + 1]),
+                Some(&written[PURGED as usize + 11]),
                 "{at}"
             );
             assert_eq!(reopened.last(), Some(&next), "{at}");
