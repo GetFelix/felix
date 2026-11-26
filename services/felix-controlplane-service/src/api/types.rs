@@ -366,6 +366,11 @@ pub struct NodeHeartbeatRequest {
     /// Raft root open, or that predates it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub placement_incarnation: Option<u64>,
+    /// `registered_at_millis` from the reporting process's registration.
+    /// Sending it says the broker understands `register_again`. Absent
+    /// from a broker that predates it, which is never told.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub registered_at_millis: Option<u64>,
 }
 
 /// A data root's storage id and last synced root sequence, as a heartbeat
@@ -405,6 +410,13 @@ pub struct NodeHeartbeatResponse {
     /// broker acknowledges it on disk before its next heartbeat reports it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub placement_incarnation: Option<u64>,
+    /// The beat came from above the node record's incarnation, as one does
+    /// after a restore put back a record older than the broker's last
+    /// registration. The broker registers again, keeping its lease, so its
+    /// reports count as the record's process. Only for a live node whose
+    /// beat sent the record's `registered_at_millis`; left out otherwise.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub register_again: bool,
 }
 
 /// A broker claiming its identity on boot.

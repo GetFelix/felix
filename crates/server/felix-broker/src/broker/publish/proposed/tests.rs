@@ -833,3 +833,134 @@ async fn complete_then_answers_early_and_finishes_on_its_own_task() {
     finished.await.expect("finished");
     assert_eq!(next(&mut receiver).await.base_offset(), Some(0));
 }
+
+/// **A batch the engine refused before writing any of it is answered at
+/// once, behind an earlier batch answered on its write and never
+/// committed.** It holds no offset, so its refusal says nothing about the
+/// order. Answered only at its turn, its publisher waits out the timeout
+/// and is told the outcome is unknown, where "not written" is known.
+#[tokio::test]
+async fn a_refusal_is_answered_at_once_behind_an_unsettled_batch() {
+    let (broker, handle, _) = broker(ReadBound::Unbounded).await;
+    let engine = Arc::new(Engine::default());
+    let earlier = publish_written(&broker, &handle, &engine, Duration::MAX);
+    let earlier = earlier
+        .await
+        .expect("joined")
+        .expect("answered on its write");
+    assert_eq!(earlier.offsets, Some((0, 0)));
+
+    let started = tokio::time::Instant::now();
+    let refused = broker
+        .propose_publish(
+            &handle,
+            vec![Bytes::from_static(b"refused")],
+            Duration::MAX,
+            |_| async { Err::<ProposalCommitted, _>(ProposalFailed::refused("refused")) },
+        )
+        .expect("handed over")
+        .answer_within(Duration::from_secs(2), || "timed out");
+    let answer = refused.complete().await;
+    let waited = started.elapsed();
+    assert!(
+        matches!(answer, Err("refused")),
+        "told {answer:?} after {waited:?}"
+    );
+    assert!(waited < Duration::from_secs(1), "answered after {waited:?}");
+}
+
+/// A refused publish and its re-send behind a batch answered on its write,
+/// then `earlier`'s outcome. Returns what subscribers got, in order.
+async fn resend_behind_unsettled(earlier: Result<(), &'static str>) -> Vec<(u64, Bytes)> {
+    let (broker, handle, _) = broker(ReadBound::Unbounded).await;
+    let (mut receiver, _guard) = subscriber(&broker).await;
+    let engine = Arc::new(Engine::default());
+    publish_written(&broker, &handle, &engine, Duration::MAX)
+        .await
+        .expect("joined")
+        .expect("answered on its write");
+    let refused = broker
+        .propose_publish(
+            &handle,
+            vec![Bytes::from_static(b"r")],
+            Duration::MAX,
+            |_| async { Err::<ProposalCommitted, _>(ProposalFailed::refused("refused")) },
+        )
+        .expect("handed over");
+    let refused = tokio::time::timeout(Duration::from_secs(1), refused.complete()).await;
+    assert!(matches!(refused, Ok(Err("refused"))), "{refused:?}");
+
+    // The client, told nothing was written, sends it again.
+    let proposer = Arc::clone(&engine);
+    let resent = broker
+        .propose_publish(
+            &handle,
+            vec![Bytes::from_static(b"r")],
+            Duration::MAX,
+            move |_| proposer.propose(1),
+        )
+        .expect("handed over");
+    let resent = tokio::spawn(resent.complete());
+    engine.commit(1, Ok(()));
+    nothing(&mut receiver).await;
+    assert!(!resent.is_finished(), "answered ahead of the earlier batch");
+
+    engine.commit(0, earlier);
+    let resent = resent.await.expect("joined").expect("committed");
+    assert_eq!(resent.offsets, Some((1, 1)));
+    let mut got = Vec::new();
+    while let Ok(Some(envelope)) =
+        tokio::time::timeout(Duration::from_millis(150), receiver.recv()).await
+    {
+        let first = envelope.base_offset().expect("offsets");
+        for (at, payload) in envelope.payloads().iter().enumerate() {
+            got.push((first + at as u64, payload.clone()));
+        }
+    }
+    got
+}
+
+/// **The re-send of a refused publish lands once, after the earlier batch,
+/// when that batch commits.**
+#[tokio::test]
+async fn a_resent_refusal_lands_once_after_an_earlier_batch_that_commits() {
+    let got = resend_behind_unsettled(Ok(())).await;
+    assert_eq!(
+        got,
+        [(0, Bytes::from_static(b"p")), (1, Bytes::from_static(b"r"))]
+    );
+}
+
+/// **The re-send of a refused publish lands once when the earlier batch is
+/// lost.** Nothing of the refused one is delivered, and the lost batch
+/// never appears after it.
+#[tokio::test]
+async fn a_resent_refusal_lands_once_when_the_earlier_batch_is_lost() {
+    let got = resend_behind_unsettled(Err("deposed")).await;
+    assert_eq!(got, [(1, Bytes::from_static(b"r"))]);
+}
+
+/// **A failure the engine cannot say wrote nothing still waits for its
+/// turn.** It may yet commit, so it is answered in order, as before.
+#[tokio::test]
+async fn an_unknown_failure_waits_behind_an_unsettled_batch() {
+    let (broker, handle, _) = broker(ReadBound::Unbounded).await;
+    let engine = Arc::new(Engine::default());
+    publish_written(&broker, &handle, &engine, Duration::MAX)
+        .await
+        .expect("joined")
+        .expect("answered on its write");
+    let unknown = broker
+        .propose_publish(
+            &handle,
+            vec![Bytes::from_static(b"u")],
+            Duration::MAX,
+            |_| async { Err::<ProposalCommitted, _>(ProposalFailed::unwritten("unknown")) },
+        )
+        .expect("handed over");
+    let unknown = tokio::spawn(unknown.complete());
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert!(!unknown.is_finished(), "answered ahead of its turn");
+    engine.commit(0, Ok(()));
+    assert!(matches!(unknown.await.expect("joined"), Err("unknown")));
+}

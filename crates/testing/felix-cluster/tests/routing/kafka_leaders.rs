@@ -6,7 +6,7 @@
 //! returns.
 //!
 //! Run with `cargo test -p felix-cluster --test routing kafka_leaders::`.
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::process::Output;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
@@ -26,21 +26,17 @@ const KCAT_BOUND: Duration = Duration::from_secs(90);
 /// kcat expands the `\n` itself.
 const FORMAT: &str = "%p:%o:%s\\n";
 
-/// **kcat reads every partition from whichever broker leads it, and follows
-/// a partition to its new leader.** Bootstrapped at one broker, a consume
-/// from the beginning returns every record of every shard at the offsets
-/// Felix gave them. Then a shard moves while a kcat is parked on its old
-/// leader; the old leader answers NOT_LEADER_OR_FOLLOWER, and kcat finds the
-/// new leader through Metadata and reads what was published there.
-#[serial]
-#[tokio::test]
-async fn kcat_reads_every_shard_and_follows_a_moved_one() {
-    if felix_cluster::skip_on_raft_until_moves_land() {
-        return;
-    }
-    if !kcat_available().await {
-        return;
-    }
+/// A three-broker cluster whose shards are spread over at least two brokers,
+/// each holding records published through its owner.
+struct Spread {
+    cluster: Cluster,
+    topic: String,
+    owners: HashMap<u32, String>,
+    /// `partition:offset:payload` for every record, sorted.
+    expected: Vec<String>,
+}
+
+async fn spread_and_publish() -> Spread {
     let cluster = Cluster::start(ClusterConfig {
         nodes: 3,
         streams: vec![StreamSpec::new(STREAM, SHARDS)],
@@ -72,53 +68,126 @@ async fn kcat_reads_every_shard_and_follows_a_moved_one() {
         expected.extend(logged(&cluster, &owners[&shard], shard, &ours).await);
     }
     expected.sort();
+    Spread {
+        cluster,
+        topic,
+        owners,
+        expected,
+    }
+}
 
-    let bootstrap = kafka_addr(&cluster, "broker-0");
-    let output = kcat(sasl(&cluster, &bootstrap, &["-L", "-t", &topic])).await;
-    let listing = stdout(&output);
-    assert!(output.status.success(), "{listing}\n{}", stderr(&output));
-    assert!(
-        listing.contains(&format!("topic \"{topic}\" with {SHARDS} partitions")),
-        "{listing}"
-    );
+/// What `kcat -L` must say about the spread, or why it does not yet.
+fn listing_problem(spread: &Spread, listing: &str) -> Option<String> {
+    let Spread {
+        cluster,
+        topic,
+        owners,
+        ..
+    } = spread;
+    if !listing.contains(&format!("topic \"{topic}\" with {SHARDS} partitions")) {
+        return Some(format!("partition count: {listing}"));
+    }
     for node in &cluster.nodes {
         let addr = node.kafka_addr.as_deref().expect("kafka listener");
-        assert!(
-            listing.contains(addr),
-            "{} is not listed: {listing}",
-            node.node_id
-        );
+        if !listing.contains(addr) {
+            return Some(format!("{} is not listed: {listing}", node.node_id));
+        }
     }
     // Kafka broker ids are Felix node ids hashed, so check the grouping: two
     // partitions share a leader id exactly when they share a Felix owner.
-    let leaders = leaders(&listing);
-    assert_eq!(leaders.len(), SHARDS as usize, "{listing}");
-    assert!(
-        leaders.values().collect::<BTreeSet<_>>().len() >= 2,
-        "{listing}"
-    );
-    for (a, b) in (0..SHARDS).flat_map(|a| (0..SHARDS).map(move |b| (a, b))) {
-        assert_eq!(
-            leaders[&a] == leaders[&b],
-            owners[&a] == owners[&b],
-            "partitions {a} and {b}: owners {owners:?}, listing {listing}"
-        );
+    let leaders = leaders(listing);
+    if leaders.len() != SHARDS as usize {
+        return Some(format!("{} leaders: {listing}", leaders.len()));
     }
+    if leaders.values().collect::<BTreeSet<_>>().len() < 2 {
+        return Some(format!("one leader for every partition: {listing}"));
+    }
+    for (a, b) in (0..SHARDS).flat_map(|a| (0..SHARDS).map(move |b| (a, b))) {
+        if (leaders[&a] == leaders[&b]) != (owners[&a] == owners[&b]) {
+            return Some(format!(
+                "partitions {a} and {b}: owners {owners:?}, listing {listing}"
+            ));
+        }
+    }
+    None
+}
 
-    let consume_all = [
+/// `kcat -C` from the beginning of every partition of the topic.
+fn consume_all(topic: &str) -> Vec<&str> {
+    vec![
         "-C",
         "-t",
-        &topic,
+        topic,
         "-o",
         "beginning",
         "-e",
         "-q",
         "-f",
         FORMAT,
-    ];
-    let output = kcat(sasl(&cluster, &bootstrap, &consume_all)).await;
+    ]
+}
+
+/// **kcat reads every partition from whichever broker leads it.**
+/// Bootstrapped at one broker, a listing names each partition's leader and a
+/// consume from the beginning returns every record of every shard at the
+/// offsets Felix gave them. Runs on both engines: on a Raft shard the leader
+/// Metadata names is the elected one, which can lag placement's by a moment
+/// after the group forms, so the listing is asked again until it agrees.
+#[serial]
+#[tokio::test]
+async fn kcat_reads_every_shard_from_its_leader() {
+    if !kcat_available().await {
+        return;
+    }
+    let spread = spread_and_publish().await;
+    let Spread {
+        cluster,
+        topic,
+        expected,
+        ..
+    } = &spread;
+    let bootstrap = kafka_addr(cluster, "broker-0");
+
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
+    loop {
+        let output = kcat(sasl(cluster, &bootstrap, &["-L", "-t", topic])).await;
+        let listing = stdout(&output);
+        assert!(output.status.success(), "{listing}\n{}", stderr(&output));
+        match listing_problem(&spread, &listing) {
+            None => break,
+            Some(problem) => {
+                assert!(tokio::time::Instant::now() < deadline, "{problem}");
+                tokio::time::sleep(Duration::from_secs(2)).await;
+            }
+        }
+    }
+
+    let output = kcat(sasl(cluster, &bootstrap, &consume_all(topic))).await;
     assert!(output.status.success(), "{}", stderr(&output));
-    assert_eq!(records(&output), expected);
+    assert_eq!(&records(&output), expected);
+    spread.cluster.shutdown().await;
+}
+
+/// **kcat follows a partition to its new leader.** A shard moves while a kcat
+/// is parked on its old leader; the old leader answers
+/// NOT_LEADER_OR_FOLLOWER, and kcat finds the new leader through Metadata and
+/// reads what was published there.
+#[serial]
+#[tokio::test]
+async fn kcat_follows_a_moved_shard() {
+    if felix_cluster::skip_on_raft_until_moves_land() {
+        return;
+    }
+    if !kcat_available().await {
+        return;
+    }
+    let Spread {
+        cluster,
+        topic,
+        owners,
+        expected,
+    } = spread_and_publish().await;
+    let everything_args = consume_all(&topic);
 
     // Park a kcat at the tail of one shard on its leader, then move the shard.
     let moved = 2;
@@ -194,7 +263,7 @@ async fn kcat_reads_every_shard_and_follows_a_moved_one() {
 
     // And a fresh consumer bootstrapped at the old leader reads everything,
     // the moved shard from its new leader.
-    let output = kcat(sasl(&cluster, &old_bootstrap, &consume_all)).await;
+    let output = kcat(sasl(&cluster, &old_bootstrap, &everything_args)).await;
     assert!(output.status.success(), "{}", stderr(&output));
     let mut everything = expected;
     everything.extend(owed);
