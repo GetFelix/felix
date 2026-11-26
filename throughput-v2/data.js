@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795666986574,
+  "lastUpdate": 1795669036485,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -70616,6 +70616,58 @@ window.BENCHMARK_DATA = {
             "range": "13781.41",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1171604.34\nmean: 1168948.92\nstdev: 13781.41\ncv: 1.18%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "5e6cd679de5519932884e6b2aafe2817bd1e92e4",
+          "message": "fix(raft): a cache watch that resumes on another member after a failover is replayed (#3087) (#3194)\n\n* fix(raft): every cache member records while a watch of the shard is active (#3087)\n\nWIP: a member serving a watch has its leader append a Watched entry,\nand every member that applies it starts recording.\n\nSpec-Unaffected: the Watched entry is a stamped entry that changes no key, answer or floor, like an expiry of an overwritten version, which FelixRaftCache.tla already covers; recording buffers are per-member memory the model does not hold\n\n* fix(raft): a follower serving a watch asks for the mark on each applied run; tests and docs (#3087)\n\nSpec-Unaffected: the Watched entry is a stamped entry that changes no key, answer or floor, like an expiry of an overwritten version, which FelixRaftCache.tla already covers; recording buffers are per-member memory the model does not hold\n\n* fix(raft): a member that leads marks at once, without the follower's ask backoff (#3087)\n\nSpec-Unaffected: changes only when a leader appends the Watched entry, which changes no modelled state\n\n* docs(protocol): a Raft cache watch resume replays on any member while the shard is watched (#3087)\n\nSpec-Unaffected: docs only\n\n* fix(raft): a cache member opening from a snapshot inside a mark's life records past it (#3087)\n\nThe cache snapshot (version 2) carries the end of the last mark's life,\nand a member restored from one inside it starts recording past the\nsnapshot's entry. Version 1 still reads, as no live mark.\n\nSpec-Unaffected: marked_until is a function of applied entries that changes no key, answer, floor or the log's time; FelixRaftCache.tla does not model Watched entries or recording\n\n* test(raft): install a parsed snapshot in the mark test, as a receiver does (#3087)\n\nSpec-Unaffected: test only\n\n* docs(raft): the cache snapshot carries the watched entry's end (#3087)\n\nSpec-Unaffected: docs only\n\n* docs(raft): state the cache entry kinds and the version 2 snapshot layout (#3087)\n\nSpec-Unaffected: docs only\n\n* fix(raft): a cache watch resume records from the edge it reads, so a resume at the edge replays (#3087)\n\nThe broker's Raft cache watch tests now pin replay and order by the\nversions writes were acknowledged at, not by an edge read before the\nwatch, since the watched entry takes an index.\n\nSpec-Unaffected: changes only when a member starts recording, per-member memory the model does not hold",
+          "timestamp": "2026-11-26T04:45:52Z",
+          "tree_id": "fa844df3bca0baf0c04fd4f1e5fd49be1fd192f8",
+          "url": "https://github.com/GetFelix/felix/commit/5e6cd679de5519932884e6b2aafe2817bd1e92e4"
+        },
+        "date": 1795669035933,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 353257.6,
+            "range": "12239.73",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 353257.60\nmean: 349555.19\nstdev: 12239.73\ncv: 3.50%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 353257.6,
+            "range": "12239.73",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 353257.60\nmean: 349555.19\nstdev: 12239.73\ncv: 3.50%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 80195.8,
+            "range": "540.90",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 80195.80\nmean: 80263.92\nstdev: 540.90\ncv: 0.67%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 801957.99,
+            "range": "5409.02",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 801957.99\nmean: 802639.27\nstdev: 5409.02\ncv: 0.67%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
