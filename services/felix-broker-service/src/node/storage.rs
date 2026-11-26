@@ -604,12 +604,16 @@ pub(crate) fn mark_clean_stop(root: &Path, id: StorageId) -> Result<()> {
 }
 
 /// Give the data directory under `root` a new storage id, for when its
-/// contents have become an older copy of themselves.
+/// contents have become an older copy of themselves: the restore tools. It
+/// records the restore, so a standalone broker re-forms each group above
+/// every offset it could have given out after the copy was taken.
 pub(crate) fn rotate_storage_id(root: &Path) -> Result<StorageId> {
-    rotate_storage_id_after(root, |_| Ok(()))
+    felix_storage::run_state::rotate_for_restore(root, fresh_storage_id())
+        .with_context(|| format!("write a new storage id under {}", root.display()))
 }
 
-/// [`rotate_storage_id`], running `before` with the new id first.
+/// Give the data directory under `root` a new storage id, running `before`
+/// with the new id first. Unlike [`rotate_storage_id`] it records no restore.
 pub(crate) fn rotate_storage_id_after(
     root: &Path,
     before: impl FnOnce(StorageId) -> Result<()>,

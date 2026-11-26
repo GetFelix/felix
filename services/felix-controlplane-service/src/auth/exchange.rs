@@ -185,7 +185,7 @@ pub async fn exchange_token(
         .collect();
     let principal = principal::from_claims(&validated.issuer, &validated.subject, scoped);
     crate::audit::note_verified("idp_token", &tenant_id, &principal.principal_id, None);
-    mint_for_principal(
+    mint_for_assertion(
         &state,
         &tenant_id,
         &principal.principal_id,
@@ -193,6 +193,7 @@ pub async fn exchange_token(
         &request,
         audience,
         binding.as_ref().map(|Extension(binding)| binding),
+        Some(validated.issued_at),
     )
     .await
     .map(Json)
@@ -210,6 +211,38 @@ pub(crate) async fn mint_for_principal(
     request: &TokenExchangeRequest,
     audience: &str,
     binding: Option<&ExchangeBinding>,
+) -> Result<TokenExchangeResponse, ApiError> {
+    mint_for_assertion(
+        state,
+        tenant_id,
+        principal_id,
+        groups,
+        request,
+        audience,
+        binding,
+        None,
+    )
+    .await
+}
+
+/// The refusal for an IdP token issued at or before a revocation of its
+/// principal.
+const ASSERTION_REVOKED: &str = "the token was issued before its principal was revoked";
+
+/// [`mint_for_principal`] on the strength of an IdP token issued at
+/// `issued_at`. Refused with `401` when that is at or before the principal's
+/// assertion cutoff (an explicit revocation) plus the allowed clock skew,
+/// both before minting and again once the refresh token is stored.
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn mint_for_assertion(
+    state: &AppState,
+    tenant_id: &str,
+    principal_id: &str,
+    groups: &[String],
+    request: &TokenExchangeRequest,
+    audience: &str,
+    binding: Option<&ExchangeBinding>,
+    issued_at: Option<i64>,
 ) -> Result<TokenExchangeResponse, ApiError> {
     let tenant_id = tenant_id.to_string();
     let mut narrowing = narrowing_for(request, &tenant_id, audience)?;
@@ -278,7 +311,19 @@ pub(crate) async fn mint_for_principal(
         binding.check(principal_id, narrowing.may_act.as_deref())?;
     }
 
-    crate::auth::revocation::wait_out_revocation(state, &tenant_id, principal_id).await?;
+    let skew = state.oidc_validator.clock_skew_seconds();
+    // Only an explicit revocation refuses the IdP token. An RBAC edit's
+    // cutoff ends what Felix minted under the old rules, and the token
+    // minted here carries the current ones.
+    let cutoffs = crate::auth::revocation::cutoffs(state, &tenant_id, principal_id).await?;
+    if let Some(issued_at) = issued_at
+        && crate::auth::revocation::assertion_revoked(issued_at, cutoffs.assertions, skew)
+    {
+        return Err(refused(Refusal::InvalidToken, ASSERTION_REVOKED));
+    }
+    // Token times are whole seconds, and the cutoff may come from a member
+    // whose clock is ahead: the token minted here must carry an `iat` after it.
+    crate::auth::revocation::wait_past(cutoffs.tokens).await;
     let ttl = access_token_ttl();
     let felix_token = mint_token_may_act(
         &keys,
@@ -306,6 +351,7 @@ pub(crate) async fn mint_for_principal(
         refresh_ttl,
     );
     record.narrowing = Some(narrowing);
+    let family_id = record.family_id.clone();
     state
         .store
         .insert_refresh_token(record)
@@ -316,6 +362,28 @@ pub(crate) async fn mint_for_principal(
             StoreError::Conflict(message) => api_conflict("conflict", &message),
             err => api_internal("failed to store refresh token", &err),
         })?;
+    #[cfg(test)]
+    if let Ok(revoked_at) = tests::REVOKE_AFTER_STORE.try_with(|at| *at) {
+        state
+            .store
+            .revoke_principals_explicitly(&tenant_id, vec![principal_id.to_string()], revoked_at)
+            .await
+            .expect("revoke");
+    }
+    // A revocation that landed since the read above may have already ended
+    // the principal's chains, and missed this one. Revoking writes the cutoff
+    // before it ends chains, so a chain stored after that sees it here.
+    if let Some(issued_at) = issued_at {
+        let cutoffs = crate::auth::revocation::cutoffs(state, &tenant_id, principal_id).await?;
+        if crate::auth::revocation::assertion_revoked(issued_at, cutoffs.assertions, skew) {
+            state
+                .store
+                .revoke_refresh_family(&tenant_id, &family_id)
+                .await
+                .map_err(|err| api_internal("failed to revoke refresh family", &err))?;
+            return Err(refused(Refusal::InvalidToken, ASSERTION_REVOKED));
+        }
+    }
     metrics::counter!("felix_refresh_tokens_issued_total", "via" => "exchange").increment(1);
 
     Ok(TokenExchangeResponse {

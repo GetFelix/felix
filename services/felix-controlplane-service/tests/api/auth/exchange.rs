@@ -1171,3 +1171,405 @@ fn mint_upstream_token_with_claims(
     )
     .expect("token")
 }
+
+/// A tenant trusting `issuer`, with `user-1` granted a read, behind a
+/// validator allowing 60 s of clock skew.
+async fn revocable_app(issuer: &str) -> (axum::Router, Arc<InMemoryStore>, String) {
+    let store = Arc::new(InMemoryStore::new(StoreConfig {
+        changes_limit: 200,
+        change_retention_max_rows: Some(200),
+    }));
+    store
+        .create_tenant(Tenant {
+            tenant_id: "t1".to_string(),
+            display_name: "Tenant One".to_string(),
+        })
+        .await
+        .expect("tenant");
+    store
+        .upsert_idp_issuer(
+            "t1",
+            IdpIssuerConfig {
+                issuer: issuer.to_string(),
+                audiences: vec!["aud-1".to_string()],
+                jwks_url: Some(format!("{issuer}/jwks")),
+                ..Default::default()
+            },
+        )
+        .await
+        .expect("issuer");
+    let principal = principal_id(issuer, "user-1");
+    store
+        .add_rbac_policy(
+            "t1",
+            PolicyRule {
+                subject: principal.clone(),
+                object: "stream:t1/payments/*".to_string(),
+                action: "stream.subscribe".to_string(),
+            },
+        )
+        .await
+        .expect("policy");
+    store
+        .set_tenant_signing_keys(
+            "t1",
+            TenantSigningKeys {
+                current: SigningKey {
+                    kid: "k1".to_string(),
+                    alg: Algorithm::EdDSA,
+                    private_key: FELIX_PRIVATE_KEY,
+                    public_key: Ed25519SigningKey::from_bytes(&FELIX_PRIVATE_KEY)
+                        .verifying_key()
+                        .to_bytes(),
+                },
+                previous: vec![],
+            },
+        )
+        .await
+        .expect("keys");
+    let state = AppState {
+        region: Region {
+            region_id: "local".to_string(),
+            display_name: "Local Region".to_string(),
+        },
+        api_version: "v1".to_string(),
+        features: FeatureFlags {
+            durable_storage: false,
+            tiered_storage: false,
+            bridges: false,
+        },
+        store: store.clone(),
+        oidc_validator: UpstreamOidcValidator::new_with_allowed_algorithms(
+            std::time::Duration::from_secs(3600),
+            std::time::Duration::from_secs(3600),
+            60,
+            vec![Algorithm::RS256],
+        ),
+        bootstrap_enabled: false,
+        bootstrap_tokens: Vec::new(),
+        operator_token_digests: Vec::new(),
+        node_liveness: Default::default(),
+        readiness: std::sync::Arc::new(felix_controlplane_service::api::readiness::Readiness::new(
+            std::sync::Arc::new(felix_controlplane_service::api::readiness::AlwaysReady),
+        )),
+        in_flight: Default::default(),
+        placement_wakes: Default::default(),
+        move_policy: Default::default(),
+        new_cluster: Default::default(),
+        audit: Default::default(),
+    };
+    (build_router(state), store, principal)
+}
+
+async fn exchange_status(app: &axum::Router, token: &str) -> StatusCode {
+    exchange(app, token).await.0
+}
+
+/// The status and, on success, the Felix token's claims.
+async fn exchange(app: &axum::Router, token: &str) -> (StatusCode, Option<FelixClaims>) {
+    let req = Request::builder()
+        .method("POST")
+        .uri("/v1/tenants/t1/token/exchange")
+        .header("authorization", format!("Bearer {token}"))
+        .body(Body::empty())
+        .expect("request");
+    let response = app
+        .clone()
+        .into_service::<Body>()
+        .oneshot(req)
+        .await
+        .expect("exchange");
+    let status = response.status();
+    if status != StatusCode::OK {
+        return (status, None);
+    }
+    let payload = read_json(response).await;
+    let claims = verify_token(
+        &felix_keys(),
+        "t1",
+        payload["felix_token"].as_str().expect("token"),
+    )
+    .expect("verify");
+    (status, Some(claims))
+}
+
+fn felix_keys() -> TenantSigningKeys {
+    TenantSigningKeys {
+        current: SigningKey {
+            kid: "k1".to_string(),
+            alg: Algorithm::EdDSA,
+            private_key: FELIX_PRIVATE_KEY,
+            public_key: Ed25519SigningKey::from_bytes(&FELIX_PRIVATE_KEY)
+                .verifying_key()
+                .to_bytes(),
+        },
+        previous: vec![],
+    }
+}
+
+/// An admin call on `app`, as a tenant admin of `t1`.
+async fn admin(app: &axum::Router, method: &str, uri: &str, body: serde_json::Value) -> StatusCode {
+    let admin = felix_controlplane_service::auth::felix_token::mint_token_for(
+        &felix_keys(),
+        "t1",
+        "p:admin",
+        vec![
+            "tenant.manage:tenant:t1".to_string(),
+            "rbac.policy.manage:tenant:t1".to_string(),
+            "rbac.assignment.manage:tenant:t1".to_string(),
+        ],
+        std::time::Duration::from_secs(900),
+        felix_controlplane_service::auth::felix_token::CONTROLPLANE_AUDIENCE,
+    )
+    .expect("admin token");
+    let req = Request::builder()
+        .method(method)
+        .uri(uri)
+        .header("authorization", format!("Bearer {admin}"))
+        .header("content-type", "application/json")
+        .body(Body::from(body.to_string()))
+        .expect("request");
+    app.clone()
+        .into_service::<Body>()
+        .oneshot(req)
+        .await
+        .expect("admin call")
+        .status()
+}
+
+async fn revoke_explicitly(app: &axum::Router, principal: &str) {
+    assert_eq!(
+        admin(
+            app,
+            "POST",
+            "/v1/tenants/t1/refresh-tokens/revoke",
+            json!({ "principal_id": principal }),
+        )
+        .await,
+        StatusCode::OK
+    );
+}
+
+fn issued_at(issuer: &str, iat: i64) -> String {
+    mint_upstream_token_with_claims(
+        &idp_key().pem,
+        issuer,
+        "aud-1",
+        "kid-1",
+        json!({ "iat": iat }),
+    )
+}
+
+/// **An explicit revocation ends what the IdP issued before it.** An IdP
+/// token minted one second before `refresh-tokens/revoke`, still unexpired, is
+/// refused with 401 rather than exchanged for a new token and refresh chain.
+#[tokio::test]
+async fn an_idp_token_from_before_a_revocation_does_not_exchange() {
+    let (addr, _handle) = spawn_jwks_server(jwks_for_key("kid-1")).await;
+    let issuer = format!("http://{addr}");
+    let (app, store, principal) = revocable_app(&issuer).await;
+    let before = issued_at(&issuer, chrono::Utc::now().timestamp() - 1);
+    assert_eq!(exchange_status(&app, &before).await, StatusCode::OK);
+
+    revoke_explicitly(&app, &principal).await;
+    assert_eq!(
+        exchange_status(&app, &before).await,
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(
+        store
+            .revoke_refresh_tokens_for_principal("t1", &principal)
+            .await
+            .expect("count"),
+        0,
+        "a chain outlived the revocation",
+    );
+}
+
+/// The 60 s of clock skew counts against the IdP token: one issued within it
+/// of the cutoff is refused, one issued after it exchanges.
+#[tokio::test]
+async fn an_idp_token_from_past_the_cutoff_and_skew_exchanges() {
+    let (addr, _handle) = spawn_jwks_server(jwks_for_key("kid-1")).await;
+    let issuer = format!("http://{addr}");
+    let (app, store, principal) = revocable_app(&issuer).await;
+    let now = chrono::Utc::now().timestamp();
+    store
+        .revoke_principals_explicitly("t1", vec![principal], now - 120)
+        .await
+        .expect("revoke");
+    assert_eq!(
+        exchange_status(&app, &issued_at(&issuer, now - 60)).await,
+        StatusCode::UNAUTHORIZED
+    );
+    assert_eq!(
+        exchange_status(&app, &issued_at(&issuer, now - 58)).await,
+        StatusCode::OK
+    );
+}
+
+/// **An RBAC edit takes back what Felix minted, not the IdP identity.** After
+/// a grouping is removed (a cutoff for the principal) or a policy that an IdP
+/// group reaches (a cutoff for the whole tenant), an IdP token from before
+/// the edit still exchanges, for a token with the current permissions and
+/// issued after the cutoff.
+#[tokio::test]
+async fn an_rbac_edit_does_not_refuse_an_older_idp_token() {
+    let (addr, _handle) = spawn_jwks_server(jwks_for_key("kid-1")).await;
+    let issuer = format!("http://{addr}");
+    let writer = PolicyRule {
+        subject: "role:writer".to_string(),
+        object: "stream:t1/payments/*".to_string(),
+        action: "stream.publish".to_string(),
+    };
+    let publish = "stream.publish:stream:t1/payments/*".to_string();
+    for tenant_wide in [false, true] {
+        let (app, store, principal) = revocable_app(&issuer).await;
+        store
+            .add_rbac_policy("t1", writer.clone())
+            .await
+            .expect("policy");
+        store
+            .add_rbac_grouping(
+                "t1",
+                GroupingRule {
+                    user: principal.clone(),
+                    role: "role:writer".to_string(),
+                },
+            )
+            .await
+            .expect("grouping");
+        store
+            .add_rbac_grouping(
+                "t1",
+                GroupingRule {
+                    user: "group:elsewhere".to_string(),
+                    role: "role:writer".to_string(),
+                },
+            )
+            .await
+            .expect("group grouping");
+        let older = issued_at(&issuer, chrono::Utc::now().timestamp() - 600);
+        let (_, claims) = exchange(&app, &older).await;
+        assert!(claims.expect("exchanged").perms.contains(&publish));
+
+        let status = if tenant_wide {
+            admin(
+                &app,
+                "DELETE",
+                "/v1/tenants/t1/rbac/policies",
+                json!({ "subject": writer.subject, "object": writer.object, "action": writer.action }),
+            )
+            .await
+        } else {
+            admin(
+                &app,
+                "DELETE",
+                "/v1/tenants/t1/rbac/groupings",
+                json!({ "user": principal, "role": "role:writer" }),
+            )
+            .await
+        };
+        assert_eq!(status, StatusCode::NO_CONTENT);
+        let cutoffs = store
+            .principal_cutoffs("t1", &principal)
+            .await
+            .expect("cutoffs");
+        let revoked_at = cutoffs.tokens.expect("the edit recorded a cutoff");
+        assert_eq!(cutoffs.assertions, None);
+        if tenant_wide {
+            assert!(
+                store
+                    .principal_cutoffs("t1", "anyone-else")
+                    .await
+                    .expect("cutoffs")
+                    .tokens
+                    .is_some(),
+                "a policy an IdP group reaches revokes the whole tenant"
+            );
+        }
+
+        let (status, claims) = exchange(&app, &older).await;
+        assert_eq!(status, StatusCode::OK, "tenant-wide: {tenant_wide}");
+        let claims = claims.expect("claims");
+        assert!(!claims.perms.contains(&publish), "{:?}", claims.perms);
+        assert!(
+            claims
+                .perms
+                .contains(&"stream.subscribe:stream:t1/payments/*".to_string())
+        );
+        assert!(claims.iat > revoked_at, "{} <= {revoked_at}", claims.iat);
+    }
+}
+
+/// An explicit revocation refuses an older IdP token even with an RBAC
+/// edit's cutoff on the same principal.
+#[tokio::test]
+async fn both_kinds_of_revocation_refuse_an_older_idp_token() {
+    let (addr, _handle) = spawn_jwks_server(jwks_for_key("kid-1")).await;
+    let issuer = format!("http://{addr}");
+    let (app, store, principal) = revocable_app(&issuer).await;
+    store
+        .add_rbac_grouping(
+            "t1",
+            GroupingRule {
+                user: principal.clone(),
+                role: "role:other".to_string(),
+            },
+        )
+        .await
+        .expect("grouping");
+    let older = issued_at(&issuer, chrono::Utc::now().timestamp() - 5);
+    revoke_explicitly(&app, &principal).await;
+    assert_eq!(
+        admin(
+            &app,
+            "DELETE",
+            "/v1/tenants/t1/rbac/groupings",
+            json!({ "user": principal, "role": "role:other" }),
+        )
+        .await,
+        StatusCode::NO_CONTENT
+    );
+    assert_eq!(
+        exchange_status(&app, &older).await,
+        StatusCode::UNAUTHORIZED
+    );
+}
+
+/// An IdP token with no `iat`, or one that is not a number, never exchanges,
+/// under a cutoff or not.
+#[tokio::test]
+async fn an_idp_token_without_an_iat_does_not_exchange() {
+    let (addr, _handle) = spawn_jwks_server(jwks_for_key("kid-1")).await;
+    let issuer = format!("http://{addr}");
+    let (app, store, principal) = revocable_app(&issuer).await;
+    let now = chrono::Utc::now().timestamp();
+    let mut header = jsonwebtoken::Header::new(Algorithm::RS256);
+    header.kid = Some("kid-1".to_string());
+    let key = jsonwebtoken::EncodingKey::from_rsa_pem(idp_key().pem.as_bytes()).expect("enc");
+    let without = jsonwebtoken::encode(
+        &header,
+        &json!({ "iss": issuer, "sub": "user-1", "aud": "aud-1", "exp": now + 300 }),
+        &key,
+    )
+    .expect("token");
+    let unparsable = mint_upstream_token_with_claims(
+        &idp_key().pem,
+        &issuer,
+        "aud-1",
+        "kid-1",
+        json!({ "iat": "yesterday" }),
+    );
+    for revoked in [false, true] {
+        if revoked {
+            store
+                .revoke_principals_explicitly("t1", vec![principal.clone()], now - 600)
+                .await
+                .expect("revoke");
+        }
+        for token in [&without, &unparsable] {
+            assert_eq!(exchange_status(&app, token).await, StatusCode::UNAUTHORIZED);
+        }
+    }
+}

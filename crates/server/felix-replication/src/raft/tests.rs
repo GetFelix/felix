@@ -203,6 +203,27 @@ struct Net {
     /// them. Each heartbeat in one is also counted in `sent`.
     beat_batches: std::sync::atomic::AtomicU64,
     batched_beats: std::sync::atomic::AtomicU64,
+    /// Every vote and pre-vote request that reached the network's far end,
+    /// with how it was answered.
+    votes: parking_lot::Mutex<Vec<VoteSeen>>,
+}
+
+/// A vote or pre-vote request and its answer.
+#[derive(Clone, Debug)]
+struct VoteSeen {
+    from: MemberId,
+    to: MemberId,
+    answer: VoteAnswer,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum VoteAnswer {
+    Granted,
+    Denied,
+    /// The broker holds another copy of the group than the one asked.
+    OtherCopy,
+    /// Lost, unreachable, or refused for another reason.
+    Failed,
 }
 
 impl Net {
@@ -371,10 +392,22 @@ impl RaftTransport for Net {
         let unheard = matches!(request.body, Request::Append(_)) && self.lose_answers.load(Relaxed);
         let late_grant =
             matches!(request.body, Request::PreVote(_)) && self.late_pre_vote_grants.load(Relaxed);
+        let vote_to = asker.map(|asker| (asker.clone(), request.to().clone()));
         let answer = match runtime {
             Some(runtime) => runtime.handle_unchecked(request).await,
             None => Err(Refused::Unreachable(format!("{broker} is down"))),
         };
+        if let Some((from, to)) = vote_to {
+            let answer = match &answer {
+                Ok(RaftReply(super::network::Reply::Vote(vote))) if vote.vote_granted => {
+                    VoteAnswer::Granted
+                }
+                Ok(_) => VoteAnswer::Denied,
+                Err(Refused::OtherCopy(..)) => VoteAnswer::OtherCopy,
+                Err(_) => VoteAnswer::Failed,
+            };
+            self.votes.lock().push(VoteSeen { from, to, answer });
+        }
         if unheard {
             return Err(Refused::Unreachable("the answer was lost".into()));
         }

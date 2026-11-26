@@ -29,6 +29,12 @@ pub trait Authenticator: Send + Sync {
         token: &str,
         peer_certs: &[Vec<u8>],
     ) -> Result<Principal, AuthError>;
+
+    /// The principal of a connection that sent no credentials, on the
+    /// anonymous dev switch, acting as `tenant_id`. A client that presented
+    /// `peer_certs` still ends with that certificate, as an authenticated one
+    /// does; a chain that has already ended or cannot be read is refused.
+    fn anonymous(&self, tenant_id: &str, peer_certs: &[Vec<u8>]) -> Result<Principal, AuthError>;
 }
 
 type RevokedFn = dyn Fn() -> Pin<Box<dyn Future<Output = ()> + Send>> + Send + Sync;
@@ -184,6 +190,12 @@ impl Principal {
 
     pub(crate) fn expires_at(&self) -> Option<i64> {
         self.expires_at
+    }
+
+    /// Whether anything can end this principal: an expiry or a revocation to
+    /// watch.
+    pub(crate) fn may_end(&self) -> bool {
+        self.expires_at.is_some() || self.revoked.is_some()
     }
 
     /// Resolves when the credential is revoked; never, if it has no

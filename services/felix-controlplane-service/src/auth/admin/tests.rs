@@ -296,3 +296,12 @@ async fn a_tenant_cannot_trust_more_than_the_cap() {
     edit.audiences.push("another".to_string());
     upsert(&state, &headers, edit).await;
 }
+
+/// Run between [`cut_off`]'s two writes.
+pub(crate) type Between = std::sync::Arc<
+    dyn Fn() -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> + Send + Sync,
+>;
+
+tokio::task_local! {
+    pub(crate) static BETWEEN_CUTOFF_AND_CHAINS: Between;
+}
