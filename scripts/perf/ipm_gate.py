@@ -2,10 +2,10 @@
 """Compare broker instructions per message with the committed baseline.
 
   ipm_gate.py check  RESULT.json [--allow-big-drop]
-                                   exit 1 if the measurement failed, the run was paced differently
-                                   from the baseline, or any baseline cell is missing, over by more
+                                   exit 1 if the measurement failed or any baseline cell is missing, over by more
                                    than the tolerance, or more than 30% under (--allow-big-drop for
-                                   a real win)
+                                   a real win); exit 3 if the baseline was
+                                   recorded at another pace (refresh it; not a regression)
   ipm_gate.py update RESULT.json...
                                    rewrite the baseline's section for this architecture from the
                                    median of at least 5 runs of one commit
@@ -26,6 +26,10 @@ BASELINE = Path(__file__).with_name("ipm-baseline.toml")
 # One run's figure moves with the runner it lands on, so a baseline is the
 # median of several runs of one commit.
 MIN_BASELINE_RUNS = 5
+
+# Exit code of a check whose baseline was taken at another pace. It is not 1,
+# which means a regression or a failed measurement.
+EXIT_STALE_BASELINE = 3
 
 # Keys of an architecture's section that are not cells.
 META = ("commit", "toolchain", "runs", "pace")
@@ -127,12 +131,15 @@ def check(result, allow_big_drop):
     section = base[arch]
     want_pace = section.get("pace", {})
     if paces(result) != want_pace:
-        summary(
-            f"The run paced {paces(result)} (messages a second) but the {arch} baseline was "
-            f"recorded at {want_pace}. Per-second work differs between the two, so they are not "
-            f"comparable. Record a new baseline at the new pace."
+        msg = (
+            f"baseline predates the fixed pace: refresh needed. This run paced {paces(result)} "
+            f"(messages a second) but the {arch} baseline was recorded at {want_pace}. Per-second "
+            f"work differs between the two, so they are not comparable. This is not a regression: "
+            f"run scripts/perf/ipm_refresh.sh (see CONTRIBUTING.md)."
         )
-        return 1
+        print(f"::error title=Baseline needs a refresh, not a regression::{msg}")
+        summary(f"### Broker instructions per message ({arch}): baseline needs a refresh\n\n{msg}")
+        return EXIT_STALE_BASELINE
     rows = ["| cell | baseline | measured (median rep) | change | rep spread |", "|---|---|---|---|---|"]
     failed, lower = [], []
     expected = [k for k in section if k not in META]

@@ -181,12 +181,18 @@ filler that restates what was just said.
     per-second work: one x86_64 `b64` run read 2% under the others because its
     reps took 4.8 s where theirs took 9. More reps do not help with that, since
     every rep in a run shares the runner.
-  - The paced `b1` figure is about 507k instructions on aarch64 and 283k on
-    x86_64, against about 190k and 184k when the same broker ran flat out. The
-    rest is per-second work and whatever a message costs when it arrives
-    alone. So a per-message cost has to grow by roughly 8% on aarch64 (5% on
-    x86_64) to move `b1` by 3%. `b64` is the cell that sees small per-message
-    costs.
+  - What each cell can see, in instructions per message. `b1` publishes one
+    message at a time, so it measures the cost of a lone publish plus the
+    broker's per-second work at that pace: about 508k on aarch64 and 284k on
+    x86_64, against about 190k and 184k flat out. It turns red at +3%: about
+    +15k per message on aarch64 and +8.5k on x86_64, which is roughly 8% and
+    5% of the flat-out cost. A smaller change to the per-message path cannot
+    move it past the tolerance. `b1` is the cell for a cost added to a lone
+    publish (a timer, a wake, a syscall, an extra task hop). `b64` publishes
+    batches, costs about 10.8k (aarch64) and 11.3k (x86_64) per message, and
+    turns red at about +325 to +340 per message, which is about 3%. It is the
+    cell for a cost added per message inside a batch. A cost added per batch
+    or per publish call shows in `b1` first.
   - What it cannot see: kernel time, time spent waiting on the disk or the
     network, and native per-second cost (callgrind's figures say nothing about
     a broker at full speed). A change to per-second work moves both cells as
@@ -202,12 +208,17 @@ filler that restates what was just said.
     the `b64` cell first, it is the more sensitive one) and remove it, or
     explain it and refresh the baseline as below. Do not rerun a red gate until
     it goes green.
-  - The Raft baseline depends on how the cluster harness starts its members.
-    After a change to that harness (for example the fix that finalizes the Raft
-    features before the members open, which changes how often they fsync), the
-    old numbers are stale. Refresh with one command from a pushed branch:
+  - A run whose baseline was taken at another pace fails with exit code 3
+    and the message "baseline predates the fixed pace: refresh needed". It is
+    not a regression and says so in the job summary and the annotation; the job
+    is red until the baseline is refreshed.
+  - The Raft baseline must be refreshed once Raft members in the test cluster
+    open in written-commit mode (#1774). Until then the cluster harness starts
+    them in strict mode (fsync on every commit), which costs more per
+    message. Refresh with one command from a pushed branch:
     `scripts/perf/ipm_refresh.sh <branch>`. It dispatches five runs, waits,
-    and rewrites both sections of `scripts/perf/ipm-baseline.toml`.
+    and rewrites both sections of `scripts/perf/ipm-baseline.toml`. Commit the
+    result only after the change that opens members that way has merged.
   - If the extra cost is deliberate, dispatch the workflow five times on the
     PR's head commit and run `python3 scripts/perf/ipm_gate.py update` with
     the five `ipm-result.json` artifacts (one per architecture per run). It

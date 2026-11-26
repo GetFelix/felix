@@ -71,8 +71,10 @@ class GateTest(unittest.TestCase):
 
     def test_a_run_at_another_pace_is_not_compared(self):
         code, out = self.run_quietly(ipm_gate.check, result(300000, pace=40), False)
-        self.assertEqual(code, 1)
-        self.assertIn("not comparable", out)
+        self.assertEqual(code, ipm_gate.EXIT_STALE_BASELINE)
+        self.assertEqual(code, 3)
+        self.assertIn("refresh needed", out)
+        self.assertIn("not a regression", out)
 
     def test_update_refuses_fewer_than_five_runs(self):
         code, _ = self.run_quietly(ipm_gate.update, [result(300000)] * 4)
