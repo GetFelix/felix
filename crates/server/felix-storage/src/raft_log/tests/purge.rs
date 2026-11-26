@@ -534,6 +534,76 @@ async fn a_re_formed_voters_base_stays_below_the_gap() {
     }
 }
 
+/// A learner that pulled a re-formed group's base and then installs the
+/// snapshot at the gap's end is asked by openraft to purge through the gap's
+/// end. That keeps the base below the purged id, as a re-formed voter holds
+/// it, instead of emptying the log; any other purge past the end still does.
+#[tokio::test]
+async fn a_purge_at_the_gap_end_keeps_the_base_below_it() {
+    use crate::raft_copy::epoch_file::{self, EpochBase, EpochFile, EpochLogId};
+
+    let first = 12 + (1 << 40);
+    for (first_index, keeps) in [(first, true), (first + 1, false)] {
+        let dir = tempdir().expect("dir");
+        let mut raft = open(&dir);
+        append_flushed(&mut raft, &thirty()[..12]).await;
+        let base = EpochBase {
+            base_last: Some(EpochLogId {
+                index: 11,
+                epoch: 0,
+                term: 1,
+            }),
+            first_index,
+        };
+        epoch_file::store(
+            dir.path(),
+            &EpochFile {
+                incarnation: 1,
+                bases: vec![base],
+            },
+        )
+        .expect("epoch");
+        raft.purge(log_id(2, first - 1)).await.expect("purge");
+        assert_eq!(
+            state(&raft).await,
+            (Some(log_id(2, first - 1)), Some(log_id(2, first - 1)))
+        );
+        assert_eq!(all(&raft).await.expect("read"), []);
+        let held =
+            raft.disk_log().base_offset()..raft.disk_log().tail_offset().await.expect("tail");
+        assert_eq!(held, if keeps { 0..12 } else { first..first });
+        if !keeps {
+            continue;
+        }
+        let next = normal(3, first, "next");
+        append_flushed(&mut raft, std::slice::from_ref(&next)).await;
+        raft.disk_log().close().await.expect("close");
+        drop(raft);
+        let raft = open(&dir);
+        let mut offsets: Vec<Offset> = Vec::new();
+        loop {
+            let start = offsets.last().map_or(0, |last| last + 1);
+            let page = raft
+                .disk_log()
+                .read_range(ReadRange {
+                    start,
+                    max_bytes: usize::MAX,
+                })
+                .await
+                .expect("read")
+                .records;
+            if page.is_empty() {
+                break;
+            }
+            offsets.extend(page.iter().map(|record| record.offset));
+        }
+        let mut expected: Vec<Offset> = (0..12).collect();
+        expected.push(first);
+        assert_eq!(offsets, expected, "the base survives a reopen");
+        assert_eq!(all(&raft).await.expect("read"), [next]);
+    }
+}
+
 /// A call that outlasts the threshold is warned about; one under it, and
 /// any call before a threshold is set, is not.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

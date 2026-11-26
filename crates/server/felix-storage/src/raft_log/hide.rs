@@ -138,6 +138,24 @@ impl<K> Shared<K> {
     /// purge empties the log, which resets it here. The caller of a purge
     /// that may empty the log has waited for every append's callback.
     pub(super) async fn remove_through(&self, purged: Purged, behind: bool) -> io::Result<()> {
+        self.store_purged(purged).await?;
+        let log = &self.log;
+        let first: Offset = purged.index + 1;
+        if first >= log.tail_offset().await.map_err(io_error)? {
+            log.reset_to(first).await.map_err(io_error)
+        } else {
+            if behind {
+                self.removals.behind(log, first);
+                return Ok(());
+            }
+            log.trim_before(first).await.map(drop).map_err(io_error)
+        }
+    }
+
+    /// Put `purged` on disk and in the bounds, removing nothing. Alone it
+    /// leaves every record below the id in place, as a re-formed copy keeps
+    /// its base below the gap.
+    pub(super) async fn store_purged(&self, purged: Purged) -> io::Result<()> {
         let log = &self.log;
         // A stopped log refuses the reset a purge past the end needs, so it
         // takes no new id either.
@@ -166,16 +184,7 @@ impl<K> Shared<K> {
                 bounds.hidden = None;
             }
         }
-        let first: Offset = purged.index + 1;
-        if first >= log.tail_offset().await.map_err(io_error)? {
-            log.reset_to(first).await.map_err(io_error)
-        } else {
-            if behind {
-                self.removals.behind(log, first);
-                return Ok(());
-            }
-            log.trim_before(first).await.map(drop).map_err(io_error)
-        }
+        Ok(())
     }
 
     /// Purge through `asked`: remove what the stored snapshot covers and

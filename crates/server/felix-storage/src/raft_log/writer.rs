@@ -541,6 +541,20 @@ where
             )));
         }
         shared.check_held(purged).await?;
+        // A learner that pulled a re-formed group's base is then sent the
+        // snapshot at the gap's end, and openraft purges through it. The
+        // base stays below the purged id, as on a re-formed voter: the
+        // stream still serves it, and the epoch's first append opens the gap.
+        let tail = log.tail_now();
+        if index.saturating_add(1) >= tail
+            && log.base_offset() < tail
+            && matches!(
+                reform_gap(log.dir(), tail, index.saturating_add(1)).await?,
+                GapCheck::Gap
+            )
+        {
+            return shared.store_purged(purged).await;
+        }
         shared.remove_through(purged, true).await
     }
 }
