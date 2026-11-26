@@ -619,7 +619,7 @@ expectations=(
   "FelixRaftReformDeadLoses violates NothingLost"
   "FelixRaftReformAbandon pass"
   "FelixRaftReformAbandonHappens violates NeverAbandonCommits"
-  "FelixRaftReformAbandonOutside violates AckedSurvive"
+  "FelixRaftReformAbandonOutside violates AbandonedNotLed"
   "FelixRaftReformAbandonAtFloor violates OffsetNeverReused"
   "FelixRaftReformAbandonFromZero violates OffsetNeverReused"
   "FelixRaftReformAbandonOpen violates AbandonedNotLed"

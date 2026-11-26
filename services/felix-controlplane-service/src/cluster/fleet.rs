@@ -272,7 +272,7 @@ pub(crate) const ELECTION_METADATA_LEVEL_READY: bool = true;
 /// `FELIX_RECORD_PUBLISHERS` asks for it, and `record_generations`, the one-way
 /// move onto segment format v9, kept out until replicated clusters are
 /// measured with it on.
-pub(crate) const NEW_CLUSTER: [felix_common::fleet::FleetFeature; 19] = [
+pub(crate) const NEW_CLUSTER: [felix_common::fleet::FleetFeature; 20] = [
     felix_common::fleet::GENERATION_START,
     felix_common::fleet::MAJORITY_ACK,
     felix_common::fleet::LEASE_FREE_READS,
@@ -292,6 +292,7 @@ pub(crate) const NEW_CLUSTER: [felix_common::fleet::FleetFeature; 19] = [
     felix_common::fleet::RAFT_FOLLOWER_READ,
     felix_common::fleet::RAFT_WRITTEN_COMMIT,
     felix_common::fleet::RAFT_CONDITIONAL_BATCHES,
+    felix_common::fleet::RAFT_ABANDON,
 ];
 
 /// Whether no broker has served `store` yet: no stream or cache shard was

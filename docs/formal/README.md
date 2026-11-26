@@ -639,7 +639,7 @@ registered, run by a workflow, nor listed there.
 | `FelixRaftReformDeadLoses.cfg` | a witness: a record only the dead broker held is lost | violate `NothingLost` |
 | `FelixRaftReformAbandon.cfg` | `Abandon`: one replica, its broker a declared dead, the log abandoned in one store step: the next epoch starts on b with an empty base, its first index above the floor, every earlier first index and the restore time line (an oracle here). Before that a's copy may rotate and re-form or start by itself; a can come back with its copy afterwards and does not open | pass `OneLeaderPerTerm`, `AbandonedNotLed`, `AckedSurvive`, `StateMachineSafety`, `OffsetNeverReused` |
 | `FelixRaftReformAbandonHappens.cfg` | a witness: the abandoned epoch elects b and commits | violate `NeverAbandonCommits` |
-| `FelixRaftReformAbandonOutside.cfg` | the dead check in a step before the write; a comes back with an acknowledged record in between | violate `AckedSurvive` |
+| `FelixRaftReformAbandonOutside.cfg` | the dead check in a step before the write; a comes back and leads its old group in between | violate `AbandonedNotLed` |
 | `FelixRaftReformAbandonAtFloor.cfg` | the first index just above the floor, with no time line; the floor trails the commits | violate `OffsetNeverReused` |
 | `FelixRaftReformAbandonFromZero.cfg` | the blank copy forms the group from index 0 | violate `OffsetNeverReused` |
 | `FelixRaftReformAbandonOpen.cfg` | a copy behind the abandoned epoch opens: a comes back and leads its old group | violate `AbandonedNotLed` |
