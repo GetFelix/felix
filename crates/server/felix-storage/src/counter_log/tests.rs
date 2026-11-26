@@ -174,7 +174,7 @@ async fn adds_do_not_wait_on_a_slow_compaction() {
 async fn a_crash_mid_compaction_keeps_every_sum() {
     let dir = tempfile::tempdir().expect("tempdir");
     let keys = 3 * crate::compaction::COPY_BATCH;
-    {
+    let dir = {
         let store = store(dir.path());
         for round in 0..3i64 {
             for key in 0..keys {
@@ -193,8 +193,8 @@ async fn a_crash_mid_compaction_keeps_every_sum() {
         pass.abort();
         let _ = pass.await;
         store.compactor.kill().await;
-    }
-    crate::disk_log::dir_lock::released(dir.path()).await;
+        crate::disk_log::dir_lock::crash_image(dir.path())
+    };
 
     let expected = |key: usize| 3 + 3 * key as i64;
     let reopened = store(dir.path());

@@ -336,7 +336,7 @@ async fn on_disk(dir: &TempDir, offset: u64) {
 #[tokio::test]
 async fn the_commit_offset_is_written_behind_every_advance_under_on_commit() {
     let dir = tempdir().expect("tempdir");
-    {
+    let image = {
         let log = open(&dir, FsyncMode::OnCommit);
         log.append(&records(&["a", "b", "c"]))
             .await
@@ -345,10 +345,10 @@ async fn the_commit_offset_is_written_behind_every_advance_under_on_commit() {
         log.advance_commit_offset(3).await.expect("commit");
         // Without waiting for an interval or another advance.
         on_disk(&dir, 3).await;
-    }
-    // Reopened without a shutdown.
-    crate::disk_log::dir_lock::released(dir.path()).await;
-    assert_eq!(open(&dir, FsyncMode::OnCommit).commit_offset(), 3);
+        // A crash here: the disk as it is, with the log still open.
+        crate::disk_log::dir_lock::crash_image(dir.path())
+    };
+    assert_eq!(open(&image, FsyncMode::OnCommit).commit_offset(), 3);
 }
 
 /// **An advance does not wait on a replica-state write** (#1456). Under
@@ -392,9 +392,10 @@ async fn an_advance_does_not_wait_on_a_replica_state_write() {
 
     drop(held);
     on_disk(&dir, 2).await;
+    // A crash here: the disk as it is, with the log still open.
+    let image = crate::disk_log::dir_lock::crash_image(dir.path());
     drop(log);
-    crate::disk_log::dir_lock::released(dir.path()).await;
-    let reopened = open(&dir, FsyncMode::OnCommit);
+    let reopened = open(&image, FsyncMode::OnCommit);
     assert_eq!(reopened.commit_offset(), 2);
     assert!(matches!(
         reopened.truncate(1).await,

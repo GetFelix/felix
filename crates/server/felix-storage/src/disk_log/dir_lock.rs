@@ -85,34 +85,26 @@ pub(crate) fn release_under(root: &Path) {
     }
 }
 
-/// Wait until every directory directly under `root`, or `root` itself, is
-/// let go: a test that drops a log to stand in for a crash reopens it only
-/// once the old log's last background write has finished with it.
+/// A copy of everything under `root` as it is now, for a test to open as
+/// what a process that died here leaves: the logs open under `root` hold
+/// it, and a process death would have let go of their locks.
 #[cfg(test)]
-pub(crate) async fn released(root: &Path) {
-    let mut dirs = vec![root.to_path_buf()];
-    if let Ok(entries) = std::fs::read_dir(root) {
-        dirs.extend(
-            entries
-                .flatten()
-                .map(|entry| entry.path())
-                .filter(|path| path.is_dir()),
-        );
-    }
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
-    for dir in dirs {
-        while let Err(err) = DirLock::take(&dir) {
-            if err.kind() != io::ErrorKind::ResourceBusy {
-                break;
+pub(crate) fn crash_image(root: &Path) -> tempfile::TempDir {
+    fn copy(from: &Path, to: &Path) {
+        for entry in std::fs::read_dir(from).expect("list") {
+            let entry = entry.expect("entry");
+            let target = to.join(entry.file_name());
+            if entry.file_type().expect("type").is_dir() {
+                std::fs::create_dir_all(&target).expect("mkdir");
+                copy(&entry.path(), &target);
+            } else {
+                std::fs::copy(entry.path(), target).expect("copy");
             }
-            assert!(
-                std::time::Instant::now() < deadline,
-                "{} is still held by a dropped log",
-                dir.display()
-            );
-            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
         }
     }
+    let image = tempfile::tempdir().expect("image");
+    copy(root, image.path());
+    image
 }
 
 impl Drop for DirLock {

@@ -297,9 +297,9 @@ async fn a_crash_mid_compaction_replays_to_the_same_cache() {
         // No shutdown: the process dies here, and its background passes
         // with it.
         cache.compactor.kill().await;
-        expected
+        (expected, crate::disk_log::dir_lock::crash_image(dir.path()))
     };
-    crate::disk_log::dir_lock::released(dir.path()).await;
+    let (expected, dir) = expected;
 
     let reopened = cache(dir.path()).await;
     assert_reads(&reopened, &expected, "after a crash mid-compaction").await;

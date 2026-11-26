@@ -1911,6 +1911,12 @@ same way: the second stops at startup when it finds the stream root locked.
 The lock is a `flock` that goes away with its holder, so a crash leaves no
 stale lock behind. See "One open at a time" in `docs/storage-format.md`.
 
+A filesystem that cannot lock a directory refuses every log on it, stream,
+cache and counter logs included, not only Raft logs as before. On Linux NFS
+`flock` is emulated with byte-range locks, which a directory cannot take, so a
+broker with its data directory there does not start. Keep the data directory
+on a local disk.
+
 The end-to-end demo (publish, crash, restart, recover) is:
 
 ```sh

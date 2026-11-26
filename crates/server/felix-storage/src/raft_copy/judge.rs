@@ -332,8 +332,11 @@ impl CopyRoot {
         } else {
             let kept = kept_path(dir, &parent, replaced)?;
             crate::fs::rename(dir, &kept)?;
+            step()?;
             // Locked at once, and the old one held until it is finished
-            // with: a copy is never without its holder.
+            // with. Another open that takes the new, empty directory first
+            // makes this fail before anything is written to it, which leaves
+            // what a crash at the step above leaves.
             crate::fs::create_dir_all(dir)?;
             let _old = lock.follow(dir)?;
             step()?;

@@ -755,3 +755,102 @@ async fn a_rotation_holds_the_copy_directory_at_every_step() {
     assert_eq!((again.copy, again.rotation.clone()), (copy, None));
     close(again).await;
 }
+
+/// Another open that takes the new directory between the rename and its
+/// lock fails the rotation before anything is written there. What is left
+/// is what a crash right after the rename leaves, and the next open
+/// rotates again with the old copy kept.
+#[tokio::test]
+async fn an_open_that_takes_the_new_directory_first_fails_the_rotation_and_the_next_open_recovers()
+{
+    use crate::disk_log::dir_lock::DirLock;
+
+    let root = Root::new();
+    let dir = root.shard_dir();
+    let copies = root.open();
+    let opened = open_copy(&copies, &dir).await;
+    save_vote(&opened, 6).await;
+    let old = close(opened).await;
+    copies
+        .mark_log()
+        .fresh(Arc::from(SHARD), 0xdead)
+        .await
+        .expect("marks");
+
+    // At the first step that finds the directory renamed away, another open
+    // makes the new one, locks it and writes into it.
+    let parent = dir.parent().expect("parent").to_path_buf();
+    let outsider = Arc::new(parking_lot::Mutex::new(None));
+    {
+        let (dir, outsider) = (dir.clone(), Arc::clone(&outsider));
+        crash_point::probe_under(&parent, move || {
+            let mut outsider = outsider.lock();
+            if outsider.is_none() && !dir.exists() {
+                std::fs::create_dir_all(&dir).expect("mkdir");
+                *outsider = Some(DirLock::take(&dir).expect("the outsider's lock"));
+                std::fs::write(dir.join("outsider"), b"x").expect("write");
+            }
+        });
+    }
+    let refused = copies
+        .open_copy(SHARD, &dir, "t/ns/orders/0", config())
+        .await;
+    crash_point::unprobe();
+    assert!(
+        refused.as_ref().is_err_and(is_busy),
+        "the rotation went on in a directory another open holds"
+    );
+    let names: Vec<_> = std::fs::read_dir(&dir)
+        .expect("list")
+        .map(|entry| entry.expect("entry").file_name())
+        .collect();
+    assert_eq!(
+        names,
+        ["outsider"],
+        "the rotation wrote into the outsider's directory"
+    );
+    outsider.lock().take();
+
+    let reopened = open_copy(&copies, &dir).await;
+    assert!(![old, 0xdead].contains(&reopened.copy));
+    assert_eq!(
+        reopened.log.accepted_generation(),
+        0,
+        "the new copy never voted"
+    );
+    let kept = kept_copies(&dir).expect("kept");
+    assert!(
+        kept.iter().any(|kept| kept.copy == Some(old)),
+        "the old copy is not kept: {kept:?}"
+    );
+    close(reopened).await;
+}
+
+/// A close lets go of the directory before it returns, whatever background
+/// work of the log is still finishing, so a reopen right after it never
+/// finds the directory busy.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_copy_reopens_at_once_after_a_close_under_load() {
+    let root = Root::new();
+    let dir = root.shard_dir();
+    let copies = root.open();
+    for round in 0..20 {
+        let opened = open_copy(&copies, &dir).await;
+        let writers: Vec<_> = (0..4)
+            .map(|_| {
+                let log = opened.log.clone();
+                tokio::spawn(async move { while log.save_vote(1, "1", false).await.is_ok() {} })
+            })
+            .collect();
+        tokio::task::yield_now().await;
+        close(opened).await;
+        let again = copies
+            .open_copy(SHARD, &dir, "t/ns/orders/0", config())
+            .await;
+        assert!(again.is_ok(), "round {round}: {:?}", again.err());
+        close(again.expect("open")).await;
+        for writer in writers {
+            writer.await.expect("writer");
+        }
+    }
+}

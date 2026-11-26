@@ -135,3 +135,35 @@ async fn on_the_simulated_filesystem_the_claim_is_per_process() {
 
     crate::sim_fs::unregister_root(&root);
 }
+
+/// A close lets go of the directory before it returns, with appends in
+/// flight, a periodic flusher and rollovers running, so a reopen right after
+/// it never finds the directory busy.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_stream_log_reopens_at_once_after_a_close_under_load() {
+    let dir = tempdir().expect("tempdir");
+    let config = LogConfig {
+        segment_size_bytes: crate::segment::SEGMENT_HEADER_LEN + 512,
+        fsync_mode: FsyncMode::Periodic {
+            interval: std::time::Duration::from_millis(1),
+        },
+        ..config(FsyncMode::None)
+    };
+    for round in 0..20 {
+        let log = DiskLog::open(dir.path(), "t/ns/orders/0", config.clone()).expect("open");
+        let writers: Vec<_> = (0..4)
+            .map(|_| {
+                let log = log.clone();
+                tokio::spawn(async move { while log.append(&records(&["load"])).await.is_ok() {} })
+            })
+            .collect();
+        tokio::time::sleep(std::time::Duration::from_millis(2)).await;
+        log.close().await.expect("close");
+        let again = DiskLog::open(dir.path(), "t/ns/orders/0", config.clone());
+        assert!(again.is_ok(), "round {round}: {:?}", again.err());
+        again.expect("open").close().await.expect("close");
+        for writer in writers {
+            writer.await.expect("writer");
+        }
+    }
+}
