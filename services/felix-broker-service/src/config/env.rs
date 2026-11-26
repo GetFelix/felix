@@ -800,13 +800,15 @@ pub(crate) struct RaftPrerequisites {
 
 impl RaftPrerequisites {
     /// Why this broker cannot run Raft shards, if it cannot. Starting as a
-    /// hybrid broker instead would put two engines on one shard.
+    /// hybrid broker instead would put two engines on one shard. A cluster
+    /// member without durable storage runs no Raft group and is given only
+    /// in-memory stream shards, so it needs no disk.
     pub(crate) fn missing(&self) -> Option<&'static str> {
         if !self.compiled {
             Some("this build has no Raft engine (cargo feature `raft`)")
         } else if self.membership && !self.peer_transport {
             Some("it needs the broker-internal listener (FELIX_INTERNAL_BIND)")
-        } else if !self.durable_storage {
+        } else if !self.membership && !self.durable_storage {
             Some("it needs durable storage (FELIX_DURABLE_STORAGE_DIR)")
         } else {
             None

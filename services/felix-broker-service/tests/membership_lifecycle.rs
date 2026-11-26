@@ -165,6 +165,7 @@ fn config(node_id: &str, port: u16) -> MembershipConfig {
         region: "us-west-2".to_string(),
         zone: None,
         internal: false,
+        durable_storage: true,
         region_bridges: Vec::new(),
         features: Default::default(),
     }

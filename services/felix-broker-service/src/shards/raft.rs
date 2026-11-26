@@ -738,11 +738,9 @@ impl RaftShards {
     async fn durable_rf(&self, key: &ShardKey) -> Option<Durable> {
         let (tenant, namespace, name) = (&key.tenant_id, &key.namespace, &key.stream);
         if key.kind == ShardKind::Cache {
-            // A broker whose cache store has no logs leaves every cache to
-            // the hybrid, registered or not.
-            if self.broker.cache().as_log_cache().is_none() {
-                return Some(Durable::No);
-            }
+            // Every cache is a group, even on a broker whose cache store has
+            // no logs: placement gives such a broker no cache shard, so here
+            // it only routes to the group, and the hybrid never sees it.
             let metadata = self.broker.cache_metadata(tenant, namespace, name).await?;
             return Some(Durable::Yes(metadata.replication_factor));
         }
