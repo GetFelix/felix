@@ -708,8 +708,8 @@ the live directory is gone.
 A Raft log saves its committed index behind the commit, in every fsync mode,
 at most once a second, because a save is a file create, two fsyncs and a
 rename that the log's own fsyncs would queue behind, and openraft waits for
-`save_committed` to return before it applies. A clean close writes the last
-index saved. The last commit before a group goes idle
+`save_committed` to return before it applies. A clean close waits for a save
+in flight, then writes the last index saved. The last commit before a group goes idle
 is saved within that second, so a kept directory waits at most that long on
 the save.
 
