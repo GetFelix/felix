@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795666982502,
+  "lastUpdate": 1795669032431,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -89694,6 +89694,72 @@ window.BENCHMARK_DATA = {
             "range": "898.05",
             "unit": "us",
             "extra": "trials: 5\nmedian: 2219.00\nmean: 1871.80\nstdev: 898.05\ncv: 47.98%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "5e6cd679de5519932884e6b2aafe2817bd1e92e4",
+          "message": "fix(raft): a cache watch that resumes on another member after a failover is replayed (#3087) (#3194)\n\n* fix(raft): every cache member records while a watch of the shard is active (#3087)\n\nWIP: a member serving a watch has its leader append a Watched entry,\nand every member that applies it starts recording.\n\nSpec-Unaffected: the Watched entry is a stamped entry that changes no key, answer or floor, like an expiry of an overwritten version, which FelixRaftCache.tla already covers; recording buffers are per-member memory the model does not hold\n\n* fix(raft): a follower serving a watch asks for the mark on each applied run; tests and docs (#3087)\n\nSpec-Unaffected: the Watched entry is a stamped entry that changes no key, answer or floor, like an expiry of an overwritten version, which FelixRaftCache.tla already covers; recording buffers are per-member memory the model does not hold\n\n* fix(raft): a member that leads marks at once, without the follower's ask backoff (#3087)\n\nSpec-Unaffected: changes only when a leader appends the Watched entry, which changes no modelled state\n\n* docs(protocol): a Raft cache watch resume replays on any member while the shard is watched (#3087)\n\nSpec-Unaffected: docs only\n\n* fix(raft): a cache member opening from a snapshot inside a mark's life records past it (#3087)\n\nThe cache snapshot (version 2) carries the end of the last mark's life,\nand a member restored from one inside it starts recording past the\nsnapshot's entry. Version 1 still reads, as no live mark.\n\nSpec-Unaffected: marked_until is a function of applied entries that changes no key, answer, floor or the log's time; FelixRaftCache.tla does not model Watched entries or recording\n\n* test(raft): install a parsed snapshot in the mark test, as a receiver does (#3087)\n\nSpec-Unaffected: test only\n\n* docs(raft): the cache snapshot carries the watched entry's end (#3087)\n\nSpec-Unaffected: docs only\n\n* docs(raft): state the cache entry kinds and the version 2 snapshot layout (#3087)\n\nSpec-Unaffected: docs only\n\n* fix(raft): a cache watch resume records from the edge it reads, so a resume at the edge replays (#3087)\n\nThe broker's Raft cache watch tests now pin replay and order by the\nversions writes were acknowledged at, not by an edge read before the\nwatch, since the watched entry takes an index.\n\nSpec-Unaffected: changes only when a member starts recording, per-member memory the model does not hold",
+          "timestamp": "2026-11-26T04:45:52Z",
+          "tree_id": "fa844df3bca0baf0c04fd4f1e5fd49be1fd192f8",
+          "url": "https://github.com/GetFelix/felix/commit/5e6cd679de5519932884e6b2aafe2817bd1e92e4"
+        },
+        "date": 1795669017102,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 152,
+            "range": "7.33",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 152.00\nmean: 156.60\nstdev: 7.33\ncv: 4.68%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 225,
+            "range": "267.61",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 225.00\nmean: 351.80\nstdev: 267.61\ncv: 76.07%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 364,
+            "range": "453.03",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 364.00\nmean: 603.00\nstdev: 453.03\ncv: 75.13%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 199,
+            "range": "1.34",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 199.00\nmean: 199.60\nstdev: 1.34\ncv: 0.67%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 404,
+            "range": "11.39",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 404.00\nmean: 401.20\nstdev: 11.39\ncv: 2.84%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 582,
+            "range": "763.09",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 582.00\nmean: 935.00\nstdev: 763.09\ncv: 81.61%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
