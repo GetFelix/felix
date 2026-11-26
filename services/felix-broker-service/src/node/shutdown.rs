@@ -39,6 +39,9 @@ pub(super) struct Storage {
     /// Whoever runs the shards the hybrid does not. Its members write logs
     /// the storage provider never opened, so they stop before the flush.
     pub(super) engine_shards: Option<Arc<dyn crate::shards::routing::EngineShards>>,
+    /// Background tasks that can write under the root (cache expiry, the
+    /// Raft restore gate and reports), joined before storage closes.
+    pub(super) writers: TaskTracker,
 }
 
 /// Everything a running node has to stop, in the fields the drain reads.
@@ -404,6 +407,11 @@ impl Running {
             }
         }
 
+        sync_shutdown.cancel();
+        storage.writers.close();
+        budget
+            .drain("background_writers", storage.writers.wait())
+            .await;
         let mut engine_closed = true;
         if let Some(engine_shards) = &storage.engine_shards {
             budget
@@ -522,7 +530,7 @@ const NO_STORE_WRITES: [&str; 4] = [
 /// during the run (the Raft restore gate, a deferred restore check) already
 /// distrusted every copy, so the record names the id the directory has now:
 /// under the old one the next start would read a crash and rotate again.
-fn record_clean_stop(root: &std::path::Path, id: StorageId) -> Result<()> {
+pub(super) fn record_clean_stop(root: &std::path::Path, id: StorageId) -> Result<()> {
     let current = felix_storage::storage_identity::load(root)
         .ok()
         .flatten()

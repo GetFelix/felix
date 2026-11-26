@@ -439,3 +439,50 @@ async fn a_broker_restarts_in_process_after_a_clean_stop() -> Result<()> {
     assert_eq!(ids[0], ids[1], "a clean stop kept the storage id");
     Ok(())
 }
+
+/// **A start that fails after storage opened lets the data directory go
+/// only once it has stopped everything and closed storage** (#3250). Its
+/// QUIC port is taken, which fails the start after storage, the Raft shards
+/// and cache expiry are up. By the time it returns the stop is recorded as
+/// clean, so nothing under the root is still being written, and a restart in
+/// this process takes the directory and keeps its storage id.
+#[tokio::test]
+#[serial_test::serial]
+async fn a_start_that_fails_after_storage_opened_lets_go_once_stopped() -> Result<()> {
+    let data = tempfile::tempdir()?;
+    let taken = std::net::UdpSocket::bind("127.0.0.1:0")?;
+    let env = standalone_durable(data.path(), free_tcp());
+    let _quic = EnvGuard::set("FELIX_QUIC_BIND", &taken.local_addr()?.to_string());
+    let failed = tokio::time::timeout(
+        Duration::from_secs(20),
+        run_with_shutdown(std::future::pending::<()>()),
+    )
+    .await
+    .expect("the start neither failed nor stopped");
+    let err = failed.expect_err("a broker started on a taken QUIC port");
+    assert!(format!("{err:#}").contains("bind QUIC listener"), "{err:#}");
+
+    let id = felix_storage::storage_identity::load(data.path())?.expect("a storage id");
+    assert_eq!(
+        felix_storage::run_state::read(data.path(), id)?,
+        felix_storage::run_state::LastRun::Clean,
+        "the failed start returned before it closed storage and recorded the stop"
+    );
+
+    drop(taken);
+    drop(env);
+    let _env = standalone_durable(data.path(), free_tcp());
+    let (stop, stopped) = tokio::sync::oneshot::channel();
+    let mut again = tokio::spawn(run_with_shutdown(async {
+        let _ = stopped.await;
+    }));
+    await_opened(data.path(), &mut again).await;
+    assert_eq!(
+        felix_storage::storage_identity::load(data.path())?,
+        Some(id),
+        "the restart after a failed start rotated the storage id"
+    );
+    let _ = stop.send(());
+    tokio::time::timeout(Duration::from_secs(10), again).await???;
+    Ok(())
+}

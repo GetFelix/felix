@@ -326,7 +326,7 @@ pub(crate) struct Cut {
 }
 
 /// Where a shard's log of `kind` lives under the durable root; the same
-/// layout `node::storage::open` gives each store.
+/// layout `node::storage::open_with` gives each store.
 fn log_dir(root: &Path, kind: LogKind, shard: &PointShard) -> PathBuf {
     let store = match kind {
         LogKind::Stream => root.to_path_buf(),
