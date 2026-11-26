@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795695734914,
+  "lastUpdate": 1795696318964,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -90750,6 +90750,72 @@ window.BENCHMARK_DATA = {
             "range": "558.96",
             "unit": "us",
             "extra": "trials: 5\nmedian: 727.00\nmean: 927.80\nstdev: 558.96\ncv: 60.25%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "a6928053e9105d3b8d776b7a0a80de2d80c7b56d",
+          "message": "formal(raft): the standalone self re-form is checked through a second relaxed crash (#3048) (#3264)\n\nFelixRaftReformAloneTwoCuts gives the group of one two power cuts, two\nre-forms and three plans, so a cut can fall between the plan, the stop,\nthe epoch write and the start, or after a finished re-form. It holds the\nsame checks as FelixRaftReformAlone. Two witnesses show the bounds reach\nthe cases: a second re-form after a finished one that keeps an epoch-1\nrecord (NeverReformsAloneTwice), and a cut between the epoch write and\nthe start that the group recovers from (NeverRecoversFromCutBeforeStart).\n\nThe model and the README now document the existing Alone configs and the\none place the model differs from the broker: after a cut between the write\nand the start the model re-forms once more, where the broker replaces its\nunstarted plan under the same epoch.",
+          "timestamp": "2026-11-26T04:15:17-08:00",
+          "tree_id": "8efed367b27e33c87eb80a035560f08e6db90482",
+          "url": "https://github.com/GetFelix/felix/commit/a6928053e9105d3b8d776b7a0a80de2d80c7b56d"
+        },
+        "date": 1795696301743,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 150,
+            "range": "0.84",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 150.00\nmean: 150.20\nstdev: 0.84\ncv: 0.56%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 212,
+            "range": "11.76",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 212.00\nmean: 212.60\nstdev: 11.76\ncv: 5.53%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 255,
+            "range": "83.92",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 255.00\nmean: 293.60\nstdev: 83.92\ncv: 28.58%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 197,
+            "range": "1.30",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 197.00\nmean: 196.20\nstdev: 1.30\ncv: 0.66%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 388,
+            "range": "5.70",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 388.00\nmean: 388.00\nstdev: 5.70\ncv: 1.47%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 556,
+            "range": "890.54",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 556.00\nmean: 973.40\nstdev: 890.54\ncv: 91.49%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
