@@ -142,6 +142,7 @@ impl std::fmt::Display for Reason {
 /// the hot path for a lookup that is two loads.
 pub type ServableShards = HashMap<ShardKey, u64>;
 
+pub(crate) use super::engine::RaftShard;
 pub(crate) use super::engine::leave_stores_to_engines;
 pub use super::engine::{RaftIdempotentPublish, RaftPublish, RaftRefusal, StreamEngine};
 

@@ -358,6 +358,11 @@ impl RaftShards {
         self.runtime.holds(shard).then_some(&self.engine)
     }
 
+    /// This broker's member of `shard`, looked up once for a publish.
+    pub(crate) fn shard_for(&self, shard: &ShardKey) -> Option<felix_replication::raft::RaftShard> {
+        self.engine.shard(shard)
+    }
+
     /// The committed log id of every group this broker leads, with the
     /// stream incarnation the group runs and the group epoch of its copy.
     /// A group whose epoch its copy cannot prove ([`proven_epoch`]) is left

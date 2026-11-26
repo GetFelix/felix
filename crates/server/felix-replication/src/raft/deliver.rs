@@ -7,6 +7,7 @@
 //! the batch the publisher handed in once the engine says it committed.
 
 use std::future::Future;
+use std::sync::Arc;
 use std::time::Duration;
 
 use bytes::Bytes;
@@ -20,7 +21,10 @@ use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
 
 use super::commit::SkipClaim;
-use super::engine::RaftEngine;
+use super::engine::{
+    RaftEngine, admit_local_ack_on, await_commit_on, await_quorum_on, claim_skips_on, propose_to,
+};
+use super::group::Group;
 use super::propose::{AckAt, AnswerAt, Batch, Heard, Record, Sequenced, Unacknowledged};
 use crate::engine::{CommitError, Written};
 use crate::{ShardKey, ShardKind};
@@ -57,6 +61,49 @@ fn with_headers(
 type Settling = BoxFuture<'static, Result<ProposalCommitted, ProposalFailed<CommitError>>>;
 
 const OTHER_TERM: &str = "the batch was written at a later term than it was admitted at";
+
+/// A Raft shard's group on this broker, looked up once
+/// ([`RaftEngine::shard`]) so a publish to it does no further lookup.
+/// Cheap to clone. Held past a close or a re-form of the shard, it refuses
+/// every publish as a broker holding no member would.
+#[derive(Clone)]
+pub struct RaftShard {
+    engine: RaftEngine,
+    group: Arc<Group>,
+}
+
+impl RaftShard {
+    /// [`RaftEngine::read_bound`] of this shard.
+    pub fn read_bound(&self) -> u64 {
+        self.group.read_bound()
+    }
+
+    /// [`RaftEngine::publish_with`] to this shard.
+    #[allow(clippy::too_many_arguments)]
+    pub fn publish_with(
+        &self,
+        broker: &Broker,
+        stream: &StreamHandle,
+        term: Option<u64>,
+        payloads: Vec<Bytes>,
+        attribution: Attribution,
+        ack: AckAt,
+        answer: AnswerAt,
+        timeout: Duration,
+    ) -> Result<ProposedPublish<CommitError>, BrokerError> {
+        self.engine.publish_on(
+            Some(Arc::clone(&self.group)),
+            broker,
+            stream,
+            term,
+            payloads,
+            attribution,
+            ack,
+            answer,
+            timeout,
+        )
+    }
+}
 
 impl RaftEngine {
     /// Publish `payloads` to `shard` through `broker`'s stream handle
@@ -134,6 +181,44 @@ impl RaftEngine {
         answer: AnswerAt,
         timeout: Duration,
     ) -> Result<ProposedPublish<CommitError>, BrokerError> {
+        self.publish_on(
+            self.looked_up(shard),
+            broker,
+            stream,
+            term,
+            payloads,
+            attribution,
+            ack,
+            answer,
+            timeout,
+        )
+    }
+
+    /// `shard`'s group on this broker, looked up once for the publishes
+    /// [`RaftShard::publish_with`] makes. `None` when it holds no member.
+    pub fn shard(&self, shard: &ShardKey) -> Option<RaftShard> {
+        Some(RaftShard {
+            engine: self.clone(),
+            group: self.looked_up(shard)?,
+        })
+    }
+
+    /// [`Self::publish_with`] on `group`, the shard's group as one lookup
+    /// found it. Every later step uses it, and refuses as a missing group
+    /// does once the registry no longer holds it open.
+    #[allow(clippy::too_many_arguments)]
+    fn publish_on(
+        &self,
+        group: Option<Arc<Group>>,
+        broker: &Broker,
+        stream: &StreamHandle,
+        term: Option<u64>,
+        payloads: Vec<Bytes>,
+        attribution: Attribution,
+        ack: AckAt,
+        answer: AnswerAt,
+        timeout: Duration,
+    ) -> Result<ProposedPublish<CommitError>, BrokerError> {
         let attribution = broker.admit_attribution(&payloads, attribution)?;
         let records = payloads.clone();
         let (on_lease, answered) = oneshot::channel();
@@ -151,7 +236,7 @@ impl RaftEngine {
             attribution.clone(),
             timeout,
             self.proposer(
-                shard,
+                group,
                 term,
                 records,
                 attribution,
@@ -219,7 +304,7 @@ impl RaftEngine {
             timeout,
             |tail| CommitError::OffsetMismatch { tail },
             self.proposer(
-                shard,
+                self.looked_up(shard),
                 term,
                 records,
                 attribution,
@@ -282,7 +367,7 @@ impl RaftEngine {
             timeout,
             |tail| CommitError::OffsetMismatch { tail },
             self.proposer(
-                shard,
+                self.looked_up(shard),
                 term,
                 vec![stored],
                 attribution,
@@ -336,7 +421,7 @@ impl RaftEngine {
                 timeout,
                 |tail| CommitError::OffsetMismatch { tail },
                 self.proposer(
-                    shard,
+                    self.looked_up(shard),
                     term,
                     vec![headers],
                     Attribution::default(),
@@ -381,7 +466,7 @@ impl RaftEngine {
                 headers.clone(),
                 timeout,
                 self.proposer(
-                    shard,
+                    self.looked_up(shard),
                     term,
                     vec![headers],
                     Attribution::default(),
@@ -407,7 +492,7 @@ impl RaftEngine {
     #[allow(clippy::too_many_arguments)]
     fn proposer(
         &self,
-        shard: &ShardKey,
+        group: Option<Arc<Group>>,
         term: Option<u64>,
         records: Vec<Bytes>,
         attribution: Attribution,
@@ -419,8 +504,6 @@ impl RaftEngine {
         on_majority: Option<(AckAt, oneshot::Sender<u64>)>,
         timeout: Duration,
     ) -> impl FnOnce(u64) -> Settling + use<> {
-        let engine = self.clone();
-        let shard = shard.clone();
         move |timestamp_micros| {
             let count = records.len() as u64;
             let Attribution { publisher, headers } = attribution;
@@ -443,18 +526,18 @@ impl RaftEngine {
                 commit,
                 publisher,
             };
-            let skips = engine.claim_skips(&shard);
-            let written = engine.propose_reaching(&shard, batch, heard);
+            let skips = claim_skips_on(group.as_ref());
+            let written = propose_to(group.as_ref(), batch, heard);
             let batch = Proposed {
                 skips,
-                shard,
+                group,
                 term,
                 count,
                 timeout,
                 on_lease,
                 on_majority,
             };
-            Box::pin(settled(engine, batch, written))
+            Box::pin(settled(batch, written))
         }
     }
 
@@ -598,8 +681,9 @@ impl RaftEngine {
             commit: false,
             publisher,
         };
-        let skips = self.claim_skips(shard);
-        let written = self.propose_reaching(shard, batch, Heard::Written);
+        let group = self.looked_up(shard);
+        let skips = claim_skips_on(group.as_ref());
+        let written = propose_to(group.as_ref(), batch, Heard::Written);
         // On a task of its own, so the turn is given up when the batch is
         // written whether or not its publisher has started waiting.
         let written = self.group_runtime(shard).spawn(async move {
@@ -613,14 +697,14 @@ impl RaftEngine {
         };
         let batch = Proposed {
             skips,
-            shard: shard.clone(),
+            group,
             term: Some(term),
             count,
             timeout,
             on_lease: None,
             on_majority: None,
         };
-        settled(self.clone(), batch, written)
+        settled(batch, written)
     }
 
     /// What an idempotent publish waits on: the commit of what it proposed,
@@ -779,7 +863,8 @@ impl IdempotentPublish {
 pub(super) struct Proposed {
     /// Taken before the proposal, held until its skip count is read.
     pub(super) skips: Option<SkipClaim>,
-    pub(super) shard: ShardKey,
+    /// The shard's group as the publish looked it up.
+    pub(super) group: Option<Arc<Group>>,
     pub(super) term: Option<u64>,
     /// How many records it holds.
     pub(super) count: u64,
@@ -795,13 +880,12 @@ pub(super) struct Proposed {
 /// What the broker is told of a proposed batch: committed and where, or
 /// why not and how far it is known written.
 pub(super) async fn settled(
-    engine: RaftEngine,
     batch: Proposed,
     written: impl Future<Output = Result<Written, Unacknowledged>>,
 ) -> Result<ProposalCommitted, ProposalFailed<CommitError>> {
     let Proposed {
         skips,
-        shard,
+        group,
         term,
         count,
         timeout,
@@ -830,7 +914,7 @@ pub(super) async fn settled(
     // term it names. A refusal answers the publisher where a `Quorum` one
     // would be: a `Leader` write never waits longer than a `Quorum` one.
     let on_majority = match on_lease {
-        Some((_, on_lease)) if engine.admit_local_ack_of(&shard, written).is_ok() => {
+        Some((_, on_lease)) if admit_local_ack_on(group.as_ref(), written).is_ok() => {
             let _ = on_lease.send(written.end);
             None
         }
@@ -844,8 +928,7 @@ pub(super) async fn settled(
     // rev). See `docs/per-shard-raft.md`, "`Quorum` on a `Periodic` stream".
     let majority = async {
         if let Some((ack, on_majority)) = on_majority
-            && engine
-                .await_quorum_ack(&shard, written, ack, timeout)
+            && await_quorum_on(group.as_ref(), written, ack, timeout)
                 .await
                 .is_ok()
         {
@@ -856,7 +939,7 @@ pub(super) async fn settled(
     // No deadline: the publisher's own wait is bounded by `answer_within` or
     // by its caller. Delivery is not: a batch skipped here and committed
     // later would reach no live subscriber, while the one behind it did.
-    let committed = engine.await_commit_unbounded(&shard, written);
+    let committed = await_commit_on(group.as_ref(), written);
     let committed = tokio::select! {
         biased;
         committed = committed => committed,

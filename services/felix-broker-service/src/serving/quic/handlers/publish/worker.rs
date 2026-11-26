@@ -25,6 +25,7 @@ use crate::serving::quic::handlers::subscribe::WriterLaneManager;
 use crate::serving::quic::preauth::PreAuthGate;
 use crate::shards::ShardKey;
 use crate::shards::lifecycle::fence::{self, FenceGuard};
+use crate::shards::routing::RaftShard;
 
 /// The publish context with untracked executors, for tests that do not drain.
 #[cfg(test)]
@@ -255,9 +256,9 @@ impl LaneWork {
         | PublishTarget::Idempotent {
             shard: Some(shard), ..
         } = &job.target
-            && self.engine.on_raft(shard)
+            && let Some(raft) = self.engine.raft_shard(shard)
         {
-            return self.publish_on_raft(job, lane);
+            return self.publish_on_raft(job, lane, raft);
         }
         match &job.target {
             PublishTarget::Resolved { handle, .. } if handle.is_durable() => {
@@ -531,13 +532,15 @@ impl LaneWork {
     /// lane instead, and the later publishes of its own connection to the
     /// shard queue behind it ([`Waiting`]), because a connection's
     /// publishes to a shard are committed in the order they were read.
-    fn publish_on_raft(self: &Arc<Self>, job: PublishJob, lane: LaneGuard) {
+    fn publish_on_raft(self: &Arc<Self>, job: PublishJob, lane: LaneGuard, raft: RaftShard) {
         let place = place_of(&job);
         let job = match place {
             Some(place) => self.waiting.join(place, job),
             None => Some(job),
         };
-        let Some((job, turn)) = job.and_then(|job| self.propose_on_raft(job)) else {
+        // A job that goes now uses the group `run` found. One queued behind
+        // its connection's earlier publish looks it up again at its turn.
+        let Some((job, turn)) = job.and_then(|job| self.propose_on_raft(job, Some(&raft))) else {
             return;
         };
         let this = Arc::clone(self);
@@ -566,7 +569,11 @@ impl LaneWork {
     /// Propose `job` to its shard's Raft group and leave its answer to a
     /// task, or hand it back with the producer's turn it has to wait for.
     /// The turn's place in the producer's line is already taken.
-    fn propose_on_raft(self: &Arc<Self>, mut job: PublishJob) -> Option<(PublishJob, Turn)> {
+    fn propose_on_raft(
+        self: &Arc<Self>,
+        mut job: PublishJob,
+        raft: Option<&RaftShard>,
+    ) -> Option<(PublishJob, Turn)> {
         let (handle, shard, term) = match &job.target {
             PublishTarget::Resolved {
                 handle,
@@ -601,21 +608,35 @@ impl LaneWork {
             headers: job.headers.take(),
         };
         felix_storage::hops::mark(felix_storage::hops::Stage::Handed);
-        let proposed = self
-            .engine
-            .publish_on_raft(
+        let payloads = std::mem::take(&mut job.payloads);
+        let timeout = self.quorum_timeout;
+        let proposed = match raft {
+            Some(raft) => self.engine.publish_to_raft(
+                raft,
                 &self.broker,
                 handle,
                 shard,
                 term,
-                std::mem::take(&mut job.payloads),
+                payloads,
                 attribution,
-                self.quorum_timeout,
-            )
-            .unwrap_or(Err(crate::shards::routing::RaftRefusal::NotLeading {
-                term,
-            }))
-            .map_err(crate::shards::routing::RaftRefusal::into_anyhow);
+                timeout,
+            ),
+            None => self
+                .engine
+                .publish_on_raft(
+                    &self.broker,
+                    handle,
+                    shard,
+                    term,
+                    payloads,
+                    attribution,
+                    timeout,
+                )
+                .unwrap_or(Err(crate::shards::routing::RaftRefusal::NotLeading {
+                    term,
+                })),
+        }
+        .map_err(crate::shards::routing::RaftRefusal::into_anyhow);
         let shard = shard.clone();
         match proposed {
             Ok(proposed) => {
@@ -722,7 +743,7 @@ impl LaneWork {
                 let Some(next) = line.next() else {
                     return;
                 };
-                if let Some(waits) = self.propose_on_raft(next) {
+                if let Some(waits) = self.propose_on_raft(next, None) {
                     (job, turn) = waits;
                     break;
                 }

@@ -549,6 +549,9 @@ pub(crate) struct Registry {
     /// How long this broker's vote saves take, for the election bound.
     pub(crate) vote_saves: Arc<ticker::VoteSaves>,
     election_load: parking_lot::Mutex<ElectionLoad>,
+    /// Shard lookups by [`Self::get`] and [`Self::holds`], for tests.
+    #[cfg(any(test, feature = "testing"))]
+    pub(crate) lookups: AtomicU64,
     /// Makes the ticker's next interval panic.
     #[cfg(test)]
     pub(crate) trip_ticker: std::sync::atomic::AtomicBool,
@@ -584,6 +587,8 @@ impl Registry {
     }
 
     pub(super) fn get(&self, shard: &ShardKey) -> Option<Arc<Group>> {
+        #[cfg(any(test, feature = "testing"))]
+        self.lookups.fetch_add(1, Ordering::Relaxed);
         match self.slots.read().by_shard.get(shard) {
             Some(Slot::Open(group)) => Some(Arc::clone(group)),
             _ => None,
@@ -591,6 +596,8 @@ impl Registry {
     }
 
     fn holds(&self, shard: &ShardKey) -> bool {
+        #[cfg(any(test, feature = "testing"))]
+        self.lookups.fetch_add(1, Ordering::Relaxed);
         matches!(self.slots.read().by_shard.get(shard), Some(Slot::Open(_)))
     }
 }
@@ -704,6 +711,8 @@ impl GroupRuntime {
                     reach: Arc::new(Reach::new(started, config.heartbeat)),
                     vote_saves: Arc::default(),
                     election_load: parking_lot::Mutex::default(),
+                    #[cfg(any(test, feature = "testing"))]
+                    lookups: AtomicU64::new(0),
                     #[cfg(test)]
                     trip_ticker: std::sync::atomic::AtomicBool::new(false),
                 }),
@@ -1311,6 +1320,7 @@ impl GroupRuntime {
                 // A slot still opening is its open's to place or free.
                 Some((_, Slot::Opening)) | None => return false,
             };
+            group.release();
             slots
                 .by_shard
                 .insert(Arc::clone(&shard), Slot::Closing(Arc::clone(&group)));
@@ -1407,7 +1417,10 @@ impl GroupRuntime {
                 .filter_map(|slot| match slot {
                     // A member being closed is stopped by its close too.
                     // Both wait for the same stop.
-                    Slot::Open(group) | Slot::Closing(group) => Some(group),
+                    Slot::Open(group) | Slot::Closing(group) => {
+                        group.release();
+                        Some(group)
+                    }
                     Slot::Opening => None,
                 })
                 .collect();
@@ -1647,6 +1660,12 @@ impl GroupRuntime {
 
     pub(crate) fn group(&self, shard: &ShardKey) -> Option<Arc<Group>> {
         self.inner.registry.get(shard)
+    }
+
+    /// How many times a shard was looked up in this runtime's registry.
+    #[cfg(any(test, feature = "testing"))]
+    pub(crate) fn lookups(&self) -> u64 {
+        self.inner.registry.lookups.load(Ordering::Relaxed)
     }
 
     /// The shards the ticker visits, in its order.
