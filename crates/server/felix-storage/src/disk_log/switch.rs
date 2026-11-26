@@ -24,6 +24,7 @@ use std::path::Path;
 use sha2::{Digest, Sha256};
 
 use super::ballot::{self, Ballot};
+use super::dir_lock::DirLock;
 use super::engine_marker;
 use super::replica_state::{self, ReplicaState};
 use super::set;
@@ -369,7 +370,9 @@ fn hash_bytes(hash: &mut Sha256, bytes: Option<&[u8]>) {
 /// 6. Write the engine marker with the base.
 ///
 /// No log may have the directory open: the caller closes the hybrid's
-/// first.
+/// first. The directory is locked before the marker is read and stays
+/// locked to the last step, so another open is refused with
+/// [`io::ErrorKind::ResourceBusy`] meanwhile.
 ///
 /// A crash anywhere before 6 leaves an unmarked directory, and calling
 /// this again redoes every step with the same result. A directory already
@@ -398,6 +401,7 @@ pub async fn start_voter(
             snapshot.last, base.offset
         )));
     }
+    let lock = DirLock::take(dir)?;
     match engine_marker::read_marker(dir, label)? {
         None => {}
         Some(Some(found)) if found == (base.generation, base.offset) => return Ok(Ok(())),
@@ -417,12 +421,14 @@ pub async fn start_voter(
             return Ok(Err(NotAVoter::SideDiffers { log }));
         }
     }
-    if let Err(not) = check_and_cut(dir, label, hybrid, base).await? {
-        return Ok(Err(not));
-    }
+    let lock = match check_and_cut(dir, label, hybrid, base, lock).await? {
+        (Ok(()), lock) => lock,
+        (Err(not), _) => return Ok(Err(not)),
+    };
     crash_point(1)?;
     write_member_state(dir, label, base, term, vote_for, snapshot).await?;
     engine_marker::mark_switched(dir, base.generation, base.offset)?;
+    drop(lock);
     Ok(Ok(()))
 }
 
@@ -469,8 +475,9 @@ async fn check_and_cut(
     label: &str,
     hybrid: LogConfig,
     base: &SwitchBase,
-) -> Result<std::result::Result<(), NotAVoter>> {
-    let log = DiskLog::open(dir, label, without_retention(hybrid))?;
+    lock: DirLock,
+) -> Result<(std::result::Result<(), NotAVoter>, DirLock)> {
+    let log = DiskLog::open_holding(dir, label, without_retention(hybrid), None, lock)?;
     let checked = check(dir, &log, base).await;
     let cut = match checked {
         Ok(Ok(())) => match retain_between_check_and_cut(&log).await {
@@ -479,11 +486,11 @@ async fn check_and_cut(
         },
         _ => Ok(()),
     };
-    let shut = log.close().await;
+    let shut = log.close_keeping_lock().await;
     let checked = checked?;
     cut?;
-    shut?;
-    Ok(checked)
+    let lock = shut?.ok_or_else(|| invalid(format!("{label}: closed under the switch")))?;
+    Ok((checked, lock))
 }
 
 async fn check(

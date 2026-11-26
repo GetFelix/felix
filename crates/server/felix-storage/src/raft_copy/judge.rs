@@ -379,7 +379,7 @@ impl CopyRoot {
         // The poisoned log is in `.kept` or gone; the new copy starts clean.
         crate::disk_log::forget_poisoned_dir(dir);
         if marked && kept.is_some() {
-            engine_marker::claim_for_raft(dir, shard).map_err(io::Error::other)?;
+            engine_marker::claim_for_raft_holding(dir, shard, lock).map_err(io::Error::other)?;
         }
         // Before the copy file, so the new copy never votes without it.
         if let Some(epoch) = &epoch {

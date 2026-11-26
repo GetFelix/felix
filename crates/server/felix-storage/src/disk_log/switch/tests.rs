@@ -131,7 +131,7 @@ async fn copy(dir: &Path, below: Below, payloads: &[&str], tail: &[&str]) -> Off
             .await
             .expect("tail");
     }
-    log.shutdown().await.expect("shutdown");
+    log.close().await.expect("close");
     seal
 }
 
@@ -144,7 +144,7 @@ async fn base_of(dir: &Path, offset: Offset) -> SwitchBase {
         })
         .await
         .expect("read");
-    log.shutdown().await.expect("shutdown");
+    log.close().await.expect("close");
     SwitchBase::from_record(&at[0]).expect("a seal record")
 }
 
@@ -243,7 +243,7 @@ async fn the_digest_leaves_out_the_generation_and_nothing_else() {
         change(&mut changed);
         log.append(&[changed]).await.expect("append");
         let digest = digest(&log, 0, 1).await.expect("digest");
-        log.shutdown().await.expect("shutdown");
+        log.close().await.expect("close");
         digest
     };
     let plain = digest_of(|_| {}).await;
@@ -273,7 +273,7 @@ async fn a_digest_refuses_a_range_the_log_does_not_hold() {
     let n = copy(root.path(), Below::Stamped, &["a", "b"], &[]).await;
     let log = DiskLog::open(root.path(), LABEL, open_config()).expect("open");
     assert!(digest(&log, 0, n + 5).await.is_err());
-    log.shutdown().await.expect("shutdown");
+    log.close().await.expect("close");
 }
 
 #[tokio::test]
@@ -324,7 +324,7 @@ async fn a_voter_keeps_the_records_below_the_base_and_starts_after_it() {
         .expect("append after the base");
     assert_eq!(all(&raft).await.expect("read"), [blank(SEAL, n + 1)]);
     assert_eq!(payloads(&log, 0).await, ["a", "b", "c", "d"]);
-    log.shutdown().await.expect("shutdown");
+    log.close().await.expect("close");
 
     // A marked directory is a started member: starting it again changes
     // nothing, and the hybrid refuses it.
@@ -383,7 +383,7 @@ async fn a_crash_before_the_marker_starts_the_voter_again_with_the_same_result()
             log.accepted_vote(),
             (SEAL, Some(Arc::from(VOTE_FOR)), false)
         );
-        log.shutdown().await.expect("shutdown");
+        log.close().await.expect("close");
     }
 }
 
@@ -440,7 +440,7 @@ async fn a_copy_that_does_not_hold_the_base_is_not_a_voter_and_is_left_alone() {
     let starts_late = root.path().join("starts-late");
     {
         let log = DiskLog::open_at(&starts_late, LABEL, open_config(), 2).expect("open");
-        log.shutdown().await.expect("shutdown");
+        log.close().await.expect("close");
     }
     let before = files(&starts_late);
     assert_eq!(
@@ -509,7 +509,7 @@ async fn a_record_at_the_base_from_another_claim_is_not_the_seal() {
         ..base
     };
     log.append(&[other.record(7)]).await.expect("seal");
-    log.shutdown().await.expect("shutdown");
+    log.close().await.expect("close");
     drop(log);
     assert_eq!(
         start(&dir, &base).await,
@@ -554,7 +554,7 @@ async fn a_copy_that_accepted_a_later_generation_is_refused_before_anything_is_c
         let log = DiskLog::open(&dir, LABEL, open_config()).expect("open");
         lead(&log, SEAL + 1).await;
         log.append(&[record("later")]).await.expect("append");
-        log.shutdown().await.expect("shutdown");
+        log.close().await.expect("close");
     }
     let before = files(&dir);
 
@@ -569,7 +569,7 @@ async fn a_copy_that_accepted_a_later_generation_is_refused_before_anything_is_c
     assert_eq!(files(&dir), before);
     let log = DiskLog::open(&dir, LABEL, open_config()).expect("open");
     assert_eq!(payloads(&log, 0).await, ["a", "b", "c", "later"]);
-    log.shutdown().await.expect("shutdown");
+    log.close().await.expect("close");
 }
 
 #[tokio::test]
@@ -603,5 +603,5 @@ async fn retention_deletes_nothing_between_the_check_and_the_cut() {
     let log = DiskLog::open(&dir, LABEL, raft()).expect("open as a Raft log");
     assert_eq!(log.base_offset(), 0);
     assert_eq!(payloads(&log, 0).await, ["a", "b", "c", "d"]);
-    log.shutdown().await.expect("shutdown");
+    log.close().await.expect("close");
 }
