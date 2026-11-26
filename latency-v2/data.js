@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795723518589,
+  "lastUpdate": 1795727746247,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -91542,6 +91542,72 @@ window.BENCHMARK_DATA = {
             "range": "1053.28",
             "unit": "us",
             "extra": "trials: 5\nmedian: 545.00\nmean: 1017.00\nstdev: 1053.28\ncv: 103.57%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "55151f8f390941bf16d40ca5781de7bac63aeb4c",
+          "message": "fix(raft): an RF 1 shard in a cluster re-forms itself after a relaxed crash rotated its only copy (#3001) (#3290)\n\n* feat(controlplane): a group of one records its own next epoch in one checked command (#3001)\n\nStartAloneEpoch (metadata level 55, fleet feature raft_alone_reform) checks\nin the same apply as the epoch compare and swap that the group is alone on\nthe calling broker, and POST /v1/nodes/{node_id}/reform/alone carries it.\n\nSpec-Unaffected: no broker sends the command yet; the model change is the next commit\n\n* test(controlplane): the self re-form command is checked at the store, the endpoint and the level (#3001)\n\nTests for each aloneness check, the replay, the store's reads of the\nreplication factor and declared-dead set, the level 55 gate and the\nnode-scoped endpoint, plus the docs and changelog for the command.\n\nSpec-Unaffected: no broker sends the command yet; the model change is the next commit\n\n* spec(raft): a group of one's self re-form in a cluster, with and without the placement check (#3001)\n\nFelixRaftReformAloneCluster.cfg lets a second broker be placed around the\nre-form of a group of one: the epoch is written only while the group is\nalone, in the step that writes it (the control plane's StartAloneEpoch).\nFelixRaftReformAloneClusterUnchecked.cfg drops that check with\nReformBeforeAll and must violate LossNeedsLostDisk. No new flag.\n\n* feat(broker): a cluster's RF 1 shard re-forms itself through the control plane after a relaxed crash (#3001)\n\nPlan and stop the copy, write the epoch with the checked alone command,\nthen start from the seed the control plane recorded. The standalone path\nis unchanged.\n\nSpec-Unaffected: the model change landed earlier on this branch\n\n* test(storage): the cluster's stop of a group of one writes no epoch and resends one plan (#3001)\n\nSpec-Unaffected: tests only\n\n* test(broker): a cluster's RF 1 shard re-forms through the control plane, or is left alone (#3001)\n\nSpec-Unaffected: tests only\n\n* test(broker): the control plane fake shows a refusal's body would have started the copy (#3001)\n\nSpec-Unaffected: tests only\n\n* test(cluster): a crashed one-replica Raft shard re-forms itself with no operator (#3001)\n\nSpec-Unaffected: tests only\n\n* docs(raft): a cluster's RF 1 shard re-forms itself after a relaxed crash (#3001)\n\nSpec-Unaffected: documents behaviour the earlier spec commit models\n\n* fix(broker): an RF 1 self re-form decides against the record before it stops the copy (#3001)\n\nThe cluster's stop_alone stopped the copy before the broker compared\nthe plan with the control plane's record, so a directory restored from\nbefore an earlier self re-form was left stopped for an epoch the record\nholds for another copy. The broker now decides first: send when the\nrecord is one epoch behind, start when it holds this plan's bases and\nvoter, otherwise leave the copy unstopped and the shard not ready.\n\nTests: a restored directory is not stopped or started, a lost answer is\nretried on a later pass, a full operator re-form after a 409, and the\nstorage stop leaves a second crash's plan unstopped. The cluster test\npublishes an unsynced tail and requires the next offset above every\nacknowledged one. Docs: the endpoint also takes node.manage on\ncluster:*, and the unchecked TLA config models no check at all.\n\nSpec-Unaffected: broker ordering and docs only; the cfg change is a comment",
+          "timestamp": "2026-11-26T13:05:52-08:00",
+          "tree_id": "444e0448235bf4df01a885d4252988e0eacbf637",
+          "url": "https://github.com/GetFelix/felix/commit/55151f8f390941bf16d40ca5781de7bac63aeb4c"
+        },
+        "date": 1795727732596,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 96,
+            "range": "0.84",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 96.00\nmean: 96.20\nstdev: 0.84\ncv: 0.87%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 130,
+            "range": "0.89",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 130.00\nmean: 130.60\nstdev: 0.89\ncv: 0.68%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 187,
+            "range": "38.89",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 187.00\nmean: 203.60\nstdev: 38.89\ncv: 19.10%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 134,
+            "range": "0.84",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 134.00\nmean: 133.80\nstdev: 0.84\ncv: 0.63%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 262,
+            "range": "6.32",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 262.00\nmean: 263.00\nstdev: 6.32\ncv: 2.40%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 388,
+            "range": "460.33",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 388.00\nmean: 688.80\nstdev: 460.33\ncv: 66.83%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
