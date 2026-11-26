@@ -165,9 +165,6 @@ async fn a_forwarded_publish_is_still_authorized() -> Result<()> {
 #[serial]
 #[tokio::test]
 async fn a_moved_shard_converges_on_the_new_owner() -> Result<()> {
-    if felix_cluster::skip_on_raft_until_moves_land() {
-        return Ok(());
-    }
     let cluster = Cluster::start(config(3)).await?;
 
     let key = format!("{}/{}/{}/0", cluster.tenant_id, cluster.namespace, STREAM);
@@ -317,9 +314,6 @@ async fn a_broker_that_cannot_renew_its_lease_stops_serving() -> Result<()> {
 #[serial]
 #[tokio::test]
 async fn a_publish_refused_during_a_move_is_retryable() -> Result<()> {
-    if felix_cluster::skip_on_raft_until_moves_land() {
-        return Ok(());
-    }
     let cluster = Cluster::start(ClusterConfig {
         nodes: 3,
         streams: vec![StreamSpec::replicated(STREAM, 1, 3)],

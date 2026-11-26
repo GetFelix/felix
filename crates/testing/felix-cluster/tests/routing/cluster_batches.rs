@@ -219,9 +219,6 @@ where
 #[serial]
 #[tokio::test]
 async fn a_leader_change_mid_run_duplicates_nothing() {
-    if felix_cluster::skip_on_raft_until_moves_land() {
-        return;
-    }
     let cluster = Cluster::start(config()).await.expect("start cluster");
     cluster
         .await_every_shard_serving(STREAM, SHARDS)
@@ -264,9 +261,6 @@ async fn a_leader_change_mid_run_duplicates_nothing() {
 #[serial]
 #[tokio::test]
 async fn at_least_once_loses_nothing_across_a_leader_change() {
-    if felix_cluster::skip_on_raft_until_moves_land() {
-        return;
-    }
     let cluster = Cluster::start(config()).await.expect("start cluster");
     cluster
         .await_every_shard_serving(STREAM, SHARDS)

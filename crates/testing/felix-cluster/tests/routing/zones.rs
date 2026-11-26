@@ -58,9 +58,6 @@ fn assert_spread(copies: &HashMap<String, Vec<String>>) {
 #[serial]
 #[tokio::test]
 async fn a_shards_copies_span_every_zone_and_a_drain_keeps_them_spread() {
-    if felix_cluster::skip_on_raft_until_moves_land() {
-        return;
-    }
     let cluster = Cluster::start(config()).await.expect("start cluster");
     assert_spread(&copies(&cluster).await);
 
