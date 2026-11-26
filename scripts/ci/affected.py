@@ -75,7 +75,7 @@ DOC_TESTS = [
     (r"^docs-site/src/content/docs/reference/felixctl\.md$", {"felixctl"}, set()),
 ]
 
-TEST_ONLY = re.compile(r"^(tests|benches|examples)/|(^|/)tests(\.rs$|/)|\.md$")
+TEST_ONLY = re.compile(r"(?:^(?:tests|benches|examples)/)|(?:(?:^|/)tests(?:\.rs$|/))|(?:\.md$)")
 
 # The crates under fuzz/ directories (the fuzz job and `task fuzz`).
 FUZZED = {
