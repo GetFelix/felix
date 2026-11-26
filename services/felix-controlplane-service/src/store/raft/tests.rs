@@ -717,6 +717,7 @@ async fn a_held_new_cluster_finalize_is_retried_once_every_member_can() {
             all.clone(),
         );
         async move {
+            let never_placed = crate::cluster::fleet::never_placed(shared.as_ref()).await;
             let (_, enabled) = store
                 .register_node_in_fleet(crate::store::contract::nodes::with_features(
                     crate::store::contract::nodes::node(id, port),
@@ -724,7 +725,8 @@ async fn a_held_new_cluster_finalize_is_retried_once_every_member_can() {
                 ))
                 .await
                 .expect("register");
-            crate::cluster::fleet::finalize_new_cluster(&shared, &pending, enabled).await
+            crate::cluster::fleet::finalize_new_cluster(&shared, &pending, never_placed, enabled)
+                .await
         }
     };
     for (id, port) in [("broker-a", 7401), ("broker-b", 7402), ("broker-c", 7403)] {
@@ -780,7 +782,8 @@ async fn a_held_new_cluster_finalize_gives_up() {
         ))
         .await
         .expect("register");
-    let enabled = crate::cluster::fleet::finalize_new_cluster(&shared, &pending, enabled).await;
+    let enabled =
+        crate::cluster::fleet::finalize_new_cluster(&shared, &pending, Ok(true), enabled).await;
     assert!(enabled.is_empty(), "{enabled:?}");
     assert!(pending.retrying());
 

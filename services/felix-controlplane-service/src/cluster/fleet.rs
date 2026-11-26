@@ -294,26 +294,54 @@ pub(crate) const NEW_CLUSTER: [felix_common::fleet::FleetFeature; 19] = [
     felix_common::fleet::RAFT_CONDITIONAL_BATCHES,
 ];
 
-/// Whether `store` is a cluster created on this release, so far untouched: no
-/// stream or cache was ever created, and every broker it knows has registered
-/// once. A broker re-registering takes the next node incarnation, so a store
-/// upgraded from an older release, whose brokers registered before, never
-/// reads as new.
-pub(crate) async fn is_new_cluster(
+/// Whether no broker has served `store` yet: no stream or cache shard was
+/// ever placed, the store was never restored from a backup, and its group
+/// did not adopt brokers' existing data when it formed. Streams and
+/// caches created before any broker registered do not count, since no
+/// broker holds anything of theirs until one of their shards is placed.
+///
+/// Read before a registration lands, so the placement pass that the
+/// registration wakes, which may place a shard on the registering broker at
+/// once, cannot make the cluster's first registration read as not new.
+pub(crate) async fn never_placed(
     store: &(dyn crate::store::ControlPlaneStore + Send + Sync),
 ) -> Result<bool, StoreError> {
-    if store
-        .list_nodes()
-        .await?
-        .iter()
-        .any(|node| node.status.incarnation != 0)
+    // A restore raises the placement incarnation, and a restored store's
+    // brokers may hold data its backup does not name.
+    if store.placement_incarnation().await? != 0 {
+        return Ok(false);
+    }
+    // A group formed over a store that already had a catalog took brokers'
+    // existing data as its own.
+    if let crate::store::identity::GroupIdentity::Recorded(identity) =
+        store.group_identity().await?
+        && identity.adopts_existing
     {
         return Ok(false);
     }
-    Ok(store.stream_changes(0).await?.items.is_empty()
-        && store.cache_changes(0).await?.items.is_empty()
-        && store.stream_snapshot().await?.items.is_empty()
-        && store.cache_snapshot().await?.items.is_empty())
+    // `next_seq` counts every assignment write, including ones the feed's
+    // retention has dropped and ones whose shard is gone.
+    let changes = store.shard_assignment_changes(0).await?;
+    Ok(changes.items.is_empty()
+        && changes.next_seq == 0
+        && store.shard_assignment_snapshot().await?.items.is_empty())
+}
+
+/// Whether `store` is a cluster created on this release, so far unserved:
+/// `never_placed` held before the registration ([`never_placed`]), and every
+/// broker it knows has registered once. A broker re-registering takes the
+/// next node incarnation, so a store whose brokers ran before, as every
+/// upgraded one's did, never reads as new.
+pub(crate) async fn is_new_cluster(
+    store: &(dyn crate::store::ControlPlaneStore + Send + Sync),
+    never_placed: bool,
+) -> Result<bool, StoreError> {
+    Ok(never_placed
+        && store
+            .list_nodes()
+            .await?
+            .iter()
+            .all(|node| node.status.incarnation == 0))
 }
 
 /// A new cluster's finalize that could not finish at a registration, retried
@@ -367,24 +395,30 @@ const GIVE_UP_AFTER: Duration = Duration::from_secs(600);
 type Store = Arc<dyn crate::store::ControlPlaneStore + Send + Sync>;
 
 /// Finalize [`NEW_CLUSTER`] after a registration if the cluster is new, and
-/// answer with the enabled set after.
+/// answer with the enabled set after. `never_placed` is [`never_placed`],
+/// read before the registration landed.
 ///
 /// When something that passes held it back, a control-plane member below
 /// this build or a store error, the finalize is retried in the background
 /// until it gets past them. The retry does not ask again whether the cluster
-/// is new: its brokers re-registering, or streams created meanwhile, change
+/// is new: its brokers re-registering, or shards placed meanwhile, change
 /// nothing about the rollback the check is for, and an operator could
 /// finalize just the same with them. Once anything makes the cluster not new
 /// before a first attempt, finalizing is the operator's again.
 pub(crate) async fn finalize_new_cluster(
     store: &Store,
     pending: &Arc<NewClusterFinalize>,
+    never_placed: Result<bool, StoreError>,
     enabled: BTreeSet<String>,
 ) -> BTreeSet<String> {
     if all_enabled(&enabled) || pending.retrying.load(Ordering::Acquire) {
         return enabled;
     }
-    match is_new_cluster(store.as_ref()).await {
+    let is_new = match never_placed {
+        Ok(never_placed) => is_new_cluster(store.as_ref(), never_placed).await,
+        Err(err) => Err(err),
+    };
+    match is_new {
         Ok(true) => {}
         Ok(false) => return enabled,
         Err(err) => {

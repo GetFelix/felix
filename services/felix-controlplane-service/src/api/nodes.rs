@@ -98,6 +98,9 @@ pub(crate) async fn register_node(
         },
     };
 
+    // Before the registration, which wakes placement: see `never_placed`.
+    let store = Arc::clone(&state.store) as Arc<dyn ControlPlaneStore + Send + Sync>;
+    let never_placed = crate::cluster::fleet::never_placed(store.as_ref()).await;
     let (node, fleet_features) = state
         .store
         .register_node_in_fleet(node)
@@ -108,10 +111,13 @@ pub(crate) async fn register_node(
         })?;
     // A new broker is somewhere to put held-back shards and missing copies.
     state.placement_wakes.request_pass();
-    let store = Arc::clone(&state.store) as Arc<dyn ControlPlaneStore + Send + Sync>;
-    let fleet_features =
-        crate::cluster::fleet::finalize_new_cluster(&store, &state.new_cluster, fleet_features)
-            .await;
+    let fleet_features = crate::cluster::fleet::finalize_new_cluster(
+        &store,
+        &state.new_cluster,
+        never_placed,
+        fleet_features,
+    )
+    .await;
 
     Ok(Json(NodeRegistrationResponse {
         node,
