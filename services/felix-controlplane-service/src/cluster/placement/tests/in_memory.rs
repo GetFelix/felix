@@ -173,7 +173,7 @@ fn an_owner_that_may_not_hold_the_shard_is_replaced_within_its_region() {
         region("eu-1", "eu"),
     ];
     let plan = plan_with(
-        &[homed.clone()],
+        std::slice::from_ref(&homed),
         &[],
         &nodes,
         &existing,
