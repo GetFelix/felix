@@ -38,3 +38,30 @@ fn raft_is_the_default_test_engine() {
 fn hybrid_is_opt_in() {
     assert_eq!(engine_named(Some("hybrid")), "hybrid");
 }
+
+/// **A Raft cluster starts new; a hybrid one starts as before #1774.** The
+/// hybrid's tests predate the new-cluster rule, so a hybrid start with seeded
+/// streams reads as upgraded unless the test asks for a new cluster.
+#[test]
+fn a_cluster_starts_new_on_raft_and_upgraded_on_the_hybrid() {
+    assert!(!engine("raft").starts_upgraded());
+    assert!(engine("hybrid").starts_upgraded());
+    let empty = ClusterConfig {
+        streams: Vec::new(),
+        ..engine("hybrid")
+    };
+    assert!(
+        !empty.starts_upgraded(),
+        "nothing seeded was new before #1774"
+    );
+    let new = ClusterConfig {
+        upgraded_fleet: Some(false),
+        ..engine("hybrid")
+    };
+    assert!(!new.starts_upgraded());
+    let upgraded = ClusterConfig {
+        upgraded_fleet: Some(true),
+        ..engine("raft")
+    };
+    assert!(upgraded.starts_upgraded());
+}

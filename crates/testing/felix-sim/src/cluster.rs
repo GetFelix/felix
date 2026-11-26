@@ -150,6 +150,12 @@ pub struct SimConfig {
     /// at startup). `Some` also gives the brokers small segments, so their
     /// logs roll onto format v9 after it.
     pub finalize_record_generations: Option<Duration>,
+    /// Start as a fleet upgraded from a release before its features existed,
+    /// so the control plane finalizes nothing at the first registration (see
+    /// `felix_cluster::ClusterConfig::upgraded_fleet`). On by default: these
+    /// brokers run the hybrid, whose seeds predate the new-cluster rule
+    /// (#1774). Off, the cluster comes up new.
+    pub upgraded_fleet: bool,
 }
 
 impl SimConfig {
@@ -178,6 +184,7 @@ impl SimConfig {
             clock_plan: None,
             finalize_election: true,
             finalize_record_generations: None,
+            upgraded_fleet: true,
         }
     }
 
@@ -356,6 +363,11 @@ impl SimCluster {
     async fn create_catalog(&self) -> Result<()> {
         let config = &self.config;
         self.cp.create_tenant(TENANT).await?;
+        if config.upgraded_fleet {
+            felix_cluster::controlplane::record_a_served_shard(self.cp.store().as_ref(), TENANT)
+                .await
+                .context("start as an upgraded fleet")?;
+        }
         self.cp.create_namespace(TENANT, NAMESPACE).await?;
         self.cp
             .create_durable_stream(

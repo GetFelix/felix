@@ -1145,6 +1145,19 @@ impl ControlPlaneStore for InMemoryStore {
         // did what (the Raft apply keeps the group's the same way).
         let mut state = state;
         state.audit = self.audit_log().await;
+        // Above both the store's and the backup's, as the Raft import raises
+        // it: brokers may hold placements this backup does not name, and a
+        // restored store must not read as a new cluster (#1774).
+        state.placement_incarnation = felix_storage::raft_copy::restored_placement_incarnation(
+            self.placement_incarnation().await?,
+            state.placement_incarnation,
+        )
+        .ok_or_else(|| {
+            crate::store::StoreError::Conflict(
+                "the placement incarnation is at its limit; this backup cannot be restored"
+                    .to_string(),
+            )
+        })?;
         InMemoryStore::import_state(self, state).await?;
         Ok(crate::store::ImportOutcome::Imported)
     }
