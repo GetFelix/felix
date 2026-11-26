@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795674933158,
+  "lastUpdate": 1795676165149,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -90024,6 +90024,72 @@ window.BENCHMARK_DATA = {
             "range": "944.41",
             "unit": "us",
             "extra": "trials: 5\nmedian: 309.00\nmean: 925.60\nstdev: 944.41\ncv: 102.03%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "ad4f4cd672731572ac106be0a2dc588aa9fccfc0",
+          "message": "perf(broker): a Raft follower with no subscriber does not read back what it just wrote (#3223) (#3227)\n\n* perf(raft): a follower with no subscriber reads nothing back per commit (#3223)\n\nOn each commit advance a follower read the records it had just written\nback from its log, on the blocking pool, to fill a replay ring nobody\nread. With no subscriber and no built state view the pass now moves the\nstream to the committed bound with an empty ring, as it already did when\nfar behind. A subscriber registers under the same ring lock, so it joins\nabove the move and reads below it from the log, or stops the move.\n\nSpec-Unaffected: follower-local delivery cache; no Raft, ack, lease or commit timing changes\n\n* fix(raft): a jump past generation-start records still reports them skipped (#3223)\n\nThe unwatched jump clears generation_start_run and moves past trailing\ngeneration-start records without reading them. A subscriber that joined\nafter it saw the next event with no skip and read the record as a drop,\nand a member promoted at that tail reported no run. The jump now leaves\na flag; the first pass that reads, or the term that opens there, counts\nthe run from the log.\n\nSpec-Unaffected: follower-local skip accounting; no Raft, ack, lease or commit timing changes\n\n* test(raft): the follower probe waits for its sequence to pass the second record (#3223)\n\nWith nobody subscribed the follower jumps instead of filling its ring, so\nan empty backlog no longer means it is behind.",
+          "timestamp": "2026-11-26T06:49:42Z",
+          "tree_id": "a42d2727b69958acfee91c4a19233499227f2fc8",
+          "url": "https://github.com/GetFelix/felix/commit/ad4f4cd672731572ac106be0a2dc588aa9fccfc0"
+        },
+        "date": 1795676149356,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 151,
+            "range": "1.82",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 151.00\nmean: 151.40\nstdev: 1.82\ncv: 1.20%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 208,
+            "range": "5.48",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 208.00\nmean: 207.00\nstdev: 5.48\ncv: 2.65%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 249,
+            "range": "463.55",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 249.00\nmean: 551.60\nstdev: 463.55\ncv: 84.04%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 199,
+            "range": "2.12",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 199.00\nmean: 199.00\nstdev: 2.12\ncv: 1.07%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 405,
+            "range": "41.17",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 405.00\nmean: 423.40\nstdev: 41.17\ncv: 9.72%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 979,
+            "range": "506.62",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 979.00\nmean: 1018.00\nstdev: 506.62\ncv: 49.77%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
