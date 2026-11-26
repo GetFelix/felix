@@ -25,8 +25,11 @@ pub(crate) const MAX_BASE_BYTES: u32 = 8 * 1024 * 1024;
 /// One chunk of the base, starting at the asked index.
 #[derive(Debug)]
 pub(crate) struct BaseChunk {
-    /// The voter's first index. Above the asked start, the chunk is empty
-    /// and the learner restarts its pull here.
+    /// The lowest index the voter serves: the higher of its log's first
+    /// index and the trim floor in force at the base. Both are committed,
+    /// so nothing below it is a record the group still serves. Above the
+    /// asked start, the chunk is empty and the learner restarts here,
+    /// keeping this as its floor so it never serves below it.
     pub(crate) floor: u64,
     pub(crate) entries: Vec<EntryOf<ShardTypes>>,
 }
@@ -34,10 +37,13 @@ pub(crate) struct BaseChunk {
 /// Read the base entries from `start` that fit `max_bytes` and `max_count`,
 /// each held to its own cap. Refused when the copy has no base or `start`
 /// is past it: nothing past the base is ever served, since the gap holds
-/// nothing and the epoch's entries come by append.
+/// nothing and the epoch's entries come by append. `floor` gives the
+/// chunk's floor for a base ending at the index it is passed; it is read
+/// again after the read, so a purge that moves it under the read answers
+/// an empty chunk at the new floor instead of entries it may have cut.
 pub(crate) async fn serve(
     reader: &mut LogReader<ShardTypes, ShardCodec>,
-    first_index: u64,
+    floor: impl Fn(u64) -> u64,
     base: Option<EpochBase>,
     start: u64,
     max_bytes: u32,
@@ -56,8 +62,9 @@ pub(crate) async fn serve(
         floor,
         entries: Vec::new(),
     };
-    if start < first_index {
-        return Ok(empty(first_index));
+    let moved = || Some(floor(last.index)).filter(|floor| *floor > start);
+    if let Some(floor) = moved() {
+        return Ok(empty(floor));
     }
     let count = u64::from(max_count.clamp(1, MAX_BASE_ENTRIES));
     let budget = max_bytes.clamp(1, MAX_BASE_BYTES) as usize;
@@ -72,14 +79,16 @@ pub(crate) async fn serve(
             .await
             .map_err(|err: io::Error| err.to_string())?;
         if page.is_empty() {
+            if let Some(floor) = moved() {
+                return Ok(empty(floor));
+            }
             return Err(format!("the log holds no entry at {next}, inside the base"));
         }
         for entry in page {
             let index = entry.log_id.index;
             if index != next {
-                // A purge moved the first index under the read.
-                if entries.is_empty() && index > next {
-                    return Ok(empty(index));
+                if let Some(floor) = moved() {
+                    return Ok(empty(floor));
                 }
                 return Err(format!("the log skips from {next} to {index}"));
             }
@@ -95,8 +104,11 @@ pub(crate) async fn serve(
             }
         }
     }
+    if let Some(floor) = moved() {
+        return Ok(empty(floor));
+    }
     Ok(BaseChunk {
-        floor: first_index,
+        floor: floor(last.index),
         entries,
     })
 }

@@ -170,8 +170,9 @@ pub(crate) enum Reply {
     },
     /// A watched ask was taken. Whether a mark follows shows in the log.
     Watched,
-    /// Base entries from the asked start, in order, and the voter's first
-    /// index. Empty when that index is above the start.
+    /// Base entries from the asked start, in order, and the lowest index
+    /// the voter serves (`base_pull::BaseChunk::floor`). Empty when that
+    /// floor is above the start.
     Base {
         floor: u64,
         entries: Vec<EntryOf<ShardTypes>>,

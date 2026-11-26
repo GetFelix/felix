@@ -82,18 +82,18 @@ async fn a_chunk_stops_at_the_base_and_at_its_count() {
     let dir = tempfile::tempdir().expect("dir");
     let raft = log(dir.path()).await;
     let mut reader = raft.reader();
-    let chunk = serve(&mut reader, 0, base(), 2, u32::MAX, u32::MAX)
+    let chunk = serve(&mut reader, |_| 0, base(), 2, u32::MAX, u32::MAX)
         .await
         .expect("served");
     // Entries 8 and 9 are in the log but past the base: never served.
     assert_eq!(indexes(&chunk), (2..=7).collect::<Vec<_>>());
     assert_eq!(chunk.floor, 0);
-    let chunk = serve(&mut reader, 0, base(), 1, u32::MAX, 3)
+    let chunk = serve(&mut reader, |_| 0, base(), 1, u32::MAX, 3)
         .await
         .expect("served");
     assert_eq!(indexes(&chunk), vec![1, 2, 3]);
     // A count of 0 still moves.
-    let chunk = serve(&mut reader, 0, base(), 4, u32::MAX, 0)
+    let chunk = serve(&mut reader, |_| 0, base(), 4, u32::MAX, 0)
         .await
         .expect("served");
     assert_eq!(indexes(&chunk), vec![4]);
@@ -105,11 +105,11 @@ async fn a_chunk_stops_at_its_bytes_but_carries_its_first_entry() {
     let raft = log(dir.path()).await;
     let mut reader = raft.reader();
     let one = entry_bytes(&record(1, b"a record of some bytes")) as u32;
-    let chunk = serve(&mut reader, 0, base(), 1, 1, u32::MAX)
+    let chunk = serve(&mut reader, |_| 0, base(), 1, 1, u32::MAX)
         .await
         .expect("served");
     assert_eq!(indexes(&chunk), vec![1]);
-    let chunk = serve(&mut reader, 0, base(), 1, 2 * one + 1, u32::MAX)
+    let chunk = serve(&mut reader, |_| 0, base(), 1, 2 * one + 1, u32::MAX)
         .await
         .expect("served");
     assert_eq!(indexes(&chunk), vec![1, 2]);
@@ -120,15 +120,15 @@ async fn a_pull_past_the_base_or_without_one_is_refused() {
     let dir = tempfile::tempdir().expect("dir");
     let raft = log(dir.path()).await;
     let mut reader = raft.reader();
-    let past = serve(&mut reader, 0, base(), 8, u32::MAX, u32::MAX).await;
+    let past = serve(&mut reader, |_| 0, base(), 8, u32::MAX, u32::MAX).await;
     assert!(past.expect_err("refused").contains("past the base"));
-    let none = serve(&mut reader, 0, None, 1, u32::MAX, u32::MAX).await;
+    let none = serve(&mut reader, |_| 0, None, 1, u32::MAX, u32::MAX).await;
     assert!(none.expect_err("refused").contains("no re-form base"));
     let empty = Some(EpochBase {
         base_last: None,
         first_index: 20,
     });
-    let empty = serve(&mut reader, 0, empty, 0, u32::MAX, u32::MAX).await;
+    let empty = serve(&mut reader, |_| 0, empty, 0, u32::MAX, u32::MAX).await;
     assert!(empty.expect_err("refused").contains("no re-form base"));
 }
 
@@ -139,9 +139,36 @@ async fn a_pull_below_the_first_index_names_it() {
     let dir = tempfile::tempdir().expect("dir");
     let raft = log(dir.path()).await;
     let mut reader = raft.reader();
-    let chunk = serve(&mut reader, 4, base(), 2, u32::MAX, u32::MAX)
+    let chunk = serve(&mut reader, |_| 4, base(), 2, u32::MAX, u32::MAX)
         .await
         .expect("served");
     assert_eq!(chunk.floor, 4);
     assert!(chunk.entries.is_empty());
+}
+
+/// A purge or trim that raises the floor under the read answers an empty
+/// chunk at the new floor, not entries the voter may have cut.
+#[tokio::test]
+async fn a_floor_that_moves_under_the_read_restarts_the_pull() {
+    let dir = tempfile::tempdir().expect("dir");
+    let raft = log(dir.path()).await;
+    let mut reader = raft.reader();
+    let reads = std::cell::Cell::new(0);
+    let floor = |at: u64| {
+        // The floor is the one in force at the base.
+        assert_eq!(at, 7);
+        reads.set(reads.get() + 1);
+        if reads.get() == 1 { 0 } else { 5 }
+    };
+    let chunk = serve(&mut reader, floor, base(), 2, u32::MAX, u32::MAX)
+        .await
+        .expect("served");
+    assert_eq!(chunk.floor, 5);
+    assert!(chunk.entries.is_empty());
+    // A floor at or below the start does not stop the chunk.
+    let chunk = serve(&mut reader, |_| 2, base(), 2, u32::MAX, u32::MAX)
+        .await
+        .expect("served");
+    assert_eq!(chunk.floor, 2);
+    assert_eq!(indexes(&chunk), (2..=7).collect::<Vec<_>>());
 }

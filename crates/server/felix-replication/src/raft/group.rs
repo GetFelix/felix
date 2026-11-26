@@ -1842,9 +1842,11 @@ impl Group {
                 .await
                 .map_err(|err| Refused::Unreachable(err.to_string()))?
                 .map_err(|err| Refused::Unreachable(err.to_string()))?;
-        let first = (self.log.first_index_reader())();
+        let first = self.log.first_index_reader();
+        let disk = self.log.disk_log().clone();
+        let floor = move |base: u64| first().max(disk.floor_as_of(base));
         let mut reader = self.log.reader();
-        let chunk = super::base_pull::serve(&mut reader, first, base, start, max_bytes, max_count)
+        let chunk = super::base_pull::serve(&mut reader, floor, base, start, max_bytes, max_count)
             .await
             .map_err(|why| {
                 tracing::warn!(group = %self.id, member = %self.member, learner = %from, start, "refused a base pull: {why}");

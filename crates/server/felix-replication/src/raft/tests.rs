@@ -23,6 +23,7 @@ use super::types::{Command, Membership, ShardTypes};
 use super::*;
 use crate::{ShardKey, ShardKind};
 
+mod base_pull;
 mod beats;
 mod cache;
 mod change;
