@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795711019501,
+  "lastUpdate": 1795711342724,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -71760,6 +71760,58 @@ window.BENCHMARK_DATA = {
             "range": "9728.51",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1232031.15\nmean: 1227373.52\nstdev: 9728.51\ncv: 0.79%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1018-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "9bb7028367a37484f0a96911e2615d1a676f5dd5",
+          "message": "fix(raft): a cache group's state is bounded under the snapshot cap, and a snapshot over the cap is not sent (#2460) (#3244)\n\n* spec(raft): a cache group's state has a bound and a write past it answers full (#2460)\n\nSpec change: FelixRaftCache.tla gains a state bound (`Bound`). A put or an\nadd that would take the state past it answers \"full\", the answer is kept\nlike any other, and nothing else changes. The size counts the record only\nif it is unexpired at the entry's stamp, and the counter once made.\nDeletes and expiry deletes are never refused.\n\nSumExact is restated: an add whose first commit answered \"full\" never\ncounts. FullFinal is new: a request one commit answered \"full\" is answered\n\"full\" or \"forgotten\" by every commit of it.\n\nNew configurations: FelixRaftCacheFull and FelixRaftCacheFullSnapshot\npass; FelixRaftCacheFullNotRecorded (the answer not kept) violates\nFullFinal; FelixRaftCacheFullSnapshotRawSize (expired records counted)\nviolates MembersAgree; FelixRaftCacheFullReachFull is the witness. Every\nexisting configuration sets Bound = 2, which a one-key, one-counter state\nnever passes, so its behaviour is unchanged.\n\n* wip(raft): bound a cache group's state, refuse sending an over-cap snapshot (#2460)\n\nTaken over from a worker that died mid-task; not yet built.\n\nSpec-Unaffected: the bound was modelled in the previous commit; this adds a comment only\n\n* docs(formal): the full-bound configurations cite their tests (#2460)\n\nSpec-Unaffected: Evidence comments only\n\n* fix(raft): docs say counters are never freed; an unsendable member is forgotten after its warning window (#2460)\n\nValue bytes are freed by deletes and expiries, counter bytes are not\n(#3243). The internal-protocol row says what a requester that predates\ncode 14 does. The unsendable metric counts refused attempts on stream and\ncache groups.\n\nSpec-Unaffected: docs, comments and the snapshot-send warning map only\n\n* fix(raft): an idle member holds no snapshot-cap state (#2460)\n\nopenraft's channels hold a SnapshotData in every slot, so the parsed\nCacheState it carried inline grew every member's queues when the PR\nadded the size accounting fields. Box it. The unsendable-snapshot\nwarnings are kept once per broker instead of once per group, and the\nreceiver's cap is only stored in tests.\n\nSpec-Unaffected: memory layout only, no behaviour change",
+          "timestamp": "2026-11-26T08:34:18-08:00",
+          "tree_id": "ac921cabe8e0a386870136b4fa5f980e40df8be0",
+          "url": "https://github.com/GetFelix/felix/commit/9bb7028367a37484f0a96911e2615d1a676f5dd5"
+        },
+        "date": 1795711342150,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 495049.79,
+            "range": "17409.71",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 495049.79\nmean: 500766.84\nstdev: 17409.71\ncv: 3.48%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 495049.79,
+            "range": "17409.71",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 495049.79\nmean: 500766.84\nstdev: 17409.71\ncv: 3.48%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 121994.43,
+            "range": "1552.25",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 121994.43\nmean: 122062.42\nstdev: 1552.25\ncv: 1.27%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1219944.26,
+            "range": "15522.42",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1219944.26\nmean: 1220624.16\nstdev: 15522.42\ncv: 1.27%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
