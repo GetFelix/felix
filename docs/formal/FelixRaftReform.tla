@@ -178,7 +178,8 @@
 (* and stands, only for a candidate whose last log id is at or past the    *)
 (* allowance's, or for the member that named it. A rotated leader's broker *)
 (* tells a voter where its kept copy ends, and the voter lowers the        *)
-(* allowance to it (LowerAllowance). A power cut keeps the copy's stored   *)
+(* allowance to it, but never below what its own log holds of that         *)
+(* leader's log (LowerAllowance). A power cut keeps the copy's stored   *)
 (* allowance or loses it, as it is not synced on a relaxed run; a restore  *)
 (* keeps none. The re-form vouches by the majority-held end (issue 3109):  *)
 (* the highest end E that a majority of every voter set of the epoch store *)
@@ -197,6 +198,8 @@
 (*                          disk holds is in the log of every later leader *)
 (*                          of its epoch.                                  *)
 (*   LeaseAckedReformed  -- and in the base of every later epoch.          *)
+(*   LowerNoFloor        -- knob: a voter lowers to the kept end even      *)
+(*                          below what its own log holds.                  *)
 (*   VouchBy             -- "majority" is the rule above. The others each  *)
 (*                          drop part of it: "majorityRead" takes E from   *)
 (*                          the stores read and never waits; "lowest"      *)
@@ -247,7 +250,8 @@ CONSTANTS
     MaxReturns,
     LeaseAnswers,       \* a leader answers records on its lease (issue 3103)
     MaxNames,           \* allowances named, in all
-    VouchBy             \* "majority", "majorityRead", "lowest" or "none" (see the header)
+    VouchBy,            \* "majority", "majorityRead", "lowest" or "none" (see the header)
+    LowerNoFloor        \* a voter lowers to the kept end without its own floor
 
 VARIABLES
     ep,         \* group epoch of the broker's member
@@ -1194,18 +1198,36 @@ NameAllowance(l) ==
 \* The broker of a rotated copy tells voter v, under its node credential,
 \* where that copy's kept log ends (nothing, if no kept copy is left), and
 \* v lowers an allowance that copy named to it.
+\* v lowers only to the larger of the kept log's end and its own floor: how
+\* far v's log holds the log of the copy that named the allowance, up to
+\* the allowance's end. v's entry at k holds it when it is that leader's own
+\* entry of the allowance's term, or the entry the allowance's log id names
+\* at its end; by log matching v's log up to k is then that leader's log.
+\* The floor never passes the end, so lowering never raises it; with v's
+\* log reaching the end nothing is lowered. LowerNoFloor drops the floor.
+OwnFloor(v, a) ==
+    IF LowerNoFloor \/ ep[v] # a.e THEN 0
+    ELSE MaxOf({0} \cup {k \in 1..Min(a.end, Len(log[v])) :
+                  \/ <<log[v][k].e, log[v][k].t>> = <<a.e, a.t>>
+                  \/ k = a.end /\ <<log[v][k].e, log[v][k].t>> = a.id})
+
 LowerAllowance(v) ==
     LET a == allow[v]
         x == a.from[1]
         kept == {k \in keptLogs[x] : k.cid = a.from[2] /\ k.e = a.e}
         lg == IF kept = {} THEN <<>> ELSE (CHOOSE k \in kept : TRUE).log
+        fl == OwnFloor(v, a)
+        n == Max(Len(lg), fl)
     IN /\ LeaseAnswers /\ Alive(v)
        /\ a # NoAllow
        /\ Alive(x) /\ cid[x] > a.from[2]
-       /\ Len(lg) < a.end
+       /\ n < a.end
        /\ allow' = [allow EXCEPT ![v] =
-                       [a EXCEPT !.end = Len(lg),
-                                 !.id = IF lg = <<>> THEN <<0, 0>> ELSE LastKey(lg)]]
+                       [a EXCEPT !.end = n,
+                                 !.id = IF n = 0 THEN <<0, 0>>
+                                        ELSE IF fl >= Len(lg)
+                                        THEN <<log[v][fl].e, log[v][fl].t>>
+                                        ELSE LastKey(lg)]]
        /\ UNCHANGED <<reformVars, leaseAcked, echoed, names>>
 
 \* The steps that start a new copy (and so a new allowance) or store one.
@@ -1295,12 +1317,40 @@ LeaseAckedReformed ==
     \A x \in leaseAcked, f \in forms :
         (f.e > x.e /\ OnLiveDisk(x)) => Has(f.base, x)
 
-\* A witness: a re-form keeps a lease-answered record that only a kept
-\* copy held.
+\* Witnesses for the lease tail. A re-form keeps a lease-answered record
+\* that only a kept copy held.
 NeverReformsKeptTail ==
     ~\E x \in leaseAcked, f \in forms :
         /\ f.e > x.e /\ Has(f.base, x)
         /\ \A q \in Brokers : ~Has(log[q], x)
+
+\* A re-form keeps a lease-answered record after a power cut rotated the
+\* copy of the leader that answered it, and no kept copy holds it.
+NeverReformsFollowerTail ==
+    ~\E x \in leaseAcked, f \in forms, y \in elected :
+        /\ f.e > x.e /\ Has(f.base, x)
+        /\ y.e = x.e /\ y.t = x.t /\ cid[y.b] > 0
+        /\ \A q \in Brokers : \A k \in keptLogs[q] : ~Has(k.log, x)
+
+\* After the power cut rotated the copy of the leader that answered a
+\* record, another broker is elected in a later term of the epoch.
+NeverElectsAfterLeaderCut ==
+    ~\E x \in leaseAcked, y \in elected, b \in Brokers :
+        /\ y.e = x.e /\ y.t = x.t /\ cid[y.b] > 0
+        /\ b # y.b /\ Leads(b) /\ ep[b] = x.e /\ term[b] > x.t
+
+\* A plan is made while an intact voter holds a lease-answered record of
+\* the epoch above the end its stores settle on, and the stores the re-form
+\* would read leave the majority-held end open, so it waits.
+NeverWaitsOnHeldRecord ==
+    LET S == Brokers \ dead
+        R == UNION {Copies(b) : b \in S}
+    IN ~\E x \in leaseAcked, q \in S :
+          /\ x.e = cpEpoch /\ plans # {}
+          /\ Has(log[q], x) /\ StoreKnown(<<q, cid[q]>>, S)
+          /\ \E Vs \in VoterSets(cpEpoch, R) : <<q, cid[q]>> \in Vs
+          /\ HeldLow(cpEpoch, S, R) < x.i
+          /\ HeldLow(cpEpoch, S, R) # HeldHigh(cpEpoch, S, R)
 
 ElectedGroupLeftAlone ==
     [][\A b \in Brokers : (~retired[b] /\ retired'[b]) =>

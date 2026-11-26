@@ -3523,11 +3523,15 @@ are today; the rule only refuses more votes.
   test) or its disk is gone: the member the allowance names never returns. The
   rotated broker tells the group's voters, under its node credential, that the
   copy is gone and where its kept log in `.kept` ends (nothing, after a lost
-  data root). A voter then lowers that allowance to the kept log's end: what
-  the leader held past it was lost with its unsynced tail, which `Leader`
-  allows. If a follower is at or past it, the followers elect as usual. If the
-  kept log is ahead of every follower, only that copy holds the answered tail,
-  and the group re-forms from it (below).
+  data root). A voter then lowers that allowance to the kept log's end, but
+  never below what its own log holds of that leader's log: its entries of
+  the leader's term, up to the allowance's end, or the entry the allowance
+  names at its end. A record the leader answered is lost only when no copy
+  holds it, which `Leader` allows for an unsynced tail. Lowering never raises
+  the end: a voter whose log reaches the end lowers nothing. If a follower is
+  at or past the lowered end, the followers elect as usual. If the kept log
+  is ahead of every follower, only that copy holds the answered tail, and the
+  group re-forms from it (below).
 - The leader's broker never comes back: the shard waits until an operator
   gives the tail up. That is the abandon command of #3096, which for this case
   clears the allowance on the surviving voters and lets them elect, losing
