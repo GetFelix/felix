@@ -2088,12 +2088,15 @@ mod on_raft {
         }
 
         /// The next ack on `out`: its request and offset, or its error's
-        /// retry class.
+        /// code and retry class.
         async fn next_ack(
             out: &mut tokio::sync::mpsc::Receiver<
                 crate::serving::quic::handlers::publish::ack::Outgoing,
             >,
-        ) -> (u64, Result<Option<u64>, felix_wire::RetryClass>) {
+        ) -> (
+            u64,
+            Result<Option<u64>, (felix_wire::ErrorCode, felix_wire::RetryClass)>,
+        ) {
             use crate::serving::quic::handlers::publish::ack::Outgoing;
             match tokio::time::timeout(Duration::from_secs(10), out.recv())
                 .await
@@ -2107,9 +2110,9 @@ mod on_raft {
                 }) => (request_id, Ok(offset)),
                 Some(Outgoing::PublishAck {
                     request_id,
-                    code: Some((_, retry)),
+                    code: Some(code),
                     ..
-                }) => (request_id, Err(retry)),
+                }) => (request_id, Err(code)),
                 other => panic!("expected a binary ack, got {other:?}"),
             }
         }
@@ -2185,7 +2188,11 @@ mod on_raft {
                 acked.push(next_ack(&mut out_rx).await);
             }
             acked.sort_by_key(|(request, _)| *request);
-            let first = acked[0].1.expect("acknowledged").expect("an offset");
+            let first = acked[0]
+                .1
+                .clone()
+                .expect("acknowledged")
+                .expect("an offset");
             assert_eq!(
                 acked,
                 [
@@ -2273,8 +2280,14 @@ mod on_raft {
             }
             answered.push(next_ack(&mut outs[1].1).await);
             answered.sort_by_key(|(request, _)| *request);
-            let unknown = Err(felix_wire::RetryClass::OutcomeUnknown);
-            assert_eq!(answered, [(1, unknown), (2, unknown), (3, unknown)]);
+            // The quorum wait's error, not the longer ack timeout's.
+            let unknown = || {
+                Err((
+                    felix_wire::ErrorCode::QuorumTimeout,
+                    felix_wire::RetryClass::OutcomeUnknown,
+                ))
+            };
+            assert_eq!(answered, [(1, unknown()), (2, unknown()), (3, unknown())]);
             assert_eq!(raft.proposals(&orders) - proposed, 1, "not one proposal");
             // The one is the proposal's wait for a majority to have written
             // it; an engine deadline would be a second.
