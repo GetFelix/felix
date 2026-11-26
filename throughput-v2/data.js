@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795711342724,
+  "lastUpdate": 1795714479748,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -71812,6 +71812,58 @@ window.BENCHMARK_DATA = {
             "range": "15522.42",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1219944.26\nmean: 1220624.16\nstdev: 15522.42\ncv: 1.27%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "9cd3d3b4d75995de497854d04c2192cb59794be0",
+          "message": "fix(broker): the data directory is locked for the whole run and let go only after storage is shut down (#3250) (#3275)\n\n* fix(storage): a broker holds its data directory for the life of its run (#3250)\n\nWIP: lock taken first, held to the end of the run; tests and docs follow.\n\nSpec-Unaffected: a process-level lock on the data directory; no modelled replication or storage behaviour changes\n\n* test(broker): a second broker on a held data directory is refused before it writes\n\nSpec-Unaffected: tests only\n\n* docs(storage): the data directory is locked for the life of a broker's run (#3250)\n\nSpec-Unaffected: docs and changelog only\n\n* fix(broker): a failed start lets the data directory go only after storage closed (#3250)\n\nEvery way out of a run after storage opened now goes through a guard that\nowns the root lock: it cancels the run's tokens, joins the tasks that can\nwrite under the root (Raft shards, the restore gate and reports, cache\nexpiry, and on a late failure the listeners, membership and catalog sync),\nstops the Raft members, shuts storage down, records the stop, and only then\nlets the lock go. A guard dropped without closing closes on its own task,\nand keeps the lock until the process exits if that cannot finish.\n\nSpec-Unaffected: startup and shutdown ordering of the broker process; no modelled protocol step changes\n\n* docs(storage): the data directory lock goes only after storage closed; what it does not cover (#3250)\n\nSpec-Unaffected: documentation only\n\n* fix(broker): a run's teardown stops within the drain timeout and never upgrades the drain's verdict (#3250)\n\nThe teardown's joins, engine stop and flush now run under one deadline,\nthe drain timeout. Out of time it records no clean stop and keeps the lock\nuntil the process exits, so a stuck writer or a client still connected\nafter a late failed start no longer keeps the broker from exiting. The\ndrain says what it decided as soon as it has flushed, so a teardown after\na drain dropped at a later step neither waits again nor records a clean\nstop over an unclean one. Client connections are waited for too.\n\nSpec-Unaffected: startup and shutdown ordering of the broker process; no modelled protocol step changes",
+          "timestamp": "2026-11-26T09:20:12-08:00",
+          "tree_id": "f13260d03dc97525a7e261c4e5599e2e270784be",
+          "url": "https://github.com/GetFelix/felix/commit/9cd3d3b4d75995de497854d04c2192cb59794be0"
+        },
+        "date": 1795714478788,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 475566.13,
+            "range": "22727.08",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 475566.13\nmean: 465481.02\nstdev: 22727.08\ncv: 4.88%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 475566.13,
+            "range": "22727.08",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 475566.13\nmean: 465481.02\nstdev: 22727.08\ncv: 4.88%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 108116.05,
+            "range": "712.42",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 108116.05\nmean: 107851.24\nstdev: 712.42\ncv: 0.66%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1081160.47,
+            "range": "7124.15",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1081160.47\nmean: 1078512.46\nstdev: 7124.15\ncv: 0.66%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
