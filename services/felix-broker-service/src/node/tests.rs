@@ -326,34 +326,35 @@ fn client_certs_are_offered_exactly_when_the_broker_binds_subjects() {
 }
 
 /// Point a standalone durable broker at `data`, answering probes on
-/// `metrics`, with no control plane.
+/// `metrics`. Its control plane does not answer and it has no token, so it
+/// opens storage without one and never becomes ready.
 fn standalone_durable(data: &std::path::Path, metrics: std::net::SocketAddr) -> Vec<EnvGuard> {
     vec![
         EnvGuard::set("FELIX_BROKER_METRICS_BIND", &metrics.to_string()),
         EnvGuard::set("FELIX_QUIC_BIND", "127.0.0.1:0"),
         EnvGuard::unset("FELIX_CP_URL"),
-        EnvGuard::unset("FELIX_CONTROLPLANE_URL"),
+        EnvGuard::set("FELIX_CONTROLPLANE_URL", "http://127.0.0.1:1"),
         EnvGuard::set("FELIX_DURABLE_STORAGE_DIR", data.to_str().expect("utf-8")),
     ]
 }
 
-async fn await_ready(metrics: std::net::SocketAddr, handle: &tokio::task::JoinHandle<Result<()>>) {
-    let http = reqwest::Client::builder()
-        .timeout(Duration::from_secs(1))
-        .build()
-        .expect("client");
+/// Wait until the broker `handle` runs has opened every store on `data`.
+async fn await_opened(data: &std::path::Path, handle: &mut tokio::task::JoinHandle<Result<()>>) {
     let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
-    loop {
-        let ready = http.get(format!("http://{metrics}/ready")).send().await;
-        if matches!(&ready, Ok(r) if r.status() == 200) {
-            return;
+    // The counters open last.
+    while !data.join("counters").is_dir() {
+        if handle.is_finished() {
+            panic!("the broker stopped while starting: {:?}", handle.await);
         }
-        assert!(!handle.is_finished(), "the broker stopped while starting");
         assert!(
             tokio::time::Instant::now() < deadline,
-            "the broker never became ready"
+            "the broker never opened its storage"
         );
         tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    if handle.is_finished() {
+        panic!("the broker stopped after opening: {:?}", handle.await);
     }
 }
 
@@ -378,13 +379,12 @@ fn run_files(data: &std::path::Path) -> Vec<(&'static str, Vec<u8>)> {
 #[serial_test::serial]
 async fn a_second_broker_on_the_data_directory_is_refused_before_it_writes() -> Result<()> {
     let data = tempfile::tempdir()?;
-    let first_metrics = free_tcp();
-    let env = standalone_durable(data.path(), first_metrics);
+    let env = standalone_durable(data.path(), free_tcp());
     let (stop_first, stopped) = tokio::sync::oneshot::channel();
-    let first = tokio::spawn(run_with_shutdown(async {
+    let mut first = tokio::spawn(run_with_shutdown(async {
         let _ = stopped.await;
     }));
-    await_ready(first_metrics, &first).await;
+    await_opened(data.path(), &mut first).await;
     let before = run_files(data.path());
 
     // Its own ports, so only the directory is shared.
@@ -424,13 +424,12 @@ async fn a_broker_restarts_in_process_after_a_clean_stop() -> Result<()> {
     let data = tempfile::tempdir()?;
     let mut ids = Vec::new();
     for _ in 0..2 {
-        let metrics = free_tcp();
-        let _env = standalone_durable(data.path(), metrics);
+        let _env = standalone_durable(data.path(), free_tcp());
         let (stop, stopped) = tokio::sync::oneshot::channel();
-        let run = tokio::spawn(run_with_shutdown(async {
+        let mut run = tokio::spawn(run_with_shutdown(async {
             let _ = stopped.await;
         }));
-        await_ready(metrics, &run).await;
+        await_opened(data.path(), &mut run).await;
         ids.push(std::fs::read(
             data.path().join(felix_storage::storage_identity::FILE_NAME),
         )?);
