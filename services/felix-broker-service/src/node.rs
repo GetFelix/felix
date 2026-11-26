@@ -510,6 +510,12 @@ where
             credential.clone(),
             sync_shutdown.clone(),
         );
+        cluster::write_alone_reforms(
+            &raft_shards,
+            link.clone(),
+            membership.node_id.clone(),
+            credential.clone(),
+        );
     }
     startup::bind_read_check(
         &config,

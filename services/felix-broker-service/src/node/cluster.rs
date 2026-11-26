@@ -531,6 +531,27 @@ pub(super) fn answer_reform_surveys<L: ControlPlaneLink>(
     ));
 }
 
+/// Let this broker's RF 1 Raft shards ask the control plane to record their
+/// re-formed epoch after a relaxed crash.
+#[cfg(feature = "raft")]
+pub(super) fn write_alone_reforms<L: ControlPlaneLink>(
+    shards: &RaftShards,
+    link: Option<L>,
+    node_id: String,
+    credential: Option<NodeCredential>,
+) {
+    let (Some(members), Some(link)) = (shards.members.clone(), link) else {
+        return;
+    };
+    let credential = credential
+        .map(|credential| Arc::new(credential) as Arc<dyn replication::reporter::Credential>);
+    members.set_alone_writer(Arc::new(crate::shards::raft::alone_cluster::LinkWriter {
+        link,
+        node_id,
+        credential,
+    }));
+}
+
 /// Put the engine check in front of `shards` and route by the result: a
 /// durable stream shard placed with a peer on the other engine is refused
 /// here, whichever engine this broker runs. Call it before the routing feed

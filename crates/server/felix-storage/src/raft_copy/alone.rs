@@ -130,12 +130,42 @@ impl CopyRoot {
     /// which a second crash left, is dropped with the copy it was made for
     /// and the group is planned again above everything the first reserved.
     pub async fn reform_alone(&self, a: Alone<'_>) -> io::Result<Aloned> {
-        let sources = crate::run_state::reform_evidence(self.root()).map_err(io::Error::other)?;
-        if sources.is_empty() {
-            return Ok(Aloned::NotOwed);
-        }
         let parent = parent_of(a.dir)?;
         let step = || crash_point::reached(&parent);
+        match self.planned_alone(&a, &step).await? {
+            None => Ok(Aloned::NotOwed),
+            Some((plan, lock)) => self.finish(&a, &plan, &step, lock).await,
+        }
+    }
+
+    /// The cluster's half of [`Self::reform_alone`]: plan and stop the copy,
+    /// and leave the epoch to the control plane. The plan is kept only so
+    /// the request can be sent again after a crash; nothing here starts the
+    /// copy or counts the epoch as written. Run again, it returns the same
+    /// plan while the copy is stopped for it, so the control plane's
+    /// idempotent write is never bumped twice.
+    pub async fn stop_alone(&self, a: Alone<'_>) -> io::Result<Option<AlonePlan>> {
+        let parent = parent_of(a.dir)?;
+        let step = || crash_point::reached(&parent);
+        let Some((plan, lock)) = self.planned_alone(&a, &step).await? else {
+            return Ok(None);
+        };
+        stop_for(&a, &plan, &step, &lock)?;
+        Ok(Some(plan))
+    }
+
+    /// The plan this copy owes, recorded, with the directory lock held; or
+    /// `None` when no re-form is owed or it already started.
+    async fn planned_alone(
+        &self,
+        a: &Alone<'_>,
+        step: &(dyn Fn() -> io::Result<()> + Sync),
+    ) -> io::Result<Option<(AlonePlan, DirLock)>> {
+        let sources = crate::run_state::reform_evidence(self.root()).map_err(io::Error::other)?;
+        if sources.is_empty() {
+            return Ok(None);
+        }
+        let parent = parent_of(a.dir)?;
         // Held from the plan's load to the start's last write, through the
         // rotation's open, so no other open of the copy runs in between.
         let mut lock = lock_dir(a.dir)?;
@@ -147,9 +177,9 @@ impl CopyRoot {
             if fresh {
                 let epoch = plan.bases.len() as u64;
                 if started_in(a.dir, epoch)? {
-                    return Ok(Aloned::NotOwed);
+                    return Ok(None);
                 }
-                return self.finish(&a, &plan, &step, lock).await;
+                return Ok(Some((plan, lock)));
             }
             if building(a.dir)? {
                 // Derived from a kept copy, which a start only reads, and
@@ -175,13 +205,13 @@ impl CopyRoot {
                 io::Error::other(format!("{}: closed under the re-form", a.dir.display()))
             })?;
         let Some(restored) = self.owed(a.dir, a.config.index_spacing_bytes, &sources)? else {
-            return Ok(Aloned::NotOwed);
+            return Ok(None);
         };
-        let plan = plan(&a, self.storage_id().to_hex(), restored)?;
+        let plan = plan(a, self.storage_id().to_hex(), restored)?;
         step()?;
         a.record.store(a.dir, &plan)?;
         step()?;
-        self.finish(&a, &plan, &step, lock).await
+        Ok(Some((plan, lock)))
     }
 
     /// Whether the copy in `dir` was rotated by a relaxed crash or a restore
@@ -235,11 +265,7 @@ impl CopyRoot {
     ) -> io::Result<Aloned> {
         let bases: Vec<EpochBase> = plan.bases.iter().copied().map(EpochBase::from).collect();
         let epoch = bases.len() as u64;
-        let at = super::group_epoch(a.dir)?.unwrap_or(0);
-        if !building(a.dir)? && stop_file::stopped(a.dir)?.is_none() && at + 1 == epoch {
-            stop_file::stop_holding(a.dir, plan.last, &lock)?;
-            step()?;
-        }
+        stop_for(a, plan, step, &lock)?;
         if !start_due(a.dir, epoch)? {
             return Err(io::Error::other(format!(
                 "{}: not a copy stopped for epoch {epoch}",
@@ -261,6 +287,22 @@ impl CopyRoot {
         .await?;
         Ok(Aloned::Reformed { epoch })
     }
+}
+
+/// Stop the copy for `plan`'s epoch unless it is stopped, building or past it.
+fn stop_for(
+    a: &Alone<'_>,
+    plan: &AlonePlan,
+    step: &(dyn Fn() -> io::Result<()> + Sync),
+    lock: &DirLock,
+) -> io::Result<()> {
+    let epoch = plan.bases.len() as u64;
+    let at = super::group_epoch(a.dir)?.unwrap_or(0);
+    if !building(a.dir)? && stop_file::stopped(a.dir)?.is_none() && at + 1 == epoch {
+        stop_file::stop_holding(a.dir, plan.last, lock)?;
+        step()?;
+    }
+    Ok(())
 }
 
 /// Plan the next epoch of the group of one from `a.dir`'s kept copies. After

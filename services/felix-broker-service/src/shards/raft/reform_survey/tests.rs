@@ -290,7 +290,10 @@ async fn stopped_group() -> Stopped {
     let copy = report.current.copy.expect("a copy id");
     let (term, index) = report.current.last.expect("a last entry");
     let mut next = assigned(held.clone(), INCARNATION);
-    next.placed = Some(PlacedEpoch { epoch: 1 });
+    next.placed = Some(PlacedEpoch {
+        epoch: 1,
+        ..Default::default()
+    });
     next.raft_bases = Some(RaftBases {
         incarnation: INCARNATION,
         bases: vec![RaftEpochBase {

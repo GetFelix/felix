@@ -41,6 +41,7 @@ pub(crate) fn assigned(key: ShardKey, incarnation: u64) -> ShardAssignment {
         raft_voters: None,
         raft_bases: None,
         raft_seed: None,
+        raft_floor: None,
         move_reason: None,
         placed: None,
     }
@@ -421,7 +422,10 @@ async fn a_copy_without_an_epoch_file_counts_only_at_epoch_zero() {
     assert_eq!(shards.held_copies().len(), 1);
 
     let mut reformed = assigned(orders.clone(), INCARNATION);
-    reformed.placed = Some(crate::shards::watch::PlacedEpoch { epoch: 1 });
+    reformed.placed = Some(crate::shards::watch::PlacedEpoch {
+        epoch: 1,
+        ..Default::default()
+    });
     shards.take(&mut assignments([reformed])).await;
     assert!(shards.runtime.status(&orders).is_some(), "still open");
     assert!(
@@ -468,7 +472,10 @@ async fn a_fresh_copy_past_epoch_zero_takes_the_records_epoch() {
     let shards = shards(&broker);
     let orders = key("orders", 0);
     let mut placed = assigned(orders.clone(), INCARNATION);
-    placed.placed = Some(crate::shards::watch::PlacedEpoch { epoch: 1 });
+    placed.placed = Some(crate::shards::watch::PlacedEpoch {
+        epoch: 1,
+        ..Default::default()
+    });
     placed.raft_bases = Some(reformed_once());
     shards.take(&mut assignments([placed])).await;
     assert!(shards.runtime.status(&orders).is_some(), "open");
@@ -1536,7 +1543,10 @@ async fn a_member_the_copy_id_report_leaves_out_is_still_in_a_backup_point() {
     assert_eq!(read.term, term);
 
     let mut reformed = assigned(orders.clone(), INCARNATION);
-    reformed.placed = Some(crate::shards::watch::PlacedEpoch { epoch: 1 });
+    reformed.placed = Some(crate::shards::watch::PlacedEpoch {
+        epoch: 1,
+        ..Default::default()
+    });
     shards.take(&mut assignments([reformed])).await;
     assert!(shards.held_copies().is_empty(), "an unproven epoch");
     let [read] = shards.backup_members().try_into().expect("listed");
