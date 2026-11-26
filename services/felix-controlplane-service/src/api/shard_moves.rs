@@ -497,6 +497,12 @@ fn shard_move(
             .find(|replica| *replica != joining)
             .cloned();
         (ShardMoveStep::Replacing, Some(joining.clone()), replacing)
+    } else if assignment.move_reason == Some(MoveReason::Operator) {
+        (
+            ShardMoveStep::Leading,
+            Some(assignment.leader.clone()),
+            None,
+        )
     } else {
         return None;
     };
@@ -511,9 +517,16 @@ fn shard_move(
         && destination
             .as_deref()
             .is_some_and(|node| positions.is_caught_up(key, node));
+    let leader = match step {
+        ShardMoveStep::Leading => assignment
+            .reported_leader()
+            .unwrap_or(&assignment.leader)
+            .to_string(),
+        _ => assignment.leader.clone(),
+    };
     Some(ShardMove {
         key: key.clone(),
-        leader: assignment.leader.clone(),
+        leader,
         destination,
         replacing,
         step,

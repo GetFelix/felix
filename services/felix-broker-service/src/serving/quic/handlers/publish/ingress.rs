@@ -67,6 +67,14 @@ pub(crate) enum PublishTarget {
 }
 
 impl PublishTarget {
+    /// The shard a local write lands on, when routing named one.
+    pub(crate) fn shard(&self) -> Option<&crate::shards::ShardKey> {
+        match self {
+            Self::Resolved { shard, .. } | Self::Idempotent { shard, .. } => shard.as_ref(),
+            _ => None,
+        }
+    }
+
     /// The fence place routing entered for this write, if it did.
     fn take_fence(&mut self) -> Option<FenceGuard> {
         match self {

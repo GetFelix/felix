@@ -358,6 +358,11 @@ impl RaftShards {
         self.runtime.holds(shard).then_some(&self.engine)
     }
 
+    /// This broker's member of `shard`, looked up once for a publish.
+    pub(crate) fn shard_for(&self, shard: &ShardKey) -> Option<felix_replication::raft::RaftShard> {
+        self.engine.shard(shard)
+    }
+
     /// The committed log id of every group this broker leads, with the
     /// stream incarnation the group runs and the group epoch of its copy.
     /// A group whose epoch its copy cannot prove ([`proven_epoch`]) is left
@@ -738,9 +743,14 @@ impl RaftShards {
     async fn durable_rf(&self, key: &ShardKey) -> Option<Durable> {
         let (tenant, namespace, name) = (&key.tenant_id, &key.namespace, &key.stream);
         if key.kind == ShardKind::Cache {
-            // A broker whose cache store has no logs leaves every cache to
-            // the hybrid, registered or not.
-            if self.broker.cache().as_log_cache().is_none() {
+            // A broker with durable storage but a cache store with no logs
+            // leaves every cache to the hybrid, registered or not. One with no
+            // durable storage at all is a cluster member placement gives no
+            // cache shard: it only routes to the cache's group, and the hybrid
+            // never sees it.
+            if self.broker.cache().as_log_cache().is_none()
+                && self.broker.durable_storage().is_some()
+            {
                 return Some(Durable::No);
             }
             let metadata = self.broker.cache_metadata(tenant, namespace, name).await?;
@@ -1603,7 +1613,8 @@ impl EngineShards for RaftShards {
                 admit(&self.runtime, key, assignment);
                 // The group's leader hands it the leadership. Even the first
                 // one: the broker that forms a group wins its first term.
-                self.runtime.prefer(key, &assignment.leader);
+                self.runtime
+                    .prefer_as(key, &assignment.leader, assignment.leader_by_operator());
                 // A set short of the stream's replica count forms nothing: a
                 // group of the brokers placed so far would be formed again,
                 // on empty logs, by the ones placed later.

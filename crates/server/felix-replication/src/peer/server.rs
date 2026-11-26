@@ -113,6 +113,10 @@ pub trait RaftHandler: Send + Sync + 'static {
     /// `from` is the node id the connection's `Hello` bound; a message that
     /// names another broker as its sender must be refused.
     async fn answer(&self, from: Option<Arc<str>>, body: bytes::Bytes) -> bytes::Bytes;
+
+    /// The Raft body layouts this handler reads and answers in, given to a
+    /// caller that offers [`PeerCapabilities::RAFT_LAYOUTS`].
+    fn layouts(&self) -> felix_wire::internal::RaftLayouts;
 }
 
 /// Answers every forwarded request with `Unavailable`.
@@ -324,7 +328,9 @@ impl PeerServer {
 
     /// Answer peers' Raft messages with `raft`, and offer
     /// [`PeerCapabilities::RAFT`] so they send them, with
-    /// [`PeerCapabilities::RAFT_BEATS`] for heartbeats sent together.
+    /// [`PeerCapabilities::RAFT_BEATS`] for heartbeats sent together. A
+    /// caller that offers [`PeerCapabilities::RAFT_LAYOUTS`] is told the
+    /// layouts `raft` reads.
     pub fn with_raft(mut self, raft: Arc<dyn RaftHandler>) -> Self {
         self.capabilities = self
             .capabilities
@@ -772,9 +778,17 @@ async fn serve_connection(
                             .incarnation
                             .clone()
                             .filter(|_| asked(PeerCapabilities::NODE_INCARNATION));
+                        let raft_layouts = offered
+                            .raft
+                            .as_ref()
+                            .map(|raft| raft.layouts())
+                            .filter(|_| asked(PeerCapabilities::RAFT_LAYOUTS));
                         let mut answered = offered.capabilities;
                         if identity.is_some() {
                             answered = answered.union(PeerCapabilities::STORAGE_IDENTITY);
+                        }
+                        if raft_layouts.is_some() {
+                            answered = answered.union(PeerCapabilities::RAFT_LAYOUTS);
                         }
                         let mut at = None;
                         if let Some(mut watch) = incarnation {
@@ -805,6 +819,7 @@ async fn serve_connection(
                             capabilities: hello.capabilities.map(|_| answered),
                             identity: identity.map(|id| id.to_bytes()),
                             incarnation: at,
+                            raft_layouts,
                         })
                     }
                     // A kind that needs a capability this broker never offered

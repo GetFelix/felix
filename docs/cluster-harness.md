@@ -633,9 +633,12 @@ default.
 
 `FELIX_TEST_SHARD_ENGINE=hybrid` runs a whole suite on the hybrid engine,
 which stays until the hybrid is deleted (`docs/hybrid-retirement.md`). Unset
-or `raft` runs Raft: the cluster finalizes every `raft_*` fleet feature as a
-new cluster does, and the tests that need hybrid behaviour or unbuilt Raft
-work skip with a reason. On Raft, `Cluster::wait_for_replication` waits for
+or `raft` runs Raft, and the tests that need hybrid behaviour or unbuilt Raft
+work skip with a reason. A Raft cluster starts new, so the control plane
+finalizes the new-cluster fleet features at the first registration. A hybrid
+cluster with seeded streams or caches starts as an upgraded one, with nothing
+finalized, because its tests predate that rule; `ClusterConfig::upgraded_fleet`
+picks either explicitly. On Raft, `Cluster::wait_for_replication` waits for
 the member that leads the stream's shard 0 (each broker's `shard_inspect`
 answer carries its member's role, leader and log index) and for a majority of
 the group to hold the log through the leader's last entry. A test that skips

@@ -372,3 +372,53 @@ async fn a_capabilities_probe_leaves_nothing_in_the_pool() {
     assert!(pool.connected_capabilities(PEER).is_some());
     pool.shutdown().await;
 }
+
+/// **The hit path allocates no key.** Every request after the first finds its
+/// peer by a borrowed lookup; only the miss builds the owned key.
+#[tokio::test]
+async fn a_pooled_peer_is_found_without_allocating_its_key() {
+    let listener = Listener::start(PEER, Arc::new(CountingHandler::default())).await;
+    let pool = pool(config());
+    let allocations = || crate::peer::pool::KEY_ALLOCATIONS.with(|count| count.get());
+    let before = allocations();
+
+    pool.request(PEER, listener.addr, forward())
+        .await
+        .expect("first");
+    assert_eq!(allocations() - before, 1, "the miss builds the key once");
+    for _ in 0..50 {
+        pool.request(PEER, listener.addr, forward())
+            .await
+            .expect("pooled");
+    }
+    assert_eq!(allocations() - before, 1, "a hit must not build a key");
+    assert_eq!(pool.peer_count(), 1);
+
+    pool.shutdown().await;
+    listener.stop().await;
+}
+
+/// **A peer nobody is using is evicted**, and the next request makes a fresh
+/// entry for it.
+#[tokio::test]
+async fn an_idle_peer_is_evicted_and_comes_back_on_demand() {
+    let listener = Listener::start(PEER, Arc::new(CountingHandler::default())).await;
+    let pool = pool(PeerTransportConfig {
+        idle_timeout: Duration::from_millis(1),
+        ..config()
+    });
+    pool.request(PEER, listener.addr, forward())
+        .await
+        .expect("first");
+    tokio::time::sleep(Duration::from_millis(20)).await;
+    pool.reap().await;
+    assert_eq!(pool.peer_count(), 0);
+
+    pool.request(PEER, listener.addr, forward())
+        .await
+        .expect("after eviction");
+    assert_eq!(pool.peer_count(), 1);
+
+    pool.shutdown().await;
+    listener.stop().await;
+}

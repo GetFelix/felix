@@ -303,8 +303,11 @@ commit on a written majority (`per-shard-raft.md`, "Proposal: commit on a
 written majority on relaxed brokers"), so its log fsyncs on the broker's
 periodic schedule, or once a second under `none`, rather than on every
 commit. Every build reports it and a new
-cluster finalizes it. Brokers act on it only when they open a member, so a
-member opened before the finalize fsyncs on commit until it opens again.
+cluster finalizes it, at its first registration whether its streams were
+created before the brokers or after. Brokers act on it only when they open a
+member, so a member opened before the finalize, on an upgraded cluster or
+one whose new-cluster finalize was held back, fsyncs on commit until it opens
+again.
 Once it is finalized, no broker may be downgraded to a build without the
 reservation file, since that build would rotate or reclaim a copy without
 carrying it.
@@ -369,10 +372,18 @@ registration it finalizes every feature its brokers report except
 write on `majority_ack` from the first stream: without it the leader waits
 for a replica report to reach the control plane before it acknowledges.
 
-The registration handler checks that the cluster is new: no stream or cache
-was ever created (the change feeds and snapshots are empty) and every node
-record is at node incarnation 0, which a broker leaves when it registers
-again, as every broker of an upgraded cluster does. Under Raft it also waits
+The registration handler checks that the cluster is new: no broker has
+served it yet, and every node record is at node incarnation 0, which a
+broker leaves when it registers again, as every broker of an upgraded
+cluster does. No broker has served it when no stream or cache shard was
+ever placed (the assignment feed has never written anything), the store was
+never restored (its placement incarnation is 0), and under Raft its group
+did not adopt brokers' existing data when it formed. Streams and caches
+created before any broker registers, as a seed job does, do not count: no
+broker holds anything of theirs until a shard is placed. The handler reads
+placement before it registers the broker, since the registration wakes a
+placement pass that can put a shard on that broker before the finalize
+runs (`cluster::fleet::never_placed`). Under Raft it also waits
 for every member to report this build's metadata level, since the upgrade
 runbook finalizes `majority_ack` and the features after it only once every
 control-plane member is upgraded. It then finalizes each feature in the
@@ -388,7 +399,7 @@ When the member check or a store error holds the finalize back, the
 instance that took the registration retries it in the background, from one
 second apart up to thirty, until nothing that passes holds it
 (`cluster::fleet::NewClusterFinalize`). The retry does not check again that
-the cluster is new. Brokers re-registering or streams created meanwhile do
+the cluster is new. Brokers re-registering or shards placed meanwhile do
 not make it one that could roll back to an older build, and an operator's
 finalize at that point passes the same checks. Members starting together
 with their brokers, as a Kubernetes rollout does, would otherwise leave
@@ -417,11 +428,30 @@ The registration answers with the enabled set after the finalize, so the
 broker uses it from its first stream
 (`a_new_cluster_finalizes_every_feature_at_its_first_registration`,
 `a_new_cluster_finalizes_only_what_its_brokers_report`,
-`a_store_with_streams_is_not_finalized_on_registration`,
+`a_store_seeded_before_its_first_broker_is_finalized_on_registration`,
+`a_store_that_placed_a_shard_is_not_finalized_on_registration`,
 `a_store_whose_brokers_registered_before_is_not_finalized`,
-`a_new_cluster_waits_for_every_member_to_finalize`). A cluster that creates
-streams before any broker registers is not new by then, and is finalized by
-the operator as an upgraded one is.
+`a_new_cluster_waits_for_every_member_to_finalize`). A broker opens its
+storage and Raft members only after that answer, so in a cluster seeded
+before its brokers, as in one seeded after, they open with
+`raft_written_commit` already on
+(`streams_created_before_the_first_broker_are_finalized_before_it_opens_a_member`).
+A cluster that was restored, or that placed a shard on a broker since gone,
+is finalized by the operator as an upgraded one is
+(`a_restored_store_is_not_new`,
+`a_store_that_placed_a_shard_on_a_broker_since_gone_is_not_new`). The
+memory store and the Raft store both raise the placement incarnation on an
+operator's import, so a restore is never new
+(`an_operator_import_makes_the_store_not_new`).
+
+The memory store keeps nothing across a restart, so a restarted memory
+control plane is a new cluster to every broker, whether or not a seed job
+runs again. Its first registration finalizes the new-cluster features, and a
+returning broker that held data from before is then refused by its
+data-directory check: its data is stranded, not misread. A broker runs that
+check after it registers, so a refused broker can itself be the
+registration that finalized. That is harmless, since it reports every
+feature this build implements.
 
 **Atomicity.** Registration is the only way a node starts serving, so a
 finalize only has to be serialized with registrations. The memory store holds
@@ -1578,6 +1608,47 @@ A broker registers as internal only once every control-plane member supports
 the role (metadata level 44); until then the registration is refused with 409,
 so a leader that would ignore the label never sees an internal node. A restore (`import_state`) carrying an internal node is held to the same level and is refused with 409 below it. The restore keeps no rule against dropping the role: it replaces the records on purpose.
 
+##### Nodes without durable storage
+
+A broker with a node id and no `FELIX_DURABLE_STORAGE_DIR` registers the label
+`felix.dev/node-storage=none` in the request that creates its incarnation. It
+runs on the Raft engine but holds no Raft group. Placement treats the label
+as a hard constraint for every durable stream shard and every cache shard,
+the way it treats a region the shard may not use:
+
+- None is placed on it, at creation, by balancing, on failover or when a lost
+  copy is restored. A cluster whose only live brokers have no storage places
+  no durable or cache shard.
+- An operator move of one onto it is refused with `no_durable_storage` (409).
+- One it already holds is moved off as a drain moves it; a Raft member there
+  is replaced through the group's membership change.
+- An in-memory stream's shard may be placed on it as on any other broker, and
+  is served there (`docs/hybrid-retirement.md`, "In-memory shards").
+- A shard with nowhere else to go reports "every live node this shard may use
+  has no durable storage" instead of being placed.
+- A stream create counts only brokers with storage when it warns that the
+  replication factor is more than the live brokers.
+
+These rules hold under the deprecated hybrid engine too, where a broker
+without storage used to hold caches in memory: it now holds no cache shard,
+and a cluster whose only live brokers have no storage places no cache.
+
+Every cache is a Raft group on brokers with storage, so a broker without
+storage only routes a cache request to the group's leader. A durable stream
+is not registered on it at all: the catalog sync skips it, so a client reaches
+that stream through a broker with storage.
+
+The label follows each registration: a broker restarted with storage
+registers without it, and one restarted without storage registers with it.
+`PATCH /v1/nodes/{id}` keeps it whatever `labels` says, and rejects a `labels`
+map that tries to set or change it.
+
+A broker without storage registers only once every control-plane member can
+apply the label (metadata level 54); until then the registration is refused
+with 409, and so is a restore carrying such a node. The broker also refuses a
+control plane whose registration answer has no `storage_placement`: that
+control plane predates these brokers and would place durable shards on it.
+
 The cluster-wide floor matters when many shards arrive at once, for example
 from an application that creates a stream per job. With only the ceiling as
 the bound, the best-scoring brokers could fill to it before the last one
@@ -2508,11 +2579,11 @@ after the fence.
 
 | Metric | Meaning |
 | --- | --- |
-| `felix_shard_move_steps_total{step}` | move steps written: `stage`, `fence`, `cut_over`, `abandon`, `halted` (the destination halted), `timed_out`, `stalled` (a restore's copy stopped moving), `reseat`, `restore`, `seat`, `take_pending_set` (a pending replica set taken on the leader's report), `pending_set_timed_out`, `pending_set_dropped`, `pending_set_cancelled`, `pending_set_member_replaced` (one dropped), `readmit` (a replaced copy named by its new storage id and held as a learner), `election_refused` (a leader named again above a generation promised to an elected broker), `set_unknown` (a leader named again above a generation whose set before it could not learn, or that a newer ballot holds), `raft_leader` (a Raft shard's leader named another member), `raft_move_dropped` (a hybrid move left on a Raft shard dropped), and an operator's `cancel`, `retake`, `discard` and `owner_replaced` (an in-memory shard given a new owner) |
+| `felix_shard_move_steps_total{step}` | move steps written: `stage`, `fence`, `cut_over`, `abandon`, `halted` (the destination halted), `timed_out`, `stalled` (a restore's copy stopped moving), `reseat`, `restore`, `seat`, `take_pending_set` (a pending replica set taken on the leader's report), `pending_set_timed_out`, `pending_set_dropped`, `pending_set_cancelled`, `pending_set_member_replaced` (one dropped), `readmit` (a replaced copy named by its new storage id and held as a learner), `election_refused` (a leader named again above a generation promised to an elected broker), `set_unknown` (a leader named again above a generation whose set before it could not learn, or that a newer ballot holds), `raft_leader` (a Raft shard's leader named another member), `raft_leader_landed` and `raft_leader_timed_out` (an operator's move of a Raft shard's leader within its set landed, or was given up after two minutes), `raft_move_dropped` (a hybrid move left on a Raft shard dropped), and an operator's `cancel`, `retake`, `discard` and `owner_replaced` (an in-memory shard given a new owner) |
 | `felix_shards_under_replicated` | shards with fewer copies on serving brokers than their replication factor; non-zero for longer than the restore delay plus a copy means no broker can take the copy, or placement is paused |
 | `felix_shard_replicas_missing` | the copies those shards are missing between them |
 | `felix_shard_replicas_halted` | copies whose leader reports it has stopped shipping to them; counted as missing, kept out of placement, and replaced after the restore delay |
-| `felix_shard_moves_timed_out_total` | moves and follower replacements abandoned at the move timeout, and restores dropped as `stalled`; a steady count means a copy that cannot finish |
+| `felix_shard_moves_timed_out_total` | moves and follower replacements abandoned at the move timeout, operator leader moves on Raft shards given up (`raft_leader_timed_out`), and restores dropped as `stalled`; a steady count means a copy that cannot finish |
 | `felix_shard_moves_waiting` | moves that could not advance in the last pass: a destination not catching up, a leader not reporting drained, a move limit holding a drain back, or a move for balance held while the cluster recovers |
 | `felix_shards_on_internal_nodes` | shards with a copy on an internal node and no live node outside the set to take its place |
 | `felix_shard_assignment_write_conflicts_total` | placements and move steps not written because another instance changed the shard after this pass read it; the next pass re-plans |
@@ -2570,7 +2641,9 @@ a move takes `node.manage:cluster:*`, the permission that drains a node.
 | `POST /v1/nodes/{node_id}/seal-report` | the seal leader reports its shard's seal: the base and the copies that hold it. Answers `accepted`, true for the one report recorded for the seal; 409 `not_sealer` from any other broker. Takes `node.manage` over the node |
 | `POST /v1/nodes/{node_id}/seal-give-up` | the seal leader gives up a seal it cannot finish, and the shard opens again at the next generation. Answers `given_up`, false when a report was already recorded or the shard moved on. Takes `node.manage` over the node |
 
-A listed move has a `step` (`staged`, `fenced`, `replacing` or `restoring`),
+A listed move has a `step` (`staged`, `fenced`, `replacing`, `restoring`, or
+`leading` for an operator's move of a Raft shard's leader within its set,
+where `leader` is the member the group last reported leading),
 the `reason` it started (`drain`, `balance`, `operator`, `replace` or
 `restore`, stored on the
 assignment as `move_reason`), `started_at_millis`, and from the leader's
@@ -2606,8 +2679,20 @@ cancel and an abandon on a shard that switched to Raft are all refused (409
 (see [Raft shards](#raft-shards)) the start is the whole move and takes no
 move slot: to a member it names that member leader (`raft_leader`), and
 outside the set it gives the destination the leader's seat
-(`raft_replace`). The second is refused while a member is not serving (409
-`member_down`), while the group's target is not stored for its current set
+(`raft_replace`). The first is refused when fewer than a majority of the
+set's members are serving (409 `member_down`), since the group's leader could
+never hand over. With one member of three down it goes ahead: it is marked as
+an operator's (`move_reason` `operator`), and the group's leader hands over
+when the destination is caught up and the caught-up voters, counting the
+leader and the destination, are a majority, which it does not do for
+placement's own names. The move ends when the group reports the destination
+leading (`raft_leader_landed`). One that has not landed after two minutes is
+given up (`raft_leader_timed_out`, counted in
+`felix_shard_moves_timed_out_total` and logged as a warning): with a member
+down the name goes back to the member the group runs. While the move is
+pending, a drain of either broker or a swap of a leaving follower on that
+shard waits for it, up to those two minutes. The second is refused
+while a member is not serving (409 `member_down`), while the group's target is not stored for its current set
 (409 `set_unsettled`), while the destination is still a learner (409
 `not_a_member`). A one-member group grows to the destination first and
 shrinks once its copy votes. Any other move is held to

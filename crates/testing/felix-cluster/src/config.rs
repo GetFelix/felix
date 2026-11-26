@@ -48,6 +48,8 @@ pub struct ClusterConfig {
     /// every interface and advertises the address a kcat container reaches
     /// the host by, since the tests drive it from Docker or Podman.
     pub kafka: bool,
+    /// How that Kafka listener runs. Plaintext SASL by default.
+    pub kafka_listener: KafkaListener,
     /// Route every broker-to-broker and broker-to-control-plane link through
     /// the harness's own proxies, so [`Fault::Drop`](crate::Fault::Drop) and
     /// [`Fault::Delay`](crate::Fault::Delay) can act on them. Off by default:
@@ -87,6 +89,15 @@ pub struct ClusterConfig {
     /// serves and stays it (#3157). Only a test about the hand-over itself
     /// wants it pending.
     pub pending_raft_hand_overs: bool,
+    /// Start as a fleet upgraded from a release before its features existed,
+    /// so the control plane finalizes none of them at the first registration
+    /// and every one is the test's to finalize. `Some(false)` asks for a new
+    /// cluster, with the new-cluster features finalized (#1774).
+    ///
+    /// `None`, the default, decides by engine. A Raft cluster comes up new.
+    /// A hybrid one comes up as it did before that rule, upgraded whenever
+    /// streams or caches are seeded, because its tests predate the rule.
+    pub upgraded_fleet: Option<bool>,
 }
 
 impl Default for ClusterConfig {
@@ -106,6 +117,7 @@ impl Default for ClusterConfig {
             node_env: Vec::new(),
             tcp_listeners: Vec::new(),
             kafka: false,
+            kafka_listener: KafkaListener::default(),
             proxy_links: false,
             metadata_group: false,
             power_loss: false,
@@ -113,8 +125,25 @@ impl Default for ClusterConfig {
             node_expiry: Duration::from_secs(1),
             control_plane_engine: None,
             pending_raft_hand_overs: false,
+            upgraded_fleet: None,
         }
     }
+}
+
+/// How each broker's Kafka listener runs when [`ClusterConfig::kafka`] is on.
+/// The default is plaintext with SASL required, what every Kafka test that
+/// says nothing about the listener gets.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct KafkaListener {
+    /// Serve TLS with the broker's generated client certificate, the one it
+    /// exports to [`BrokerNode::client_certificate`](crate::BrokerNode::client_certificate).
+    pub tls: bool,
+    /// Take a connection that skips SASL as the cluster's tenant
+    /// (`FELIX_KAFKA_ANONYMOUS_TENANT`), the development switch.
+    pub anonymous: bool,
+    /// Store Kafka keys and headers (`FELIX_KAFKA_RECORD_HEADERS`). A cluster
+    /// stores them only once the fleet has finalized `record_headers`.
+    pub record_headers: bool,
 }
 
 impl ClusterConfig {
@@ -126,17 +155,18 @@ impl ClusterConfig {
         }
     }
 
-    /// Whether the cluster is Raft only because the suite is, not because the
-    /// test asked for it. A test that names its engine controls its own fleet
-    /// features, e.g. to check what is refused before one is finalized.
-    pub(crate) fn raft_by_suite_default(&self) -> bool {
-        self.named_engine().is_none() && default_engine() == "raft"
-    }
-
     /// Whether a start waits for every Raft shard's placed leader to lead.
     /// The hybrid has no hand-over: placement's owner serves from the start.
     pub(crate) fn awaits_placed_raft_leaders(&self) -> bool {
         self.raft_brokers() && !self.pending_raft_hand_overs
+    }
+
+    /// Whether the start leaves the history of an upgraded fleet in the store
+    /// (see [`ClusterConfig::upgraded_fleet`]).
+    pub(crate) fn starts_upgraded(&self) -> bool {
+        self.upgraded_fleet.unwrap_or_else(|| {
+            !self.raft_brokers() && !(self.streams.is_empty() && self.caches.is_empty())
+        })
     }
 
     fn named_engine(&self) -> Option<&str> {

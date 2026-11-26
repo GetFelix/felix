@@ -72,6 +72,13 @@
 (* most once a second. "whole" vouches for each copy's whole log, as no    *)
 (* other disk can hold a newer record; "commit" keeps the usual rule, cut  *)
 (* to the saved commit, and loses synced records (KeptLossBound).          *)
+(* The plan, the stop, the epoch write and the start are separate steps,   *)
+(* so a second power cut can fall between any two of them or after a       *)
+(* finished re-form. A cut after the write and before the start rotates    *)
+(* the copy the epoch named: here it starts as a learner and the group     *)
+(* re-forms once more. The broker instead replaces its unstarted plan      *)
+(* under the same epoch. Both read the same kept copies and start above    *)
+(* the same reservations, and nothing was served under the unstarted one.  *)
 (*                                                                         *)
 (* Membership inside an epoch changes through a joint configuration, and a *)
 (* member uses the newest membership in its log, committed or not.         *)
@@ -1141,6 +1148,22 @@ NeverKeepsAcrossOldRestore ==
         /\ \E b \in Brokers : \E k \in keptLogs[b] : k.e = 0 /\ k.by = "restore"
         /\ dead # {}
         /\ \E j \in 1..Len(f.base) : f.base[j].k = "rec" /\ f.base[j].e = 1
+
+\* A group of one re-forms itself, starts the new epoch, loses that copy to a
+\* second relaxed crash, and re-forms again keeping an epoch-1 record. Epoch
+\* 2 then commits a record of its own.
+NeverReformsAloneTwice ==
+    ~/\ \E b \in Brokers : \E k0, k1 \in keptLogs[b] : k0.e = 0 /\ k1.e = 1
+     /\ \E f \in forms : f.e = 2 /\ \E j \in 1..Len(f.base) : f.base[j].k = "rec" /\ f.base[j].e = 1
+     /\ \E x \in acked : x.e = 2 /\ x.t > 0
+
+\* The copy a self re-form made the voter loses a relaxed crash after the
+\* epoch is written and before it starts, and the group re-forms again and
+\* commits.
+NeverRecoversFromCutBeforeStart ==
+    ~/\ \E b \in Brokers : \E f \in forms : \E k \in keptLogs[b] :
+            f.e = 1 /\ k.e = 0 /\ <<b, k.cid>> \in f.voters
+     /\ \E x \in acked : x.e = 2 /\ x.t > 0
 
 \* A learner that no membership names holds a record.
 NeverLearnerHolds ==

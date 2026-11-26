@@ -86,15 +86,25 @@ fn a_standalone_broker_in_memory_starts_unless_raft_was_asked_for() {
     );
 }
 
+/// A broker with a node id and no durable storage runs Raft with no group:
+/// the control plane gives it only in-memory stream shards.
+#[test]
+fn a_registering_broker_without_durable_storage_runs_raft() {
+    let diskless = RaftPrerequisites {
+        durable_storage: false,
+        ..ALL
+    };
+    assert_eq!(diskless.missing(), None);
+    assert_eq!(diskless.resolve(None).expect("resolve"), ShardEngine::Raft);
+    let asked = diskless.resolve(Some(ShardEngine::Raft)).expect("asked");
+    assert_eq!(asked, ShardEngine::Raft);
+}
+
 /// A broker with a node id registers, and the control plane places shards
 /// on it beside Raft peers, so with no engine setting it runs Raft or does
 /// not start; the refusal names what Raft needs.
 #[test]
 fn a_registering_broker_that_cannot_run_raft_is_refused() {
-    let in_memory = RaftPrerequisites {
-        durable_storage: false,
-        ..ALL
-    };
     let no_listener = RaftPrerequisites {
         peer_transport: false,
         ..ALL
@@ -104,7 +114,6 @@ fn a_registering_broker_that_cannot_run_raft_is_refused() {
         ..ALL
     };
     for (broker, needs) in [
-        (in_memory, "FELIX_DURABLE_STORAGE_DIR"),
         (no_listener, "FELIX_INTERNAL_BIND"),
         (no_feature, "cargo feature `raft`"),
     ] {
@@ -149,6 +158,8 @@ fn a_raft_broker_missing_a_prerequisite_is_refused() {
         ),
         (
             RaftPrerequisites {
+                membership: false,
+                peer_transport: false,
                 durable_storage: false,
                 ..ALL
             },

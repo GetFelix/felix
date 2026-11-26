@@ -393,3 +393,224 @@ fn record_generations_can_be_finalized() {
     check_operator_finalizable("record_generations").expect("finalizable");
     assert!(check_operator_finalizable("head_trim").is_ok());
 }
+
+type Shared = Arc<dyn crate::store::ControlPlaneStore + Send + Sync>;
+
+fn memory() -> Arc<crate::store::memory::InMemoryStore> {
+    Arc::new(crate::store::memory::InMemoryStore::new(
+        crate::store::StoreConfig {
+            changes_limit: crate::config::DEFAULT_CHANGES_LIMIT,
+            change_retention_max_rows: Some(1_000),
+        },
+    ))
+}
+
+/// What an operator's seed job creates before any broker is up: a stream
+/// and a cache, named as `contract::shards::assignment` expects.
+async fn seed_job(store: &dyn crate::store::ControlPlaneStore) {
+    use crate::model::{
+        Cache, ConsistencyLevel, DeliveryGuarantee, Namespace, RetentionPolicy, Stream, StreamKind,
+        Tenant,
+    };
+    store
+        .create_tenant(Tenant {
+            tenant_id: "shard-t".to_string(),
+            display_name: "Seed".to_string(),
+        })
+        .await
+        .expect("tenant");
+    store
+        .create_namespace(Namespace {
+            tenant_id: "shard-t".to_string(),
+            namespace: "shard-ns".to_string(),
+            display_name: "Seed".to_string(),
+        })
+        .await
+        .expect("namespace");
+    store
+        .create_stream(Stream {
+            tenant_id: "shard-t".to_string(),
+            namespace: "shard-ns".to_string(),
+            stream: "orders".to_string(),
+            kind: StreamKind::Stream,
+            shards: 1,
+            replication_factor: 1,
+            retention: RetentionPolicy {
+                max_age_seconds: None,
+                max_size_bytes: None,
+            },
+            consistency: ConsistencyLevel::Leader,
+            delivery: DeliveryGuarantee::AtMostOnce,
+            durable: true,
+            region: None,
+            routing: Default::default(),
+            incarnation: 0,
+            mount: None,
+        })
+        .await
+        .expect("stream");
+    store
+        .create_cache(Cache {
+            tenant_id: "shard-t".to_string(),
+            namespace: "shard-ns".to_string(),
+            cache: "sessions".to_string(),
+            display_name: "Sessions".to_string(),
+            shards: 1,
+            replication_factor: 1,
+            consistency: ConsistencyLevel::Leader,
+            incarnation: 0,
+        })
+        .await
+        .expect("cache");
+}
+
+fn current(id: &str, port: u16) -> Node {
+    let all: Vec<&str> = felix_common::fleet::IMPLEMENTED
+        .iter()
+        .map(|feature| feature.name())
+        .collect();
+    crate::store::contract::nodes::with_features(node(id, port), &all)
+}
+
+/// What the registration handler does, in its order: check placement,
+/// register, then finalize. `between` runs after the registration landed,
+/// where the placement pass it wakes may place a shard.
+async fn register<F, Fut>(store: &Shared, node: Node, between: F) -> BTreeSet<String>
+where
+    F: FnOnce() -> Fut,
+    Fut: std::future::Future<Output = ()>,
+{
+    let never_placed = never_placed(store.as_ref()).await;
+    let (_, enabled) = store.register_node_in_fleet(node).await.expect("register");
+    between().await;
+    finalize_new_cluster(
+        store,
+        &Arc::new(NewClusterFinalize::default()),
+        never_placed,
+        enabled,
+    )
+    .await
+}
+
+fn new_cluster_names() -> BTreeSet<String> {
+    NEW_CLUSTER
+        .iter()
+        .map(|feature| feature.name().to_string())
+        .collect()
+}
+
+/// **Streams created before the first broker do not make a cluster old.**
+/// The first registration answers with the whole new-cluster set, including
+/// `raft_written_commit`, even when placement puts the stream's shard on the
+/// broker before the finalize runs. A broker opens its Raft members only
+/// after that answer, from it, so they open relaxed.
+#[tokio::test]
+async fn streams_created_before_the_first_broker_are_finalized_before_it_opens_a_member() {
+    let store = memory();
+    seed_job(store.as_ref()).await;
+    let shared = Arc::clone(&store) as Shared;
+
+    let placing = Arc::clone(&shared);
+    let enabled = register(&shared, current("broker-a", 7001), || async move {
+        placing
+            .put_shard_assignment(crate::store::contract::shards::assignment(0, "broker-a"))
+            .await
+            .expect("placed on the registering broker");
+    })
+    .await;
+    assert!(
+        enabled.contains(felix_common::fleet::RAFT_WRITTEN_COMMIT.name()),
+        "{enabled:?}"
+    );
+    assert_eq!(enabled, new_cluster_names());
+
+    let enabled = register(&shared, current("broker-b", 7002), || async {}).await;
+    assert_eq!(enabled, new_cluster_names());
+}
+
+/// **A restored store is not new**, though its backup named no broker and
+/// no placement: brokers that ran after the backup hold data it does not
+/// know of.
+#[tokio::test]
+async fn a_restored_store_is_not_new() {
+    let store = memory();
+    seed_job(store.as_ref()).await;
+    let backup = store.export_state().await;
+    let shared = Arc::clone(&store) as Shared;
+    shared
+        .import_state(backup, true)
+        .await
+        .expect("an operator's restore");
+
+    let enabled = register(&shared, current("broker-a", 7001), || async {}).await;
+    assert!(enabled.is_empty(), "{enabled:?}");
+}
+
+/// **A store that ever placed a shard is not new**, even once the shard,
+/// its stream and the broker's record are gone: that broker, here one that
+/// predates every feature, may still hold the shard's data and come back.
+#[tokio::test]
+async fn a_store_that_placed_a_shard_on_a_broker_since_gone_is_not_new() {
+    let store = memory();
+    seed_job(store.as_ref()).await;
+    let shared = Arc::clone(&store) as Shared;
+
+    let enabled = register(&shared, node("broker-old", 7000), || async {}).await;
+    assert!(enabled.is_empty(), "{enabled:?}");
+    shared
+        .put_shard_assignment(crate::store::contract::shards::assignment(0, "broker-old"))
+        .await
+        .expect("placed");
+    shared
+        .delete_stream(&crate::model::StreamKey {
+            tenant_id: "shard-t".to_string(),
+            namespace: "shard-ns".to_string(),
+            stream: "orders".to_string(),
+        })
+        .await
+        .expect("delete stream");
+    shared
+        .set_node_lifecycle("broker-old", NodeLifecycle::Down)
+        .await
+        .expect("expired");
+    shared.delete_node("broker-old").await.expect("forgotten");
+    assert!(shared.list_nodes().await.expect("nodes").is_empty());
+
+    assert!(!never_placed(shared.as_ref()).await.expect("placed"));
+    let enabled = register(&shared, current("broker-a", 7001), || async {}).await;
+    assert!(enabled.is_empty(), "{enabled:?}");
+}
+
+/// **A broker that registered before and expired is not new** when it comes
+/// back: it takes the next node incarnation.
+#[tokio::test]
+async fn a_broker_that_registers_again_is_not_new() {
+    let store = memory();
+    seed_job(store.as_ref()).await;
+    let shared = Arc::clone(&store) as Shared;
+    shared
+        .register_node(current("broker-a", 7001))
+        .await
+        .expect("earlier run");
+    shared
+        .set_node_lifecycle("broker-a", NodeLifecycle::Down)
+        .await
+        .expect("expired");
+
+    let enabled = register(&shared, current("broker-a", 7001), || async {}).await;
+    assert!(enabled.is_empty(), "{enabled:?}");
+}
+
+/// **An older broker registering first keeps what it lacks off**, streams
+/// or not, and a current broker after it does not turn them on over it.
+#[tokio::test]
+async fn an_older_first_broker_keeps_a_seeded_cluster_unfinalized() {
+    let store = memory();
+    seed_job(store.as_ref()).await;
+    let shared = Arc::clone(&store) as Shared;
+
+    let enabled = register(&shared, node("broker-old", 7000), || async {}).await;
+    assert!(enabled.is_empty(), "{enabled:?}");
+    let enabled = register(&shared, current("broker-a", 7001), || async {}).await;
+    assert!(enabled.is_empty(), "{enabled:?}");
+}

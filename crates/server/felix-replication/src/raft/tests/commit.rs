@@ -287,7 +287,7 @@ impl Applying {
             self.queue.waiters(),
             Leads(self.leads.subscribe()),
             CancellationToken::new(),
-            Duration::from_secs(60),
+            Some(Duration::from_secs(60)),
         ))
     }
 

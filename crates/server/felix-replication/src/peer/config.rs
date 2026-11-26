@@ -328,6 +328,7 @@ impl PeerTransportConfig {
             .union(PeerCapabilities::LEARNER_ACKS)
             .union(PeerCapabilities::REFUSAL_REASONS)
             .union(PeerCapabilities::KEPT_BALLOTS)
+            .union(PeerCapabilities::RAFT_LAYOUTS)
             .union(if self.fence && self.unified_fence {
                 PeerCapabilities::UNIFIED_FENCE
             } else {

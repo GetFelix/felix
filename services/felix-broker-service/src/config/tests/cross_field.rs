@@ -281,6 +281,7 @@ fn joining_with(token: &str, refresh: bool, token_file: bool) -> BrokerConfig {
             region: "us-west-2".to_string(),
             zone: None,
             internal: false,
+            durable_storage: true,
             region_bridges: Vec::new(),
             features: Default::default(),
         }),

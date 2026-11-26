@@ -21,7 +21,9 @@ use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow};
 use felix_common::fleet::FleetGate;
-use felix_common::membership::{NODE_ROLE_INTERNAL, NODE_ROLE_LABEL, NodeLifecycle};
+use felix_common::membership::{
+    NODE_ROLE_INTERNAL, NODE_ROLE_LABEL, NODE_STORAGE_LABEL, NODE_STORAGE_NONE, NodeLifecycle,
+};
 use felix_replication::controlplane_link::ControlPlaneLink;
 use felix_storage::StorageId;
 use serde::{Deserialize, Serialize};
@@ -95,6 +97,10 @@ struct RegistrationResponse {
     /// enables none.
     #[serde(default)]
     fleet_features: BTreeSet<String>,
+    /// Whether the control plane keeps durable shards off a node registered
+    /// without durable storage. Absent from one that predates such nodes.
+    #[serde(default)]
+    storage_placement: bool,
 }
 
 /// `GET /v1/nodes/{node_id}`.
@@ -416,6 +422,10 @@ pub async fn register(
                     .internal
                     .then_some((NODE_ROLE_LABEL, NODE_ROLE_INTERNAL))
                     .into_iter()
+                    .chain(
+                        (!config.durable_storage)
+                            .then_some((NODE_STORAGE_LABEL, NODE_STORAGE_NONE)),
+                    )
                     .collect(),
                 features: &config.features,
                 storage_id: storage_id.map(|id| id.to_hex()),
@@ -441,6 +451,18 @@ pub async fn register(
         .json()
         .context("decode node registration response")
         .map_err(MembershipError::Unavailable)?;
+
+    // An older control plane would place a durable shard here, which this
+    // broker has no log to run.
+    if !config.durable_storage && !registered.storage_placement {
+        return Err(MembershipError::Rejected(format!(
+            "node {} has no durable storage (FELIX_DURABLE_STORAGE_DIR) and the control plane \
+             at {} predates brokers without it; upgrade the control plane or give the broker \
+             durable storage",
+            config.node_id,
+            link.endpoint()
+        )));
+    }
 
     mm::record_registration("registered");
     mm::record_membership_live(true);

@@ -172,6 +172,20 @@ impl PeerPool {
         Ok(self.connection(node_id, addr).await?.capabilities())
     }
 
+    /// What `node_id` can do and the Raft layouts it reads, from one
+    /// handshake, dialling it if there is no connection yet.
+    pub(crate) async fn raft_offer(
+        &self,
+        node_id: &str,
+        addr: SocketAddr,
+    ) -> std::result::Result<RaftOffer, PeerError> {
+        let connection = self.connection(node_id, addr).await?;
+        Ok(RaftOffer {
+            capabilities: connection.capabilities(),
+            layouts: connection.raft_layouts(),
+        })
+    }
+
     /// What `node_id`'s listener offered on a live connection this pool
     /// holds, without dialling or waiting on a dial in progress.
     pub(crate) fn connected_capabilities(&self, node_id: &str) -> Option<PeerCapabilities> {
@@ -231,6 +245,12 @@ impl PeerPool {
     /// either direction. Hand it to the listener so inbound handshakes count.
     pub fn known_capabilities(&self) -> &KnownCapabilities {
         &self.known
+    }
+
+    /// Peers the pool holds an entry for.
+    #[cfg(test)]
+    pub(crate) fn peer_count(&self) -> usize {
+        self.peers.lock().len()
     }
 
     /// Live connections across all peers. Test and metrics surface.
@@ -340,12 +360,19 @@ impl PeerPool {
 
     fn peer(&self, node_id: &str) -> Arc<Peer> {
         let mut peers = self.peers.lock();
-        Arc::clone(peers.entry(node_id.to_string()).or_insert_with(|| {
-            Arc::new(Peer::new(
-                node_id.to_string(),
-                self.config.max_inflight_per_peer,
-            ))
-        }))
+        // A borrowed lookup: the hit path, taken for every request, must not
+        // allocate a key.
+        if let Some(peer) = peers.get(node_id) {
+            return Arc::clone(peer);
+        }
+        #[cfg(test)]
+        KEY_ALLOCATIONS.with(|count| count.set(count.get() + 1));
+        let peer = Arc::new(Peer::new(
+            node_id.to_string(),
+            self.config.max_inflight_per_peer,
+        ));
+        peers.insert(node_id.to_string(), Arc::clone(&peer));
+        peer
     }
 
     /// Close connections that have gone unused, and republish the gauges.
@@ -368,7 +395,7 @@ impl PeerPool {
         });
     }
 
-    async fn reap(&self) {
+    pub(crate) async fn reap(&self) {
         let peers: Vec<_> = self
             .peers
             .lock()
@@ -528,6 +555,14 @@ impl PeerError {
     }
 }
 
+/// What a peer said in one handshake about taking Raft messages.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RaftOffer {
+    pub capabilities: PeerCapabilities,
+    /// The layouts it reads, or `None` for a peer that did not say.
+    pub layouts: Option<felix_wire::internal::RaftLayouts>,
+}
+
 /// The one thing forwarding asks of the connection pool.
 ///
 /// A trait rather than the pool itself so the retry rules above — which decide
@@ -552,6 +587,22 @@ pub trait PeerRequester: Sync {
     ) -> impl std::future::Future<Output = std::result::Result<PeerCapabilities, PeerError>> + Send
     {
         async { Ok(PeerCapabilities::NONE) }
+    }
+
+    /// What `node_id` said it can do and the Raft layouts it said it reads,
+    /// from the same handshake. A requester that cannot tell the layouts
+    /// says none were given.
+    fn raft_offer(
+        &self,
+        node_id: &str,
+        addr: SocketAddr,
+    ) -> impl std::future::Future<Output = std::result::Result<RaftOffer, PeerError>> + Send {
+        async move {
+            Ok(RaftOffer {
+                capabilities: self.capabilities(node_id, addr).await?,
+                layouts: None,
+            })
+        }
     }
 
     /// What `node_id` said in its latest handshake with this broker, in
@@ -642,6 +693,14 @@ impl<T: PeerRequester + Send> PeerRequester for std::sync::Arc<T> {
         T::capabilities(self, node_id, addr)
     }
 
+    fn raft_offer(
+        &self,
+        node_id: &str,
+        addr: SocketAddr,
+    ) -> impl std::future::Future<Output = std::result::Result<RaftOffer, PeerError>> + Send {
+        T::raft_offer(self, node_id, addr)
+    }
+
     fn recorded_capabilities(&self, node_id: &str) -> Option<PeerCapabilities> {
         T::recorded_capabilities(self, node_id)
     }
@@ -704,6 +763,14 @@ impl PeerRequester for PeerPool {
         addr: SocketAddr,
     ) -> std::result::Result<PeerCapabilities, PeerError> {
         PeerPool::capabilities(self, node_id, addr).await
+    }
+
+    async fn raft_offer(
+        &self,
+        node_id: &str,
+        addr: SocketAddr,
+    ) -> std::result::Result<RaftOffer, PeerError> {
+        PeerPool::raft_offer(self, node_id, addr).await
     }
 
     fn recorded_capabilities(&self, node_id: &str) -> Option<PeerCapabilities> {
@@ -791,6 +858,12 @@ fn message_capability(message: &InternalMessage) -> Option<PeerCapabilities> {
         }
         ReplicaLog::Stream | ReplicaLog::Cache => base,
     })
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Peer keys allocated on this thread: one per miss, none per hit.
+    pub(crate) static KEY_ALLOCATIONS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
 #[cfg(test)]

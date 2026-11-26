@@ -8,99 +8,34 @@
 //! what CI runs.
 //!
 //! Run with `cargo test -p felix-broker-service --test mqtt_subscribe`.
-use std::sync::Arc;
+#[path = "support/mqtt_fixture.rs"]
+mod mqtt_fixture;
+#[path = "support/raft_shard.rs"]
+mod raft_shard;
+
 use std::time::Duration;
 
 use anyhow::{Context, Result};
-use felix_broker::{Broker, DurableStorage, StreamMetadata};
-use felix_broker_service::config::MqttListenerConfig;
-use felix_broker_service::serving::auth::demo::{DemoAuth, demo_auth_for_tenant};
-use felix_broker_service::serving::mqtt::{
-    BrokerMounts, BrokerMqttAuth, BrokerReads, BrokerWrites, MqttListener,
-};
-use felix_mqtt::Settings;
-use felix_storage::EphemeralCache;
-use felix_storage::log::{FsyncMode, LogConfig};
-use tokio_util::sync::CancellationToken;
-use tokio_util::task::TaskTracker;
+use mqtt_fixture::{Felix, Fixture, Options, TENANT, on_both};
 
-const TENANT: &str = "t1";
 const WAIT: Duration = Duration::from_secs(10);
 
-struct Running {
-    demo: DemoAuth,
-    port: u16,
-    shutdown: CancellationToken,
-    _data: tempfile::TempDir,
-}
-
-impl Drop for Running {
-    fn drop(&mut self) {
-        self.shutdown.cancel();
-    }
-}
-
-async fn start(headers: bool) -> Result<Running> {
-    let data = tempfile::tempdir()?;
-    let storage = DurableStorage::open(
-        data.path(),
-        LogConfig {
-            fsync_mode: FsyncMode::None,
-            preallocate_segments: false,
-            ..LogConfig::default()
+async fn start(fixture: Fixture) -> Result<Felix> {
+    Felix::start(
+        fixture,
+        Options {
+            headers: true,
+            reads: true,
         },
-    )?;
-    let broker = Arc::new(Broker::new(EphemeralCache::new().into()).with_durable_storage(storage));
-    if headers {
-        broker.record_headers_when(|| true);
-    }
-    broker.register_tenant(TENANT).await?;
-    broker.register_namespace(TENANT, "ns").await?;
-    broker
-        .register_stream(
-            TENANT,
-            "ns",
-            "plant",
-            StreamMetadata {
-                durable: true,
-                mount: Some("plant/".to_string()),
-                ..StreamMetadata::default()
-            },
-        )
-        .await?;
-
-    let demo = demo_auth_for_tenant(TENANT)?;
-    let listener = MqttListener::bind(
-        &MqttListenerConfig {
-            listen: "127.0.0.1:0".parse()?,
-            tls: false,
-            worker_threads: 2,
-            max_connections: 64,
-            max_connections_per_ip: 0,
-            connect_rate: 0,
-            settings: Settings::default(),
-            ws: None,
-        },
-        None,
-        Arc::new(BrokerMqttAuth::new(Arc::clone(&demo.auth))),
-        Arc::new(BrokerMounts::new(Arc::clone(&broker), None)),
-        Arc::new(BrokerWrites::new(
-            Arc::clone(&broker),
-            Arc::new(felix_broker_service::shards::routing::StreamEngine::default()),
-            Duration::from_secs(5),
-        )),
-    )?
-    .with_reads(Arc::new(BrokerReads::new(Arc::clone(&broker), None)));
-    let port = listener.local_addr()?.port();
-    let shutdown = CancellationToken::new();
-    drop(listener.spawn(shutdown.clone(), TaskTracker::new(), None));
-    Ok(Running {
-        demo,
-        port,
-        shutdown,
-        _data: data,
-    })
+    )
+    .await
 }
+
+on_both!(
+    rumqttc_3_1_1_subscribes_with_a_wildcard_at_qos_1,
+    rumqttc_5_gets_properties_and_a_refusal_per_filter,
+    mosquitto_sub_receives_a_published_message,
+);
 
 /// Wait for the broker to say the subscription is in place.
 macro_rules! subscribed {
@@ -117,13 +52,12 @@ macro_rules! subscribed {
     };
 }
 
-#[tokio::test]
-async fn rumqttc_3_1_1_subscribes_with_a_wildcard_at_qos_1() -> Result<()> {
+async fn rumqttc_3_1_1_subscribes_with_a_wildcard_at_qos_1(fixture: Fixture) -> Result<()> {
     use rumqttc::{AsyncClient, Event, MqttOptions, Packet, QoS};
 
-    let felix = start(true).await?;
+    let felix = start(fixture).await?;
     let mut options = MqttOptions::new("sub-1", "127.0.0.1", felix.port);
-    options.set_credentials(TENANT, felix.demo.token.clone());
+    options.set_credentials(TENANT, felix.token.clone());
     let (subscriber, mut events) = AsyncClient::new(options, 10);
     subscriber
         .subscribe("plant/+/temp", QoS::AtLeastOnce)
@@ -131,7 +65,7 @@ async fn rumqttc_3_1_1_subscribes_with_a_wildcard_at_qos_1() -> Result<()> {
     subscribed!(events, Event::Incoming(Packet::SubAck(_)));
 
     let mut options = MqttOptions::new("pub-1", "127.0.0.1", felix.port);
-    options.set_credentials(TENANT, felix.demo.token.clone());
+    options.set_credentials(TENANT, felix.token.clone());
     let (publisher, mut publisher_events) = AsyncClient::new(options, 10);
     tokio::spawn(async move { while publisher_events.poll().await.is_ok() {} });
     publisher
@@ -166,15 +100,14 @@ async fn rumqttc_3_1_1_subscribes_with_a_wildcard_at_qos_1() -> Result<()> {
     Ok(())
 }
 
-#[tokio::test]
-async fn rumqttc_5_gets_properties_and_a_refusal_per_filter() -> Result<()> {
+async fn rumqttc_5_gets_properties_and_a_refusal_per_filter(fixture: Fixture) -> Result<()> {
     use rumqttc::v5::mqttbytes::QoS;
     use rumqttc::v5::mqttbytes::v5::{Filter, Packet, PublishProperties, SubscribeReasonCode};
     use rumqttc::v5::{AsyncClient, Event, MqttOptions};
 
-    let felix = start(true).await?;
+    let felix = start(fixture).await?;
     let mut options = MqttOptions::new("sub-5", "127.0.0.1", felix.port);
-    options.set_credentials(TENANT, felix.demo.token.clone());
+    options.set_credentials(TENANT, felix.token.clone());
     let (subscriber, mut events) = AsyncClient::new(options, 10);
     subscriber
         .subscribe_many(vec![
@@ -201,7 +134,7 @@ async fn rumqttc_5_gets_properties_and_a_refusal_per_filter() -> Result<()> {
     ));
 
     let mut options = MqttOptions::new("pub-5", "127.0.0.1", felix.port);
-    options.set_credentials(TENANT, felix.demo.token.clone());
+    options.set_credentials(TENANT, felix.token.clone());
     let (publisher, mut publisher_events) = AsyncClient::new(options, 10);
     tokio::spawn(async move { while publisher_events.poll().await.is_ok() {} });
     let properties = PublishProperties {
@@ -231,16 +164,15 @@ async fn rumqttc_5_gets_properties_and_a_refusal_per_filter() -> Result<()> {
     Ok(())
 }
 
-#[tokio::test]
-async fn mosquitto_sub_receives_a_published_message() -> Result<()> {
+async fn mosquitto_sub_receives_a_published_message(fixture: Fixture) -> Result<()> {
     use rumqttc::{AsyncClient, MqttOptions, QoS};
 
-    let felix = start(true).await?;
+    let felix = start(fixture).await?;
     let child = tokio::process::Command::new("mosquitto_sub")
         .args(["-h", "127.0.0.1", "-p"])
         .arg(felix.port.to_string())
         .args(["-u", TENANT, "-P"])
-        .arg(&felix.demo.token)
+        .arg(&felix.token)
         .args(["-t", "plant/#", "-q", "1", "-C", "1", "-W", "10", "-v"])
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
@@ -254,7 +186,7 @@ async fn mosquitto_sub_receives_a_published_message() -> Result<()> {
         Err(err) => return Err(err.into()),
     };
     let mut options = MqttOptions::new("pub-m", "127.0.0.1", felix.port);
-    options.set_credentials(TENANT, felix.demo.token.clone());
+    options.set_credentials(TENANT, felix.token.clone());
     let (publisher, mut events) = AsyncClient::new(options, 10);
     tokio::spawn(async move { while events.poll().await.is_ok() {} });
     // mosquitto_sub has no way to say it is subscribed, so publish until it
