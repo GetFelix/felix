@@ -1,8 +1,9 @@
 # Broker instructions per message: written by scripts/perf/ipm_gate.py update.
 # Each value is the median, over at least five workflow runs of the one commit
 # named in its section, of that run's median rep. Every rep runs on a fresh
-# broker; b1 is paced at the rate under [<arch>.pace] for a fixed time, so the
-# broker's per-second work is the same in every rep and is part of the value.
+# broker; every cell is paced at the rate under [<arch>.pace] for a fixed time,
+# so the broker's per-second work is the same in every rep and is part of the
+# value.
 # Raise or lower a value only this way: dispatch the Instructions per message
 # workflow five times on one commit and run
 #   python3 scripts/perf/ipm_gate.py update <the five ipm-result.json files>

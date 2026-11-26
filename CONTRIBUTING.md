@@ -162,36 +162,40 @@ filler that restates what was just said.
   cell is more than 3% over `scripts/perf/ipm-baseline.toml`. The broker runs
   under callgrind, since hosted runners expose no hardware counters, so only
   user-space instructions are counted, less the idle broker's per-second cost.
-  - Each cell runs five reps, each on a fresh broker with a fresh data
-    directory, and reports the median rep with the spread. A broker that runs
-    for a long time under callgrind gets slower, so a rep on it would cost
-    more than a rep on a fresh one.
+  - Each cell runs five reps. Every rep starts a fresh broker with a fresh
+    data directory, gives it a fixed unmeasured warm-up, then counts. The cell
+    reports its median rep, with the spread across reps. A broker that runs
+    for a long time under callgrind gets slower, so reusing one would make
+    later reps cost more.
   - Under callgrind the broker runs hundreds of times slower than native while
     its timers fire in real time, so its per-second work (timers, heartbeats,
     polling) is a large share of what it executes. Taking the idle rate off
-    does not remove all of it: a broker under load does more per second than
-    an idle one. So `b1` is paced at a fixed rate for a fixed 300 s (20 msg/s
-    on aarch64, 100 msg/s on x86_64, both well under what the slowest runner
-    sustains), and its figure includes the same amount of per-second work in
-    every rep and every run. That makes `b1` the cost of a message at that
-    pace: about 507k instructions on aarch64 and 283k on x86_64, against about
-    190k and 184k when the same broker ran flat out. The difference is
-    per-second work above the idle rate plus whatever a message costs when it
-    arrives alone; the gate does not separate the two. `b64` is not paced: its
-    reps take 5 to 12 s and its run-to-run spread was already under the
-    tolerance.
+    does not remove all of it, because a broker under load does more per
+    second than an idle one. So every cell publishes at a fixed pace for a
+    fixed time, and its figure includes the same per-second work in every rep
+    and every run:
+    - `b1`: 20 msg/s on aarch64 and 100 msg/s on x86_64, for 300 s.
+    - `b64`: 4,000 msg/s for 20 s on both.
+
+    Unpaced, a rep on a fast runner finishes sooner and picks up less
+    per-second work: one x86_64 `b64` run read 2% under the others because its
+    reps took 4.8 s where theirs took 9. More reps do not help with that, since
+    every rep in a run shares the runner.
+  - The paced `b1` figure is about 507k instructions on aarch64 and 283k on
+    x86_64, against about 190k and 184k when the same broker ran flat out. The
+    rest is per-second work and whatever a message costs when it arrives
+    alone. So a per-message cost has to grow by roughly 8% on aarch64 (5% on
+    x86_64) to move `b1` by 3%. `b64` is the cell that sees small per-message
+    costs.
   - What it cannot see: kernel time, time spent waiting on the disk or the
     network, and native per-second cost (callgrind's figures say nothing about
-    a broker at full speed). A change to per-second work moves `b1` as if it
-    were per-message cost. And if the extra over the flat-out figure is all
-    per-second work, a per-message cost has to grow by about 8% on aarch64 (5%
-    on x86_64) to move `b1` by 3%. `b64` is the cell that sees small
-    per-message costs. Its remaining variation follows runner speed: an
-    unpaced rep on a fast runner is shorter and picks up less per-second work
-    (one x86_64 run read 1.9% under the baseline for that reason).
-  - If a rep cannot hold its pace (it issued more than 3% off the rate, or ran
-    more than 3% over 300 s), the run fails as a measurement failure, not a
-    regression. Rerun it. The result file is still uploaded with every rep in it.
+    a broker at full speed). A change to per-second work moves both cells as
+    if it were per-message cost.
+  - A rep that could not hold its pace is a measurement failure, not a
+    regression: it issued more than 3% off the rate, or took more than 3%
+    (plus 1 s for the last acks) over its time. The run fails, says which rep
+    and why, and still uploads the result file with every rep in it. Rerun it.
+    The result also records the runner's CPU model.
   - If the extra cost is deliberate, dispatch the workflow five times on the
     PR's head commit and run `python3 scripts/perf/ipm_gate.py update` with
     the five `ipm-result.json` artifacts (one per architecture per run). It

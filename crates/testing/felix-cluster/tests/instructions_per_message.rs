@@ -28,9 +28,10 @@
 //! - Every rep gets a fresh broker (and so a fresh valgrind) on a fresh data
 //!   directory. A long-lived instrumented broker gets slower rep after rep, and
 //!   a slower rep picks up more per-second work.
-//! - `b1` is paced at a fixed rate for a fixed time, so its per-second work is
-//!   a constant that is part of the baseline. A rep that could not hold the
-//!   pace is a failed measurement, not a regression.
+//! - Every cell is paced at a fixed rate for a fixed time, so its per-second
+//!   work is a constant that is part of the baseline. An unpaced rep finishes
+//!   sooner on a faster runner and picks up less of it. A rep that could not
+//!   hold the pace is a failed measurement, not a regression.
 //!
 //! Each fresh broker gets an unmeasured, unpaced warm-up of a fixed number of
 //! messages before counting starts, the same in every rep and every run. It
@@ -61,12 +62,22 @@ const IN_FLIGHT: usize = 64;
 /// enough that its own noise stays small.
 const IDLE_WINDOW: Duration = Duration::from_secs(20);
 
-/// How long a paced rep publishes for.
-const PACED_REP: Duration = Duration::from_secs(300);
+/// How long a `b1` rep publishes for.
+const B1_REP: Duration = Duration::from_secs(300);
+
+/// The `b64` pace and how long a rep publishes for: 80,000 messages. The
+/// slowest unpaced rep seen took 13.3 s on aarch64 (6,000 msg/s) and 10.3 s on
+/// x86_64, so both architectures hold 4,000 msg/s with room to spare.
+const B64_PACE: u64 = 4_000;
+const B64_REP: Duration = Duration::from_secs(20);
 
 /// How far a paced rep's issue rate and wall time may stray from the target
 /// before the rep is not comparable with the baseline.
 const PACE_TOLERANCE_PCT: f64 = 3.0;
+
+/// Added to a paced rep's allowed wall time for the last acks to come back,
+/// which on a 20 s rep is more than the percentage allows.
+const ACK_DRAIN: Duration = Duration::from_secs(1);
 
 /// The `b1` pace in messages a second. The instrumented broker's capacity is
 /// what bounds it: on aarch64 it executes 14 to 19M guest instructions a
@@ -92,10 +103,8 @@ fn b1_pace() -> u64 {
 /// How a cell drives its load.
 #[derive(Clone, Copy)]
 enum Load {
-    /// This many messages a second for [`PACED_REP`].
-    Paced(u64),
-    /// This many messages as fast as acks allow.
-    Unpaced(usize),
+    /// This many messages a second for this long.
+    Paced(u64, Duration),
 }
 
 /// A cell: name, publish batch size, load, and the warm-up messages each fresh
@@ -110,35 +119,32 @@ struct Cell {
 
 impl Cell {
     fn messages(&self) -> usize {
-        match self.load {
-            Load::Paced(rate) => (rate * PACED_REP.as_secs()) as usize,
-            Load::Unpaced(messages) => messages,
-        }
+        let Load::Paced(rate, secs) = self.load;
+        (rate * secs.as_secs()) as usize
     }
 
-    fn rate(&self) -> Option<u64> {
-        match self.load {
-            Load::Paced(rate) => Some(rate),
-            Load::Unpaced(_) => None,
-        }
+    fn rate(&self) -> u64 {
+        let Load::Paced(rate, _) = self.load;
+        rate
     }
 }
 
-/// `b64` stays unpaced: its reps take about 10 s, per-second work is about a
-/// tenth of its count, and its spread was already 2 to 3%. Pacing it under the
-/// slowest runner would make that share several times larger.
+/// Unpaced, `b64` read up to 2% low on a fast runner: its rep took 4.8 s
+/// where others took 9, and so picked up less per-second work. Paced, the
+/// per-second share is larger (about a tenth of the count) but the same on
+/// every runner.
 fn cells() -> Vec<Cell> {
     vec![
         Cell {
             name: "b1",
             batch: 1,
-            load: Load::Paced(b1_pace()),
+            load: Load::Paced(b1_pace(), B1_REP),
             warmup: 4_000,
         },
         Cell {
             name: "b64",
             batch: 64,
-            load: Load::Unpaced(80_000),
+            load: Load::Paced(B64_PACE, B64_REP),
             warmup: 320_000,
         },
     ]
@@ -150,7 +156,7 @@ fn cells() -> Vec<Cell> {
 const MQTT_IDLE_CELL: Cell = Cell {
     name: "b64_mqtt_idle",
     batch: 64,
-    load: Load::Unpaced(80_000),
+    load: Load::Paced(B64_PACE, B64_REP),
     warmup: 320_000,
 };
 
@@ -388,11 +394,12 @@ fn pace_problem(rate: u64, messages: usize, rep: &Rep) -> Option<String> {
     let want_secs = messages as f64 / rate as f64;
     let rate_off = (rep.issued_msg_s - rate as f64) / rate as f64 * 100.0;
     let secs_off = (rep.secs - want_secs) / want_secs * 100.0;
-    let held = rate_off.abs() <= PACE_TOLERANCE_PCT && secs_off <= PACE_TOLERANCE_PCT;
+    let max_secs = want_secs * (1.0 + PACE_TOLERANCE_PCT / 100.0) + ACK_DRAIN.as_secs_f64();
+    let held = rate_off.abs() <= PACE_TOLERANCE_PCT && rep.secs <= max_secs;
     (!held).then(|| {
         format!(
-            "issued {:.2} msg/s against {rate} ({rate_off:+.1}%) and took {:.1} s against {want_secs:.0} ({secs_off:+.1}%); tolerance {PACE_TOLERANCE_PCT}%",
-            rep.issued_msg_s, rep.secs
+            "issued {:.2} msg/s against {rate} ({rate_off:+.1}%) and took {:.1} s against {want_secs:.0} ({secs_off:+.1}%); tolerance {PACE_TOLERANCE_PCT}% plus {} s for the last acks",
+            rep.issued_msg_s, rep.secs, ACK_DRAIN.as_secs()
         )
     })
 }
@@ -421,13 +428,9 @@ fn summarize(cell: &Cell, reps: &[Rep]) -> (serde_json::Value, Vec<String>) {
     let raw: Vec<f64> = reps.iter().map(|r| r.raw).collect();
     let secs: Vec<f64> = reps.iter().map(|r| r.secs).collect();
     let mut problems = Vec::new();
-    // An unpaced rep's duration is not checked: on fresh brokers it moves
-    // with the runner, not with state, and five reps can climb by chance.
-    if let Some(rate) = cell.rate() {
-        for (i, rep) in reps.iter().enumerate() {
-            if let Some(problem) = pace_problem(rate, cell.messages(), rep) {
-                problems.push(format!("{} rep {i}: {problem}", cell.name));
-            }
+    for (i, rep) in reps.iter().enumerate() {
+        if let Some(problem) = pace_problem(cell.rate(), cell.messages(), rep) {
+            problems.push(format!("{} rep {i}: {problem}", cell.name));
         }
     }
     let entry = serde_json::json!({
@@ -520,7 +523,7 @@ async fn measure_rep(dir: &Path, env: &[(String, String)], cell: Cell, rep: usiz
         let before = ProcSample::read(pid);
         let rep_started = Instant::now();
         let (ir, row) = count_instructions(dir, pid, || {
-            run_ingest(&cluster, cell.batch, total, cell.rate(), true)
+            run_ingest(&cluster, cell.batch, total, Some(cell.rate()), true)
         })?;
         let secs = rep_started.elapsed().as_secs_f64();
         let after = ProcSample::read(pid);
@@ -626,6 +629,7 @@ async fn broker_instructions_per_message() {
     }
     let result = serde_json::json!({
         "arch": std::env::consts::ARCH,
+        "cpu": cpu_model(),
         "commit": commit,
         "toolchain": toolchain,
         "cells": cells,
@@ -638,6 +642,28 @@ async fn broker_instructions_per_message() {
         "the measurement failed, so it says nothing about a regression:\n{}",
         problems.join("\n")
     );
+}
+
+/// The runner's CPU model. Libraries pick code paths by CPU feature, so two
+/// models can retire different counts for the same broker.
+fn cpu_model() -> String {
+    let info = std::fs::read_to_string("/proc/cpuinfo").unwrap_or_default();
+    let field = |key: &str| {
+        info.lines()
+            .find(|line| line.starts_with(key))
+            .and_then(|line| line.split_once(':'))
+            .map(|(_, value)| value.trim().to_string())
+    };
+    // Arm reports no model name, only the implementer and part numbers.
+    field("model name")
+        .or_else(|| {
+            Some(format!(
+                "{} {}",
+                field("CPU implementer")?,
+                field("CPU part")?
+            ))
+        })
+        .unwrap_or_else(|| "unknown".to_string())
 }
 
 fn rep(user: f64, secs: f64, issued_msg_s: f64) -> Rep {
@@ -669,11 +695,17 @@ fn a_paced_rep_that_fell_behind_is_a_failed_measurement() {
 }
 
 #[test]
+fn a_short_paced_rep_gets_time_for_its_last_acks() {
+    assert_eq!(pace_problem(4000, 80_000, &rep(1.0, 21.4, 4000.0)), None);
+    assert!(pace_problem(4000, 80_000, &rep(1.0, 21.8, 4000.0)).is_some());
+}
+
+#[test]
 fn a_cell_is_reported_by_its_median_rep() {
     let cell = Cell {
         name: "b1",
         batch: 1,
-        load: Load::Paced(20),
+        load: Load::Paced(20, B1_REP),
         warmup: 0,
     };
     let reps: Vec<Rep> = [5.0, 1.0, 3.0, 4.0, 2.0]

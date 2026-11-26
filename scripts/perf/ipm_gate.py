@@ -33,8 +33,9 @@ META = ("commit", "toolchain", "runs", "pace")
 METHOD = """\
 # Each value is the median, over at least five workflow runs of the one commit
 # named in its section, of that run's median rep. Every rep runs on a fresh
-# broker; b1 is paced at the rate under [<arch>.pace] for a fixed time, so the
-# broker's per-second work is the same in every rep and is part of the value.
+# broker; every cell is paced at the rate under [<arch>.pace] for a fixed time,
+# so the broker's per-second work is the same in every rep and is part of the
+# value.
 # Raise or lower a value only this way: dispatch the Instructions per message
 # workflow five times on one commit and run
 #   python3 scripts/perf/ipm_gate.py update <the five ipm-result.json files>
@@ -176,7 +177,10 @@ def check(result, allow_big_drop):
                 f"{name}: {got:.0f} instructions/message is {change:+.2f}% over {base_name} ({want:.0f}) in the same run "
                 f"(tolerance {tol}%): an idle MQTT listener is costing the QUIC path"
             )
-    summary(f"### Broker instructions per message ({arch}, tolerance +{tol}%)\n\n" + "\n".join(rows))
+    summary(
+        f"### Broker instructions per message ({arch}, tolerance +{tol}%)\n\n"
+        f"CPU: {result.get('cpu', 'not recorded')}\n\n" + "\n".join(rows)
+    )
     for note in lower:
         print(f"::warning::instructions per message fell below the baseline ({note}); if the gain is real, lower the baseline in this PR")
         summary(f"Lower than baseline: {note}. Check whether the baseline is stale.")
@@ -213,6 +217,7 @@ def update(results):
     names = sorted(n for n in first["cells"] if not is_paired(n))
     values = {}
     print(f"{arch} at {first['commit']}, {len(results)} runs (each the median of its reps):")
+    print("  cpus: " + ", ".join(r.get("cpu", "not recorded") for r in results))
     for name in names:
         per_run = [r["cells"].get(name, {}).get("user_per_message") for r in results]
         if not all(finite(v) for v in per_run):

@@ -9,10 +9,13 @@ name: Instructions per message
 # A pull request runs it only when it touches the broker's hot-path code.
 # Otherwise it runs on workflow_dispatch only; there is no main or schedule run.
 #
-# Every rep runs on a fresh broker and b1 is paced at a fixed rate, so a job
-# takes about the same time on every run: roughly 70 minutes on aarch64 and 55
-# on x86_64, half of each spent building. A new baseline is the median of five
-# dispatched runs of one commit (see scripts/perf/ipm-baseline.toml).
+# Every rep runs on a fresh broker, and every cell publishes at a fixed rate
+# for a fixed time, so per-second work is the same on a fast runner as on a
+# slow one and a job takes about the same time on every run: roughly 70
+# minutes on aarch64 and 55 on x86_64, half of each spent building. A rep that
+# cannot hold its pace fails the run as a measurement failure, not a
+# regression. A new baseline is the median of five dispatched runs of one
+# commit (see scripts/perf/ipm-baseline.toml).
 
 on:
   pull_request:
