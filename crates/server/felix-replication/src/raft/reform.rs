@@ -10,7 +10,7 @@ use std::path::Path;
 use std::pin::Pin;
 use std::sync::Arc;
 
-use felix_storage::log::LogConfig;
+use felix_storage::DiskLog;
 use felix_storage::raft_copy::{BrokerReport, GapFold, MembershipReader, VoterSets, build_report};
 use felix_storage::raft_log::{EntryCodec, LogPoint, StoredSnapshot};
 
@@ -77,13 +77,13 @@ impl GapFold for GapSnapshot {
     fn fold<'a>(
         &'a self,
         dir: &'a Path,
-        config: &'a LogConfig,
+        log: &'a DiskLog,
         base: Option<LogPoint>,
         gap_end: LogPoint,
     ) -> Pin<Box<dyn Future<Output = io::Result<StoredSnapshot>> + Send + 'a>> {
         Box::pin(super::machine::gap_snapshot(
             dir,
-            config,
+            log,
             self.kind,
             &self.voters,
             base,

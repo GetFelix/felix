@@ -72,6 +72,14 @@ impl DirLock {
     }
 }
 
+/// Take and let go of the lock on `dir`, creating it if it is not there: a
+/// start's check that the filesystem can lock a directory, so a broker on
+/// one that cannot fails before it is ready rather than at each log's open.
+pub fn probe(dir: &Path) -> io::Result<()> {
+    crate::io::create_dir_all_durable(dir)?;
+    DirLock::take(dir).map(drop)
+}
+
 /// Give up every claim below `root`, for a simulated crash: the logs open
 /// there belong to a process that is gone. Their handles, dropped later,
 /// leave a newer claim on the same directory alone.
@@ -136,8 +144,21 @@ fn flock(dir: &Path) -> io::Result<std::fs::File> {
 
     use std::os::unix::fs::MetadataExt;
 
-    let file = std::fs::File::open(dir)?;
+    let file = std::fs::File::open(dir).map_err(|err| match err.kind() {
+        io::ErrorKind::NotFound => io::Error::new(
+            err.kind(),
+            format!(
+                "{}: cannot open the log directory to lock it: {err}",
+                dir.display()
+            ),
+        ),
+        _ => unlockable(dir, err),
+    })?;
     loop {
+        #[cfg(any(debug_assertions, test, feature = "fault-injection"))]
+        if let Some(err) = crate::fault::injected_lock_failure(dir) {
+            return Err(unlockable(dir, err));
+        }
         // SAFETY: `file` is open, and `flock` only reads the descriptor.
         if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0 {
             // A rotation can rename the directory away between the open and
@@ -152,9 +173,23 @@ fn flock(dir: &Path) -> io::Result<std::fs::File> {
         match err.kind() {
             io::ErrorKind::Interrupted => {}
             io::ErrorKind::WouldBlock => return Err(busy(dir)),
-            _ => return Err(err),
+            _ => return Err(unlockable(dir, err)),
         }
     }
+}
+
+/// A lock the filesystem cannot give, as on NFS or a FUSE mount without
+/// `flock`. Same kind as `err`, with the directory and what to do.
+#[cfg(unix)]
+fn unlockable(dir: &Path, err: io::Error) -> io::Error {
+    io::Error::new(
+        err.kind(),
+        format!(
+            "{}: cannot lock the log directory ({err}); the filesystem does not \
+             support flock on a directory. Keep the data directory on a local disk",
+            dir.display()
+        ),
+    )
 }
 
 fn busy(dir: &Path) -> io::Error {

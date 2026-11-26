@@ -255,7 +255,7 @@ impl crate::raft_copy::GapFold for Given {
     fn fold<'a>(
         &'a self,
         _dir: &'a Path,
-        _config: &'a crate::log::LogConfig,
+        _log: &'a crate::DiskLog,
         _base: Option<crate::raft_log::LogPoint>,
         gap_end: crate::raft_log::LogPoint,
     ) -> std::pin::Pin<

@@ -468,7 +468,7 @@ pub(crate) fn base_snapshot(
 /// crashed after storing it, which is returned as it is.
 pub(crate) async fn gap_snapshot(
     dir: &std::path::Path,
-    config: &felix_storage::log::LogConfig,
+    log: &DiskLog,
     kind: ShardKind,
     voters: &std::collections::BTreeSet<super::types::MemberId>,
     base: Option<LogPoint>,
@@ -509,12 +509,25 @@ pub(crate) async fn gap_snapshot(
         None => 0,
     };
     let data = stored.map(|stored| stored.data).unwrap_or_default();
-    let log = DiskLog::open(dir, &label, config.clone()).map_err(io::Error::other)?;
-    let folded = fold_through(&log, kind, data, from, base, gap_end).await;
-    let closed = log.close().await.map_err(io::Error::other);
-    let data = folded?;
-    closed?;
+    let data = fold_through(log, kind, data, from, base, gap_end).await?;
     Ok(StoredSnapshot { last, meta, data })
+}
+
+/// [`gap_snapshot`] over the log in `dir`, opened and closed around it.
+#[cfg(test)]
+pub(crate) async fn gap_snapshot_in(
+    dir: &std::path::Path,
+    config: &felix_storage::log::LogConfig,
+    kind: ShardKind,
+    voters: &std::collections::BTreeSet<super::types::MemberId>,
+    base: Option<LogPoint>,
+    gap_end: LogPoint,
+) -> io::Result<StoredSnapshot> {
+    let log =
+        DiskLog::open(dir, dir.display().to_string(), config.clone()).map_err(io::Error::other)?;
+    let folded = gap_snapshot(dir, &log, kind, voters, base, gap_end).await;
+    log.close().await.map_err(io::Error::other)?;
+    folded
 }
 
 /// The state machine's data after the entries `from..=base` of `log` are

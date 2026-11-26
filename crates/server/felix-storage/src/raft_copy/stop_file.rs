@@ -11,6 +11,7 @@
 use std::io;
 use std::path::Path;
 
+use crate::disk_log::dir_lock::DirLock;
 use crate::raft_log::state_file;
 
 pub(crate) const FILE_NAME: &str = "raft-stopped";
@@ -48,8 +49,14 @@ impl StoppedCopy {
 /// Stop the copy in `dir` in its current group epoch, synced before this
 /// returns. `last` is the index of its last entry, from the log its member
 /// closed with. Its member must already be closed, and a re-form reads the
-/// copy's report only after this.
+/// copy's report only after this. Refused with
+/// [`io::ErrorKind::ResourceBusy`] while any log has `dir` open.
 pub fn stop(dir: &Path, last: Option<u64>) -> io::Result<()> {
+    stop_holding(dir, last, &DirLock::take(dir)?)
+}
+
+/// [`stop`], for a caller that holds `dir`'s lock.
+pub(super) fn stop_holding(dir: &Path, last: Option<u64>, _held: &DirLock) -> io::Result<()> {
     let epoch = stop_epoch(dir)?;
     let last = last.map_or_else(|| "-".to_owned(), |index| index.to_string());
     state_file::store(

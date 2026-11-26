@@ -154,6 +154,29 @@ impl CopyRoot {
                 format!("a shard name of {} bytes is too long", shard.len()),
             ));
         }
+        // Held from the first check through any rotation into the open log,
+        // so no other open can change what was judged.
+        let lock = lock_dir(dir)?;
+        self.open_copy_holding(shard, dir, label.into(), config, lock)
+            .await
+    }
+
+    /// [`Self::open_copy`] under `lock`, the lock on `dir`, which passes to
+    /// the open log.
+    pub(super) async fn open_copy_holding(
+        &self,
+        shard: &str,
+        dir: &Path,
+        label: String,
+        config: LogConfig,
+        mut lock: DirLock,
+    ) -> io::Result<OpenedCopy> {
+        if shard.len() > MAX_SHARD_NAME {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("a shard name of {} bytes is too long", shard.len()),
+            ));
+        }
         // A re-form start that did not finish has to be run again first.
         if super::start::building(dir)? {
             return Err(io::Error::other(format!(
@@ -162,10 +185,6 @@ impl CopyRoot {
             )));
         }
         let shard: Arc<str> = Arc::from(shard);
-        let label = label.into();
-        // Held from the judge through any rotation into the open log, so no
-        // other open can change what was judged.
-        let mut lock = lock_dir(dir)?;
         let (found, reason) = self.judge_files(&shard, dir)?;
         let reason = match (found, reason) {
             // Every other reason rotates it anyway, which is the rejoin.
@@ -216,6 +235,8 @@ impl CopyRoot {
         label: impl Into<String>,
         config: LogConfig,
     ) -> io::Result<OpenedCopy> {
+        // Before the check, so the copy rotated is the one found stopped.
+        let lock = lock_dir(dir)?;
         if super::start::building(dir)? || super::stop_file::stopped(dir)?.is_none() {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
@@ -225,7 +246,6 @@ impl CopyRoot {
                 ),
             ));
         }
-        let lock = lock_dir(dir)?;
         self.rotate_and_open(
             Arc::from(shard),
             dir,
@@ -496,11 +516,11 @@ async fn judge_log(
 }
 
 fn open_log(dir: &Path, label: &str, config: LogConfig, lock: DirLock) -> io::Result<DiskLog> {
-    DiskLog::open_holding(dir, label.to_string(), config, lock).map_err(io::Error::other)
+    DiskLog::open_holding(dir, label.to_string(), config, None, lock).map_err(io::Error::other)
 }
 
 /// Lock `dir`, creating it if it is not there.
-fn lock_dir(dir: &Path) -> io::Result<DirLock> {
+pub(super) fn lock_dir(dir: &Path) -> io::Result<DirLock> {
     crate::io::create_dir_all_durable(dir)?;
     DirLock::take(dir)
 }

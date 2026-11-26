@@ -77,6 +77,7 @@ pub mod switch;
 mod sync;
 
 pub use carried_floor::CarriedFloor;
+pub use dir_lock::probe as probe_dir_lock;
 pub use producers::{ForgottenCuts, ProducerSequence, UnfinishedBatch};
 #[cfg(feature = "raft")]
 pub(crate) use producers::{forgotten_file_name, snapshot_file_name as producers_file_name};
@@ -1285,13 +1286,14 @@ impl DiskLog {
         self.close_keeping_lock().await.map(drop)
     }
 
-    /// [`Self::open`] with the lock on `dir` already held, so whoever took
-    /// it can look at and change the directory before the log opens.
-    #[cfg(feature = "raft")]
+    /// [`Self::open`], or [`Self::open_at`] with `base_offset`, with the
+    /// lock on `dir` already held, so whoever took it can look at and change
+    /// the directory before the log opens.
     pub(crate) fn open_holding(
         dir: impl Into<PathBuf>,
         label: impl Into<String>,
         config: LogConfig,
+        base_offset: Option<Offset>,
         lock: dir_lock::DirLock,
     ) -> Result<Self> {
         let files = SealedFiles::for_config(&config);
@@ -1299,7 +1301,7 @@ impl DiskLog {
             dir.into(),
             label.into(),
             config,
-            None,
+            base_offset,
             files,
             OtherCommit::Drop,
             Some(lock),
