@@ -83,19 +83,6 @@ async fn an_idempotent_kafka_producer_lands_each_record_once_through_failover_an
         offsets.push(producer.send_ok(sequence).await);
     }
 
-    // A Raft shard's leader moves only within its voting set, and placement
-    // does not manage that yet (#2235), so the move half runs on hybrid only.
-    if felix_cluster::suite_runs_on_raft() {
-        let read = read_back(&cluster, &second).await;
-        let expected: Vec<(u64, String)> = offsets
-            .iter()
-            .enumerate()
-            .map(|(i, offset)| (*offset as u64, format!("r{i}")))
-            .collect();
-        assert_eq!(read, expected, "every record once, in order");
-        cluster.shutdown().await;
-        return;
-    }
     let third = cluster
         .node_ids()
         .into_iter()
