@@ -15,6 +15,11 @@ broker outside the set, and a broker gone for `restore_after_millis` swap one
 member at a time: the leader adds the new copy as a learner, waits for it to
 catch up, and changes the voters.
 
+When a shard's leader goes down, the group elects a new one, and placement
+names the member it elected once that member reports. While a broker of the
+set is down the leader does not hand over, so this keeps the assignment
+pointing at the broker that actually serves the shard.
+
 A drain does not move a replication factor 1 shard, which waits with
 `no live node can take this shard` until an operator moves it. A lost broker
 that held the only copy cannot be replaced, and a removed copy keeps its

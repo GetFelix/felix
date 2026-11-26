@@ -856,6 +856,7 @@ async fn a_follower_strips_nothing_on_its_own_lagging_floor() {
         raft_voters: None,
         raft_seed: None,
         raft_bases: None,
+        raft_leader: None,
         raft_ordered: None,
     };
     let written = follower

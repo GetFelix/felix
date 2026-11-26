@@ -621,6 +621,10 @@ pub enum MetaCommand {
         /// stored, whatever the floor did with the report (#2909).
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         vouched_voters: bool,
+        /// Level 52: each report also records its reporter as the broker
+        /// the group elected (`ShardAssignment::raft_leader`).
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        note_leader: bool,
     },
     /// Declare a node's data directory dead under the storage id its record
     /// holds as this applies

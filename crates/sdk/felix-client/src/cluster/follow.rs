@@ -13,6 +13,7 @@ pub(crate) use cache_watch::{WatchProgress, WatchStep, WatchTarget};
 
 use std::net::SocketAddr;
 use std::sync::Arc;
+use std::sync::atomic::AtomicUsize;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
@@ -311,14 +312,9 @@ impl Client {
         shard: u32,
         start: StartPosition,
     ) -> Result<(Arc<Connection>, Subscription)> {
+        let cursor = AtomicUsize::new(0);
         self.reopen_after_loss(lost_client, || {
-            self.subscribe_shard_following_redirects(
-                tenant_id,
-                namespace,
-                stream,
-                shard,
-                Some(start),
-            )
+            self.subscribe_shard_rotating(&cursor, tenant_id, namespace, stream, shard, Some(start))
         })
         .await
         .with_context(|| {

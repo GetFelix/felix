@@ -584,3 +584,199 @@ async fn a_raft_shard_bounds_kafka_reads_by_its_commit_index() {
     assert!(bound(&raft) >= after_first, "the bound went backwards");
     raft.stop().await;
 }
+
+/// A CA, a server certificate it issued for `localhost`, and a client
+/// certificate it issued that ends `client_lifetime` from now.
+struct Pki {
+    ca: rustls::pki_types::CertificateDer<'static>,
+    server: (
+        rustls::pki_types::CertificateDer<'static>,
+        rustls::pki_types::PrivateKeyDer<'static>,
+    ),
+    client: (
+        rustls::pki_types::CertificateDer<'static>,
+        rustls::pki_types::PrivateKeyDer<'static>,
+    ),
+    client_not_after: i64,
+}
+
+fn pki(client_lifetime: Duration) -> Pki {
+    let ca_key = rcgen::KeyPair::generate().expect("key");
+    let mut ca_params = rcgen::CertificateParams::new(Vec::<String>::new()).expect("params");
+    ca_params.is_ca = rcgen::IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
+    let ca = ca_params.self_signed(&ca_key).expect("ca");
+    let issuer = rcgen::Issuer::new(ca_params, ca_key);
+    let issue = |name: &str, not_after: Option<i64>| {
+        let key = rcgen::KeyPair::generate().expect("key");
+        let mut params = rcgen::CertificateParams::new(vec![name.to_string()]).expect("params");
+        if let Some(not_after) = not_after {
+            params.not_after = rcgen::date_time_ymd(1970, 1, 1)
+                + Duration::from_secs(u64::try_from(not_after).expect("after 1970"));
+        }
+        let cert = params.signed_by(&key, &issuer).expect("cert");
+        (
+            cert.der().clone(),
+            rustls::pki_types::PrivatePkcs8KeyDer::from(key.serialize_der()).into(),
+        )
+    };
+    let now = i64::try_from(felix_common::clock::unix_now().as_secs()).expect("now");
+    let client_not_after = now + i64::try_from(client_lifetime.as_secs()).expect("secs");
+    Pki {
+        ca: ca.der().clone(),
+        server: issue("localhost", None),
+        client: issue("client", Some(client_not_after)),
+        client_not_after,
+    }
+}
+
+/// An `ApiVersions` v0 request, framed: answered on any authenticated
+/// connection.
+fn api_versions(correlation_id: i32) -> Vec<u8> {
+    let mut body = Vec::new();
+    body.extend_from_slice(&18i16.to_be_bytes());
+    body.extend_from_slice(&0i16.to_be_bytes());
+    body.extend_from_slice(&correlation_id.to_be_bytes());
+    body.extend_from_slice(&(-1i16).to_be_bytes());
+    let mut frame = (body.len() as i32).to_be_bytes().to_vec();
+    frame.extend_from_slice(&body);
+    frame
+}
+
+/// Whether `stream` answers an `ApiVersions` request within two seconds.
+async fn answers<S>(stream: &mut S, correlation_id: i32) -> bool
+where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+{
+    use tokio::io::AsyncWriteExt;
+    if stream
+        .write_all(&api_versions(correlation_id))
+        .await
+        .is_err()
+    {
+        return false;
+    }
+    let read = async {
+        let mut size = [0u8; 4];
+        stream.read_exact(&mut size).await?;
+        let mut body = vec![0u8; usize::try_from(i32::from_be_bytes(size)).unwrap_or(0)];
+        stream.read_exact(&mut body).await
+    };
+    matches!(
+        tokio::time::timeout(Duration::from_secs(2), read).await,
+        Ok(Ok(_))
+    )
+}
+
+/// On the anonymous dev switch, a connection whose client presented a
+/// certificate closes at its `notAfter`, as an authenticated one does, and
+/// is not served after it. One without a certificate stays open.
+#[tokio::test]
+async fn an_anonymous_connection_closes_when_its_client_certificate_expires() {
+    // Long enough for both handshakes and a first request under CI load.
+    let pki = pki(Duration::from_secs(4));
+    let mut roots = rustls::RootCertStore::empty();
+    roots.add(pki.ca.clone()).expect("root");
+    let roots = Arc::new(roots);
+    let provider = crate::serving::tls::provider();
+
+    let verifier = rustls::server::WebPkiClientVerifier::builder_with_provider(
+        Arc::clone(&roots),
+        Arc::clone(&provider),
+    )
+    .allow_unauthenticated()
+    .build()
+    .expect("verifier");
+    let server = rustls::ServerConfig::builder_with_provider(Arc::clone(&provider))
+        .with_protocol_versions(rustls::ALL_VERSIONS)
+        .expect("versions")
+        .with_client_cert_verifier(verifier)
+        .with_single_cert(vec![pki.server.0.clone()], pki.server.1.clone_key())
+        .expect("server config");
+    let auth = Arc::new(
+        BrokerAuth::new("http://127.0.0.1:1".to_string())
+            .with_client_roots(Some(Arc::clone(&roots))),
+    );
+    let cluster = Arc::new(
+        BrokerCluster::new(
+            auth,
+            Arc::new(crate::shards::routing::StreamEngine::default()),
+            None,
+            STANDALONE_NODE_ID,
+            "127.0.0.1:9092",
+        )
+        .expect("cluster"),
+    );
+    let mut config = listener_config(16);
+    config.tls = true;
+    config.anonymous_tenant = Some("t1".to_string());
+    let broker = Arc::new(Broker::new(EphemeralCache::new().into()));
+    let listener = KafkaListener::bind(
+        &config,
+        Some(Arc::new(server)),
+        broker,
+        Arc::clone(&cluster) as Arc<dyn Cluster>,
+        "felix-test".to_string(),
+    )
+    .await
+    .expect("bind");
+    let addr = listener.local_addr().expect("addr");
+    let shutdown = CancellationToken::new();
+    let serving = tokio::spawn(listener.serve(shutdown.clone(), TaskTracker::new()));
+
+    let client_config = |with_cert: bool| {
+        let builder = rustls::ClientConfig::builder_with_provider(Arc::clone(&provider))
+            .with_protocol_versions(rustls::ALL_VERSIONS)
+            .expect("versions")
+            .with_root_certificates(Arc::clone(&roots));
+        Arc::new(if with_cert {
+            builder
+                .with_client_auth_cert(vec![pki.client.0.clone()], pki.client.1.clone_key())
+                .expect("client cert")
+        } else {
+            builder.with_no_client_auth()
+        })
+    };
+    let connect = |with_cert: bool| {
+        let connector = tokio_rustls::TlsConnector::from(client_config(with_cert));
+        async move {
+            let socket = TcpStream::connect(addr).await.expect("connect");
+            connector
+                .connect("localhost".try_into().expect("name"), socket)
+                .await
+                .expect("handshake")
+        }
+    };
+    let mut with_cert = connect(true).await;
+    let mut bare = connect(false).await;
+    assert!(answers(&mut with_cert, 1).await, "served before expiry");
+    assert!(answers(&mut bare, 1).await, "served without a certificate");
+
+    // The principal the switch hands out refuses a request past `notAfter`
+    // by itself, before its close has fired.
+    let principal = cluster
+        .anonymous("t1", &[pki.client.0.to_vec()])
+        .expect("principal");
+    assert!(!principal.is_revoked());
+
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(15);
+    let mut byte = [0u8; 1];
+    let closed = tokio::time::timeout_at(deadline, with_cert.read(&mut byte)).await;
+    assert!(
+        matches!(closed, Ok(Ok(0)) | Ok(Err(_))),
+        "a connection with a client certificate outlived its notAfter: {closed:?}"
+    );
+    let now = i64::try_from(felix_common::clock::unix_now().as_secs()).expect("now");
+    assert!(
+        now >= pki.client_not_after,
+        "closed before the certificate ended"
+    );
+    assert!(principal.is_revoked(), "a request after notAfter is served");
+    assert!(!answers(&mut with_cert, 2).await, "served after expiry");
+    assert!(
+        answers(&mut bare, 2).await,
+        "a connection without a certificate closed"
+    );
+
+    shutdown.cancel();
+    let _ = tokio::time::timeout(Duration::from_secs(5), serving).await;
+}

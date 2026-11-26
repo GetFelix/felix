@@ -15,6 +15,7 @@ mod head_trim;
 mod identity;
 mod keyed_producer;
 mod not_leader_retry;
+mod not_ready_rotation;
 mod offsets;
 mod policy_bounds;
 mod reconnect;

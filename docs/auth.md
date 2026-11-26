@@ -456,8 +456,12 @@ The stream ends as a revoked one does: the broker sends code `revoked` as the
 last frame of a subscription, cache watch or control stream, closes a publish
 stream, disconnects an MQTT client with `Not authorized`, and refuses the next
 Kafka request. A Kafka connection closes then too, idle or in a long-poll
-fetch. A Kafka connection on the anonymous-tenant dev switch has no
-credential, so nothing ends it, even with a client certificate. The broker also closes a QUIC client connection at its
+fetch. A Kafka connection on the anonymous-tenant dev switch has no token,
+but if its client presented a certificate it still closes at that
+certificate's `notAfter`, by the same rule, and the broker refuses any
+request it sends after that. One with no certificate has nothing to end it
+and stays open. An MQTT connection on its anonymous dev switch is not yet
+bounded by its certificate. The broker also closes a QUIC client connection at its
 certificate's `notAfter`, with application close code `2` and reason
 `credential expired`, and refuses any stream opened on it after that.
 

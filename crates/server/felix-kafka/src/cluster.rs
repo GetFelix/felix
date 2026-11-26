@@ -36,6 +36,13 @@ pub trait Cluster: Send + Sync + 'static {
         self.authenticate(tenant_id, token).await
     }
 
+    /// The principal of a connection on the anonymous dev switch, acting as
+    /// `tenant_id`. A connection whose TLS client presented `peer_certs` still
+    /// ends when that certificate does, so the broker bounds the principal by
+    /// the chain as it bounds a token, and refuses a chain that has already
+    /// ended or that it cannot read.
+    fn anonymous(&self, tenant_id: &str, peer_certs: &[Vec<u8>]) -> Result<Principal, String>;
+
     /// Every broker a Kafka client may be sent to, this one included.
     fn brokers(&self) -> Vec<Endpoint>;
 

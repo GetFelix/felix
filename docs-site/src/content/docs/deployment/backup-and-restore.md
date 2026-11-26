@@ -32,6 +32,11 @@ brokers keep running, are cut back to the point on restore.
   replaced. A shard its leader cannot vouch for yet (just taken, lease lapsed)
   is asked about again a few times, and then the command fails naming it. A
   partial point is not a point.
+- **A Raft shard is read on its elected leader.** Every broker is asked each
+  round, and a shard is read as a Raft one when any broker lists a member
+  of it. That is decided again every round, so a shard whose members are
+  not listed yet is asked about again rather than read on the broker
+  placement names, which need not lead it.
 
 "Acknowledged" means what the ack promised. A durable `Leader` publish is acknowledged
 after the write unless the broker runs with `FELIX_ACK_ON_COMMIT=0`, so with
