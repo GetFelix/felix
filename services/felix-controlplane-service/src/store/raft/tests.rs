@@ -5470,6 +5470,29 @@ async fn the_leader_takes_an_operator_import() {
     );
 }
 
+/// **An operator's restore leaves a cluster that is not new** (#1774): the
+/// import raises the placement incarnation, so the first broker to register
+/// after it finalizes nothing, whatever the backup held.
+#[tokio::test]
+async fn an_operator_import_makes_the_store_not_new() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let store = unrecorded_store(dir.path()).await;
+    assert!(
+        crate::cluster::fleet::never_placed(&*store)
+            .await
+            .expect("read")
+    );
+    ControlPlaneStore::import_state(&*store, one_tenant_export().await, false)
+        .await
+        .expect("import");
+    assert!(
+        !crate::cluster::fleet::never_placed(&*store)
+            .await
+            .expect("read"),
+        "a restored store reads as new"
+    );
+}
+
 /// A member that does not lead writes nothing and says so. It must not
 /// forward: the peer route that would carry it refuses imports, so a member
 /// never relays a whole-store replacement for the operator.

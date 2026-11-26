@@ -535,13 +535,12 @@ async fn streams_created_before_the_first_broker_are_finalized_before_it_opens_a
 async fn a_restored_store_is_not_new() {
     let store = memory();
     seed_job(store.as_ref()).await;
-    let mut backup = serde_json::to_value(store.export_state().await).expect("export");
-    backup["placement_incarnation"] = 1.into();
-    store
-        .import_state(serde_json::from_value(backup).expect("state"))
-        .await
-        .expect("import");
+    let backup = store.export_state().await;
     let shared = Arc::clone(&store) as Shared;
+    shared
+        .import_state(backup, true)
+        .await
+        .expect("an operator's restore");
 
     let enabled = register(&shared, current("broker-a", 7001), || async {}).await;
     assert!(enabled.is_empty(), "{enabled:?}");

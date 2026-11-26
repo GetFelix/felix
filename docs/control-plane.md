@@ -439,7 +439,19 @@ before its brokers, as in one seeded after, they open with
 A cluster that was restored, or that placed a shard on a broker since gone,
 is finalized by the operator as an upgraded one is
 (`a_restored_store_is_not_new`,
-`a_store_that_placed_a_shard_on_a_broker_since_gone_is_not_new`).
+`a_store_that_placed_a_shard_on_a_broker_since_gone_is_not_new`). The
+memory store and the Raft store both raise the placement incarnation on an
+operator's import, so a restore is never new
+(`an_operator_import_makes_the_store_not_new`).
+
+The memory store keeps nothing across a restart, so a restarted memory
+control plane is a new cluster to every broker, whether or not a seed job
+runs again. Its first registration finalizes the new-cluster features, and a
+returning broker that held data from before is then refused by its
+data-directory check: its data is stranded, not misread. A broker runs that
+check after it registers, so a refused broker can itself be the
+registration that finalized. That is harmless, since it reports every
+feature this build implements.
 
 **Atomicity.** Registration is the only way a node starts serving, so a
 finalize only has to be serialized with registrations. The memory store holds

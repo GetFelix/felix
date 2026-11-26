@@ -487,7 +487,7 @@ is closed or kept.
 | #1998 fsync error must poison the log | Own storage fix, before #2233. A group stops on a storage error, so the error must be sticky |
 | #1931 crash between purge and snapshot install | Track 2 (#2221, pull request #2255) |
 | #1820 balancer moves caches back and forth | Placement. Re-tested after #2235, when leader balance is a transfer |
-| #1774 creating streams before a broker registers skips the feature finalize | Re-tested under Raft, which needs no replication feature finalized |
+| #1774 creating streams before a broker registers skips the feature finalize | Fixed for both engines: Raft needs it too, since a member opens strict (fsync on every commit) until `raft_written_commit` is finalized. A cluster is new until a shard is placed |
 | #1615 a counted copy dropped as staged | Resolved in PR 6. Staged and counted become learner and voter, read from the membership |
 | #1006 lone unbatched publisher slower on a per-log thread | Measured by the single-node cell of #2243 |
 | #2164 publishes time out forever after a whole-cluster wipe | Resolved by #2250: no voter is left, so the shard is re-formed or reported, not retried |

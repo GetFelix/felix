@@ -266,6 +266,9 @@ impl Campaign {
             metadata_group: nemesis.needs_metadata_group(),
             power_loss: nemesis.needs_power_loss(),
             broker_env,
+            // On the hybrid, lease mode is a fleet with only its own features
+            // finalized, which a new cluster would not be.
+            upgraded_fleet: self.mode == Mode::Lease && !crate::suite_runs_on_raft(),
             ..ClusterConfig::default()
         }
     }

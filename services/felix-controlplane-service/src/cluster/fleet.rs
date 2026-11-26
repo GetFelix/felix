@@ -306,6 +306,11 @@ pub(crate) const NEW_CLUSTER: [felix_common::fleet::FleetFeature; 19] = [
 pub(crate) async fn never_placed(
     store: &(dyn crate::store::ControlPlaneStore + Send + Sync),
 ) -> Result<bool, StoreError> {
+    // On Raft these read this member's applied state, which may lag the
+    // leader. That is safe because the finalize checks every node record
+    // under the registration lock, and a broker missing a finalized feature
+    // is refused. Keep those checks; a linearizable read is not needed here.
+    //
     // A restore raises the placement incarnation, and a restored store's
     // brokers may hold data its backup does not name.
     if store.placement_incarnation().await? != 0 {
