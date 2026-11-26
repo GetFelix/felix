@@ -154,6 +154,16 @@ pub fn fail_flush(root: &Path, skip: u64) -> io::Result<()> {
     Ok(())
 }
 
+/// Fail one unlink of a log segment under `root` with an I/O error, after
+/// `skip` more have succeeded. The file stays.
+///
+/// # Errors
+/// `NotFound` when `root` was not registered.
+pub fn fail_segment_unlink(root: &Path, skip: u64) -> io::Result<()> {
+    tree(root)?.fail_segment_unlink(skip);
+    Ok(())
+}
+
 /// Disarm [`fail_flush`], and say whether its flush had failed.
 ///
 /// # Errors

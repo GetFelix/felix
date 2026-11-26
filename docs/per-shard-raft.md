@@ -2745,6 +2745,17 @@ installs the leader's purge snapshot when it is back and keeps the floor it
 carries; the install starts its log at the purge point, so it holds no more
 than the others.
 
+A leader's openraft runs the purge on its Raft core, and holds it back while
+a replication stream still reads the range, even one to a member that is
+going away; it runs it when that stream answers or fails. A purge that
+waited on the disk there would stop the leader's heartbeats and writes
+right after a follower went away, long enough on a slow disk to lose the
+lease. So the purge only writes its purged id and returns, and the segments
+are unlinked behind it (`docs/durable-storage.md`, "Deleting below the
+floor"). Every call openraft makes into the log that outlasts a heartbeat is
+counted in `felix_storage_raft_log_slow_calls_total`, labelled by `call`,
+and logged as a warning at most every ten seconds.
+
 > `services/felix-broker-service/src/shards/raft/tests/retention.rs`,
 > `the_leader_trims_what_the_streams_retention_drops`,
 > `retention_trims_a_shard_when_a_publish_lands_mid_pass`,
@@ -4640,6 +4651,11 @@ record's floor once the record is below its commit offset, and rebuilds it
 at open from the trim records and the `head` file, as the hybrid does
 (`docs/durable-storage.md`, "Conditional head trim"). So once a member's
 commit passes the trim it hides the same records as every other member.
+A floor also waits for the member's own sync of the record, and a leader can
+answer a trim that its followers synced before it did. So the floor check of
+`propose_trim_at` and of retention's trim first waits for every trim the
+leader's log holds to apply, as a read does; a lower trim checked in that
+gap would otherwise be written below a floor the client was already given.
 
 On the hybrid only the leader serves readers, so once a trim is answered
 no reader on any broker is served below its floor. A Raft follower serves

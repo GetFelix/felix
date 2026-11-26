@@ -90,6 +90,12 @@ impl Opens {
     pub(super) fn all(&self) -> Vec<Open> {
         self.opens.lock().clone()
     }
+
+    /// How many opens have been reported so far. The list only grows, so
+    /// this marks a point in it.
+    pub(super) fn len(&self) -> usize {
+        self.opens.lock().len()
+    }
 }
 
 /// The broker side of one member: the engine's only calls into it on Raft
@@ -145,6 +151,10 @@ pub(super) struct Seen<'a> {
     pub(super) committed: &'a BTreeMap<u32, BTreeSet<u64>>,
     /// Per shard: where that log was read and who else holds what.
     pub(super) read: &'a BTreeMap<u32, Read>,
+    /// Per shard: how many of the run's opens, in the order reported, came
+    /// before its final log was read. Only those are judged against that
+    /// log, since a later open's entry cannot be in it. Absent, every open is.
+    pub(super) before_read: &'a BTreeMap<u32, usize>,
 }
 
 /// Where a shard's final log was read, kept so a missing term can be told
@@ -206,13 +216,13 @@ impl Read {
 ///
 /// - Two brokers opened one term of a shard. Raft elects one per term.
 /// - The watch saw another broker lead that term.
-/// - The shard's final log holds no entry of that term. The blank is the
-///   first entry a leader writes, so if it was committed, the log keeps an
-///   entry of the term for good.
+/// - The shard's final log holds no entry of that term, for an open before
+///   that log was read. The blank is the first entry a leader writes, so if
+///   it was committed, the log keeps an entry of the term for good.
 pub(super) fn judge(opens: &[Open], seen: &Seen<'_>) -> Vec<String> {
     let mut findings = Vec::new();
     let mut opener: BTreeMap<(u32, u64), usize> = BTreeMap::new();
-    for open in opens {
+    for (index, open) in opens.iter().enumerate() {
         let Open {
             member,
             shard,
@@ -237,7 +247,12 @@ pub(super) fn judge(opens: &[Open], seen: &Seen<'_>) -> Vec<String> {
                 name(leader)
             ));
         }
-        if let Some(terms) = seen.committed.get(&shard)
+        let before_read = seen
+            .before_read
+            .get(&shard)
+            .is_none_or(|&count| index < count);
+        if before_read
+            && let Some(terms) = seen.committed.get(&shard)
             && !terms.contains(&term)
         {
             let read = seen.read.get(&shard).map(|read| read.missing(term));

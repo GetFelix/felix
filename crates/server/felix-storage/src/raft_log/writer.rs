@@ -38,6 +38,8 @@ where
     type LogReader = LogReader<C, K>;
 
     async fn get_log_state(&mut self) -> io::Result<LogState<C>> {
+        let shared = &self.shared;
+        let _timed = shared.slow.time(shared.log.label(), "get_log_state");
         self.log_state().await
     }
 
@@ -50,6 +52,7 @@ where
     /// after the vote: a crash between the two leaves a vote above its mark,
     /// which passes and was never answered.
     async fn save_vote(&mut self, vote: &VoteOf<C>) -> io::Result<()> {
+        let _timed = self.shared.slow.time(self.shared.log.label(), "save_vote");
         let leader_id = vote.leader_id();
         let generation = generation_of(leader_id.term())?;
         let leader = self.shared.codec.encode_node_id(leader_id.node_id());
@@ -89,6 +92,10 @@ where
     /// [`crate::disk_log::COMMIT_PERSIST_INTERVAL`]: after a crash the id
     /// read back may be older, never newer.
     async fn save_committed(&mut self, committed: Option<LogIdOf<C>>) -> io::Result<()> {
+        let _timed = self
+            .shared
+            .slow
+            .time(self.shared.log.label(), "save_committed");
         match committed {
             None => Ok(()),
             Some(id) => self
@@ -142,6 +149,7 @@ where
     {
         crate::hops::mark(crate::hops::Stage::AppendBegin);
         let shared = &self.shared;
+        let _timed = shared.slow.time(shared.log.label(), "append");
         // A batched log mark that stopped moving would let the log run ahead
         // of it without bound: the append waits while the mark is too far
         // behind, and fails once a mark write failed. Exact marks fail each
@@ -401,11 +409,7 @@ where
     /// caller is not describing this log.
     async fn truncate_after(&mut self, last_log_id: Option<LogIdOf<C>>) -> io::Result<()> {
         let log = &self.shared.log;
-        // A flush still waiting on entries this cuts would never reach them
-        // and would report the append failed. Each one finishes first.
-        self.shared.drain_flushes().await?;
-        // Before the cut, so no read finds here an entry the log has lost.
-        self.shared.tail.clear();
+        let _timed = self.shared.slow.time(log.label(), "truncate_after");
         let first = self.shared.first_index();
         let kept = last_log_id.as_ref().map(|id| LogPoint {
             term: **id.committed_leader_id(),
@@ -451,6 +455,13 @@ where
         if keep >= log.tail_now() {
             return Ok(());
         }
+        // A flush still waiting on entries this cuts would never reach them
+        // and would report the append failed. Each one finishes first.
+        // openraft sends one write at a time, so no append lands between the
+        // check above and the cut.
+        self.shared.drain_flushes().await?;
+        // Before the cut, so no read finds here an entry the log has lost.
+        self.shared.tail.clear();
         // The mark comes down before the cut, so a crash after it leaves no
         // mark above the log. The batch stays off the shard until the
         // positions have come down too.
@@ -485,10 +496,16 @@ where
     async fn purge(&mut self, log_id: LogIdOf<C>) -> io::Result<()> {
         let shared = &self.shared;
         let log = &shared.log;
-        // A purge past the end drops entries a flush may still be waiting
-        // on, as a truncation does.
-        shared.drain_flushes().await?;
+        let _timed = shared.slow.time(log.label(), "purge");
         let index = log_id.index();
+        // A purge past the end drops entries a flush may still be waiting
+        // on, as a truncation does, and so may a hidden purge's admit. One
+        // inside the log unlinks only sealed segments below its id, and a
+        // flush still due on one of those syncs its open handle, so it does
+        // not wait behind the log's fsync (#3263).
+        if index.saturating_add(1) >= log.tail_now() || shared.hides().is_some() {
+            shared.drain_flushes().await?;
+        }
         let term = **log_id.committed_leader_id();
         let purged = Purged {
             index,
@@ -524,7 +541,7 @@ where
             )));
         }
         shared.check_held(purged).await?;
-        shared.remove_through(purged).await
+        shared.remove_through(purged, true).await
     }
 }
 

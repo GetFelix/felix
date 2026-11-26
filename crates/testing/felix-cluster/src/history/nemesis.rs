@@ -551,7 +551,8 @@ impl Fault {
                     .node(node)
                     .with_context(|| format!("unknown node {node}"))?
                     .storage_dir();
-                std::fs::remove_dir_all(&storage)
+                tokio::fs::remove_dir_all(&storage)
+                    .await
                     .with_context(|| format!("wipe {}", storage.display()))
             }
             _ => {
