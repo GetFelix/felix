@@ -213,7 +213,7 @@ newcomer as a top-up instead of undoing it; that case is a unit test only.
 | `SetChangesJoint` | Once a set change opened, a majority of the new set and of the set before it know the new set. A history invariant over consecutive sets, checked under `SetCheck`. |
 | `CountersOnSetMajority` | Under `Counters`, every acknowledged counter update is on a majority of the set the control plane records, as `AckedOnMajority` for the cache log: the old set while a change is pending, the new set after the flip. |
 | `QuorumReportNamesASuccessor` | Under `Quorum`, a report from a leader still serving names a follower that may take over, whenever a majority is still replicating. A liveness property in invariant form, checked in `FelixShard.cfg`. |
-| `ElectionSettles` | In `FelixRaftElect.tla`: once a majority of the voters stays up and connected, a leader among them is elected that none of them has outvoted, and it stays. A temporal property, checked under `LiveSpec` in `FelixRaftElectLive.cfg` and `FelixRaftElectLiveFaults.cfg`. The hybrid's version, with the control plane down, was checked in `FelixShardElectLive.cfg`, deleted with the hybrid. See [Raft election liveness](#raft-election-liveness). |
+| `ElectionSettles` | In `FelixRaftElect.tla`: once a majority of the voters stays up and connected, a leader among them is elected that none of them has outvoted, and it stays. A temporal property, checked under `LiveSpec` in `FelixRaftElectLive.cfg`, `FelixRaftElectLiveFaults.cfg` and their `Slack` variants. The hybrid's version, with the control plane down, was checked in `FelixShardElectLive.cfg`, deleted with the hybrid. See [Raft election liveness](#raft-election-liveness). |
 | `EventuallyServes` (Raft) | In `FelixRaftElect.tla`: the same leader's blank entry is committed, so the shard is open, and every member of that majority follows it. Checked with `ElectionSettles`. |
 | `NoStandAgainstHeardLeader` | Nobody starts fencing against an open leader that a majority of its set still hears. An action property, checked with the liveness configurations. |
 | `OwnBallotCaughtUp` | The control plane's leader does not stay open at its generation while its own copy holds its own ballot above it. While it does, it never counts its own copy, so with one follower down nothing it writes is acknowledged (#1933). A temporal property, checked under `RenameSpec` in the `FelixShardElectRouteLag*.cfg` configurations. |
@@ -326,9 +326,11 @@ registered, run by a workflow, nor listed there.
 | `FelixRaftReachSnapshotReplace.cfg` | witness: a broker replaces a snapshot it stored | violate `NeverReplacesSnapshot` |
 | `FelixRaftReachDeliverFailover.cfg` | witness: two deliveries in a row from leaders of different terms | violate `NeverDeliversAcrossFailover` |
 | `FelixRaftElectLive.cfg` | `FelixRaftElect.tla`: three voters, one crash or cut, one timeout while a round is open, five terms, under weak fairness (`LiveSpec`, no symmetry) | pass `ElectionSettles` and `EventuallyServes` (33k distinct states, seconds) |
-| `FelixRaftElectLiveFaults.cfg` | the same with two faults and eight terms. At six it fails on the bound: a pre-vote that passed before a new leader's heartbeat arrived stands anyway, deposes that leader, and the last term goes to a candidate with the shorter log | pass the same |
+| `FelixRaftElectLiveFaults.cfg` | the same with two faults and eight terms. At six it fails on the bound: a pre-vote that passed before a new leader's heartbeat arrived stands anyway, deposes that leader, and the last term goes to a candidate with the shorter log | pass the same and `TermsLeft` (587k distinct states, about a minute) |
+| `FelixRaftElectLiveSlack.cfg` | `FelixRaftElectLive.cfg` with six terms | pass the same and `TermsLeft`, no member reaches the sixth term (the same 33k states) |
+| `FelixRaftElectLiveFaultsSlack.cfg` | `FelixRaftElectLiveFaults.cfg` with nine terms | pass the same and `TermsLeft` (the same 587k states) |
 | `FelixRaftElectLiveSplits.cfg` | no faults, three terms, timeouts not staggered (`Staggered = FALSE`) | violate `ElectionSettles` (7k distinct states): all three pass their pre-vote before any stands, stand in one term, and do it again until no term is left |
-| `FelixRaftElectLiveNoOpen.cfg` | no faults, two terms, the commit of the blank entry not owed (`NoOpenSpec`) | violate `EventuallyServes`: a leader is elected and never opens |
+| `FelixRaftElectLiveNoOpen.cfg` | no faults, two terms, the commit of the blank entry not owed (`NoOpenSpec`) | violate `EventuallyServes` (535 distinct states): a leader is elected and never opens |
 | `FelixRaftMembership.cfg` | `FelixRaftMembership.tla`: three voters and a newcomer, two terms, one write, two membership calls (a whole move), every rule on | pass `OneLeaderPerTerm`, `LogMatching`, `LeaderCompleteness`, `StateMachineSafety`, `AckedSurvive`, `NeverStops` (4.5M distinct states) |
 | `FelixRaftMembershipFailover.cfg` | the newcomer already a learner, two terms, no write, three calls: a joint change and a new leader's repeat of it | pass the same (7.1M distinct states) |
 | `FelixRaftMembershipTerms.cfg` | the newcomer already a learner, three terms, one write, one joint change | pass the same (91.4M distinct states, 109 min in CI) |
@@ -2562,12 +2564,14 @@ passed before a new leader's heartbeat reached the member and stands anyway,
 deposing that leader). One fault makes five, two make eight. Two faults and six
 terms fail on exactly that stale stand.
 
-The count is not taken on trust. `FelixRaftElectLiveSlack.cfg` and
-`FelixRaftElectLiveFaultsSlack.cfg` give one term more (six and nine) and check
-`TermsLeft`, that no member ever reaches the last term. It holds, so the bound
-never stops a step in those runs, and their verdict is the verdict with terms
-unbounded. `FelixRaftElectLiveFaultsTight.cfg` shows that two faults do reach
-the eighth term, so eight is the real cost, not a guess.
+The count is an upper bound, and it is not taken on trust.
+`FelixRaftElectLiveSlack.cfg` and `FelixRaftElectLiveFaultsSlack.cfg` give one
+term more (six and nine) and check `TermsLeft`, that no member ever reaches the
+last term. It holds, so the bound never stops a step in those runs, and their
+verdict is the verdict with terms unbounded. Each finds exactly the states of
+the configuration it extends (32,616 for one fault, 587,152 for two), and
+`FelixRaftElectLiveFaults.cfg` checks `TermsLeft` itself: with two faults no
+member reaches the eighth term, so eight has room to spare.
 
 What is proven, then: with three voters, at most two crashes or cuts, and at
 most one colliding round, once a majority stays up and connected a leader is

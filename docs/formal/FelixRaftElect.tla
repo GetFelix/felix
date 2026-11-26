@@ -49,10 +49,10 @@
 (* above what their faults and splits can spend: one term for the first    *)
 (* election, one for the split, and at most three per fault (the election  *)
 (* it forces, a crashed leader's restore, one stale pre-vote standing).    *)
-(* That reasoning is not trusted on its own. The `Slack` configurations    *)
-(* add one term and check TermsLeft, that no member ever reaches MaxTerm,  *)
-(* so no step is ever held back by the bound and their verdict holds with  *)
-(* terms unbounded.                                                        *)
+(* That is an upper bound, and it is not trusted on its own: the `Slack`   *)
+(* configurations add one term and check TermsLeft, that no member ever    *)
+(* reaches MaxTerm, so no step is held back by the bound and the verdict   *)
+(* holds with terms unbounded.                                             *)
 (***************************************************************************)
 EXTENDS Naturals, Sequences, FiniteSets
 

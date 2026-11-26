@@ -252,7 +252,6 @@ expectations=(
   "FelixRaftElectLiveFaults pass"
   "FelixRaftElectLiveSlack pass"
   "FelixRaftElectLiveFaultsSlack pass"
-  "FelixRaftElectLiveFaultsTight violates TermsLeft"
   "FelixRaftElectLiveSplits violates liveness"
   "FelixRaftElectLiveNoOpen violates liveness"
   "FelixRaftMembership pass"
