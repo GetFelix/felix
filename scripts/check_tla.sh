@@ -1427,6 +1427,8 @@ if [ "$mode" = simulate ] && command -v java >/dev/null 2>&1 && ! command -v tim
   exit 1
 fi
 fetch_tools
+# A runner can keep its checkout between jobs, so start with no old traces.
+rm -rf target/tla/trace
 failed=0
 position=-1
 for entry in "${selected[@]}"; do
