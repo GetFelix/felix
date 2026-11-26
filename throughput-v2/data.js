@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795660408010,
+  "lastUpdate": 1795661219037,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -70304,6 +70304,58 @@ window.BENCHMARK_DATA = {
             "range": "7072.45",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 803138.74\nmean: 802445.63\nstdev: 7072.45\ncv: 0.88%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "455d3d1a6ed6e3f6b01e6b4377b0683442861265",
+          "message": "fix(storage): a standalone restore through the tools never reuses an offset (#3048) (#3207)\n\n* wip(storage): a standalone restore through the tools re-forms on the time line (#3048)\n\nSpec-Unaffected: work in progress; the reason is in the final commit\n\n* fix(storage): a standalone restore through the tools never reuses an offset (#3048)\n\nA standalone broker had no way to tell a data directory put back from a\nbackup from the one its last run left, so its Raft groups handed out again\nthe offsets given out after the backup was taken: under OnCommit nothing\nrotated, and a relaxed re-form started only above the backup's reservation.\n\n`felix-broker rotate-storage-id` and `restore-point` now rotate through\n`run_state::rotate_for_restore`, which writes `restore-pending`, records the\nrestore in the `relaxed-crash-id` chain (marked ` restore`), rotates the id\nand removes the marker. A start refuses while the marker is there. A group of\none whose kept copy a restore rotated re-forms alone, with its first index no\nlower than the backup-point restore's time line at the broker's clock.\n\nSpec-Unaffected: the alone re-form's plan steps (FelixRaftReformAlone) are unchanged; the restore trigger and marker are outside the models, and the first index takes the Line rule FelixRaftRestoreRepeated checks, with the broker's clock as the planner's\n\n* test(broker): drop clones of a Copy fsync mode (#3048)\n\nSpec-Unaffected: test-only change\n\n* fix(storage): drop relaxed_crash_sources and state the time line's clock assumption (#3048)\n\nSpec-Unaffected: removes an unused accessor and adds docs; no modelled behaviour changes",
+          "timestamp": "2026-11-26T02:18:09Z",
+          "tree_id": "2240baa0f215886711b59ed06a976930efdbc02b",
+          "url": "https://github.com/GetFelix/felix/commit/455d3d1a6ed6e3f6b01e6b4377b0683442861265"
+        },
+        "date": 1795661218049,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 359532.35,
+            "range": "13387.43",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 359532.35\nmean: 358984.94\nstdev: 13387.43\ncv: 3.73%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 359532.35,
+            "range": "13387.43",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 359532.35\nmean: 358984.94\nstdev: 13387.43\ncv: 3.73%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 83587.85,
+            "range": "520.69",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 83587.85\nmean: 83669.33\nstdev: 520.69\ncv: 0.62%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 835878.46,
+            "range": "5206.90",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 835878.46\nmean: 836693.31\nstdev: 5206.90\ncv: 0.62%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
