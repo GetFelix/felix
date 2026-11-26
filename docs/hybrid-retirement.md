@@ -255,7 +255,7 @@ A Raft broker serves one on a path of its own, `shards::memory` (#3065):
 | Publish and fanout | `publish_in_memory` and the broker's fanout. Acknowledged on enqueue. `StreamEngine::await_commit` returns at once for a publish with no offsets, so neither branch reaches the hybrid | None |
 | Idempotent sequences | The stream's `ProducerTable`, in memory, empty on a new owner | None |
 | Reports | None. The control plane places an in-memory shard without reading a report | None |
-| Caches without logs | Not reachable on a Raft broker: durable storage always opens a `LogCache` | n/a |
+| Brokers without a disk | A broker with a node id and no durable storage starts on the Raft engine, runs no group and registers `felix.dev/node-storage=none` (#3067). The control plane places only in-memory stream shards on it, at metadata level 54 and above. It serves those through `shards::memory`, routes a cache's shard to its group like any broker outside it, and never registers a durable stream | None |
 | Control plane | Its own step, `cluster/placement/in_memory.rs` (#3066): one owner from `choose` and no followers, kept while it is live, placed again in the same pass when it is down, gone, draining, internal or outside the stream's region. An operator move is one write. No replica report is read. Every owner change is a new assignment at the next generation | No |
 
 A hybrid broker (`FELIX_SHARD_ENGINE=hybrid`) still serves in-memory shards
@@ -278,11 +278,14 @@ The design, in three issues that block the deletion:
    reaches it. They keep the assigned leader and the bump that #2262 removes
    for durable shards, and #2262 can delete `promote`, `readmit`, catch-up
    and replica reports without touching them.
-3. **Brokers without a disk (#3067).** A broker with a node id and no
-   `FELIX_DURABLE_STORAGE_DIR` is refused at start today. It may start, run
-   no Raft groups, say so when it registers, and the control plane places
-   only in-memory streams and caches on it. That is where a log-less cache
-   lives in a cluster.
+3. **Brokers without a disk (#3067, done).** A broker with a node id and no
+   `FELIX_DURABLE_STORAGE_DIR` starts on the Raft engine, runs no group and
+   registers the label `felix.dev/node-storage=none`. Placement keeps every
+   durable stream shard and every cache shard off it, and moves one already
+   there. It refuses a control plane that predates the label, and a control
+   plane below metadata level 54 refuses it. In a Raft cluster every cache is
+   a group on brokers with storage, so there is no log-less cache in a cluster:
+   a broker without a disk routes cache requests to the group.
 
 The behaviour is pinned by `crates/testing/felix-cluster/tests/routing/in_memory.rs`:
 served through any broker with no Raft group, owner loss gives a new
@@ -301,7 +304,7 @@ flowchart LR
 
 | Phase | What main has | What CI runs |
 | --- | --- | --- |
-| 1. Raft by default (now) | Both engines. A control plane with no `FELIX_SHARD_ENGINE` forms the cluster for Raft. A broker with no `FELIX_SHARD_ENGINE` and a node id (`FELIX_NODE_ID`) runs Raft, and refuses to start, naming what is missing, without the internal listener, durable storage or the `raft` build feature. A standalone broker, with no node id, runs each durable stream and cache shard as a Raft group of one, with no peer, internal listener or control-plane placement (decided in #2986); it refuses `FELIX_SHARD_ENGINE=raft` without durable storage, and without durable storage it runs in memory as before. Every registering broker is compared with the engine the control plane recorded. `FELIX_SHARD_ENGINE=hybrid` still works and logs a deprecation warning. `compose.yaml` runs its broker this way on images built from main, and `felix-cluster up` starts its brokers and control plane on Raft (#2985) | Raft cluster jobs gate. The hybrid cluster jobs run beside them and only report |
+| 1. Raft by default (now) | Both engines. A control plane with no `FELIX_SHARD_ENGINE` forms the cluster for Raft. A broker with no `FELIX_SHARD_ENGINE` and a node id (`FELIX_NODE_ID`) runs Raft, and refuses to start, naming what is missing, without the internal listener or the `raft` build feature; without durable storage it runs no group and holds only in-memory stream shards (#3067). A standalone broker, with no node id, runs each durable stream and cache shard as a Raft group of one, with no peer, internal listener or control-plane placement (decided in #2986); it refuses `FELIX_SHARD_ENGINE=raft` without durable storage, and without durable storage it runs in memory as before. Every registering broker is compared with the engine the control plane recorded. `FELIX_SHARD_ENGINE=hybrid` still works and logs a deprecation warning. `compose.yaml` runs its broker this way on images built from main, and `felix-cluster up` starts its brokers and control plane on Raft (#2985) | Raft cluster jobs gate. The hybrid cluster jobs run beside them and only report |
 | 2. Hybrid deleted | Raft only, one pull request at a time (see "Pull request split"). A broker with a node id runs Raft as in phase 1. A standalone broker runs its durable shards as single-voter Raft groups, as in phase 1, so nothing about it changes when the hybrid goes | Raft only. Each pull request removes the hybrid tests for the code it removes |
 
 The order, decided with Raft as the default:

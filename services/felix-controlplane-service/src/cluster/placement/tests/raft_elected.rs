@@ -349,3 +349,86 @@ fn a_leaving_follower_is_swapped_unless_the_set_is_degraded() {
     assert_eq!(after.nodes().count(), 4, "the set stays");
     assert!(matches!(last, Decision::Waiting(_)), "{last:?}");
 }
+
+const NOW: u64 = 10_000_000_000;
+
+/// No copy caught up, as of the time it holds.
+struct At(u64);
+
+impl CaughtUp for At {
+    fn is_caught_up(&self, _key: &ShardKey, _node_id: &str) -> bool {
+        false
+    }
+
+    fn as_of_millis(&self) -> Option<u64> {
+        Some(self.0)
+    }
+}
+
+/// One pass over `existing` at `now`.
+fn pass_at(existing: &ShardAssignment, nodes: &[Node], now: u64) -> Decision {
+    let streams = vec![replicated_stream("orders", 1, 3)];
+    plan_with(
+        &streams,
+        &[],
+        nodes,
+        std::slice::from_ref(existing),
+        &At(now),
+        raft(),
+    )
+    .shards[0]
+        .decision
+        .clone()
+}
+
+/// **An operator's leader stands with a member down** until the group
+/// reports it leading, or for `RAFT_OPERATOR_LEADER_MILLIS` (#3234). The
+/// same name from placement itself is still renamed to the member the
+/// group elected (#3041).
+#[test]
+fn an_operator_leader_stands_with_a_member_down_until_it_lands_or_times_out() {
+    let nodes = down(live(&ABC), &["broker-a"]);
+    // The group runs b; c is named.
+    let placements = reported(formed("broker-c", &ABC), "broker-b", 5);
+    let by_operator = ShardAssignment {
+        move_reason: Some(crate::model::MoveReason::Operator),
+        move_started_at_millis: Some(NOW),
+        ..placements.clone()
+    };
+
+    match pass_at(&placements, &nodes, NOW) {
+        Decision::Move(MoveStep::RaftLeader { to, .. }, written) => {
+            assert_eq!(to, "broker-b");
+            assert_eq!(written.leader, "broker-b");
+        }
+        other => panic!("placement's own name was not renamed: {other:?}"),
+    }
+    assert_eq!(
+        pass_at(&by_operator, &nodes, NOW + 1_000),
+        Decision::Kept,
+        "the operator's name was renamed while its move runs"
+    );
+
+    // The group reports c leading: the move ends with c named.
+    let landed = reported(by_operator.clone(), "broker-c", 6);
+    match pass_at(&landed, &nodes, NOW + 1_000) {
+        Decision::Move(MoveStep::RaftLeaderLanded { to }, written) => {
+            assert_eq!(to, "broker-c");
+            assert_eq!(written.leader, "broker-c");
+            assert_eq!(written.move_reason, None);
+        }
+        other => panic!("the landed move did not end: {other:?}"),
+    }
+
+    // It never lands: past the limit the name goes back to b, unmarked.
+    let late = NOW + super::super::raft_leaders::RAFT_OPERATOR_LEADER_MILLIS + 1;
+    match pass_at(&by_operator, &nodes, late) {
+        Decision::Move(MoveStep::RaftLeaderTimedOut { from, to }, written) => {
+            assert_eq!((from.as_str(), to.as_str()), ("broker-c", "broker-b"));
+            assert_eq!(written.leader, "broker-b");
+            assert_eq!(written.move_reason, None);
+            assert_eq!(written.move_started_at_millis, None);
+        }
+        other => panic!("the stuck move was not given up: {other:?}"),
+    }
+}

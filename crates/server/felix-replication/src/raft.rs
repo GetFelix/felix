@@ -59,7 +59,7 @@ mod types;
 mod wire;
 mod written;
 
-pub use deliver::{IdempotentPublish, RaftReads};
+pub use deliver::{IdempotentPublish, RaftReads, RaftShard};
 #[cfg(any(test, feature = "testing"))]
 pub use draws::{TimerSeed, seed_timers};
 pub use engine::{

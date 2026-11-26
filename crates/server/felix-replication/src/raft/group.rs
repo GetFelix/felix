@@ -157,7 +157,7 @@ pub(crate) struct Group {
     lag_threshold: u64,
     /// The broker placement names as this group's leader. The member that
     /// leads hands it the leadership.
-    preferred: tokio::sync::watch::Sender<Option<String>>,
+    preferred: tokio::sync::watch::Sender<Option<placed::Preferred>>,
     placement: Placement,
     placed_budget: Arc<placed::Budget>,
     acked: Arc<AtomicU64>,
@@ -180,6 +180,10 @@ pub(crate) struct Group {
     leads_since: parking_lot::Mutex<Option<(u64, u64)>>,
     /// Set once a timer check finds the group's core gone.
     stopped: AtomicBool,
+    /// Set when the registry stops holding this member open, by a close or
+    /// the runtime's shutdown. A publish that looked the group up earlier
+    /// then refuses as if it had found no group.
+    released: AtomicBool,
     /// The shard's publish queue, in commit order. Its task starts with the
     /// first publish, so a group that takes none has none.
     proposals: OnceLock<mpsc::UnboundedSender<Proposal>>,
@@ -959,6 +963,7 @@ impl Group {
             waiting: AtomicBool::new(false),
             leads_since: parking_lot::Mutex::new(None),
             stopped: AtomicBool::new(false),
+            released: AtomicBool::new(false),
             proposals: OnceLock::new(),
             client_writes: Arc::default(),
             stop,
@@ -996,13 +1001,17 @@ impl Group {
         ));
     }
 
-    /// Placement names `broker` as this group's leader. Returns whether
-    /// that is new.
-    pub(crate) fn prefer(&self, broker: &str) -> bool {
+    /// Placement names `broker` as this group's leader, `by_operator` when
+    /// an operator move did. Returns whether that is new.
+    pub(crate) fn prefer(&self, broker: &str, by_operator: bool) -> bool {
+        let preferred = placed::Preferred {
+            broker: broker.to_owned(),
+            by_operator,
+        };
         self.preferred.send_if_modified(|held| {
-            let new = held.as_deref() != Some(broker);
+            let new = held.as_ref() != Some(&preferred);
             if new {
-                *held = Some(broker.to_owned());
+                *held = Some(preferred);
             }
             new
         })
@@ -1913,6 +1922,19 @@ impl Group {
             Err(openraft::error::Fatal::StorageError(err)) => Some(err.to_string()),
             _ => None,
         }
+    }
+
+    /// Note that the registry no longer holds this member open. Called
+    /// under the registry's lock, so it is set before anyone else can open
+    /// the shard again.
+    pub(crate) fn release(&self) {
+        self.released.store(true, Ordering::Release);
+    }
+
+    /// Whether the registry still holds this member open: what a lookup
+    /// of the shard would find.
+    pub(crate) fn held(&self) -> bool {
+        !self.released.load(Ordering::Acquire)
     }
 
     /// Cancelled when the member is shut down.
