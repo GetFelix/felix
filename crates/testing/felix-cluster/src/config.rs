@@ -48,6 +48,8 @@ pub struct ClusterConfig {
     /// every interface and advertises the address a kcat container reaches
     /// the host by, since the tests drive it from Docker or Podman.
     pub kafka: bool,
+    /// How that Kafka listener runs. Plaintext SASL by default.
+    pub kafka_listener: KafkaListener,
     /// Route every broker-to-broker and broker-to-control-plane link through
     /// the harness's own proxies, so [`Fault::Drop`](crate::Fault::Drop) and
     /// [`Fault::Delay`](crate::Fault::Delay) can act on them. Off by default:
@@ -106,6 +108,7 @@ impl Default for ClusterConfig {
             node_env: Vec::new(),
             tcp_listeners: Vec::new(),
             kafka: false,
+            kafka_listener: KafkaListener::default(),
             proxy_links: false,
             metadata_group: false,
             power_loss: false,
@@ -115,6 +118,22 @@ impl Default for ClusterConfig {
             pending_raft_hand_overs: false,
         }
     }
+}
+
+/// How each broker's Kafka listener runs when [`ClusterConfig::kafka`] is on.
+/// The default is plaintext with SASL required, what every Kafka test that
+/// says nothing about the listener gets.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct KafkaListener {
+    /// Serve TLS with the broker's generated client certificate, the one it
+    /// exports to [`BrokerNode::client_certificate`](crate::BrokerNode::client_certificate).
+    pub tls: bool,
+    /// Take a connection that skips SASL as the cluster's tenant
+    /// (`FELIX_KAFKA_ANONYMOUS_TENANT`), the development switch.
+    pub anonymous: bool,
+    /// Store Kafka keys and headers (`FELIX_KAFKA_RECORD_HEADERS`). A cluster
+    /// stores them only once the fleet has finalized `record_headers`.
+    pub record_headers: bool,
 }
 
 impl ClusterConfig {
