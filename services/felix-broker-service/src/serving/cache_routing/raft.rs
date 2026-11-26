@@ -32,6 +32,14 @@ pub(crate) enum NotServed {
     /// For a write, an unknown outcome: it may still commit.
     #[error(transparent)]
     Commit(#[from] CommitError),
+    /// A put or an add the shard refused because its state is at its
+    /// bound. Nothing was written.
+    #[cfg(feature = "raft")]
+    #[error(
+        "the cache shard {0} is full: delete keys or let them expire before writing more; \
+         nothing was written"
+    )]
+    Full(String),
     #[cfg(feature = "raft")]
     #[error("the Raft cache shard answered {0}")]
     Unexpected(String),
@@ -44,6 +52,8 @@ impl NotServed {
         match self {
             Self::Refused(refused) => refused.into_anyhow(),
             Self::Commit(err) => ClientError::from_anyhow(&err.into()).into(),
+            #[cfg(feature = "raft")]
+            Self::Full(_) => ClientError::cache_full(self.to_string()).into(),
             #[cfg(feature = "raft")]
             Self::Unexpected(_) => ClientError::internal(self.to_string()).into(),
         }
@@ -114,7 +124,13 @@ async fn on_group(
         outcome: Some(ForwardCacheOutcome { applied, version }),
         ..Answered::default()
     };
-    let unexpected = |reply: CacheReply| NotServed::Unexpected(format!("{reply:?}"));
+    let unexpected = |reply: CacheReply| match reply {
+        CacheReply::Full => NotServed::Full(format!(
+            "{}/{}/{} shard {}",
+            shard.tenant_id, shard.namespace, shard.stream, shard.shard
+        )),
+        other => NotServed::Unexpected(format!("{other:?}")),
+    };
     Ok(match request {
         CacheRequest::Put { value, ttl_ms } => {
             let op = put(value, *ttl_ms, CacheCondition::None);

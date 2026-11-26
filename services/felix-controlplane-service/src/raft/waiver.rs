@@ -52,12 +52,20 @@ pub async fn form_without(
     let path = data_dir.join(FILE);
     // Written beside and renamed, so a crash never leaves half a waiver.
     let tmp = data_dir.join(format!("{FILE}.tmp"));
-    let mut file = File::create(&tmp).context("create the form-without file")?;
-    file.write_all(&serde_json::to_vec(&waiver).context("encode the waiver")?)
-        .context("write the form-without file")?;
-    file.sync_all().context("sync the form-without file")?;
-    std::fs::rename(&tmp, &path).context("place the form-without file")?;
-    sync_dir(data_dir)?;
+    let bytes = serde_json::to_vec(&waiver).context("encode the waiver")?;
+    felix_common::blocking::spawn({
+        let (tmp, path, data_dir) = (tmp, path.clone(), data_dir.to_path_buf());
+        move || -> Result<()> {
+            let mut file = File::create(&tmp).context("create the form-without file")?;
+            file.write_all(&bytes)
+                .context("write the form-without file")?;
+            file.sync_all().context("sync the form-without file")?;
+            std::fs::rename(&tmp, &path).context("place the form-without file")?;
+            sync_dir(&data_dir)
+        }
+    })
+    .await
+    .context("form-without write task")??;
     let slots: Vec<String> = slots.iter().map(NodeId::to_string).collect();
     Ok(format!(
         "wrote {}: cluster {cluster_id} may form once without slot(s) {}",

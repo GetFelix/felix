@@ -133,6 +133,7 @@ async fn the_raft_root_opens_after_the_restore_check_and_reaches_the_heartbeat()
             stop: stop.clone(),
             rotated: CancellationToken::new(),
         },
+        &tokio_util::task::TaskTracker::new(),
     );
     let orders = raft::key("orders", 0);
     let fed = || raft::assignments([raft::assigned(orders.clone(), raft::INCARNATION)]);
@@ -209,6 +210,7 @@ async fn a_view_start_under_the_pin_rule_opens_its_raft_root_before_the_restore_
             stop: stop.clone(),
             rotated: CancellationToken::new(),
         },
+        &tokio_util::task::TaskTracker::new(),
     );
     let orders = raft::key("orders", 0);
     let fed = || raft::assignments([raft::assigned(orders.clone(), raft::INCARNATION)]);
@@ -287,6 +289,7 @@ async fn a_raft_root_behind_the_control_plane_rotates_and_stops_the_broker() {
             stop: stop.clone(),
             rotated: rotated.clone(),
         },
+        &tokio_util::task::TaskTracker::new(),
     );
     tokio::time::timeout(Duration::from_secs(10), rotated.cancelled())
         .await
@@ -356,6 +359,7 @@ async fn a_raft_root_under_an_unregistered_storage_id_stops_the_broker() {
             stop: stop.clone(),
             rotated: rotated.clone(),
         },
+        &tokio_util::task::TaskTracker::new(),
     );
     tokio::time::timeout(Duration::from_secs(10), rotated.cancelled())
         .await

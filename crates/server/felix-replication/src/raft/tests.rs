@@ -18,6 +18,7 @@ use tempfile::{TempDir, tempdir};
 
 use super::codec::{ShardCodec, StoredMembership};
 use super::network::Request;
+use super::reach::CEILING;
 use super::types::{Command, Membership, ShardTypes};
 use super::*;
 use crate::{ShardKey, ShardKind};
@@ -1398,6 +1399,7 @@ async fn a_dropped_append_does_not_keep_its_leader_fast() {
         )),
         Arc::new(super::reach::Refusals::new(group(0))),
         Arc::new(self::timers().raft(ShardKind::Stream).expect("timers")),
+        Arc::default(),
     );
     let b = MemberId::new("b", 1);
     pace.answered(&b, &pace.sending(&b, true));
@@ -1427,6 +1429,119 @@ async fn a_dropped_append_does_not_keep_its_leader_fast() {
     assert_eq!(heartbeat.gap, timers.idle_heartbeat);
     pace.answered(&b, &heartbeat);
     assert_eq!(pace.leader_gap(timers.now()), timers.idle_heartbeat);
+}
+
+/// A transport that counts what it is asked to send and answers nothing.
+#[derive(Default)]
+struct Counts(std::sync::atomic::AtomicUsize);
+
+#[async_trait]
+impl RaftTransport for Counts {
+    async fn send(&self, _: RaftRequest) -> Result<RaftReply, Refused> {
+        self.0.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        Err(Refused::Unreachable("counted".into()))
+    }
+}
+
+/// A log line's bytes, for a test to read back.
+#[derive(Clone, Default)]
+struct Captured(Arc<parking_lot::Mutex<Vec<u8>>>);
+
+impl std::io::Write for Captured {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.0.lock().extend_from_slice(buf);
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for Captured {
+    type Writer = Self;
+
+    fn make_writer(&'a self) -> Self {
+        self.clone()
+    }
+}
+
+/// A snapshot over the cap a member takes is not sent: the member would
+/// refuse its first piece on every retry. The leader counts it and logs
+/// the group and member once a minute, not on every retry.
+#[tokio::test(start_paused = true)]
+async fn a_snapshot_over_the_cap_is_not_sent_and_is_surfaced() {
+    use openraft::errors::StreamingError;
+    use openraft::network::RPCOption;
+    use openraft::storage::Snapshot;
+    use openraft_multi::GroupRouter;
+    let recorder = metrics_exporter_prometheus::PrometheusBuilder::new().build_recorder();
+    let metrics = recorder.handle();
+    let _local = ::metrics::set_default_local_recorder(&recorder);
+    let logs = Captured::default();
+    let subscriber = tracing_subscriber::fmt()
+        .with_writer(logs.clone())
+        .with_ansi(false)
+        .finish();
+    let _logging = tracing::subscriber::set_default(subscriber);
+
+    let (pace, _) = pace();
+    let sent = Arc::new(Counts::default());
+    let router = super::network::Router::new(
+        Arc::clone(&sent) as Arc<dyn RaftTransport>,
+        Arc::new(pace),
+        Arc::new(super::lease::Lease::new(Duration::from_secs(1))),
+        Arc::new(super::written::Reports::new()),
+        Arc::new(super::reach::Reach::new(
+            tokio::time::Instant::now(),
+            Duration::from_secs(1),
+        )),
+        Arc::new(super::reach::Refusals::new(group(0))),
+        Arc::new(self::timers().raft(ShardKind::Cache).expect("timers")),
+        Arc::new(super::install::Unsendable::capped(16)),
+    );
+    let vote = <VoteOf<ShardTypes> as RaftVote>::from_leader_id(
+        LeaderIdOf::<ShardTypes>::new(2, MemberId::new("a", 1)),
+        true,
+    );
+    let send = |len: usize| {
+        let snapshot = Snapshot {
+            meta: Default::default(),
+            snapshot: super::machine::SnapshotData {
+                bytes: Bytes::from(vec![0; len]),
+                restored: None,
+            },
+        };
+        router.full_snapshot(
+            MemberId::new("b", 1),
+            group(0),
+            vote.clone(),
+            snapshot,
+            std::future::pending(),
+            RPCOption::new(Duration::from_secs(1)),
+        )
+    };
+    for _ in 0..2 {
+        let refused = send(17).await.expect_err("over the cap");
+        assert!(
+            matches!(refused, StreamingError::Unreachable(_)),
+            "{refused}"
+        );
+    }
+    assert_eq!(sent.0.load(std::sync::atomic::Ordering::Relaxed), 0);
+    let rendered = metrics.render();
+    assert!(
+        rendered.contains(&format!("{} 2", super::install::UNSENDABLE_TOTAL)),
+        "{rendered}"
+    );
+    let logged = String::from_utf8(logs.0.lock().clone()).expect("utf-8");
+    assert_eq!(logged.matches("over the cap").count(), 1, "{logged}");
+    assert!(logged.contains(&group(0).to_string()), "{logged}");
+    assert!(logged.contains("member=b#1"), "{logged}");
+
+    // One that fits is sent.
+    send(16).await.expect_err("the transport answers nothing");
+    assert_eq!(sent.0.load(std::sync::atomic::Ordering::Relaxed), 1);
 }
 
 /// A transport whose answer to this group is always `Slow`.
@@ -1463,6 +1578,7 @@ async fn a_slow_answer_does_not_make_openraft_back_off() {
         )),
         Arc::new(super::reach::Refusals::new(group(0))),
         Arc::new(self::timers().raft(ShardKind::Stream).expect("timers")),
+        Arc::default(),
     );
     let vote = <VoteOf<ShardTypes> as RaftVote>::from_leader_id(
         LeaderIdOf::<ShardTypes>::new(2, MemberId::new("a", 1)),
@@ -2851,6 +2967,7 @@ async fn a_failed_vote_does_not_replace_the_scout() {
             Arc::clone(&reach),
             Arc::new(super::reach::Refusals::new(id)),
             Arc::clone(&config),
+            Arc::default(),
         )
     };
     let option = || RPCOption::new(Duration::from_secs(1));
@@ -3393,13 +3510,14 @@ async fn an_idle_group_catches_a_broker_up_within_about_a_heartbeat_of_it_coming
     cluster.stop().await;
 }
 
-/// A broker back from a restart opens its groups in two waves. Its first
-/// answers end the early wave's backoff, but the late wave's members are
-/// not open yet and refuse, so each is retried on its own member's first
-/// answer. Each opens just after its fourth refused append, when
-/// openraft's delays alone would make it wait a second more (#2543).
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_group_that_opens_late_after_a_restart_commits_within_about_a_heartbeat() {
+/// How long a group's first write takes to commit after its late members
+/// open. A broker back from a restart opens its groups in two waves. Its
+/// first answers end the early wave's backoff, but the late wave's members
+/// are not open yet and refuse, so each is retried on its own member's first
+/// answer. Each opens just after its fourth refused append, when openraft's
+/// delays alone would make it wait a second more (#2543). `wake` off leaves
+/// the retry to those delays.
+async fn late_open_to_first_commit(wake: bool) -> Duration {
     let patient = RuntimeConfig {
         election_min: Duration::from_secs(10),
         election_max: Duration::from_secs(20),
@@ -3413,6 +3531,11 @@ async fn a_group_that_opens_late_after_a_restart_commits_within_about_a_heartbea
     }
     let leader = cluster.elected(0).await;
     assert_eq!(leader.broker, cluster.elected(1).await.broker);
+    cluster
+        .runtime(&leader.broker)
+        .reach()
+        .no_wake
+        .store(!wake, std::sync::atomic::Ordering::Relaxed);
 
     for broker in BROKERS.iter().filter(|broker| **broker != &*leader.broker) {
         cluster.net.heal_after.lock().insert((*broker).into(), 4);
@@ -3455,17 +3578,34 @@ async fn a_group_that_opens_late_after_a_restart_commits_within_about_a_heartbea
     }
     let opened = cluster.net.opened.lock().expect("a late member opened");
     let took = opened.elapsed();
-    eprintln!("late open to first commit: {took:?}");
     assert_eq!(
         leader,
         cluster.elected(1).await,
         "this measured an election"
     );
-    assert!(
-        took < Duration::from_millis(900),
-        "the late wave's first commit took {took:?}"
-    );
     cluster.stop().await;
+    took
+}
+
+/// The late wave commits as its members open, not when openraft's backoff
+/// next fires. The backoff is a timer of about `CEILING`, so the same run
+/// without the wake is the yardstick: a busy runner stretches both runs, and
+/// an absolute bound under `CEILING` cannot tell a slow runner from a
+/// missing wake.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_group_that_opens_late_after_a_restart_commits_within_about_a_heartbeat() {
+    let without = late_open_to_first_commit(false).await;
+    let with = late_open_to_first_commit(true).await;
+    eprintln!("late open to first commit: {with:?} with the wake, {without:?} without it");
+    // A timer never fires early, so the control did wait out the backoff.
+    assert!(
+        without >= CEILING * 9 / 10,
+        "without the wake it took {without:?}, so the comparison measures nothing"
+    );
+    assert!(
+        with + CEILING / 4 < without,
+        "the late wave's first commit took {with:?} with the wake and {without:?} without it"
+    );
 }
 
 /// Calls to a follower that answers every other call after its deadline,
@@ -3507,8 +3647,10 @@ async fn calls_to_a_flaky_peer(wake: bool) -> (u32, usize) {
 /// openraft's own backoff any more often than without the wake (#2543).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_peer_timing_out_every_other_call_is_called_no_more_than_without_the_wake() {
-    let (without, _) = calls_to_a_flaky_peer(false).await;
-    let (with, walks) = calls_to_a_flaky_peer(true).await;
+    // Side by side, so a busy runner slows both windows alike. One after the
+    // other, a slow first half made the second look like extra calls.
+    let ((without, _), (with, walks)) =
+        tokio::join!(calls_to_a_flaky_peer(false), calls_to_a_flaky_peer(true));
     eprintln!(
         "calls to the flaky peer: {without} without the wake, {with} with it ({walks} walks)"
     );

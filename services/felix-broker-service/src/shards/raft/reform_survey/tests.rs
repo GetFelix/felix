@@ -173,6 +173,12 @@ async fn a_stop_leaves_a_leading_member_running() {
     let shards = shards(&broker);
     let held = key("orders", 0);
     take_formed(&shards, assigned(held.clone(), INCARNATION)).await;
+    // A group has formed once it has a term, which can be before the member
+    // wins it, and a stop only spares a member that leads.
+    crate::shards::raft::tests::until("the member to lead", || {
+        shards.runtime.led_term(&held).is_some()
+    })
+    .await;
 
     let report = shards
         .stop_for_reform(&stop_survey(held.clone()))
