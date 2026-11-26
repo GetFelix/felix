@@ -274,8 +274,10 @@ pub(crate) struct Opened {
 pub(crate) struct SnapshotData {
     pub(crate) bytes: Bytes,
     /// The state `bytes` hold, when a receiver has already parsed them.
-    /// Install takes it instead of parsing a second time.
-    pub(crate) restored: Option<CacheState>,
+    /// Install takes it instead of parsing a second time. Boxed because
+    /// openraft's channels hold a `SnapshotData` in every slot, so every
+    /// member, a stream member too, would pay for a `CacheState`.
+    pub(crate) restored: Option<Box<CacheState>>,
 }
 
 impl SnapshotData {
@@ -1067,7 +1069,9 @@ impl RaftStateMachine<ShardTypes> for Machine {
         // become the one this member restarts from.
         let restored = match (&self.cache, restored) {
             (Some(_), Some(restored)) => Some(restored),
-            (Some(_), None) => Some(restore(data.clone(), meta.last_log_id.is_some()).await?),
+            (Some(_), None) => Some(Box::new(
+                restore(data.clone(), meta.last_log_id.is_some()).await?,
+            )),
             (None, _) => None,
         };
         let carried = match &self.log {
@@ -1118,7 +1122,7 @@ impl RaftStateMachine<ShardTypes> for Machine {
             if let Some(watch) = &self.watch {
                 watch.reset(state.applied() + 1);
             }
-            *state = restored;
+            *state = *restored;
         }
         // The table as of the snapshot's last entry, which openraft applies
         // above from here. Trackers go with the old table.

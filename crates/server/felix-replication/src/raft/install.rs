@@ -25,19 +25,18 @@ pub(crate) const IDLE: Duration = felix_storage::raft_log::transfer::IDLE;
 /// The one snapshot a member is receiving. A sender that starts again, or
 /// one with a newer vote, replaces what is held, so a leader that was
 /// deposed part way cannot hold off its successor.
+#[derive(Default)]
 pub(crate) struct Incoming {
     slot: parking_lot::Mutex<Slot>,
-    cap: u64,
-}
-
-impl Default for Incoming {
-    fn default() -> Self {
-        Self::capped(MAX_SNAPSHOT_BYTES)
-    }
+    /// A test's cap in place of [`MAX_SNAPSHOT_BYTES`]. Every member holds
+    /// an `Incoming`, so the cap is not stored outside tests.
+    #[cfg(test)]
+    cap: Option<u64>,
 }
 
 /// The members a leader could not send a snapshot to, so each is logged
-/// once a [`WARN_EVERY`] rather than on every retry.
+/// once a [`WARN_EVERY`] rather than on every retry. A broker has one,
+/// shared by all its groups.
 pub(crate) struct Unsendable {
     warned: parking_lot::Mutex<HashMap<(GroupId, MemberId), tokio::time::Instant>>,
     cap: u64,
@@ -123,11 +122,20 @@ pub(crate) enum Piece {
 }
 
 impl Incoming {
+    #[cfg(test)]
     pub(crate) fn capped(cap: u64) -> Self {
         Self {
             slot: parking_lot::Mutex::default(),
-            cap,
+            cap: Some(cap),
         }
+    }
+
+    fn cap(&self) -> u64 {
+        #[cfg(test)]
+        if let Some(cap) = self.cap {
+            return cap;
+        }
+        MAX_SNAPSHOT_BYTES
     }
 
     /// Keep one piece. Refuses a snapshot over the cap at its first piece,
@@ -141,10 +149,10 @@ impl Incoming {
         offset: u64,
         piece: &[u8],
     ) -> Result<Piece, String> {
-        if data_len > self.cap {
+        let cap = self.cap();
+        if data_len > cap {
             return Err(format!(
-                "a snapshot of {data_len} bytes is over this member's cap of {}",
-                self.cap
+                "a snapshot of {data_len} bytes is over this member's cap of {cap}"
             ));
         }
         // `offset` is the sender's, so it can be anything.

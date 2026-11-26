@@ -1398,6 +1398,7 @@ async fn a_dropped_append_does_not_keep_its_leader_fast() {
         )),
         Arc::new(super::reach::Refusals::new(group(0))),
         Arc::new(self::timers().raft(ShardKind::Stream).expect("timers")),
+        Arc::default(),
     );
     let b = MemberId::new("b", 1);
     pace.answered(&b, &pace.sending(&b, true));
@@ -1496,8 +1497,8 @@ async fn a_snapshot_over_the_cap_is_not_sent_and_is_surfaced() {
         )),
         Arc::new(super::reach::Refusals::new(group(0))),
         Arc::new(self::timers().raft(ShardKind::Cache).expect("timers")),
-    )
-    .with_unsendable(Arc::new(super::install::Unsendable::capped(16)));
+        Arc::new(super::install::Unsendable::capped(16)),
+    );
     let vote = <VoteOf<ShardTypes> as RaftVote>::from_leader_id(
         LeaderIdOf::<ShardTypes>::new(2, MemberId::new("a", 1)),
         true,
@@ -1576,6 +1577,7 @@ async fn a_slow_answer_does_not_make_openraft_back_off() {
         )),
         Arc::new(super::reach::Refusals::new(group(0))),
         Arc::new(self::timers().raft(ShardKind::Stream).expect("timers")),
+        Arc::default(),
     );
     let vote = <VoteOf<ShardTypes> as RaftVote>::from_leader_id(
         LeaderIdOf::<ShardTypes>::new(2, MemberId::new("a", 1)),
@@ -2964,6 +2966,7 @@ async fn a_failed_vote_does_not_replace_the_scout() {
             Arc::clone(&reach),
             Arc::new(super::reach::Refusals::new(id)),
             Arc::clone(&config),
+            Arc::default(),
         )
     };
     let option = || RPCOption::new(Duration::from_secs(1));

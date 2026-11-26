@@ -287,7 +287,7 @@ pub(crate) struct Router {
     refusals: Arc<Refusals>,
     /// openraft's settings, for its usual retry delays.
     config: Arc<Config>,
-    /// The members a snapshot could not be sent to.
+    /// The members a snapshot could not be sent to, shared by the broker.
     unsendable: Arc<Unsendable>,
     /// The broker of the one member this copy calls, when its retries may
     /// wait longer while that broker is down.
@@ -299,6 +299,7 @@ pub(crate) struct Router {
 struct WrongReply;
 
 impl Router {
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
         transport: Arc<dyn RaftTransport>,
         pace: Arc<Pace>,
@@ -307,6 +308,7 @@ impl Router {
         reach: Arc<Reach>,
         refusals: Arc<Refusals>,
         config: Arc<Config>,
+        unsendable: Arc<Unsendable>,
     ) -> Self {
         Self {
             transport,
@@ -316,15 +318,9 @@ impl Router {
             reach,
             refusals,
             config,
-            unsendable: Arc::default(),
+            unsendable,
             to: None,
         }
-    }
-
-    #[cfg(test)]
-    pub(crate) fn with_unsendable(mut self, unsendable: Arc<Unsendable>) -> Self {
-        self.unsendable = unsendable;
-        self
     }
 
     /// This router, for openraft's client to `target` in `group`. A cache

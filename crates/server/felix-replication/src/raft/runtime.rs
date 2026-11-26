@@ -25,6 +25,7 @@ use super::executor::GroupThreads;
 use super::group::driver::MembershipProgress;
 use super::group::placed::{self, Placement};
 use super::group::{self, Group, Timers};
+use super::install::Unsendable;
 use super::membership::Target;
 use super::network::{RaftReply, RaftRequest, RaftTransport, Refused, Reply, Request};
 use super::propose::Clock;
@@ -633,6 +634,8 @@ struct Inner {
     mark_roots: parking_lot::Mutex<Vec<MarkLog>>,
     placement: Placement,
     placed_budget: Arc<placed::Budget>,
+    /// The members this broker's leaders could not send a snapshot to.
+    unsendable: Arc<Unsendable>,
     /// See [`GroupRuntime::ack_incarnation`].
     acked: Arc<AtomicU64>,
     /// Copies a re-form stopped, by shard: no member runs on them.
@@ -722,6 +725,7 @@ impl GroupRuntime {
                 ticker: parking_lot::Mutex::new(None),
                 mark_roots: parking_lot::Mutex::default(),
                 placed_budget: Arc::new(placed::Budget::new(&config.placement)),
+                unsendable: Arc::default(),
                 acked: Arc::default(),
                 stopped: parking_lot::Mutex::default(),
                 admitted: parking_lot::Mutex::default(),
@@ -1014,6 +1018,7 @@ impl GroupRuntime {
             clock: Arc::clone(&inner.clock.read()),
             placement: inner.placement.clone(),
             placed_budget: Arc::clone(&inner.placed_budget),
+            unsendable: Arc::clone(&inner.unsendable),
             acked: Arc::clone(&inner.acked),
             cache_changes: inner.cache_changes.get().cloned(),
             stands_after: inner.stands_after.get().cloned(),
