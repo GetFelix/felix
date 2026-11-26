@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795682465614,
+  "lastUpdate": 1795686149045,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -90222,6 +90222,72 @@ window.BENCHMARK_DATA = {
             "range": "109.91",
             "unit": "us",
             "extra": "trials: 5\nmedian: 488.00\nmean: 526.60\nstdev: 109.91\ncv: 20.87%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "56e51f709cc4245069e48cb798698faba2bda31b",
+          "message": "perf(storage): a Raft log saves its commit id behind the commit path in every fsync mode (#3222) (#3226)\n\n* perf(raft): save the committed index behind the commit in every fsync mode (#3222)\n\nopenraft awaits save_committed before it applies. Under periodic and none\nfsync a Raft log wrote its replica state inline once a second, so the group\nstalled on a create, two fsyncs and a rename. It now goes through the\nbehind-writer as on_commit already did, still at most once per\nCOMMIT_PERSIST_INTERVAL and at close. The saved id may lag, never lead.\n\nSpec-Unaffected: storage write timing of an optional, lag-tolerant saved commit id; no modelled behaviour changes\n\n* wip(raft): commit-save test edits from the previous worker\n\nSpec-Unaffected: test-only WIP\n\n* test(raft): close waits for a held write behind and writes the newest id (#3222)\n\nThe coverage failure was the slow-disk test saving ids past the entries it\nappended: an open lowers such an id to the tail, so 429 read back as 399.\nKeep every saved id inside the log, and test close against a write held in\nflight.\n\nSpec-Unaffected: test seam and tests only\n\n* test(raft): release the held write before asserting, so a failure cannot hang\n\nSpec-Unaffected: test only\n\n* docs(raft): a clean close waits for a commit save in flight (#3222)\n\nSpec-Unaffected: docs only",
+          "timestamp": "2026-11-26T09:14:49Z",
+          "tree_id": "f444d50eaf6c013d6927b68e18f078b25fe62470",
+          "url": "https://github.com/GetFelix/felix/commit/56e51f709cc4245069e48cb798698faba2bda31b"
+        },
+        "date": 1795686122315,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 96,
+            "range": "0.55",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 96.00\nmean: 96.40\nstdev: 0.55\ncv: 0.57%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 129,
+            "range": "0.55",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 129.00\nmean: 129.40\nstdev: 0.55\ncv: 0.42%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 173,
+            "range": "999.09",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 173.00\nmean: 616.80\nstdev: 999.09\ncv: 161.98%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 133,
+            "range": "0.84",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 133.00\nmean: 132.80\nstdev: 0.84\ncv: 0.63%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 257,
+            "range": "3.05",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 257.00\nmean: 256.60\nstdev: 3.05\ncv: 1.19%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 352,
+            "range": "33.79",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 352.00\nmean: 341.20\nstdev: 33.79\ncv: 9.90%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
