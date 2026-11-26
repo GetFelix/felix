@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795659388559,
+  "lastUpdate": 1795660408010,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -70252,6 +70252,58 @@ window.BENCHMARK_DATA = {
             "range": "81416.46",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1695491.56\nmean: 1649951.16\nstdev: 81416.46\ncv: 4.93%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "f3272fa09bf3abfaeaacdba5b2b7a07e333ca551",
+          "message": "fix(mqtt): an anonymous connection ends with its client certificate (#3192) (#3205)\n\n* fix(kafka): an anonymous connection ends with its client certificate (#2903)\n\nUnder FELIX_KAFKA_ANONYMOUS_TENANT a connection started as\nPrincipal::anonymous with no end, so a client that presented a\ncertificate was served past its notAfter. The anonymous principal now\ncomes from Cluster::anonymous, which the broker bounds by the chain with\nthe same Revocable end an authenticated connection gets: the connection\ncloses at notAfter, a request after it is refused, and a chain that has\nalready ended or cannot be read is refused. No certificate: unchanged.\n\nSpec-Unaffected: Kafka listener connection lifetime under the dev switch; no modeled replication or storage state\n\n* fix(mqtt): an anonymous connection ends with its client certificate (#3192)\n\nUnder FELIX_MQTT_ANONYMOUS_TENANT the connection got Principal::anonymous\nwith no end, so a client that presented a TLS certificate kept its\nconnection past the certificate's notAfter.\n\nAuthenticator gains `anonymous`, which the broker implements with\nBrokerAuth::chain_only: the principal ends at the chain's end, and a chain\nthat has already ended or does not parse is refused at CONNECT. The packet\nloop now checks the principal before serving each packet, so one that\narrives after the end but before the close fires is refused. Authenticated\nconnections get the same per-packet check.\n\nSpec-Unaffected: MQTT listener connection lifetime; no consensus, storage or replication behaviour changes.\n\n* fix(mqtt): watch a connection's end on its own task, read with one atomic load\n\nThe per-packet end check called the principal's revocation predicate,\nwhich for a token reads the wall clock twice and takes the revocation\nmap's read lock with string allocations, on every packet including\npublishes. The connection now runs one task that waits for the\ncredential's end (revocation or expiry), stores the reason in an atomic\nand wakes the packet loop, which closes on that wake and checks the\natomic before each buffered packet. A principal nothing can end spawns\nno task.\n\nThe broker-service TLS test retries with a longer certificate if setting\nup outlasts it, and waits for the close until 30 s past notAfter.\n\nSpec-Unaffected: MQTT listener connection lifetime; no consensus, storage or replication behaviour changes.",
+          "timestamp": "2026-11-26T02:09:09Z",
+          "tree_id": "5da67380cc887bfb812fe6e769218e6dff0f2c11",
+          "url": "https://github.com/GetFelix/felix/commit/f3272fa09bf3abfaeaacdba5b2b7a07e333ca551"
+        },
+        "date": 1795660407428,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 353002.54,
+            "range": "14927.68",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 353002.54\nmean: 350896.19\nstdev: 14927.68\ncv: 4.25%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 353002.54,
+            "range": "14927.68",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 353002.54\nmean: 350896.19\nstdev: 14927.68\ncv: 4.25%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 80313.87,
+            "range": "707.25",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 80313.87\nmean: 80244.56\nstdev: 707.25\ncv: 0.88%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 803138.74,
+            "range": "7072.45",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 803138.74\nmean: 802445.63\nstdev: 7072.45\ncv: 0.88%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
