@@ -175,9 +175,13 @@ no vote, no log position.
 
 A member with a new id has never voted. It joins as a learner and the old
 member is removed by a membership change. This is the rule issue #1331 asks
-for, and it replaces vouching and copy trust. The copy ids of a shard
-rotate, and the directory's log is kept as plain records, in each of these
-cases:
+for, and it replaces vouching and copy trust.
+
+> `crates/server/felix-replication/src/raft/tests/identity.rs`,
+> `a_wiped_voter_never_votes_under_its_old_id_and_its_record_survives`.
+
+The copy ids of a shard rotate, and the directory's log is kept as plain
+records, in each of these cases:
 
 - The shard directory is missing or empty.
 - The storage id rotated: the data root was lost, it failed the restore
