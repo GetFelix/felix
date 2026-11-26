@@ -42,6 +42,7 @@ async fn read_bounds_hold_the_nodes_engine() {
             region: "local".to_string(),
             zone: None,
             internal: false,
+            durable_storage: true,
             region_bridges: Vec::new(),
             features: Default::default(),
         }),

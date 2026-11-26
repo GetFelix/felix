@@ -1579,8 +1579,9 @@ nothing is acknowledged while it is still only in the process's memory.
   behind in every mode: under `OnCommit` by a write that starts at once and
   serves every advance made while it runs, otherwise at most once a second
   (`DiskLog::advance_commit_offset`). A Raft log's committed index is also
-  written at most once a second, and once more after the last advance, since
-  it moves on almost every entry ([storage-format.md](storage-format.md),
+  written behind, in every fsync mode, at most once a second, and once more
+  after the last advance, since it moves on almost every entry and openraft
+  waits for `save_committed` before it applies ([storage-format.md](storage-format.md),
   "`replica`: the accepted generation and the commit offset"). After a crash
   it can read back behind, so
   a follower's refusal to

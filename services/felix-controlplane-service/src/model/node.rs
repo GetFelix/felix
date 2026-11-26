@@ -58,6 +58,11 @@ pub enum NodeValidationError {
     )]
     RoleViaLabels,
     #[error(
+        "the label {NODE_STORAGE_LABEL} cannot be changed through labels; \
+         the broker sets it when it registers"
+    )]
+    StorageViaLabels,
+    #[error(
         "node {0} is registered as internal and this registration does not carry the role; \
          an operator with node.manage on cluster:* must clear it first (PATCH with \"internal\": false)"
     )]
@@ -205,7 +210,9 @@ pub struct NodeSpec {
     pub capacity: NodeCapacity,
 }
 
-use felix_common::membership::{NODE_ROLE_INTERNAL, NODE_ROLE_LABEL};
+use felix_common::membership::{
+    NODE_ROLE_INTERNAL, NODE_ROLE_LABEL, NODE_STORAGE_LABEL, NODE_STORAGE_NONE,
+};
 
 impl NodeSpec {
     /// Whether the node is marked internal: placement never gives it a tenant
@@ -216,6 +223,13 @@ impl NodeSpec {
     /// does any label. A node without the label is an ordinary node.
     pub fn is_internal(&self) -> bool {
         self.labels.get(NODE_ROLE_LABEL).map(String::as_str) == Some(NODE_ROLE_INTERNAL)
+    }
+
+    /// Whether the node's broker keeps a log. One that registered without
+    /// durable storage is never given a durable stream's or a cache's shard.
+    /// A node without the label, including one that predates it, has storage.
+    pub fn has_durable_storage(&self) -> bool {
+        self.labels.get(NODE_STORAGE_LABEL).map(String::as_str) != Some(NODE_STORAGE_NONE)
     }
 
     pub fn validate(&self) -> Result<(), NodeValidationError> {
@@ -423,13 +437,19 @@ impl NodePatchRequest {
             {
                 return Err(NodeValidationError::RoleViaLabels);
             }
+            // Nor the storage label: only what the broker registers says
+            // whether it has a log.
+            if labels.get(NODE_STORAGE_LABEL) != node.spec.labels.get(NODE_STORAGE_LABEL)
+                && labels.contains_key(NODE_STORAGE_LABEL)
+            {
+                return Err(NodeValidationError::StorageViaLabels);
+            }
             patched.spec.labels = labels.clone();
-            patched.spec.labels.remove(NODE_ROLE_LABEL);
-            if let Some(role) = node.spec.labels.get(NODE_ROLE_LABEL) {
-                patched
-                    .spec
-                    .labels
-                    .insert(NODE_ROLE_LABEL.to_string(), role.clone());
+            for kept in [NODE_ROLE_LABEL, NODE_STORAGE_LABEL] {
+                patched.spec.labels.remove(kept);
+                if let Some(value) = node.spec.labels.get(kept) {
+                    patched.spec.labels.insert(kept.to_string(), value.clone());
+                }
             }
         }
         match self.internal {

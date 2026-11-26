@@ -65,6 +65,7 @@ fn assignment(key: ShardKey, leader: &str, generation: u64, replicas: &[&str]) -
         raft_voters: None,
         raft_bases: None,
         raft_seed: None,
+        move_reason: None,
         placed: None,
     }
 }
