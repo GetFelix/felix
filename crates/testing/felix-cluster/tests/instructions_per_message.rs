@@ -96,6 +96,8 @@ fn loadgen_binary() -> Result<PathBuf> {
 struct Ingest {
     acked: u64,
     msg_s: f64,
+    ack_p50_us: f64,
+    ack_p99_us: f64,
 }
 
 /// Run the ingest scenario, at `rate` messages a second or as fast as acks
@@ -176,6 +178,8 @@ fn run_ingest_for(
     Ok(Ingest {
         acked,
         msg_s: row["acked_throughput_msg_s"].as_f64().unwrap_or(0.0),
+        ack_p50_us: row["batch_ack_latency_us"]["p50"].as_f64().unwrap_or(-1.0),
+        ack_p99_us: row["batch_ack_latency_us"]["p99"].as_f64().unwrap_or(-1.0),
     })
 }
 
@@ -931,11 +935,23 @@ fn profile_cell(
 ) -> Result<serde_json::Value> {
     const RAMP: u64 = 3;
     const WINDOW: u64 = 10;
+    let engine = std::env::var("FELIX_TEST_SHARD_ENGINE").unwrap_or_else(|_| "raft".to_string());
     let pids: Vec<u32> = cluster.nodes.iter().filter_map(|n| n.pid()).collect();
     let syscalls = std::env::var("FELIX_PERF_SYSCALLS").unwrap_or_default();
     std::thread::scope(|scope| -> Result<serde_json::Value> {
-        let load =
-            scope.spawn(|| run_ingest_for(cluster, 1, 0, Some(RAMP + WINDOW + 2), rate, false));
+        let idle = rate == Some(0);
+        let load = scope.spawn(move || {
+            if idle {
+                std::thread::sleep(Duration::from_secs(RAMP + WINDOW + 1));
+                return Ok(Ingest {
+                    acked: 0,
+                    msg_s: 0.0,
+                    ack_p50_us: -1.0,
+                    ack_p99_us: -1.0,
+                });
+            }
+            run_ingest_for(cluster, 1, 0, Some(RAMP + WINDOW + 2), rate, false)
+        });
         std::thread::sleep(Duration::from_secs(RAMP));
         let counters_before: Vec<_> = (0..pids.len()).map(|i| all_counters(cluster, i)).collect();
         let procs_before: Vec<ProcSample> = pids.iter().map(|&p| ProcSample::read(p)).collect();
@@ -947,7 +963,8 @@ fn profile_cell(
                 let mut cmd = Command::new("sudo");
                 cmd.args(["-n", "perf"]);
                 if record {
-                    let file = prof_dir.join(format!("{label}.b{i}.data").replace(['/', ' '], "_"));
+                    let file = prof_dir
+                        .join(format!("{engine}_{label}.b{i}.data").replace(['/', ' '], "_"));
                     cmd.args(["record", "-q", "-e", "cpu-clock", "-F", "999", "-g", "-o"])
                         .arg(file);
                 } else {
@@ -980,7 +997,12 @@ fn profile_cell(
         let counters_after: Vec<_> = (0..pids.len()).map(|i| all_counters(cluster, i)).collect();
         let ingest = load.join().map_err(|_| anyhow!("load thread panicked"))??;
         // Messages acked in the window: the paced rate, or the run's average.
-        let messages = rate.map_or(ingest.msg_s, |r| r as f64) * wall;
+        // Idle: "per message" figures are per second instead.
+        let messages = if idle {
+            wall
+        } else {
+            rate.map_or(ingest.msg_s, |r| r as f64) * wall
+        };
         let mut brokers = Vec::new();
         for i in 0..pids.len() {
             let counters: serde_json::Map<String, serde_json::Value> = counters_after[i]
@@ -1006,9 +1028,11 @@ fn profile_cell(
                 })
                 .collect();
             eprintln!(
-                "profile {label} broker {i}{}: {messages:.0} msgs in {wall:.1}s ({:.0} msg/s run avg), cpu {cpu:.1}%, ctx vol/invol per msg {:.2}/{:.2}\n  perf per msg {per_message:?}\n  counters per msg {counters:?}",
+                "profile {engine} {label} broker {i}{}: {messages:.0} msgs in {wall:.1}s ({:.0} msg/s run avg, ack p50 {:.0} us p99 {:.0} us), cpu {cpu:.1}%, ctx vol/invol per msg {:.2}/{:.2}\n  perf per msg {per_message:?}\n  counters per msg {counters:?}",
                 if record { " (record)" } else { "" },
                 ingest.msg_s,
+                ingest.ack_p50_us,
+                ingest.ack_p99_us,
                 vol / messages,
                 invol / messages,
             );
@@ -1055,7 +1079,22 @@ async fn broker_light_load_profile() {
             let cluster = cluster;
             run_ingest(&cluster, 1, 5_000, None, false)?;
             let mut rows = Vec::new();
-            for (name, rate) in [("100", Some(100u64)), ("1000", Some(1000)), ("flat", None)] {
+            for (name, rate) in [
+                ("idle", Some(0u64)),
+                ("100", Some(100)),
+                ("1000", Some(1000)),
+                ("flat", None),
+            ] {
+                if record && rate == Some(0) {
+                    rows.push(profile_cell(
+                        &cluster,
+                        &format!("rf{rf}_{name}"),
+                        rate,
+                        false,
+                        &prof_dir,
+                    )?);
+                    continue;
+                }
                 let label = format!("rf{rf}_{name}");
                 rows.push(profile_cell(&cluster, &label, rate, false, &prof_dir)?);
                 std::thread::sleep(Duration::from_secs(3));
