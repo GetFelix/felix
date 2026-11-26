@@ -75,16 +75,19 @@ impl RaftShards {
         config: &LogConfig,
     ) -> anyhow::Result<Option<ShardAssignment>> {
         let Some(writer) = self.alone_writer.get() else {
-            tracing::debug!(shard = ?key, "not re-forming alone: no control plane writer is set");
+            if self.only_copy(assignment) {
+                tracing::info!(shard = ?key, epoch = assignment.group_epoch(), "not re-forming alone: no control plane writer is set");
+            }
             return Ok(None);
         };
         if !self.fleet.supports(fleet::RAFT_ALONE_REFORM) {
-            tracing::debug!(shard = ?key, "not re-forming alone: the fleet does not support it yet");
+            if self.only_copy(assignment) {
+                tracing::info!(shard = ?key, epoch = assignment.group_epoch(), "not re-forming alone: the fleet does not support it yet");
+            }
             return Ok(None);
         }
         if let Some(why) = not_alone_here(&self.local, assignment) {
-            let only_here = assignment.replicas.iter().all(|b| *b == self.local);
-            if only_here {
+            if self.only_copy(assignment) {
                 tracing::info!(shard = ?key, why, leader = %assignment.leader, replicas = ?assignment.replicas, placed = ?assignment.placed, epoch = assignment.group_epoch(), "not re-forming alone: the assignment does not name this broker the only one of the group");
             } else {
                 tracing::debug!(shard = ?key, why, "not re-forming alone: the group has other brokers");
@@ -99,7 +102,7 @@ impl RaftShards {
             .stop_alone(key, assignment, root, dir, config, &decide)
             .await?
         else {
-            tracing::debug!(shard = ?key, epoch = assignment.group_epoch(), "not re-forming alone: no re-form is owed, or the record refused the plan");
+            tracing::info!(shard = ?key, epoch = assignment.group_epoch(), replicas = ?assignment.replicas, placed = ?assignment.placed, "not re-forming alone: the copy was not rotated by a relaxed crash or restore that is owed a re-form, or the record refused the plan");
             return Ok(None);
         };
         if owed(key, &self.local, assignment, &plan) != Owed::Send {
@@ -128,6 +131,11 @@ impl RaftShards {
         }
         tracing::warn!(shard = ?key, epoch, "a relaxed crash rotated this shard's only copy; the control plane recorded its next epoch");
         Ok(answer.json::<ShardAssignment>().ok())
+    }
+
+    /// Whether this broker is the shard's only replica.
+    fn only_copy(&self, assignment: &ShardAssignment) -> bool {
+        assignment.replicas.iter().all(|b| *b == self.local)
     }
 
     /// Plan and stop the copy in `dir`, if a re-form is owed.
