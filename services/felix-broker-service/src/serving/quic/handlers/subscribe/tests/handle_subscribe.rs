@@ -1736,8 +1736,8 @@ mod on_raft {
             redirected(&ingress).is_none()
         })
         .await;
-        // The follower has delivered the leader's first two records before
-        // its reader joins, so the reader's first record is the third. Its
+        // Wait for the follower's sequence to pass the second record, by a
+        // read or by a jump, so the reader's first record is the third. Its
         // cursor tail would not say so: that follows the member's log, which
         // holds a record before it is delivered.
         let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
@@ -1749,7 +1749,7 @@ mod on_raft {
             // A follower whose log has not reached the record yet says the
             // offset is in the future.
             match probe.await {
-                Ok(probe) if !probe.backlog.is_empty() => break,
+                Ok(probe) if probe.backlog_start > second || !probe.backlog.is_empty() => break,
                 Ok(_) | Err(felix_broker::BrokerError::CursorInFuture { .. }) => {}
                 Err(error) => panic!("probe: {error:?}"),
             }

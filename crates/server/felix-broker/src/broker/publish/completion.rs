@@ -748,12 +748,24 @@ pub(crate) async fn deliver_from_log(handle: &StreamHandle) -> Result<LogDeliver
         state.advance_to(base, || crate::broker::shard_logs::accepted_leader(state));
         next = state.tail_seq();
     }
-    // Far behind with nobody subscribed (a restart, a long catch-up): the
-    // ring is a cache of the tail, so the log is not read through it.
-    if bound.saturating_sub(next) > log_capacity as u64 && state.jump_unwatched(bound) {
+    // With nobody subscribed the ring is a cache of the tail that nothing
+    // reads, so the sequence moves to the bound and the log is not read. A
+    // subscriber registers under the ring lock this takes, so it either joins
+    // above the jump and reads below it from the log, or stops the jump.
+    let far = bound.saturating_sub(next) > log_capacity as u64;
+    if state.jump_unwatched(bound, far) {
         return Ok(LogDelivery::CaughtUp);
     }
+    // A jump left out of `generation_start_run` the records just below `next`
+    // that hold no event, so the first batch counts them from the log.
+    let mut skip_from = next;
+    if next < bound && state.jumped() {
+        skip_from = log.event_end(0, next).await?;
+        state.clear_jumped();
+    }
     while next < bound {
+        #[cfg(test)]
+        state.pass_reads.fetch_add(1, Ordering::Relaxed);
         let mut records = log
             .read_data_from(next, LOG_PAGE_BYTES)
             .await?
@@ -791,7 +803,7 @@ pub(crate) async fn deliver_from_log(handle: &StreamHandle) -> Result<LogDeliver
                 commit,
                 trim: None,
                 ring_applied: None,
-                skipped_before: first.offset.saturating_sub(next),
+                skipped_before: first.offset.saturating_sub(skip_from),
                 gap: false,
                 gap_end: None,
                 blanks: 0,
@@ -814,6 +826,7 @@ pub(crate) async fn deliver_from_log(handle: &StreamHandle) -> Result<LogDeliver
             if headers.iter().any(Option::is_some) {
                 batch.record_headers = Some(headers.into());
             }
+            skip_from = next;
             let mut completion = Completion::released(handle.clone(), batch, log_capacity);
             if completion.append().is_ok() {
                 completion.deliver_unless_led().await;
