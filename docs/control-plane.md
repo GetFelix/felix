@@ -2612,12 +2612,15 @@ outside the set it gives the destination the leader's seat
 set's members are serving (409 `member_down`), since the group's leader could
 never hand over. With one member of three down it goes ahead: it is marked as
 an operator's (`move_reason` `operator`), and the group's leader hands over
-while it and the destination are caught up, which it does not do for
+when the destination is caught up and the caught-up voters, counting the
+leader and the destination, are a majority, which it does not do for
 placement's own names. The move ends when the group reports the destination
 leading (`raft_leader_landed`). One that has not landed after two minutes is
 given up (`raft_leader_timed_out`, counted in
 `felix_shard_moves_timed_out_total` and logged as a warning): with a member
-down the name goes back to the member the group runs. The second is refused
+down the name goes back to the member the group runs. While the move is
+pending, a drain of either broker or a swap of a leaving follower on that
+shard waits for it, up to those two minutes. The second is refused
 while a member is not serving (409 `member_down`), while the group's target is not stored for its current set
 (409 `set_unsettled`), while the destination is still a learner (409
 `not_a_member`). A one-member group grows to the destination first and

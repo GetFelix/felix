@@ -5583,8 +5583,8 @@ A leader hands over only when all of these hold:
 4. Every other voter is caught up and answering too. A group with a voter
    down keeps its leader: a transfer then could leave a bare majority with
    no leader. An operator's move is the exception (#3234): it goes ahead
-   while the caught-up voters, this leader and the target among them, are a
-   majority. If the target then dies mid-transfer, the group is left with
+   when the target is caught up and the caught-up voters, counting this
+   leader and the target, are a majority. If the target then dies mid-transfer, the group is left with
    the members it would have had anyway, and the leader stands again at the
    transfer's expiry if a majority is still up.
 5. This member has led its term for `led_min` (10 s), so a group that just
@@ -5658,7 +5658,9 @@ server (discovery, `felixctl`, dashboards) would point at a follower
   brokers, so the group's leader hands over (rule 4), and placement leaves
   the name alone until the group reports it leading, then takes the mark
   off. If it has not landed in two minutes, placement names the reported
-  leader again and takes the mark off (`raft_leader_timed_out`). A broker
+  leader again and takes the mark off (`raft_leader_timed_out`). While the
+  move is pending, a drain of either broker or a swap of a leaving follower
+  on that shard waits for it, up to those two minutes. A broker
   that predates the mark ignores it and keeps holding, so the move times
   out the same way. That covers a rename made before the
   report arrived. Both writes go ahead while placement is paused: they move
