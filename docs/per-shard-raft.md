@@ -1525,6 +1525,15 @@ an old restore) adds every membership it holds, which can only mark the
 plan. Below the first index is the base, whose voters are the seed. A
 membership or snapshot that does not decode fails the answer.
 
+`FelixRaftReform.tla` checks this with a snapshot that purges membership
+entries (`Purge`). With the ordered targets left out, so that the copies'
+memberships are the only source of each voter set, a re-form that reads
+the snapshot as well as the log passes
+(`FelixRaftReformSnapshotMembership.cfg`). One that reads only log
+entries misses the voter set a purge moved into the snapshot, leaves the
+plan unmarked and gives an offset out twice
+(`FelixRaftReformSnapshotMembershipLogOnly.cfg`).
+
 With one of three seeded voters dead, a read follower that holds a
 committed entry it has not yet seen committed keeps it in the base; with two
 of three dead, or a dead single seed voter, or a joint target whose new half
