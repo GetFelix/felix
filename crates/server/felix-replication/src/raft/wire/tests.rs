@@ -1320,3 +1320,33 @@ fn a_sender_chooses_a_layout_the_peer_reads() {
         "the unstated layout is frozen"
     );
 }
+
+/// **The layouts the handshake states are exactly what this build writes
+/// and reads**, so a layout bump that forgets the range fails here rather
+/// than refusing every peer.
+#[test]
+fn the_stated_layouts_are_the_ones_written_and_read() {
+    let mut written: Vec<Bytes> = every_request()
+        .iter()
+        .map(|request| encode_request(request).expect("encode"))
+        .collect();
+    written.extend(every_reply().iter().map(encode_reply));
+    let beats: Vec<RaftRequest> = every_request()
+        .into_iter()
+        .filter(|r| matches!(&r.body, Request::Append(rpc) if rpc.entries.is_empty()))
+        .collect();
+    assert!(!beats.is_empty(), "no heartbeat to send together");
+    written.push(encode_beats(&beats, std::time::Duration::from_millis(1)).expect("beats"));
+    written.push(encode_beats_reply(&every_reply()[..1]));
+    for body in &written {
+        assert!(LAYOUTS.contains(body[0]), "wrote layout {}", body[0]);
+    }
+    for layout in 0..=u8::MAX {
+        let mut body = Bytes::copy_from_slice(&[layout]);
+        assert_eq!(
+            expect_layout(&mut body).is_ok(),
+            LAYOUTS.contains(layout),
+            "layout {layout}"
+        );
+    }
+}

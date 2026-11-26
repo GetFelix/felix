@@ -47,8 +47,8 @@ pub struct PeerTransport<R> {
     logged: Mutex<HashMap<Arc<str>, Instant>>,
 }
 
-/// Raft messages not sent because the peer reads no layout this build
-/// writes, by `reason`.
+/// Sends refused because the peer reads no layout this build writes, by
+/// `reason`. A refused heartbeat batch counts once.
 pub(crate) const PEER_REFUSALS_TOTAL: &str = "felix_broker_raft_peer_refusals_total";
 const LOG_EVERY: Duration = Duration::from_secs(60);
 

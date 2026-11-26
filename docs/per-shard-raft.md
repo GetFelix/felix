@@ -2562,15 +2562,14 @@ bytes are Felix's own layout, not openraft's serde output
 runtime in `node/cluster.rs` whenever it runs Raft shards.
 
 **Mixed layouts during an upgrade.** Each listener states the Raft layouts
-it reads in the handshake (`RAFT_LAYOUTS`), and a sender writes the highest
-layout both sides read. When two builds share none, the sender sends
-nothing: Raft sees the peer as unreachable, the reason names both ranges,
-the broker logs it about once a minute per peer and counts it in
+it reads in the handshake (`RAFT_LAYOUTS`). Each build reads and writes one
+layout today. When a peer's range does not hold it, the sender sends
+nothing: Raft sees the peer as unreachable, the reason names both, and the
+broker logs it about once a minute per peer and counts each refused send in
 `felix_broker_raft_peer_refusals_total{reason="layout"}`. A group keeps
-quorum only while a majority of its voters share a layout, so an upgrade
-that changes layouts replaces voters one at a time, and a build that adds a
-layout keeps reading the old one for at least one release. Two brokers on
-the same build always share their layout. A peer that offers `RAFT` but
+quorum only while a majority of its voters share a layout. The stated range
+is what lets a later build read two layouts and pick the one its peer
+reads. Two brokers on the same build always share their layout. A peer that offers `RAFT` but
 states no layouts predates the handshake field and is read as layout 6;
 if that reading is wrong the peer refuses the body at its first byte, so
 nothing is misread. The unit tests join three runtimes with a transport that calls `handle`

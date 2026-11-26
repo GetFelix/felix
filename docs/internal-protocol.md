@@ -243,14 +243,15 @@ decoder refuses a body where the bit and the bytes disagree, a range that
 starts at 0 or ends below its start, and any byte after the range: the
 handshake fails rather than guessing at a layout.
 
-A sender writes the highest layout both ranges hold. When they share none it
-sends no Raft message and tells Raft the member is unreachable, with a
-reason naming both ranges; the broker logs it and counts it in
-`felix_broker_raft_peer_refusals_total{reason="layout"}`. A peer that
-offered `RAFT` without `RAFT_LAYOUTS` predates this field and is read as
-reading layout 6 only. That reading is frozen. If it is wrong, the peer
-still refuses the body at its first byte, so nothing is misread. A listener
-answers in the layout of the request it read.
+Every build today reads and writes one layout, so the range it states is
+that one layout. A sender whose layout is outside the peer's range sends no
+Raft message and tells Raft the member is unreachable, with a reason naming
+both; the broker logs it and counts the refused send in
+`felix_broker_raft_peer_refusals_total{reason="layout"}`. The range is what
+lets a later build that reads two layouts pick one its peer reads. A peer
+that offered `RAFT` without `RAFT_LAYOUTS` predates this field and is read
+as reading layout 6 only. That reading is frozen. If it is wrong, the peer
+still refuses the body at its first byte, so nothing is misread.
 
 `FELIX_INTERNAL_FENCE=false` turns `FENCE`, `TAIL_FETCH`, `CACHE_FENCE`,
 `GROUP_FENCE` and `BALLOTS` off: the broker refuses `Fence` and `ReplicateFetch` as unknown kinds,

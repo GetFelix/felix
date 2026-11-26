@@ -555,12 +555,6 @@ impl PeerError {
     }
 }
 
-/// The one thing forwarding asks of the connection pool.
-///
-/// A trait rather than the pool itself so the retry rules above — which decide
-/// whether a batch may be sent a second time — can be tested against an owner
-/// that answers on command, including with the answers a healthy cluster
-/// almost never produces.
 /// What a peer said in one handshake about taking Raft messages.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RaftOffer {
@@ -569,6 +563,12 @@ pub struct RaftOffer {
     pub layouts: Option<felix_wire::internal::RaftLayouts>,
 }
 
+/// The one thing forwarding asks of the connection pool.
+///
+/// A trait rather than the pool itself so the retry rules above — which decide
+/// whether a batch may be sent a second time — can be tested against an owner
+/// that answers on command, including with the answers a healthy cluster
+/// almost never produces.
 pub trait PeerRequester: Sync {
     fn request(
         &self,
