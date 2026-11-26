@@ -306,3 +306,54 @@ async fn a_quorum_timeout_is_answered_as_outcome_unknown() {
         other => panic!("expected a binary ack, got {other:?}"),
     }
 }
+
+/// **A deadline the publish path sets is answered when it passes, with its
+/// error, ahead of the ack timeout and with no timer of its own.** A Raft
+/// publish's client is told `quorum_timeout` at the quorum wait, as the
+/// engine's own timer told it.
+#[tokio::test(start_paused = true)]
+async fn a_publish_path_deadline_is_answered_with_its_error_when_it_passes() {
+    let (out_tx, mut out_rx) = mpsc::channel(8);
+    let quorum_wait = Duration::from_secs(5);
+    let acks = acks(&out_tx, 4, Duration::from_millis(6_500));
+    let (_cancel_tx, cancel_rx) = watch::channel(false);
+    let _sweep = tokio::spawn(acks.clone().run_deadlines(cancel_rx));
+    let timed_out = |timeout| {
+        anyhow::Error::from(felix_replication::quorum::QuorumError::TimedOut {
+            what: "batch",
+            timeout,
+        })
+    };
+
+    let (late, pending) = acks.reserve(request(41, AckEncoding::Json)).expect("room");
+    assert_eq!(pending.arm(), Armed::Waiting);
+    let started = Instant::now();
+    late.answer_within(quorum_wait, timed_out);
+    let answer = out_rx.recv().await.expect("open queue");
+    let waited = started.elapsed();
+    assert!(
+        waited >= quorum_wait && waited < quorum_wait + Duration::from_millis(2),
+        "answered after {waited:?}"
+    );
+    let (request_id, code, message) = publish_error(answer);
+    assert_eq!(request_id, 41);
+    assert_eq!(code, Some(felix_wire::ErrorCode::QuorumTimeout));
+    assert_eq!(message, "the batch did not reach a majority within 5s");
+    // Neither the ack timeout nor the late settle answers it again.
+    late.send(Ok(None));
+    tokio::time::sleep(Duration::from_secs(5)).await;
+    assert!(out_rx.try_recv().is_err());
+    assert_eq!(acks.inner.waiters.available_permits(), 4);
+
+    // One that settles first is not timed out afterwards.
+    let (prompt, pending) = acks.reserve(request(42, AckEncoding::Json)).expect("room");
+    assert_eq!(pending.arm(), Armed::Waiting);
+    prompt.answer_within(quorum_wait, timed_out);
+    prompt.send(Ok(Some(3)));
+    assert!(matches!(
+        out_rx.recv().await,
+        Some(Outgoing::Message(Message::PublishOk { request_id: 42, .. }))
+    ));
+    tokio::time::sleep(3 * quorum_wait).await;
+    assert!(out_rx.try_recv().is_err());
+}

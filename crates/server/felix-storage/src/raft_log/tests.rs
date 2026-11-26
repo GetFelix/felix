@@ -1,6 +1,7 @@
 //! The read side against logs written the way the write side will write
 //! them: one v9 record per entry, stamped with the entry's term plus one.
 
+mod commit_save;
 #[cfg(feature = "sim")]
 mod crash_points;
 mod flush_queue;

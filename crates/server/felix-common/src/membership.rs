@@ -21,6 +21,13 @@ pub const NODE_ROLE_LABEL: &str = "felix.dev/node-role";
 /// The role that keeps tenant shards off a node. The only role there is.
 pub const NODE_ROLE_INTERNAL: &str = "internal";
 
+/// The node label a broker without durable storage registers under. Placement
+/// gives such a node no durable stream's or cache's shard.
+pub const NODE_STORAGE_LABEL: &str = "felix.dev/node-storage";
+
+/// The one value of [`NODE_STORAGE_LABEL`]: the broker keeps nothing on disk.
+pub const NODE_STORAGE_NONE: &str = "none";
+
 /// What the cluster currently thinks of a node.
 ///
 /// `Unknown` is not a state the control plane sends. It is what a broker reads

@@ -483,10 +483,17 @@ pub(crate) fn split(batch: Batch) -> Result<(Proposal, Waiting), CommitError> {
         }),
     };
     let mut bytes = 0;
+    // Each record stores the publisher; the last takes it, so a batch of
+    // one copies nothing.
+    let mut publisher = publisher;
     let commands = records
         .into_iter()
         .zip(0u32..)
         .map(|(record, index)| {
+            let publisher = match index as usize + 1 == count {
+                true => publisher.take(),
+                false => publisher.clone(),
+            };
             bytes += record.payload.len() + record.headers.as_ref().map_or(0, Bytes::len);
             Command {
                 timestamp_micros: record.timestamp_micros,
@@ -505,7 +512,7 @@ pub(crate) fn split(batch: Batch) -> Result<(Proposal, Waiting), CommitError> {
                 trim,
                 commit,
                 group: false,
-                publisher: publisher.clone(),
+                publisher,
                 headers: record.headers.map(Box::new),
                 written: None,
                 cond: cond_len.map(|len| CondPlace {
@@ -865,6 +872,20 @@ pub(super) fn respond(
         // `queued` refuses an empty batch; one here would get no responder
         // and be told it stopped.
         debug_assert!(records > 0);
+        // A batch of one record is answered by that record's responder
+        // alone, with nothing shared to count the rest in.
+        if records == 1 {
+            responders.push(Respond {
+                tally: Tallied::One {
+                    bound,
+                    to: Some(to),
+                },
+                at: 0,
+                outcome: write_outcome,
+                done: false,
+            });
+            continue;
+        }
         let tally = Arc::new(Mutex::new(Tally {
             entries: (0..records).map(|_| None).collect(),
             left: records,
@@ -872,9 +893,9 @@ pub(super) fn respond(
             to: Some(to),
         }));
         responders.extend((0..records).map(|at| Respond {
-            tally: Arc::clone(&tally),
+            tally: Tallied::Many(Arc::clone(&tally)),
             at,
-            settle: settle_write,
+            outcome: write_outcome,
             done: false,
         }));
     }
@@ -886,11 +907,50 @@ pub(super) fn respond(
 /// task that applies the entry. A responder dropped unanswered, as a
 /// stopped group drops them, answers its record as stopped.
 pub(crate) struct Respond<T> {
-    tally: Arc<Mutex<Tally>>,
+    tally: Tallied,
     /// The record's place in its batch.
     at: usize,
-    settle: fn(&Mutex<Tally>, usize, Option<T>),
+    /// What openraft's answer, or none, says of the record. Takes the
+    /// call's `bound`.
+    outcome: fn(Option<T>, bool) -> Result<LogPoint, CommitError>,
     done: bool,
+}
+
+/// Where a record's answer goes.
+enum Tallied {
+    /// The only record of its batch: its answer is the batch's.
+    One {
+        bound: bool,
+        to: Option<oneshot::Sender<Result<Span, Unacknowledged>>>,
+    },
+    /// One of several, counted with the rest.
+    Many(Arc<Mutex<Tally>>),
+}
+
+impl<T> Respond<T> {
+    fn settle(&mut self, result: Option<T>) {
+        self.done = true;
+        match &mut self.tally {
+            Tallied::One { bound, to } => {
+                let applied = (self.outcome)(result, *bound);
+                if let Some(to) = to.take() {
+                    // The publisher may have stopped waiting.
+                    let _ = to.send(told(std::iter::once(applied)));
+                }
+            }
+            Tallied::Many(tally) => {
+                let mut tally = tally.lock();
+                let applied = (self.outcome)(result, tally.bound);
+                settle_write(&mut tally, self.at, applied);
+            }
+        }
+    }
+
+    /// Whether this record's answer is counted with others of its batch.
+    #[cfg(test)]
+    pub(super) fn shares_a_tally(&self) -> bool {
+        matches!(self.tally, Tallied::Many(_))
+    }
 }
 
 impl<T> openraft::raft::responder::Responder<ShardTypes, T> for Respond<T>
@@ -898,16 +958,14 @@ where
     T: Send + 'static,
 {
     fn on_complete(mut self, result: T) {
-        self.done = true;
-        (self.settle)(&self.tally, self.at, Some(result));
+        self.settle(Some(result));
     }
 }
 
 impl<T> Drop for Respond<T> {
     fn drop(&mut self) {
         if !self.done {
-            self.done = true;
-            (self.settle)(&self.tally, self.at, None);
+            self.settle(None);
         }
     }
 }
@@ -920,11 +978,13 @@ struct Tally {
     to: Option<oneshot::Sender<Result<Span, Unacknowledged>>>,
 }
 
-/// Note one record's answer, and once every record of the batch has one,
-/// tell the batch.
-fn settle_write(tally: &Mutex<Tally>, at: usize, result: Option<ClientWriteResult<ShardTypes>>) {
-    let mut tally = tally.lock();
-    let applied = match result {
+/// What openraft said of one record of a write call, or `None` for no
+/// answer. `bound` says the call named a term.
+fn write_outcome(
+    result: Option<ClientWriteResult<ShardTypes>>,
+    bound: bool,
+) -> Result<LogPoint, CommitError> {
+    match result {
         Some(Ok(applied)) => {
             felix_storage::hops::mark(felix_storage::hops::Stage::Applied);
             Ok(LogPoint {
@@ -938,12 +998,17 @@ fn settle_write(tally: &Mutex<Tally>, at: usize, result: Option<ClientWriteResul
         // step-down.
         Some(Err(ClientWriteError::ForwardToLeader(forward))) => Err(lost(match forward.reason {
             ForwardReason::LeaseExpired => LEASE_LAPSED,
-            _ if tally.bound => OTHER_TERM,
+            _ if bound => OTHER_TERM,
             _ => NOT_LEADING,
         })),
         Some(Err(_)) => Err(lost(DISCARDED)),
         None => Err(stopped()),
-    };
+    }
+}
+
+/// Note one record's answer, and once every record of the batch has one,
+/// tell the batch.
+fn settle_write(tally: &mut Tally, at: usize, applied: Result<LogPoint, CommitError>) {
     let Some(slot @ None) = tally.entries.get_mut(at) else {
         return;
     };

@@ -1143,6 +1143,57 @@ mod on_raft {
         Ok(())
     }
 
+    /// **A queued publish to a Raft shard looks its group up once**, as the
+    /// lane picks the Raft path; its proposal, its answer and its commit
+    /// wait use that group. The other lookups counted are the broker's read
+    /// bound, asked before it releases the committed batch.
+    #[tokio::test]
+    async fn a_queued_publish_to_a_raft_shard_looks_its_group_up_once() -> Result<()> {
+        let root = tempfile::tempdir()?;
+        let broker = fixture::broker(root.path()).await;
+        let shards = fixture::shards(&broker);
+        let orders = fixture::key("orders", 0);
+        let assigned = fixture::assigned(orders.clone(), fixture::INCARNATION);
+        fixture::take_formed(&shards, assigned).await;
+        fixture::until("the term is served", || shards.leading(&orders).is_some()).await;
+        let term = shards.leading(&orders).expect("term");
+        let engine = Arc::new(fixture::engine(&shards));
+        let cluster = ClusterContext {
+            engine,
+            ..ClusterContext::default()
+        };
+        let config = BrokerConfig {
+            pub_workers_per_conn: 1,
+            pub_queue_depth: 64,
+            ..BrokerConfig::default()
+        };
+        let publish_ctx = build_publish_context(Arc::clone(&broker), &config, cluster);
+        let handle = broker
+            .resolve_stream_handle("t1", "ns", "orders", 0)
+            .await?;
+        let (mut receiver, _guard) = broker
+            .subscribe("t1", "ns", "orders", 0)
+            .await?
+            .into_parts();
+        let raft = shards.engine_for(&orders).expect("a member here").clone();
+        let before = raft.lookups();
+        let _ = handle.read_bound();
+        let per_read = raft.lookups() - before;
+        assert_eq!(per_read, 1, "a read bound looks the shard up once");
+
+        let before = raft.lookups();
+        let (one, answer) = job(&handle, &orders, term, b"one", None);
+        publish_ctx.scheduler.send(one).await;
+        let offset = answer.await?.expect("acknowledged").expect("an offset");
+        assert_eq!(
+            fixture::delivered(&mut receiver).await,
+            (offset, Bytes::from_static(b"one"))
+        );
+        assert_eq!(raft.lookups() - before, 1 + per_read);
+        EngineShards::shutdown(&*shards).await;
+        Ok(())
+    }
+
     /// **A queued publish to a Raft shard keeps its publisher and headers**
     /// once the fleet stores them on Raft: the subscriber gets both, as on
     /// the hybrid.
@@ -1458,6 +1509,57 @@ mod on_raft {
         let taken = taken.await?.expect("acknowledged").expect("an offset");
         let passed = passed.await?.expect("acknowledged").expect("an offset");
         assert_eq!(passed, taken + 2, "the batch lost its place");
+        at.stop().await;
+        Ok(())
+    }
+
+    /// **A Raft publish whose client ack its control stream times out arms
+    /// no timer of its own.** The stream's sweep answers it at the quorum
+    /// wait with the engine's error, and the commit wait behind its delivery
+    /// has no deadline. Each was one timer per publish.
+    #[tokio::test]
+    async fn a_raft_publish_acked_to_a_client_arms_no_timer() -> Result<()> {
+        use crate::serving::quic::handlers::publish::ack::{AckEncoding, Outgoing};
+        use crate::serving::quic::handlers::publish::commit_ack::{AckRequest, Armed};
+
+        let at = Leading::new().await?;
+        let (out_tx, mut out_rx) = tokio::sync::mpsc::channel(8);
+        let acks = super::super::super::CommitAcks::for_test(
+            &out_tx,
+            Arc::new(tokio::sync::Semaphore::new(8)),
+        );
+        let request = AckRequest {
+            request_id: 1,
+            encoding: AckEncoding::Binary,
+            payload_bytes: 3,
+            forwarded_to: None,
+            start: crate::serving::quic::telemetry::t_instant_now(),
+            single: true,
+        };
+        let (reply, pending) = acks.reserve(request).expect("room");
+        let (mut one, _) = job(&at.handle, &at.orders, at.term, b"one", None);
+        one.response = Some(super::super::super::PublishReply::Ack(reply));
+
+        let armed = felix_broker::timer_probe::armed();
+        at.publish_ctx.scheduler.send(one).await;
+        assert_eq!(pending.arm(), Armed::Waiting);
+        let answer = tokio::time::timeout(Duration::from_secs(30), out_rx.recv()).await?;
+        assert!(
+            matches!(
+                answer,
+                Some(Outgoing::PublishAck {
+                    request_id: 1,
+                    error: None,
+                    ..
+                })
+            ),
+            "{answer:?}"
+        );
+        assert_eq!(
+            felix_broker::timer_probe::armed() - armed,
+            0,
+            "timers armed for one publish"
+        );
         at.stop().await;
         Ok(())
     }

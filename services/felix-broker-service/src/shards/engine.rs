@@ -249,7 +249,35 @@ impl RaftRefusal {
 /// A batch proposed to a Raft shard, or an empty one, which proposes nothing.
 pub struct RaftPublish(Option<felix_broker::ProposedPublish<CommitError>>);
 
+/// A shard's Raft group as one lookup found it ([`StreamEngine::raft_shard`]).
+/// Held past a close or a re-form of the shard, it refuses every publish
+/// as finding no group would.
+#[cfg(feature = "raft")]
+#[derive(Clone)]
+pub(crate) struct RaftShard(felix_replication::raft::RaftShard);
+
+/// No shard is on Raft in this build.
+#[cfg(not(feature = "raft"))]
+#[derive(Clone)]
+pub(crate) enum RaftShard {}
+
 impl RaftPublish {
+    /// Arm no deadline for the answer: the caller answers a publish still
+    /// unsettled after `timeout` with [`Self::timed_out`] itself, as
+    /// [`Self::complete`] otherwise would. Saves a timer per publish.
+    pub fn without_deadline(self) -> Self {
+        Self(self.0.map(felix_broker::ProposedPublish::without_deadline))
+    }
+
+    /// What [`Self::complete`] answers a publish not committed within the
+    /// `timeout` it was proposed with.
+    pub fn timed_out(timeout: Duration) -> CommitError {
+        CommitError::TimedOut {
+            what: "batch",
+            timeout,
+        }
+    }
+
     /// Wait for the acknowledgement. Returns the first record's offset.
     pub async fn complete(self) -> Result<Option<u64>, CommitError> {
         Ok(self.complete_offsets().await?.map(|(first, _)| first))
@@ -381,6 +409,19 @@ impl StreamEngine {
         Ok(())
     }
 
+    /// `shard`'s Raft group on this broker, looked up once.
+    /// [`Self::publish_to_raft`] given it looks the shard up no more. `None`
+    /// when the hybrid runs the shard.
+    pub(crate) fn raft_shard(&self, shard: &ShardKey) -> Option<RaftShard> {
+        #[cfg(feature = "raft")]
+        return self.raft.get()?.shard_for(shard).map(RaftShard);
+        #[cfg(not(feature = "raft"))]
+        {
+            let _ = shard;
+            None
+        }
+    }
+
     /// Propose a plain publish to `shard`'s Raft group, at the `term`
     /// routing answered. `None` when the hybrid runs the shard.
     ///
@@ -404,19 +445,44 @@ impl StreamEngine {
         attribution: felix_broker::Attribution,
         timeout: Duration,
     ) -> Option<Result<RaftPublish, RaftRefusal>> {
+        let raft = self.raft_shard(shard)?;
+        Some(self.publish_to_raft(
+            &raft,
+            broker,
+            handle,
+            shard,
+            term,
+            payloads,
+            attribution,
+            timeout,
+        ))
+    }
+
+    /// [`Self::publish_on_raft`] to the group [`Self::raft_shard`] found.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn publish_to_raft(
+        &self,
+        raft: &RaftShard,
+        broker: &felix_broker::Broker,
+        handle: &felix_broker::StreamHandle,
+        shard: &ShardKey,
+        term: u64,
+        payloads: Vec<bytes::Bytes>,
+        attribution: felix_broker::Attribution,
+        timeout: Duration,
+    ) -> Result<RaftPublish, RaftRefusal> {
         #[cfg(feature = "raft")]
         {
             use felix_replication::raft::{AckAt, AnswerAt};
-            let raft = self.raft(shard)?;
             // A term is served only once its stream is at the committed
             // tail, and only the term the write was routed at. The group
             // can move on between this check and the proposal, so the term
             // goes with the batch and one written at another is given up.
             if self.raft_term(shard) != Some(term) {
-                return Some(Err(RaftRefusal::NotLeading { term }));
+                return Err(RaftRefusal::NotLeading { term });
             }
             if payloads.is_empty() {
-                return Some(Ok(RaftPublish(None)));
+                return Ok(RaftPublish(None));
             }
             let ack = broker.durable_storage().map_or(AckAt::Flushed, |storage| {
                 AckAt::for_fsync(&storage.config().fsync_mode)
@@ -432,10 +498,9 @@ impl StreamEngine {
                 (felix_broker::ConsistencyLevel::Quorum, AckAt::Written) => AnswerAt::Majority,
                 (felix_broker::ConsistencyLevel::Quorum, AckAt::Flushed) => AnswerAt::Commit,
             };
-            let proposed = raft.publish_with(
+            let proposed = raft.0.publish_with(
                 broker,
                 handle,
-                shard,
                 Some(term),
                 payloads,
                 attribution,
@@ -443,16 +508,14 @@ impl StreamEngine {
                 answer,
                 timeout,
             );
-            Some(
-                proposed
-                    .map(|proposed| RaftPublish(Some(proposed)))
-                    .map_err(RaftRefusal::Broker),
-            )
+            proposed
+                .map(|proposed| RaftPublish(Some(proposed)))
+                .map_err(RaftRefusal::Broker)
         }
         #[cfg(not(feature = "raft"))]
         {
             let _ = (broker, handle, shard, term, payloads, attribution, timeout);
-            None
+            match *raft {}
         }
     }
 }
@@ -815,19 +878,18 @@ impl Engine for StreamEngine {
     ) -> Result<Option<u64>, Unreadable> {
         // One bound for every level: nothing above the commit index is read.
         #[cfg(feature = "raft")]
-        if let Some(raft) = self.raft(shard) {
-            return raft.read_bound(shard).map(Some);
+        if let Some(raft) = self.raft_shard(shard) {
+            return Ok(Some(raft.0.read_bound()));
         }
         self.hybrid.read_bound(consistency, shard)
     }
 
     fn committed_bound(&self, shard: &ShardKey) -> felix_broker::ReadBound {
+        // Asked once per publish, before the broker releases the batch: one
+        // lookup, not one to pick the engine and one to read it.
         #[cfg(feature = "raft")]
-        if let Some(raft) = self.raft(shard) {
-            return match raft.read_bound(shard) {
-                Ok(bound) => felix_broker::ReadBound::Committed(bound),
-                Err(_) => felix_broker::ReadBound::Refused,
-            };
+        if let Some(raft) = self.raft_shard(shard) {
+            return felix_broker::ReadBound::Committed(raft.0.read_bound());
         }
         self.hybrid.committed_bound(shard)
     }

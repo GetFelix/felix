@@ -472,6 +472,11 @@ pub struct NodeRegistrationResponse {
     /// The fleet features enabled as of this registration.
     #[serde(default)]
     pub fleet_features: std::collections::BTreeSet<String>,
+    /// Always true: this control plane gives a node registered without
+    /// durable storage no durable stream's or cache's shard. Absent from one
+    /// that predates such nodes, which a broker without storage refuses.
+    #[serde(default)]
+    pub storage_placement: bool,
 }
 
 /// Which fleet features the serving brokers support, and which are enabled.
@@ -802,6 +807,10 @@ pub enum ShardMoveStep {
     /// A copy is being added to bring the shard back to its replication
     /// factor; leadership stays.
     Restoring,
+    /// A Raft shard's leadership is being handed to another member of its
+    /// set, as an operator asked. `leader` is the member the group last
+    /// reported leading.
+    Leading,
 }
 
 /// One move or follower replacement in progress.

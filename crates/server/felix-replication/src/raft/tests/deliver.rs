@@ -3,7 +3,7 @@
 //! up to what it has applied.
 
 use felix_broker::{
-    Broker, BrokerError, ConsistencyLevel, DeliveryEnvelope, ReadBound, StartPosition,
+    Attribution, Broker, BrokerError, ConsistencyLevel, DeliveryEnvelope, ReadBound, StartPosition,
     StreamHandle, StreamMetadata, SubscriptionGuard, SubscriptionReceiver,
 };
 use felix_storage::EphemeralCache;
@@ -291,6 +291,62 @@ async fn a_batch_committed_after_its_timeout_goes_out_before_the_next() {
     led.cluster.stop().await;
 }
 
+/// **Publishes dropped while their leader cannot commit leave no task or
+/// waiter behind once the shard closes.** The commit wait behind a delivery
+/// has no deadline, so nothing but the commit, a lost leadership or the
+/// member's stop ends it; a dropped publisher's delivery runs on a task of
+/// its own until one does. Closing the stream ends its release of the gaps
+/// they leave.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn publishes_dropped_on_a_leader_that_cannot_commit_end_when_the_shard_closes() {
+    let mut led = led().await;
+    let (broker, handle) = broker_on(&led.engine).await;
+    // Only the publishes run here, so its live tasks are theirs.
+    let publishers = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(1)
+        .enable_all()
+        .build()
+        .expect("runtime");
+
+    led.cut_followers();
+    let mut publishing = Vec::new();
+    for _ in 0..8 {
+        let proposed = led.engine.publish(
+            &broker,
+            &handle,
+            &shard(0),
+            None,
+            vec![Bytes::from_static(b"never")],
+            AckAt::Flushed,
+            AnswerAt::Commit,
+            PATIENCE,
+        );
+        publishing.push(publishers.spawn(proposed.expect("proposed").complete()));
+    }
+    // The publishers' connections drop before any commit.
+    for publish in &publishing {
+        publish.abort();
+    }
+    for publish in publishing {
+        assert!(publish.await.expect_err("aborted").is_cancelled());
+    }
+    let metrics = publishers.metrics();
+    assert!(
+        metrics.num_alive_tasks() > 0,
+        "the deliveries ended before the shard closed"
+    );
+
+    let runtime = led.cluster.runtime(&led.leader.broker);
+    assert!(runtime.close(&shard(0)).await, "the shard was open");
+    // As a broker closes a shard: its group, then the stream's state, whose
+    // release of held batches ends with it.
+    let close = broker.close_stream_shard("t", "ns", "orders", 0, None);
+    close.await.expect("closed");
+    eventually(|| (metrics.num_alive_tasks() == 0).then_some(())).await;
+    publishers.shutdown_background();
+    led.cluster.stop().await;
+}
+
 /// **Offsets the log used for entries holding no record reach subscribers
 /// as skipped.** A new group's first entries are its membership and the
 /// leader's blank entry; reported as nothing, the first record would arrive
@@ -400,14 +456,14 @@ async fn a_reader_resuming_in_a_batch_written_in_part_goes_to_the_log() {
         };
         let batch = Proposed {
             skips: None,
-            shard: shard(0),
+            group: engine.looked_up(&shard(0)),
             term: Some(term),
             count: 2,
             timeout: PATIENCE,
             on_lease: None,
             on_majority: None,
         };
-        settled(engine, batch, written)
+        settled(batch, written)
     });
     let outcome = proposed.expect("proposed").complete().await;
     assert!(
@@ -535,14 +591,14 @@ fn publish_held(led: &Led, broker: &Broker, handle: &StreamHandle, payload: &'st
         };
         let batch = Proposed {
             skips: None,
-            shard: shard(0),
+            group: engine.looked_up(&shard(0)),
             term,
             count: 1,
             timeout: PATIENCE,
             on_lease: Some((AckAt::Flushed, on_lease)),
             on_majority: None,
         };
-        settled(engine, batch, written)
+        settled(batch, written)
     });
     let proposed = proposed.expect("proposed").answer_at(answered);
     Held {
@@ -700,7 +756,7 @@ async fn a_batch_written_at_another_term_is_not_answered_on_the_lease() {
     let (on_lease, mut answered) = oneshot::channel();
     let batch = Proposed {
         skips: None,
-        shard: shard(0),
+        group: led.engine.looked_up(&shard(0)),
         term: Some(written.generation + 1),
         count: 1,
         timeout: PATIENCE,
@@ -710,7 +766,7 @@ async fn a_batch_written_at_another_term_is_not_answered_on_the_lease() {
     let admitted = led.engine.admit_local_ack(&shard(0), written.generation);
     admitted.expect("the lease holds");
     let landed = async move { Ok::<_, Unacknowledged>(written) };
-    let outcome = settled(led.engine.clone(), batch, landed).await;
+    let outcome = settled(batch, landed).await;
     assert!(outcome.is_err(), "settled at another term");
     assert_eq!(
         answered.try_recv(),
@@ -1903,5 +1959,124 @@ async fn a_publish_answered_at_its_commit_does_not_wait_for_the_flush_too() {
         "{polls} polls for {PUBLISHES} publishes"
     );
     assert!(receiver.try_recv().is_err(), "delivered twice");
+    cluster.stop().await;
+}
+
+/// Lookups of shard groups `engine`'s runtime made while `publish` ran to
+/// its commit and its subscriber got it.
+async fn lookups_of(
+    engine: &RaftEngine,
+    receiver: &mut SubscriptionReceiver,
+    publish: impl FnOnce() -> Publishing,
+) -> u64 {
+    let before = engine.lookups();
+    let published = publish();
+    published.await.expect("joined").expect("answered");
+    // Delivered only once the batch's wait for its commit has ended.
+    next(receiver).await;
+    engine.lookups() - before
+}
+
+/// **A publish looks its shard's group up once**: its proposal, its skip
+/// count, its lease answer, its written majority and its commit wait all use
+/// the group it found. Each lookup is a read lock and a hash of the shard key.
+/// The other lookup counted is the broker's: it asks the read bound
+/// ([`RaftReads`]) before it releases the committed batch.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_publish_looks_its_shards_group_up_once() {
+    let mut cluster = Cluster::new(true);
+    let (engine, term) = sole_voter(&mut cluster).await;
+    tokio::time::sleep(timers().lease + Duration::from_millis(100)).await;
+    assert_eq!(engine.admit_local_ack(&shard(0), term), Ok(()));
+    let (broker, handle) = broker_on(&engine).await;
+    let (mut receiver, _guard) = subscriber(&broker).await;
+
+    for (ack, answer) in [
+        (AckAt::Written, AnswerAt::Lease),
+        (AckAt::Written, AnswerAt::Majority),
+        (AckAt::Flushed, AnswerAt::Commit),
+    ] {
+        let payload = Bytes::from_static(b"once");
+        let looked = lookups_of(&engine, &mut receiver, || {
+            publish_acked(&engine, &broker, &handle, payload, ack, answer, PATIENCE)
+        })
+        .await;
+        assert_eq!(looked, 2, "{answer:?}");
+    }
+    // Looked up ahead, the publish itself looks up nothing.
+    let held = engine.shard(&shard(0)).expect("a member here");
+    let looked = lookups_of(&engine, &mut receiver, || {
+        let proposed = held.publish_with(
+            &broker,
+            &handle,
+            None,
+            vec![Bytes::from_static(b"held")],
+            Attribution::default(),
+            AckAt::Written,
+            AnswerAt::Lease,
+            PATIENCE,
+        );
+        tokio::spawn(proposed.expect("proposed").complete())
+    })
+    .await;
+    assert_eq!(looked, 1);
+    cluster.stop().await;
+}
+
+/// **A publish to a shard's group looked up before the group closed, or
+/// before another member of the shard opened in its place, is refused as a
+/// publish finding no group is, and reaches neither.** Held past the close,
+/// the old member would take a write no member of the shard serves, or
+/// answer one the new member never saw.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_publish_to_a_closed_or_replaced_group_is_refused_as_with_no_group() {
+    let mut cluster = Cluster::new(true);
+    let (engine, _) = sole_voter(&mut cluster).await;
+    let (broker, handle) = broker_on(&engine).await;
+    let held = engine.shard(&shard(0)).expect("a member here");
+    let publish_held = || {
+        let proposed = held.publish_with(
+            &broker,
+            &handle,
+            None,
+            vec![Bytes::from_static(b"stale")],
+            Attribution::default(),
+            AckAt::Written,
+            AnswerAt::Lease,
+            PATIENCE,
+        );
+        tokio::spawn(proposed.expect("proposed").complete())
+    };
+
+    let runtime = cluster.runtime("a");
+    assert!(runtime.close(&shard(0)).await, "the shard was open");
+    let unheld = publish_acked(
+        &engine,
+        &broker,
+        &handle,
+        Bytes::from_static(b"none"),
+        AckAt::Written,
+        AnswerAt::Lease,
+        PATIENCE,
+    );
+    let refused = unheld.await.expect("joined").expect_err("no group");
+    assert!(
+        matches!(refused, CommitError::LeadershipLost { .. }),
+        "{refused:?}"
+    );
+    let closed = publish_held().await.expect("joined");
+    assert_eq!(closed.expect_err("closed"), refused);
+
+    // The shard's member opens again on the same log: another group.
+    let log = cluster.logs[&("a".to_string(), 0)].clone();
+    log.close().await.expect("close");
+    let log = open_log(cluster.root.path(), "a", 0, log_config());
+    cluster.logs.insert(("a".into(), 0), log.clone());
+    runtime.open(group(0), 1, log).await.expect("reopen");
+    assert!(engine.shard(&shard(0)).is_some(), "a member again");
+    assert_eq!(engine.proposals(&shard(0)), 0, "a new member");
+    let replaced = publish_held().await.expect("joined");
+    assert_eq!(replaced.expect_err("replaced"), refused);
+    assert_eq!(engine.proposals(&shard(0)), 0, "reached the new member");
     cluster.stop().await;
 }

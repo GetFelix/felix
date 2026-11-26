@@ -369,13 +369,15 @@ impl Commits {
 /// The commit index passing the offset is not enough: a leader deposed
 /// before its entry reached a majority has the offset taken by the next
 /// leader's entry. An error is an unknown outcome, never "not written".
+/// With no `timeout` only the commit, a lost leadership or the member's
+/// stop ends the wait.
 pub(crate) async fn committed(
     written: Written,
     commits: watch::Receiver<Commits>,
     applied: Waiters<u64>,
     mut leading: impl Leading,
     stop: CancellationToken,
-    timeout: Duration,
+    timeout: Option<Duration>,
 ) -> Result<(), CommitError> {
     let Some(index) = written.end.checked_sub(1) else {
         return Err(propose::lost(NO_RECORD));
@@ -385,6 +387,17 @@ pub(crate) async fn committed(
         let term_at =
             |commits: &Commits| Some(commits.term_at(index)).filter(|at| *at != TermAt::Pending);
         applied.wait_for(&commits, index, term_at).await.ok()
+    };
+    let timed_out = async {
+        match timeout {
+            Some(timeout) => {
+                #[cfg(any(test, feature = "testing"))]
+                felix_broker::timer_probe::note_armed();
+                tokio::time::sleep(timeout).await;
+                timeout
+            }
+            None => std::future::pending().await,
+        }
     };
     tokio::select! {
         biased;
@@ -399,7 +412,7 @@ pub(crate) async fn committed(
             Lost::Deposed | Lost::Electing => propose::lost(NOT_LEADING),
         }),
         () = stop.cancelled() => Err(propose::stopped()),
-        () = tokio::time::sleep(timeout) => Err(CommitError::TimedOut {
+        timeout = timed_out => Err(CommitError::TimedOut {
             what: "batch",
             timeout,
         }),
