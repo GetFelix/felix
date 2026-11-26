@@ -44,6 +44,12 @@ async fn satisfies_the_reform_epoch_contract() {
 }
 
 #[tokio::test]
+async fn satisfies_the_abandon_epoch_contract() {
+    let store = std::sync::Arc::new(store_with_limits(100, 1000).with_shard_engine("raft"));
+    crate::store::contract::abandon_epochs::run_abandon_epoch_contract(store).await;
+}
+
+#[tokio::test]
 async fn satisfies_the_raft_floor_contract() {
     let store = std::sync::Arc::new(store_with_limits(100, 1000));
     crate::store::contract::raft_floors::run_raft_floor_contract(store).await;

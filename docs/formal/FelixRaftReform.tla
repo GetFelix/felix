@@ -1022,7 +1022,10 @@ Line ==
     1 + MaxOf({x.i : x \in acked} \cup {Len(log[b]) : b \in Brokers}
                 \cup {Len(m.log) : m \in msgs} \cup {0})
 
-\* An epoch's first index is one past its padded base.
+\* An epoch's first index is one past its padded base. The code starts on
+\* the line and refuses unless the line is above the floor and every earlier
+\* first index, which a clock that is not behind always gives; the Max
+\* stands in for that here, since Line is not a clock and cannot run behind.
 AbandonFirst ==
     IF Abandon = "floor" THEN cpFloor.i + 1
     ELSE Max(Line, Max(cpFloor.i + 1, MaxOf({Len(f.base) + 2 : f \in forms} \cup {0})))

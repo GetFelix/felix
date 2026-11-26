@@ -1598,13 +1598,23 @@ so no broker that would form the new epoch from index 0 can be its leader.
 
 The control plane writes the abandon as one compare and swap,
 `AbandonRaftEpoch` at metadata level 56. It checks the incarnation, epoch
-and generation, checks the dead set again, places the shard on one live
+and generation, checks every placed broker against the store's own dead set
+at the write (not the set the operator read), places the shard on one live
 broker at the next generation and epoch, and appends an empty base whose
-first index is above the offset floor, above every earlier epoch's first
-index, and on the restore time line (`2^14 x` the planning time in
-milliseconds, plus the gap). The floor alone is not enough: a leader reports
-it at most once a second. The offset floor is kept, so offsets the lost
+first index is on the restore time line (`2^14 x` the planning time in
+milliseconds, plus the gap). The offset floor is kept, so offsets the lost
 group gave out stay given out.
+
+The floor alone is not enough: a leader reports it at most once a second,
+and not at all while it cannot reach the control plane, so the lost copy
+may have acknowledged offsets above it. The time line covers those, as for
+a restore. It does not when this control plane's clock is behind the one
+that started an earlier epoch on the line, after a restore or an earlier
+abandon: that epoch's first index can then be above the line, and nothing
+bounds what it gave out since its last report. So the abandon is refused
+(`abandon_refused`) while the line is not above the offset floor and every
+earlier epoch's first index. Fix the clock, or wait for it to pass, and ask
+again.
 
 A broker never forms a group past epoch 0 from index 0, since forming
 writes the group's first entries there. A blank copy of an abandoned epoch

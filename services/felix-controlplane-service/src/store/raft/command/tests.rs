@@ -726,7 +726,6 @@ fn an_abandon_epoch_start_is_refused_below_level_56() {
             expected_epoch: 0,
             expected_generation: 1,
             leader: "b".to_string(),
-            dead: ["a".to_string()].into(),
             planned_at_millis: 1,
             offset_gap: 1 << 40,
         },

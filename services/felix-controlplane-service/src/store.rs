@@ -777,7 +777,8 @@ pub trait ControlPlaneStore: Send + Sync {
     /// Give up the log of `key`'s Raft group and start its next epoch empty
     /// on `start.leader`, by compare and swap on the incarnation, epoch and
     /// generation, and answer the shard as written. Every broker placed in
-    /// the epoch must be in `start.dead`. The new assignment, the next
+    /// the epoch must be dead by the store's own records at the write
+    /// ([`Self::dead_nodes`]). The new assignment, the next
     /// `placed` record and the empty base with its first index land in one
     /// write, before any broker can start the epoch.
     ///

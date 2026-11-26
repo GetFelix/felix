@@ -27,9 +27,6 @@ pub struct AbandonEpochStart {
     pub expected_generation: u64,
     /// The broker the next epoch starts on.
     pub leader: String,
-    /// The brokers declared dead when the abandon was asked. The apply uses
-    /// this set, so every member decides the same way.
-    pub dead: BTreeSet<String>,
     /// The control plane's wall clock when the abandon was asked, in Unix
     /// milliseconds. Fixed in the command so every member computes the same
     /// first index.
@@ -60,20 +57,30 @@ pub(crate) enum AbandonError {
     ShortGap(u64),
     #[error("every offset is taken")]
     NoIndexLeft,
+    #[error(
+        "the restore time line at this control plane's clock ({line}) is not above index \
+         {given}, which the group's offset floor or an earlier epoch already reached; check \
+         the clock and ask again"
+    )]
+    LineBehind { line: u64, given: u64 },
 }
 
 impl ShardAssignment {
-    /// The first index an abandon gives the next epoch: above the offset
-    /// floor and the last committed index any leader reported, above every
-    /// earlier epoch's first index, and no lower than the restore time line
-    /// plus the gap.
+    /// The first index an abandon gives the next epoch: the restore time
+    /// line plus the gap. Refused unless that is above the offset floor, the
+    /// last committed index any leader reported and every earlier epoch's
+    /// first index.
     ///
     /// The floor alone is not enough: a leader reports it at most once a
     /// second, and not at all while it cannot reach the control plane, so
     /// the lost copy may have acknowledged offsets above it. The time line
     /// grows faster than any shard gives out offsets, so it covers those
     /// (`docs/per-shard-raft.md`, "A restore from a backup point is a
-    /// re-form").
+    /// re-form"), but only while this clock is not behind the one that
+    /// started an earlier epoch on the line. A floor or first index at or
+    /// above the line says it is. Starting just above them would then reuse
+    /// what the lost epoch acknowledged since its last report, and no gap
+    /// bounds that: the leader may not have reported for as long as it ran.
     pub(crate) fn abandon_first_index(
         &self,
         start: &AbandonEpochStart,
@@ -98,20 +105,18 @@ impl ShardAssignment {
             .iter()
             .map(|base| base.first_index)
             .max();
-        let above = |index: Option<u64>| {
-            index
-                .map(|index| index.checked_add(1).ok_or(AbandonError::NoIndexLeft))
-                .transpose()
-                .map(Option::unwrap_or_default)
-        };
-        Ok(line.max(above(floor)?).max(above(earlier)?))
+        match floor.max(earlier) {
+            Some(given) if line <= given => Err(AbandonError::LineBehind { line, given }),
+            _ => Ok(line),
+        }
     }
 
     /// The record `start` writes, or why it is refused.
     ///
     /// Refused unless the shard is still at the incarnation, epoch and
     /// generation the abandon was asked at, and every broker placed in the
-    /// epoch is in `start.dead`. A placed broker that is not declared dead
+    /// epoch is in `dead`. The store passes its own dead set at the write,
+    /// not the one the operator saw. A placed broker that is not declared dead
     /// may still hold acknowledged records and come back, so its word is
     /// needed and a re-form, not an abandon, is the way. The next epoch is
     /// placed on the new leader alone, its base is empty, and its first
@@ -120,6 +125,7 @@ impl ShardAssignment {
     pub(crate) fn abandon_epoch(
         &self,
         start: &AbandonEpochStart,
+        dead: &BTreeSet<String>,
     ) -> Result<ShardAssignment, AbandonError> {
         if start.incarnation != self.incarnation {
             return Err(AbandonError::OtherIncarnation {
@@ -145,11 +151,11 @@ impl ShardAssignment {
             .brokers
             .iter()
             .chain(self.placed_nodes())
-            .find(|broker| !start.dead.contains(*broker))
+            .find(|broker| !dead.contains(*broker))
         {
             return Err(AbandonError::Unaccounted(live.clone()));
         }
-        if start.dead.contains(&start.leader) {
+        if dead.contains(&start.leader) {
             return Err(AbandonError::LeaderDead(start.leader.clone()));
         }
         let first_index = self.abandon_first_index(start)?;

@@ -719,7 +719,8 @@ pub fn abandons_on_raft(catalog: &Catalog<'_>, key: &ShardKey) -> bool {
 /// Refused unless every broker placed in the group's epoch is in `dead`,
 /// so a copy that may come back is never left out. The new leader is
 /// chosen as for a new shard. The store checks the same conditions again
-/// in the write, so this only answers an operator early.
+/// in the write, against its own dead set, so this only answers an operator
+/// early.
 pub fn abandon_raft_log(
     catalog: &Catalog<'_>,
     key: &ShardKey,
@@ -758,11 +759,10 @@ pub fn abandon_raft_log(
         expected_epoch: existing.group_epoch(),
         expected_generation: existing.generation,
         leader,
-        dead: dead.clone(),
         planned_at_millis,
         offset_gap: felix_storage::raft_copy::DEFAULT_OFFSET_GAP,
     };
-    match existing.abandon_epoch(&start) {
+    match existing.abandon_epoch(&start, dead) {
         Ok(_) => Ok(start),
         Err(AbandonError::Unaccounted(node)) => Err(Refused::NotDeclaredDead(node)),
         Err(AbandonError::NotPlaced) => Err(Refused::NotStranded),

@@ -435,12 +435,18 @@ pub(super) async fn start_reformed_epoch(
 }
 
 /// [`crate::store::ControlPlaneStore::abandon_raft_epoch`]. Decided from the
-/// record and the command alone, so every member writes the same epoch.
+/// store's records and the command alone, so every member writes the same
+/// epoch.
 pub(super) async fn abandon_raft_epoch(
     store: &InMemoryStore,
     key: &ShardKey,
     start: &crate::model::AbandonEpochStart,
 ) -> StoreResult<crate::model::ShardAssignment> {
+    // Nodes, then shards, as a node delete takes them. The dead set is read
+    // under the same locks as the write, so the check and the write are one
+    // step even if the operator's read is older.
+    let nodes = store.nodes.read().await;
+    let dead = nodes.dead_node_ids();
     let mut state = store.shards.write().await;
     let Some(existing) = state.records.get(key) else {
         return Err(StoreError::NotFound("shard assignment".into()));
@@ -449,7 +455,7 @@ pub(super) async fn abandon_raft_epoch(
         return Ok(existing.clone());
     }
     let stored = existing
-        .abandon_epoch(start)
+        .abandon_epoch(start, &dead)
         .map_err(|err| StoreError::Conflict(err.to_string()))?;
     state.records.insert(key.clone(), stored.clone());
     state.record(ShardAssignmentChangeOp::Updated, key, Some(stored.clone()));

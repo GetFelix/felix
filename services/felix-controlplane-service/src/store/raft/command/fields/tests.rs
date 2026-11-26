@@ -741,7 +741,6 @@ fn commands() -> Vec<MetaCommand> {
                 expected_epoch: 1,
                 expected_generation: 1,
                 leader: s("b"),
-                dead: BTreeSet::from([s("a")]),
                 planned_at_millis: 1,
                 offset_gap: 1,
             },

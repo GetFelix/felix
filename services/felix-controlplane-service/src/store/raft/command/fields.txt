@@ -2103,7 +2103,6 @@
 56 abandon_raft_epoch.key.stream
 56 abandon_raft_epoch.key.tenant_id
 56 abandon_raft_epoch.start
-56 abandon_raft_epoch.start.dead
 56 abandon_raft_epoch.start.expected_epoch
 56 abandon_raft_epoch.start.expected_generation
 56 abandon_raft_epoch.start.incarnation

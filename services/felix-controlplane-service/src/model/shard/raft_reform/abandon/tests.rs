@@ -45,13 +45,12 @@ fn stranded() -> ShardAssignment {
     shard
 }
 
-fn start(shard: &ShardAssignment, dead: &[&str]) -> AbandonEpochStart {
+fn start(shard: &ShardAssignment) -> AbandonEpochStart {
     AbandonEpochStart {
         incarnation: shard.incarnation,
         expected_epoch: shard.group_epoch(),
         expected_generation: shard.generation,
         leader: "b".to_string(),
-        dead: set(dead),
         planned_at_millis: 1_800_000_000_000,
         offset_gap: DEFAULT_OFFSET_GAP,
     }
@@ -61,7 +60,7 @@ fn start(shard: &ShardAssignment, dead: &[&str]) -> AbandonEpochStart {
 fn an_abandon_is_refused_while_a_placed_broker_is_not_declared_dead() {
     let shard = stranded();
     assert_eq!(
-        shard.abandon_epoch(&start(&shard, &[])),
+        shard.abandon_epoch(&start(&shard), &set(&[])),
         Err(AbandonError::Unaccounted("a".to_string()))
     );
     // A broker placed earlier in the epoch counts too: it may hold a copy.
@@ -73,14 +72,14 @@ fn an_abandon_is_refused_while_a_placed_broker_is_not_declared_dead() {
         .brokers
         .insert("c".to_string());
     assert_eq!(
-        moved.abandon_epoch(&start(&moved, &["a"])),
+        moved.abandon_epoch(&start(&moved), &set(&["a"])),
         Err(AbandonError::Unaccounted("c".to_string()))
     );
     // So does one named by the assignment but not yet on the placed record.
     let mut replicated = shard.clone();
     replicated.replicas = vec!["d".to_string()];
     assert_eq!(
-        replicated.abandon_epoch(&start(&replicated, &["a"])),
+        replicated.abandon_epoch(&start(&replicated), &set(&["a"])),
         Err(AbandonError::Unaccounted("d".to_string()))
     );
 }
@@ -89,7 +88,7 @@ fn an_abandon_is_refused_while_a_placed_broker_is_not_declared_dead() {
 fn an_abandon_starts_the_next_epoch_empty_on_the_new_leader() {
     let shard = stranded();
     let next = shard
-        .abandon_epoch(&start(&shard, &["a"]))
+        .abandon_epoch(&start(&shard), &set(&["a"]))
         .expect("abandon");
     assert_eq!(next.leader, "b");
     assert!(next.replicas.is_empty());
@@ -120,8 +119,8 @@ fn an_abandon_starts_the_next_epoch_empty_on_the_new_leader() {
 #[test]
 fn offsets_after_an_abandon_are_above_every_offset_the_lost_group_gave_out() {
     let shard = stranded();
-    let start = start(&shard, &["a"]);
-    let next = shard.abandon_epoch(&start).expect("abandon");
+    let start = start(&shard);
+    let next = shard.abandon_epoch(&start, &set(&["a"])).expect("abandon");
     let first = next.raft_bases.as_ref().unwrap().bases[0].first_index;
     assert!(first > 40, "above the floor");
     // The lost leader writing at half the line's slope since the epoch
@@ -134,22 +133,51 @@ fn offsets_after_an_abandon_are_above_every_offset_the_lost_group_gave_out() {
         RESTORE_OFFSETS_PER_MILLI * start.planned_at_millis + DEFAULT_OFFSET_GAP
     );
 
-    // An earlier epoch's first index above the line still bounds it.
+    // A second abandon asked where the clock is behind the first one's
+    // would put the line below the first epoch's first index. Its copy may
+    // have acknowledged offsets from there on that no floor report names, so
+    // starting just above that index would give them out again: refused.
     let mut later = next.clone();
     later.placed.as_mut().unwrap().brokers = set(&["b"]);
-    let mut again = AbandonEpochStart {
+    let behind = AbandonEpochStart {
         expected_epoch: 1,
         expected_generation: later.generation,
         leader: "c".to_string(),
-        dead: set(&["b"]),
-        planned_at_millis: 0,
+        planned_at_millis: start.planned_at_millis - 1,
         ..start.clone()
     };
-    again.offset_gap = DEFAULT_OFFSET_GAP;
-    let third = later.abandon_epoch(&again).expect("second abandon");
+    assert_eq!(
+        later.abandon_epoch(&behind, &set(&["a", "b"])),
+        Err(AbandonError::LineBehind {
+            line: first - RESTORE_OFFSETS_PER_MILLI,
+            given: first,
+        })
+    );
+    // A clock that moved on puts the next epoch on the line again.
+    let ahead = AbandonEpochStart {
+        planned_at_millis: start.planned_at_millis + 1,
+        ..behind.clone()
+    };
+    let third = later
+        .abandon_epoch(&ahead, &set(&["a", "b"]))
+        .expect("second abandon");
     let bases = &third.raft_bases.as_ref().unwrap().bases;
     assert_eq!(bases.len(), 2);
-    assert_eq!(bases[1].first_index, first + 1);
+    assert_eq!(bases[1].first_index, first + RESTORE_OFFSETS_PER_MILLI);
+}
+
+/// A floor at or above the line says the clock is behind too: refused
+/// rather than started just above it.
+#[test]
+fn an_abandon_is_refused_while_the_floor_is_above_the_time_line() {
+    let mut shard = stranded();
+    let at = start(&shard);
+    let line = RESTORE_OFFSETS_PER_MILLI * at.planned_at_millis + DEFAULT_OFFSET_GAP;
+    shard.raft_floor.as_mut().unwrap().offset_floor = line;
+    assert_eq!(
+        shard.abandon_epoch(&at, &set(&["a"])),
+        Err(AbandonError::LineBehind { line, given: line })
+    );
 }
 
 #[test]
@@ -157,10 +185,10 @@ fn an_abandon_with_a_short_gap_is_refused() {
     let shard = stranded();
     let short = AbandonEpochStart {
         offset_gap: MIN_OFFSET_GAP - 1,
-        ..start(&shard, &["a"])
+        ..start(&shard)
     };
     assert_eq!(
-        shard.abandon_epoch(&short),
+        shard.abandon_epoch(&short, &set(&["a"])),
         Err(AbandonError::ShortGap(MIN_OFFSET_GAP - 1))
     );
 }
@@ -170,12 +198,12 @@ fn an_abandon_with_a_short_gap_is_refused() {
 #[test]
 fn a_replayed_abandon_never_starts_a_second_epoch() {
     let shard = stranded();
-    let start = start(&shard, &["a"]);
-    let next = shard.abandon_epoch(&start).expect("abandon");
+    let start = start(&shard);
+    let next = shard.abandon_epoch(&start, &set(&["a"])).expect("abandon");
     assert!(next.abandoned_by(&start));
     assert!(!shard.abandoned_by(&start));
     assert!(matches!(
-        next.abandon_epoch(&start),
+        next.abandon_epoch(&start, &set(&["a"])),
         Err(AbandonError::EpochMoved { .. })
     ));
 }
@@ -185,26 +213,26 @@ fn an_abandon_asked_at_another_generation_or_incarnation_is_refused() {
     let shard = stranded();
     let stale = AbandonEpochStart {
         expected_generation: 4,
-        ..start(&shard, &["a"])
+        ..start(&shard)
     };
     assert!(matches!(
-        shard.abandon_epoch(&stale),
+        shard.abandon_epoch(&stale, &set(&["a"])),
         Err(AbandonError::GenerationMoved { .. })
     ));
     let other = AbandonEpochStart {
         incarnation: 2,
-        ..start(&shard, &["a"])
+        ..start(&shard)
     };
     assert!(matches!(
-        shard.abandon_epoch(&other),
+        shard.abandon_epoch(&other, &set(&["a"])),
         Err(AbandonError::OtherIncarnation { .. })
     ));
     let onto_dead = AbandonEpochStart {
         leader: "a".to_string(),
-        ..start(&shard, &["a"])
+        ..start(&shard)
     };
     assert_eq!(
-        shard.abandon_epoch(&onto_dead),
+        shard.abandon_epoch(&onto_dead, &set(&["a"])),
         Err(AbandonError::LeaderDead("a".to_string()))
     );
 }

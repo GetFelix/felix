@@ -1572,6 +1572,20 @@ struct NodeState {
 }
 
 impl NodeState {
+    /// The nodes whose registered data directory is declared dead, and those
+    /// declared dead and not registered: `ControlPlaneStore::dead_nodes`.
+    fn dead_node_ids(&self) -> std::collections::BTreeSet<String> {
+        self.dead
+            .iter()
+            .filter(|dead| {
+                self.records
+                    .get(&dead.node_id)
+                    .is_none_or(|node| node.status.storage_id.as_ref() == Some(&dead.storage_id))
+            })
+            .map(|dead| dead.node_id.clone())
+            .collect()
+    }
+
     fn record(&mut self, op: NodeChangeOp, node_id: &str, node: Option<Node>) {
         self.changes.record(|seq| NodeChange {
             seq,
