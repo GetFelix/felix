@@ -1053,7 +1053,13 @@ async fn a_consumer_group_on_a_raft_shard_is_refused_until_the_fleet_finalizes_i
     if !opted_in() {
         return;
     }
-    let cluster = Cluster::start(raft_cluster()).await.expect("start cluster");
+    // A new cluster finalizes the feature itself.
+    let cluster = Cluster::start(ClusterConfig {
+        upgraded_fleet: true,
+        ..raft_cluster()
+    })
+    .await
+    .expect("start cluster");
     let nodes = cluster.node_ids();
     let leader = leader_among(&cluster, &nodes).await;
     publish_acked(&cluster, &leader, b"work").await;

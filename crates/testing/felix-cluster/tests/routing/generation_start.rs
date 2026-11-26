@@ -39,6 +39,9 @@ async fn start_with(finalize: bool, broker_env: Vec<(String, String)>) -> Cluste
         nodes: 3,
         streams: vec![StreamSpec::quorum(STREAM, 1, 2)],
         broker_env,
+        // The hybrid fleet these were written for finalizes only
+        // `generation_start`, and only when asked; a Raft one comes up new.
+        upgraded_fleet: !felix_cluster::suite_runs_on_raft(),
         ..Default::default()
     })
     .await
