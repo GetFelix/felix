@@ -15,8 +15,10 @@ pub(crate) struct RaftShard {
 impl RaftShard {
     /// Start `config` as one Raft broker, then create `stream`. Created after
     /// the start, so the harness's readiness probes write to a stream of their
-    /// own and every shard of this one starts empty. `record_headers`
-    /// finalizes the fleet feature a cluster stores keys and headers under.
+    /// own and every shard of this one starts empty. Without
+    /// `record_headers` the broker does not report the features a cluster
+    /// stores keys and headers under, so they stay off, as on a local broker
+    /// that was not opted in; a new cluster would finalize them itself.
     pub(crate) async fn start(
         config: ClusterConfig,
         stream: StreamSpec,
@@ -25,6 +27,18 @@ impl RaftShard {
         let mut broker_env = config.broker_env;
         // Named, so the fixture is Raft whatever engine a suite defaults to.
         broker_env.push(("FELIX_SHARD_ENGINE".to_string(), "raft".to_string()));
+        let headers = [
+            felix_common::fleet::RECORD_HEADERS.name(),
+            felix_common::fleet::RAFT_RECORD_HEADERS.name(),
+        ];
+        if !record_headers {
+            let reported: Vec<&str> = felix_common::fleet::IMPLEMENTED
+                .iter()
+                .map(|feature| feature.name())
+                .filter(|name| !headers.contains(name))
+                .collect();
+            broker_env.push(("FELIX_TEST_FLEET_FEATURES".to_string(), reported.join(",")));
+        }
         let cluster = Cluster::start(ClusterConfig {
             nodes: 1,
             streams: vec![StreamSpec::new("ready", 1)],
@@ -39,9 +53,10 @@ impl RaftShard {
             .iter()
             .map(|feature| feature.name())
             .filter(|name| name.starts_with("raft_"))
+            .filter(|name| record_headers || !headers.contains(name))
             .collect();
         if record_headers {
-            features.push(felix_common::fleet::RECORD_HEADERS.name());
+            features.insert(0, felix_common::fleet::RECORD_HEADERS.name());
         }
         cluster
             .finalize_fleet_features(&features, Duration::from_secs(30))

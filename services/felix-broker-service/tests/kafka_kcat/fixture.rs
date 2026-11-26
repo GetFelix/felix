@@ -148,10 +148,14 @@ impl Felix {
         self.certs.path()
     }
 
-    /// Publish `values` to `shard` through Felix itself, not Kafka.
-    pub(crate) async fn publish(&self, shard: u32, values: &[&str]) {
+    /// Publish `values` to `shard` through Felix itself, not Kafka, and
+    /// return the offset the first of them took. A local broker's offsets
+    /// count records from 0, so there it is the records the shard held
+    /// before; a cluster's is the publish ack's.
+    pub(crate) async fn publish(&self, shard: u32, values: &[&str]) -> u64 {
         match &self.backend {
             Backend::Local { broker, .. } => {
+                let before = self.local_log(shard).await.len() as u64;
                 let payloads: Vec<Bytes> = values
                     .iter()
                     .map(|v| Bytes::copy_from_slice(v.as_bytes()))
@@ -160,6 +164,7 @@ impl Felix {
                     .publish_batch(TENANT, NAMESPACE, STREAM, shard, &payloads)
                     .await
                     .expect("publish");
+                before
             }
             Backend::Raft { shard: raft, .. } => {
                 let client = raft.cluster.client_on(&raft.node).await.expect("connect");
@@ -174,7 +179,25 @@ impl Felix {
                         felix_wire::AckMode::PerMessage,
                     )
                     .await
-                    .expect("publish");
+                    .expect("publish")
+                    .expect("a durable stream's ack carries an offset")
+            }
+        }
+    }
+
+    /// The offset of the first record a fresh shard takes: 0 on a local
+    /// broker. On a Raft shard the log opens with entries that hold no record
+    /// (docs/per-shard-raft.md, "Blank and membership entries take an
+    /// offset"), so it is read from the first record the shard holds.
+    pub(crate) async fn first_offset(&self, shard: u32) -> u64 {
+        match &self.backend {
+            Backend::Local { .. } => 0,
+            Backend::Raft { .. } => {
+                self.stored(shard)
+                    .await
+                    .first()
+                    .expect("a record on the shard")
+                    .offset
             }
         }
     }

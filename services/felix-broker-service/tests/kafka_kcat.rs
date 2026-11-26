@@ -218,9 +218,9 @@ async fn kcat_consumes_every_partition_from_the_beginning_and_from_an_offset(fix
         return;
     }
     let felix = Felix::start(fixture).await;
-    felix.publish(0, &["a0", "a1"]).await;
-    felix.publish(1, &["b0", "b1", "b2"]).await;
-    felix.publish(2, &["c0"]).await;
+    let a = felix.publish(0, &["a0", "a1"]).await;
+    let b = felix.publish(1, &["b0", "b1", "b2"]).await;
+    let c = felix.publish(2, &["c0"]).await;
 
     let output = felix
         .kcat(&[
@@ -238,7 +238,14 @@ async fn kcat_consumes_every_partition_from_the_beginning_and_from_an_offset(fix
     assert!(output.status.success(), "{}", stderr(&output));
     assert_eq!(
         records(&output),
-        ["0:0:a0", "0:1:a1", "1:0:b0", "1:1:b1", "1:2:b2", "2:0:c0"]
+        [
+            format!("0:{a}:a0"),
+            format!("0:{}:a1", a + 1),
+            format!("1:{b}:b0"),
+            format!("1:{}:b1", b + 1),
+            format!("1:{}:b2", b + 2),
+            format!("2:{c}:c0"),
+        ]
     );
 
     let output = felix
@@ -249,7 +256,7 @@ async fn kcat_consumes_every_partition_from_the_beginning_and_from_an_offset(fix
             "-p",
             "1",
             "-o",
-            "1",
+            &(b + 1).to_string(),
             "-e",
             "-q",
             "-f",
@@ -257,7 +264,10 @@ async fn kcat_consumes_every_partition_from_the_beginning_and_from_an_offset(fix
         ])
         .await;
     assert!(output.status.success(), "{}", stderr(&output));
-    assert_eq!(records(&output), ["1:1:b1", "1:2:b2"]);
+    assert_eq!(
+        records(&output),
+        [format!("1:{}:b1", b + 1), format!("1:{}:b2", b + 2)]
+    );
 
     // -o end with -e: nothing new, so nothing printed, and kcat exits.
     let output = felix
@@ -282,19 +292,29 @@ async fn kcat_queries_offsets(fixture: Fixture) {
         return;
     }
     let felix = Felix::start(fixture).await;
-    felix.publish(1, &["b0", "b1", "b2"]).await;
+    let first = felix.publish(1, &["b0", "b1", "b2"]).await;
+    // Latest is one past the last record. Earliest is at or below the first:
+    // a Raft log's first entries hold no record (docs/per-shard-raft.md), and
+    // a fetch from earliest still starts at the first record.
     let latest = format!("{TOPIC}:1:-1");
     let output = felix.kcat(&["-Q", "-t", latest.as_str()]).await;
     let text = stdout(&output);
     assert!(output.status.success(), "{text}\n{}", stderr(&output));
-    assert!(text.contains(&format!("{TOPIC} [1] offset 3")), "{text}");
+    assert_eq!(queried_offset(&text), first + 3, "{text}");
     let earliest = format!("{TOPIC}:1:-2");
     let output = felix.kcat(&["-Q", "-t", earliest.as_str()]).await;
-    assert!(
-        stdout(&output).contains(&format!("{TOPIC} [1] offset 0")),
-        "{}",
-        stdout(&output)
-    );
+    let text = stdout(&output);
+    assert!(output.status.success(), "{text}\n{}", stderr(&output));
+    assert!(queried_offset(&text) <= first, "{text}");
+}
+
+/// The offset in kcat -Q's `<topic> [<partition>] offset <n>` line.
+fn queried_offset(text: &str) -> u64 {
+    let prefix = format!("{TOPIC} [1] offset ");
+    text.lines()
+        .find_map(|line| line.trim().strip_prefix(&prefix))
+        .and_then(|offset| offset.trim().parse().ok())
+        .unwrap_or_else(|| panic!("no offset for partition 1 in {text:?}"))
 }
 
 async fn kcat_receives_a_record_published_while_its_fetch_waits(fixture: Fixture) {
@@ -302,7 +322,7 @@ async fn kcat_receives_a_record_published_while_its_fetch_waits(fixture: Fixture
         return;
     }
     let felix = Arc::new(Felix::start(fixture).await);
-    felix.publish(0, &["old"]).await;
+    let next = felix.publish(0, &["old"]).await + 1;
     let consumer = {
         let felix = Arc::clone(&felix);
         tokio::spawn(async move {
@@ -316,7 +336,7 @@ async fn kcat_receives_a_record_published_while_its_fetch_waits(fixture: Fixture
                     "-p",
                     "0",
                     "-o",
-                    "1",
+                    &next.to_string(),
                     "-c",
                     "1",
                     "-q",
@@ -332,10 +352,10 @@ async fn kcat_receives_a_record_published_while_its_fetch_waits(fixture: Fixture
     tokio::time::sleep(Duration::from_secs(8)).await;
     assert!(!consumer.is_finished(), "kcat is waiting for a record");
     let published = Instant::now();
-    felix.publish(0, &["new"]).await;
+    assert_eq!(felix.publish(0, &["new"]).await, next);
     let output = consumer.await.expect("task");
     assert!(output.status.success(), "{}", stderr(&output));
-    assert_eq!(records(&output), ["1:new"]);
+    assert_eq!(records(&output), [format!("{next}:new")]);
     assert!(published.elapsed() < Duration::from_secs(3));
 }
 
@@ -344,7 +364,7 @@ async fn kcat_reads_over_sasl_ssl_and_anonymously_when_allowed(fixture: Fixture)
         return;
     }
     let mut felix = Felix::start(fixture).await;
-    felix.publish(2, &["c0"]).await;
+    let c0 = format!("{}:c0", felix.publish(2, &["c0"]).await);
     let username = format!("sasl.username={TENANT}");
     let password = format!("sasl.password={}", felix.token);
     let tls = felix.listener(Listener::Tls).await;
@@ -378,7 +398,7 @@ async fn kcat_reads_over_sasl_ssl_and_anonymously_when_allowed(fixture: Fixture)
     )
     .await;
     assert!(output.status.success(), "{}", stderr(&output));
-    assert_eq!(records(&output), ["0:c0"]);
+    assert_eq!(records(&output), std::slice::from_ref(&c0));
 
     let anonymous = felix.listener(Listener::Anonymous).await;
 
@@ -402,7 +422,7 @@ async fn kcat_reads_over_sasl_ssl_and_anonymously_when_allowed(fixture: Fixture)
     )
     .await;
     assert!(output.status.success(), "{}", stderr(&output));
-    assert_eq!(records(&output), ["0:c0"]);
+    assert_eq!(records(&output), std::slice::from_ref(&c0));
 }
 
 async fn kcat_with_a_bad_token_fails_with_the_reason(fixture: Fixture) {
@@ -475,6 +495,15 @@ async fn logged(felix: &Felix, shard: u32) -> Vec<String> {
         .collect()
 }
 
+/// `offset:value` for `values` at consecutive offsets from `first`.
+fn at(first: u64, values: &[&str]) -> Vec<String> {
+    values
+        .iter()
+        .zip(first..)
+        .map(|(value, offset)| format!("{offset}:{value}"))
+        .collect()
+}
+
 async fn consume(felix: &Felix, partition: &str) -> Vec<String> {
     let output = felix
         .kcat(&[
@@ -496,19 +525,19 @@ async fn consume(felix: &Felix, partition: &str) -> Vec<String> {
 }
 
 /// **What kcat produces, Felix and kcat read back at the same offsets.** A
-/// record already published through Felix keeps offset 0; the produced ones
-/// follow it.
+/// record already published through Felix keeps its offset, 0 on a local
+/// broker; the produced ones follow it.
 async fn kcat_produces_and_felix_and_kcat_read_the_same_records(fixture: Fixture) {
     if !kcat_available().await {
         return;
     }
     let felix = Felix::start(fixture).await;
-    felix.publish(0, &["felix"]).await;
+    let first = felix.publish(0, &["felix"]).await;
     let output = felix
         .kcat_with_input(&produce_args("0", &[]), "a\nb\nc\n")
         .await;
     assert!(output.status.success(), "{}", stderr(&output));
-    let expected = ["0:felix", "1:a", "2:b", "3:c"];
+    let expected = at(first, &["felix", "a", "b", "c"]);
     assert_eq!(logged(&felix, 0).await, expected);
     assert_eq!(consume(&felix, "0").await, expected);
 }
@@ -553,9 +582,10 @@ async fn kcat_produces_with_acks_zero_one_and_all(fixture: Fixture) {
             .await;
         assert!(output.status.success(), "acks={acks}: {}", stderr(&output));
     }
+    let first = felix.first_offset(2).await;
     assert_eq!(
         logged(&felix, 2).await,
-        ["0:acks-0", "1:acks-1", "2:acks-all"]
+        at(first, &["acks-0", "acks-1", "acks-all"])
     );
 }
 
@@ -607,7 +637,8 @@ async fn kcat_produces_keyed_records_and_the_value_is_kept(fixture: Fixture) {
         .kcat_with_input(&produce_args("1", &["-K", ":"]), "k1:v1\nk2:v2\n")
         .await;
     assert!(output.status.success(), "{}", stderr(&output));
-    assert_eq!(logged(&felix, 1).await, ["0:v1", "1:v2"]);
+    let first = felix.first_offset(1).await;
+    assert_eq!(logged(&felix, 1).await, at(first, &["v1", "v2"]));
     let output = felix
         .kcat(&[
             "-C",
