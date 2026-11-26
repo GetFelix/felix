@@ -131,8 +131,7 @@ pub struct RuntimeConfig {
     /// of this step shared by every group on the broker, at least one step
     /// and less than two after it began, so the held appends of many groups
     /// to one broker go together in one heartbeat batch. A heartbeat to the
-    /// follower ends it early, and when it carries the held commit the held
-    /// append is not sent at all.
+    /// follower, or a read on it that waits for the commit, ends it early.
     /// With no write after a commit, followers learn it up to two steps
     /// plus `beat_window` later. Shorter than `heartbeat`; zero sends it at
     /// once. See docs/per-shard-raft.md, "A commit goes on the next append".
