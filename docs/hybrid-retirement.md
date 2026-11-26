@@ -359,7 +359,7 @@ live in the Raft groups simulation, `felix-sim/src/raft.rs`, run by
 | Rule 21, one leader per generation (`history/leaders.rs`) | One leader per term | Landed: a Raft member logs its open with the term as the generation (`felix-replication/src/raft/lead.rs`), and `two_raft_members_logging_an_open_in_one_term_is_a_violation` checks the rule reads it |
 | Modes `lease` and `lease-free` | Retired. They choose between two hybrid read and acknowledgement rules. Raft has one | Retired. Removed with the hybrid wiring (#2259) |
 | Nemesis `election` | Kept, as control plane down. It is criterion 5 of the gate | Landed: `replicas_elect_a_leader_while_the_control_plane_is_down` waits on Raft for a new leader at a later term (`raft_await_election` in `history/liveness.rs`) and fails if rule 21 read no open |
-| Duplicate-offset nemesis | New with the gate (engine page) | Missing on clusters: no nemesis partitions a `Leader` stream's leader while a QUIC subscriber, a Kafka consumer and a cache watcher record offsets. The simulator checks its QUIC subscriber half (`raft/deliveries.rs`) |
+| Duplicate-offset nemesis | New with the gate (engine page) | Landed for QUIC readers: rule 22 (`history/checker/offsets.rs`) and `no_offset_is_held_as_two_records_across_leader_faults`, which kills, partitions, machine-crashes and wipes a `Leader` stream's leader while two subscribers per list and reads from every broker record offsets. The simulator checks the same for its subscribers (`raft/deliveries.rs`). Missing: a Kafka consumer and a cache watcher as readers, and a relaxed power cut of every broker followed by a re-form, which the harness cannot run yet |
 
 ### Cluster tests
 

@@ -294,18 +294,24 @@ impl Cluster {
         name: &str,
         shard: u32,
     ) -> Option<felix_wire::InspectedRaft> {
+        self.raft_copy(felix_client::ShardKind::Stream, node, name, shard)
+            .await
+    }
+
+    /// [`Self::raft_member_of`] for a stream or a cache shard.
+    pub(crate) async fn raft_copy(
+        &self,
+        kind: felix_client::ShardKind,
+        node: &str,
+        name: &str,
+        shard: u32,
+    ) -> Option<felix_wire::InspectedRaft> {
         let addr = self.node(node)?.client_addr;
         let client = crate::client::connect(addr, &self.tenant_id, &self.inspector_token())
             .await
             .ok()?;
         let view = client
-            .inspect_shard(
-                felix_client::ShardKind::Stream,
-                &self.tenant_id,
-                &self.namespace,
-                name,
-                shard,
-            )
+            .inspect_shard(kind, &self.tenant_id, &self.namespace, name, shard)
             .await;
         drop(client);
         view.ok().and_then(|view| view.raft)
