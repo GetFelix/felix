@@ -1,11 +1,14 @@
 //! The connection loop: read, decode, answer, write.
 
 use std::convert::Infallible;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU8, Ordering};
 use std::time::Duration;
 
 use bytes::BytesMut;
 use felix_mqtt_wire::{DecodeError, Disconnect, Limits, Packet, ReasonCode, Version};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
+use tokio::sync::Notify;
 use tokio::time::{Instant, sleep_until, timeout};
 use tokio_util::sync::CancellationToken;
 
@@ -13,6 +16,7 @@ use super::Shared;
 use super::connect::Session;
 use super::publish::{MAX_QUOTA_HOLD, Publishing};
 use super::subscribe::Subscriptions;
+use crate::auth::Principal;
 use crate::metrics;
 
 /// A write that has not finished by now means the peer has stopped reading.
@@ -32,6 +36,76 @@ pub(super) enum End {
     Close(&'static str),
     /// Tell a 5.0 client why, count it if a reason is given, and close.
     Disconnect(ReasonCode, Option<&'static str>),
+}
+
+/// When the credential behind a connection ends, watched on a task of its
+/// own so the packet loop reads it with one atomic load.
+struct EndWatch {
+    state: Arc<EndState>,
+    task: Option<tokio::task::JoinHandle<()>>,
+}
+
+#[derive(Default)]
+struct EndState {
+    /// `NOT_ENDED`, `REVOKED` or `EXPIRED`.
+    reason: AtomicU8,
+    fired: Notify,
+}
+
+const NOT_ENDED: u8 = 0;
+const REVOKED: u8 = 1;
+const EXPIRED: u8 = 2;
+
+impl EndWatch {
+    fn spawn(principal: &Principal) -> Self {
+        let state = Arc::new(EndState::default());
+        // A principal nothing can end, such as an anonymous one without a
+        // certificate, needs no task.
+        let task = principal.may_end().then(|| {
+            let revoked = principal.revoked();
+            let expiry = principal.expires_at();
+            let watched = Arc::clone(&state);
+            tokio::spawn(async move {
+                let reason = tokio::select! {
+                    biased;
+                    () = revoked => REVOKED,
+                    () = felix_common::clock::sleep_until_unix_or_never(expiry) => EXPIRED,
+                };
+                watched.reason.store(reason, Ordering::Release);
+                // A stored permit, so a loop not waiting yet still wakes.
+                watched.fired.notify_one();
+            })
+        });
+        Self { state, task }
+    }
+
+    /// The refusal reason, once the credential has ended.
+    fn reason(&self) -> Option<&'static str> {
+        match self.state.reason.load(Ordering::Acquire) {
+            NOT_ENDED => None,
+            REVOKED => Some("revoked"),
+            _ => Some("token_expired"),
+        }
+    }
+
+    /// Resolves with the reason once the credential ends; never, if nothing
+    /// can end it.
+    async fn ended(&self) -> &'static str {
+        loop {
+            if let Some(reason) = self.reason() {
+                return reason;
+            }
+            self.state.fired.notified().await;
+        }
+    }
+}
+
+impl Drop for EndWatch {
+    fn drop(&mut self) {
+        if let Some(task) = &self.task {
+            task.abort();
+        }
+    }
 }
 
 pub(super) struct Connection<S> {
@@ -80,11 +154,7 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> Connection<S> {
         let max_inflight = usize::from(shared.settings.max_inflight);
         let keepalive = session.keep_alive.mul_f32(KEEPALIVE_GRACE);
 
-        let revoked = session.principal.revoked();
-        tokio::pin!(revoked);
-        let expiry = session.principal.expires_at();
-        let expired = felix_common::clock::sleep_until_unix_or_never(expiry);
-        tokio::pin!(expired);
+        let end = EndWatch::spawn(&session.principal);
         let silent = sleep_until(Instant::now() + keepalive);
         tokio::pin!(silent);
         let mut publishing = Publishing::new(shared, &session);
@@ -98,6 +168,11 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> Connection<S> {
             while publishing.pending() <= max_inflight
                 && let Some(packet) = self.next_packet(Some(version), &limits)?
             {
+                // Buffered packets are served without passing the select
+                // below, so the end is checked for each one.
+                if let Some(reason) = end.reason() {
+                    return Err(End::Disconnect(ReasonCode::NotAuthorized, Some(reason)));
+                }
                 self.handle(shared, &session, &mut publishing, &mut subs, packet)
                     .await?;
             }
@@ -131,11 +206,8 @@ impl<S: AsyncRead + AsyncWrite + Unpin + Send> Connection<S> {
                 _ = shutdown.cancelled() => {
                     return Err(End::Disconnect(ReasonCode::ServerShuttingDown, None));
                 }
-                _ = &mut revoked => {
-                    return Err(End::Disconnect(ReasonCode::NotAuthorized, Some("revoked")));
-                }
-                _ = &mut expired => {
-                    return Err(End::Disconnect(ReasonCode::NotAuthorized, Some("token_expired")));
+                reason = end.ended() => {
+                    return Err(End::Disconnect(ReasonCode::NotAuthorized, Some(reason)));
                 }
                 _ = &mut silent, if reading => {
                     return Err(End::Disconnect(ReasonCode::KeepAliveTimeout, Some("keepalive_timeout")));

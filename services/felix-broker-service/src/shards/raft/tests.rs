@@ -3458,6 +3458,7 @@ mod retarget;
 mod retention;
 mod seat_move;
 mod short_placement;
+mod stopped_copy;
 mod trim;
 
 /// A blank copy hears from the brokers in the group now: the placement,

@@ -202,9 +202,11 @@ fn health_router(
 
 /// What `/ready` answers. A poisoned log refuses writes until it is
 /// reopened, so the body names each one's tenant and what stopped it. One
-/// poisoned log fails the whole broker's probe for now: see "A failed fsync
-/// poisons the log" in `docs/durable-storage.md`. A node record whose sync
-/// failed stops the node's records, and the body names it.
+/// poisoned hybrid log fails the whole broker's probe for now: see "A failed
+/// fsync poisons the log" in `docs/durable-storage.md`. A poisoned Raft log
+/// does not: its group stops that copy alone, the broker reopens it, and the
+/// shard is reported in metrics and `shard_inspect`. A node record whose
+/// sync failed stops the node's records, and the body names it.
 ///
 /// This listener has no authentication and `/metrics` on it exposes tenant
 /// labels only, so the namespace and stream stay out of the body; the
@@ -215,6 +217,7 @@ fn ready_status(
     failed_records: &[felix_storage::run_state::FailedRecord],
     ready: bool,
 ) -> (axum::http::StatusCode, String) {
+    let poisoned: Vec<_> = poisoned.iter().filter(|log| !log.raft).collect();
     if !poisoned.is_empty() || !failed_records.is_empty() {
         let mut lines: Vec<String> = poisoned
             .iter()

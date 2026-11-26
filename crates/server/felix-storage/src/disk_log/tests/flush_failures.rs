@@ -444,6 +444,19 @@ async fn a_poisoned_log_is_listed_with_its_cause() {
         .find(|log| log.shard == flushed)
         .expect("listed");
     assert!(entry.reason.contains("sync"), "{}", entry.reason);
+    assert!(!entry.raft);
+
+    // A Raft log is marked as one, so the probe can leave it to its group.
+    let raft = "t/ns/listed/2";
+    let raft_config = LogConfig {
+        raft_log: true,
+        ..config()
+    };
+    let log = DiskLog::open(sim.0.join("raft"), raft, raft_config).expect("open");
+    log.inner.poison("a flush failed (EIO)".to_string());
+    let listed = crate::disk_log::poisoned_logs();
+    let entry = listed.iter().find(|log| log.shard == raft).expect("listed");
+    assert!(entry.raft);
 
     let rewound = "t/ns/listed/1";
     let log = DiskLog::open(sim.0.join("rewound"), rewound, config()).expect("open");

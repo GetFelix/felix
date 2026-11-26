@@ -62,7 +62,8 @@ a segment, should be rejected on its first four bytes rather than misparsed.
   replaced-storage                           ← the node was once registered under another storage id
   lost-copy                                  ← whether this directory ever replaced a copy the node lost
   rotated-ids                                ← ids a crash rotated away while every ballot was kept
-  relaxed-crash-id                           ← the id a relaxed crash gave the directory, and the ids it rotated away
+  relaxed-crash-id                           ← the id a relaxed crash or a restore gave the directory, and the ids they rotated away
+  restore-pending                            ← a restore tool is rotating the id; no start runs while it is there
   last-rotation                              ← the id the last rotation gave the directory, the one before, and the registration then
   minted-id                                  ← an id a start wrote new, and the registration that bound it
   registered-at                              ← the node record's registration time, beside the incarnation
@@ -2697,14 +2698,15 @@ no id, so such a set reads as naming a lost copy, which only costs a
 readmission. So does a crash after the id rotated but before the old id was
 recorded. An older release neither reads nor writes the file.
 
-## `relaxed-crash-id`: what a relaxed crash rotated
+## `relaxed-crash-id`: what a relaxed crash or a restore rotated
 
 Written by the start that rotated the storage id after a relaxed crash
-(`run_state::begin`), and not by an operator's rotation. A standalone broker
-cannot tell a restored volume from a relaxed crash: restoring a volume
-snapshot taken while it ran writes it too, and the re-form that follows can
-give out offsets handed out after the snapshot. Text: the line `relaxed_crash`, then the new id in hex, then the ids relaxed
-crashes rotated away, newest first, one per line in hex. Synced with the
+(`run_state::begin`), and by `felix-broker rotate-storage-id` and
+`felix-broker restore-point` (`run_state::rotate_for_restore`), each before
+the new id is written. Not written when `storage-id` is deleted by hand. Text:
+the line `relaxed_crash`, then the new id in hex, then the ids relaxed
+crashes and restores rotated away, newest first, one per line in hex. An id
+a restore rotated away is followed by ` restore` on its line. Synced with the
 directory. It keeps the newest 8 of those ids, and an older one for as long as
 a Raft copy under the root (in a shard directory, kept or set aside) was
 minted under it, so the file is bounded by the copies on disk and a crash
@@ -2713,10 +2715,20 @@ loop of any length cannot drop an id a copy still waits on
 cannot be read, that start drops no id.
 
 It counts only while its first id is the current storage id
-(`run_state::relaxed_crash_sources`), so any later rotation voids it. A
-standalone broker re-forms a Raft group only on this evidence (see
-`docs/per-shard-raft.md`, "A standalone broker re-forms itself"). A missing
-or unreadable file means no evidence.
+(`run_state::reform_evidence`), so any other rotation voids it. A
+standalone broker re-forms a Raft group only on this evidence, and starts the
+group on the restore time line when a restore is among the rotations since
+its kept copy was minted (see `docs/per-shard-raft.md`, "A standalone broker
+re-forms itself"). A missing or unreadable file means no evidence.
+
+## `restore-pending`: a restore tool is running
+
+Written and synced by `run_state::rotate_for_restore` before it records the
+restore or rotates the id, and removed, with the directory synced, once both
+are on disk. Text: the line `restore_pending`, then the id the tool found, in
+hex. `run_state::begin` refuses to start while the file exists, whatever it
+holds, and names `felix-broker rotate-storage-id` as the way to finish. Run
+again, the tool keeps the first run's evidence.
 
 ## `raft-reform-alone`: a standalone group's re-form plan
 
