@@ -33,7 +33,7 @@ enum Say {
     Conflict,
 }
 
-#[derive(Default)]
+#[derive(Default, Clone)]
 struct Record {
     epoch: u64,
     bases: Vec<RaftEpochBase>,
@@ -108,27 +108,39 @@ impl AloneWriter for FakeControlPlane {
         let start = &body["start"];
         let expected = start["expected_epoch"].as_u64().expect("an epoch");
         let mut record = self.record.lock();
-        if record.epoch == expected && say != Say::Conflict {
+        let bumped = |record: &Record| {
+            let mut next = record.clone();
             let base: RaftEpochBase =
                 serde_json::from_value(start["base"].clone()).expect("a base");
-            record.epoch += 1;
-            record.bases.push(base);
-            record.seed = Some(RaftVoters {
+            next.epoch += 1;
+            next.bases.push(base);
+            next.seed = Some(RaftVoters {
                 incarnation: start["incarnation"].as_u64().expect("an incarnation"),
-                epoch: record.epoch,
+                epoch: next.epoch,
                 members: serde_json::from_value(start["voters"].clone()).expect("voters"),
                 starts: serde_json::from_value(start["starts"].clone()).expect("starts"),
             });
+            next
+        };
+        // A conflict's body carries the record the write would have made,
+        // so a broker that read the answer instead of the status would
+        // start from it.
+        let shown = if say == Say::Conflict {
+            bumped(&record)
+        } else if record.epoch == expected {
+            let next = bumped(&record);
+            *record = next;
             self.bumps.fetch_add(1, Ordering::SeqCst);
-        }
+            record.clone()
+        } else {
+            record.clone()
+        };
         if say == Say::TakeThenSilence {
             anyhow::bail!("the answer was lost");
         }
-        // A conflict's body carries the record too, so a broker that read
-        // the answer instead of the status would start from it.
         let mut answer = record.template.clone().expect("a fed assignment");
-        Self::stamp(&record, &mut answer);
-        let status = if say == Say::Conflict || record.epoch != expected + 1 {
+        Self::stamp(&shown, &mut answer);
+        let status = if say == Say::Conflict || shown.epoch != expected + 1 {
             StatusCode::CONFLICT
         } else {
             StatusCode::OK
