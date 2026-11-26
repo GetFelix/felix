@@ -192,6 +192,7 @@ pub(super) fn start_standalone_raft_shards(
     fleet: &Arc<felix_common::fleet::FleetGate>,
     storage_id: felix_storage::StorageId,
     stop: &CancellationToken,
+    writers: &tokio_util::task::TaskTracker,
 ) -> Result<RaftShards> {
     use crate::shards::raft::standalone::{self, LOCAL_MEMBER, NoPeers};
     use replication::raft::{GroupRuntime, RootOpened, open_root};
@@ -215,7 +216,7 @@ pub(super) fn start_standalone_raft_shards(
         Arc::clone(engine),
     )));
     let (members, broker, stop) = (Arc::clone(&shards), Arc::clone(broker), stop.clone());
-    tokio::spawn(async move {
+    writers.spawn(async move {
         // The gate guards against a restored root voting in a group whose
         // other members remember its newer votes. A single voter has no
         // other member and no copy that could be ahead of its root, so it
@@ -324,7 +325,11 @@ pub(super) struct RaftRoot<L> {
 /// last run left, so its members vote while the control plane is down. See
 /// `docs/per-shard-raft.md`, "Voting before the restore check".
 #[cfg(feature = "raft")]
-pub(super) fn open_raft_root<L: ControlPlaneLink>(shards: &RaftShards, on: RaftRoot<L>) {
+pub(super) fn open_raft_root<L: ControlPlaneLink>(
+    shards: &RaftShards,
+    on: RaftRoot<L>,
+    writers: &tokio_util::task::TaskTracker,
+) {
     use crate::cluster::membership::registered;
     use felix_storage::raft_copy::ControlPlaneCopy;
     use replication::raft::{RootOpened, RootReport, open_root};
@@ -332,7 +337,7 @@ pub(super) fn open_raft_root<L: ControlPlaneLink>(shards: &RaftShards, on: RaftR
     let Some(members) = shards.members.clone() else {
         return;
     };
-    tokio::spawn(async move {
+    writers.spawn(async move {
         match &on.votes_unchecked {
             Some(registered) => members.stand_after(registered.clone()),
             None => tokio::select! {
@@ -472,13 +477,14 @@ pub(super) fn report_raft_floors<L: ControlPlaneLink>(
     node_id: String,
     credential: Option<NodeCredential>,
     stop: CancellationToken,
+    writers: &tokio_util::task::TaskTracker,
 ) {
     let (Some(members), Some(link)) = (shards.members.clone(), link) else {
         return;
     };
     let credential = credential
         .map(|credential| Arc::new(credential) as Arc<dyn replication::reporter::Credential>);
-    tokio::spawn(crate::shards::raft::floor::run(
+    writers.spawn(crate::shards::raft::floor::run(
         members, link, node_id, credential, stop,
     ));
 }
@@ -494,13 +500,14 @@ pub(super) fn report_raft_copy_ids<L: ControlPlaneLink>(
     credential: Option<NodeCredential>,
     registration: crate::cluster::membership::RootSequenceSlot,
     stop: CancellationToken,
+    writers: &tokio_util::task::TaskTracker,
 ) {
     let (Some(members), Some(link)) = (shards.members.clone(), link) else {
         return;
     };
     let credential = credential
         .map(|credential| Arc::new(credential) as Arc<dyn replication::reporter::Credential>);
-    tokio::spawn(crate::shards::raft::copy_id::run(
+    writers.spawn(crate::shards::raft::copy_id::run(
         members,
         link,
         node_id,
@@ -520,13 +527,14 @@ pub(super) fn answer_reform_surveys<L: ControlPlaneLink>(
     node_id: String,
     credential: Option<NodeCredential>,
     stop: CancellationToken,
+    writers: &tokio_util::task::TaskTracker,
 ) {
     let (Some(members), Some(link)) = (shards.members.clone(), link) else {
         return;
     };
     let credential = credential
         .map(|credential| Arc::new(credential) as Arc<dyn replication::reporter::Credential>);
-    tokio::spawn(crate::shards::raft::reform_survey::run(
+    writers.spawn(crate::shards::raft::reform_survey::run(
         members, link, node_id, credential, stop,
     ));
 }

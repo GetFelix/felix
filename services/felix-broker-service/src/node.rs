@@ -29,6 +29,7 @@ mod listeners;
 mod membership;
 mod open_files;
 pub(crate) mod peer_dispatch;
+mod run_guard;
 mod shutdown;
 #[cfg(feature = "sim")]
 pub mod sim;
@@ -101,6 +102,35 @@ where
     // An in-memory broker has nothing to recover and keeps the old behaviour.
     // Parsed once: what readiness gates on is what storage opens.
     let durable_config = DurableStorageConfig::from_env()?;
+    // First, before anything reads or writes the data directory. Let go only
+    // once everything that writes there has stopped and storage has closed,
+    // however the run ends; see `run_guard`.
+    let root_lock = durable_config
+        .as_ref()
+        .map(|durable| storage::lock_root(&durable.root))
+        .transpose()?;
+    let mut run = run_guard::RunGuard::new(
+        root_lock,
+        std::time::Duration::from_millis(config.shutdown_drain_timeout_ms),
+    );
+    let served = serve(&mut run, config, durable_config, metrics_handle, shutdown).await;
+    run.close().await;
+    served
+}
+
+/// The rest of [`run_with_shutdown`], under the lock `run` holds. Whatever
+/// it starts that writes under the root is handed to `run`, so an early
+/// return here stops it before the lock goes.
+async fn serve<F>(
+    run: &mut run_guard::RunGuard,
+    config: config::BrokerConfig,
+    durable_config: Option<DurableStorageConfig>,
+    metrics_handle: metrics_exporter_prometheus::PrometheusHandle,
+    shutdown: F,
+) -> Result<()>
+where
+    F: Future<Output = ()> + Send + 'static,
+{
     // Before storage opens: every held shard keeps files open.
     open_files::raise_limit(
         durable_config
@@ -213,7 +243,16 @@ where
     } = cluster::connect_peers(&config, &peer_shutdown)?;
     let sync_shutdown = CancellationToken::new();
     let metrics_shutdown = CancellationToken::new();
+    for token in [
+        &accept_shutdown,
+        &peer_shutdown,
+        &sync_shutdown,
+        &metrics_shutdown,
+    ] {
+        run.stop_with(token);
+    }
     let connections = TaskTracker::new();
+    run.connections(&connections);
     tracing::info!(
         lanes = config.subscriber_writer_lanes.max(1),
         queue_bound = config.subscriber_lane_queue_depth.max(1),
@@ -323,7 +362,12 @@ where
         &membership_client,
         &group_refused,
     );
-    let mut stored = startup::open_storage(&config, durable_config, registered.as_ref())?;
+    let mut stored =
+        startup::open_storage(&config, durable_config.zip(run.lock()), registered.as_ref())?;
+    run.opened(
+        &stored.broker,
+        durable_root.clone().map(|root| (root, stored.storage_id)),
+    );
     let own_kept = stored.kept;
     stored.kept = stored.kept.attested(view.is_some());
     let storage_id = stored.storage_id;
@@ -412,6 +456,7 @@ where
             &fleet,
             storage_id,
             &sync_shutdown,
+            run.writers(),
         )?
     } else if shard_engine == crate::config::ShardEngine::Raft {
         cluster::start_raft_shards(
@@ -434,6 +479,7 @@ where
         shard_engine == crate::config::ShardEngine::Raft,
         raft_shards,
     );
+    run.engine_shards(raft_shards.engine_shards.clone());
     gate_record_generations(&config, &broker, &fleet);
     tracing::info!("broker started");
     let controlplane_url = config
@@ -487,6 +533,7 @@ where
                 stop: sync_shutdown.clone(),
                 rotated: root_rotated.clone(),
             },
+            run.writers(),
         );
         cluster::report_raft_floors(
             &raft_shards,
@@ -494,6 +541,7 @@ where
             membership.node_id.clone(),
             credential.clone(),
             sync_shutdown.clone(),
+            run.writers(),
         );
         cluster::report_raft_copy_ids(
             &raft_shards,
@@ -502,6 +550,7 @@ where
             credential.clone(),
             root_sequence.clone(),
             sync_shutdown.clone(),
+            run.writers(),
         );
         cluster::answer_reform_surveys(
             &raft_shards,
@@ -509,6 +558,7 @@ where
             membership.node_id.clone(),
             credential.clone(),
             sync_shutdown.clone(),
+            run.writers(),
         );
         cluster::write_alone_reforms(
             &raft_shards,
@@ -636,7 +686,7 @@ where
         ));
     }
 
-    tokio::spawn(cache_expiry::run(
+    run.writers().spawn(cache_expiry::run(
         Arc::clone(&broker),
         ingress_router.clone(),
         cache_expiry::INTERVAL,
@@ -741,7 +791,25 @@ where
         gate_readiness_on_sync.then_some(&clients),
         raft_shards.handler,
         &peer_listener_shutdown,
-    )?;
+    );
+    // The last bind, with the client listeners, membership and the catalog
+    // sync already running: they stop before storage closes.
+    let peer_listener = match peer_listener {
+        Ok(peer_listener) => peer_listener,
+        Err(err) => {
+            run.track(metrics_task);
+            if let Some(task) = controlplane_task {
+                run.track(task);
+            }
+            if let Some(membership) = membership {
+                run.track(membership.handle);
+            }
+            for task in accept_tasks {
+                run.track(task);
+            }
+            return Err(err);
+        }
+    };
     let shard_tasks = cluster::spawn_shard_tasks(cluster::ShardTaskDeps {
         config: &config,
         cluster: &cluster,
@@ -824,6 +892,8 @@ where
         controlplane_view,
         storage: shutdown::Storage {
             engine_shards: raft_shards.engine_shards,
+            writers: run.writers().clone(),
+            verdict: run.verdict(),
             broker: Arc::clone(&broker),
             run: durable_storage
                 .as_ref()
