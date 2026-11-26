@@ -181,6 +181,10 @@ const WRITE_TIMEOUT: Duration = Duration::from_secs(10);
 /// How long the groups get to elect leaders again after a burst.
 const LEADERS_SETTLE: Duration = Duration::from_secs(60);
 
+/// How long a new group gets to elect its first leader. A group that never
+/// does should fail the run, not hold it until the job limit.
+const FIRST_LEADER: Duration = Duration::from_secs(30);
+
 /// Keep `depth` writes in flight on every group `runtime` leads until
 /// `length` has passed. Returns the writes that were acknowledged.
 async fn burst(runtime: &GroupRuntime, groups: u32, depth: usize, length: Duration) -> u64 {
@@ -354,6 +358,15 @@ async fn idle_groups_cost_little_cpu() {
         ..LogConfig::default()
     };
     let members: BTreeSet<_> = BROKERS.map(|b| MemberId::new(b, 1)).into();
+    // Over the transport a blank copy hears only from brokers the control
+    // plane placed in its group, which the broker's feed admits. Stand in
+    // for that feed.
+    let placed: BTreeSet<String> = brokers.iter().map(|b| (*b).to_string()).collect();
+    for runtime in &runtimes {
+        runtime.admit_until(Some(
+            tokio::time::Instant::now() + Duration::from_secs(86_400),
+        ));
+    }
     let led = |n: u32| {
         runtimes
             .iter()
@@ -366,6 +379,7 @@ async fn idle_groups_cost_little_cpu() {
             std::fs::create_dir_all(&dir).expect("dir");
             let log = DiskLog::open(dir, format!("t/ns/orders/{n}"), config.clone()).expect("log");
             let group = GroupId::new(shard(n), 0);
+            runtime.admit(&group, placed.clone(), placed.clone());
             runtime.open(group, 1, log).await.expect("open");
         }
         // The member told first stands at once and wins, so leaders spread
@@ -375,7 +389,12 @@ async fn idle_groups_cost_little_cpu() {
             .initialize(&shard(n), members.clone())
             .await
             .expect("initialize");
+        let deadline = tokio::time::Instant::now() + FIRST_LEADER;
         while !led(n) {
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "group {n} elected no leader within {FIRST_LEADER:?} of forming"
+            );
             tokio::time::sleep(Duration::from_millis(2)).await;
         }
         for runtime in &runtimes {
