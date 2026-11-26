@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795660403437,
+  "lastUpdate": 1795661215177,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -89298,6 +89298,72 @@ window.BENCHMARK_DATA = {
             "range": "888.78",
             "unit": "us",
             "extra": "trials: 5\nmedian: 1506.00\nmean: 1413.80\nstdev: 888.78\ncv: 62.86%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "455d3d1a6ed6e3f6b01e6b4377b0683442861265",
+          "message": "fix(storage): a standalone restore through the tools never reuses an offset (#3048) (#3207)\n\n* wip(storage): a standalone restore through the tools re-forms on the time line (#3048)\n\nSpec-Unaffected: work in progress; the reason is in the final commit\n\n* fix(storage): a standalone restore through the tools never reuses an offset (#3048)\n\nA standalone broker had no way to tell a data directory put back from a\nbackup from the one its last run left, so its Raft groups handed out again\nthe offsets given out after the backup was taken: under OnCommit nothing\nrotated, and a relaxed re-form started only above the backup's reservation.\n\n`felix-broker rotate-storage-id` and `restore-point` now rotate through\n`run_state::rotate_for_restore`, which writes `restore-pending`, records the\nrestore in the `relaxed-crash-id` chain (marked ` restore`), rotates the id\nand removes the marker. A start refuses while the marker is there. A group of\none whose kept copy a restore rotated re-forms alone, with its first index no\nlower than the backup-point restore's time line at the broker's clock.\n\nSpec-Unaffected: the alone re-form's plan steps (FelixRaftReformAlone) are unchanged; the restore trigger and marker are outside the models, and the first index takes the Line rule FelixRaftRestoreRepeated checks, with the broker's clock as the planner's\n\n* test(broker): drop clones of a Copy fsync mode (#3048)\n\nSpec-Unaffected: test-only change\n\n* fix(storage): drop relaxed_crash_sources and state the time line's clock assumption (#3048)\n\nSpec-Unaffected: removes an unused accessor and adds docs; no modelled behaviour changes",
+          "timestamp": "2026-11-26T02:18:09Z",
+          "tree_id": "2240baa0f215886711b59ed06a976930efdbc02b",
+          "url": "https://github.com/GetFelix/felix/commit/455d3d1a6ed6e3f6b01e6b4377b0683442861265"
+        },
+        "date": 1795661199125,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 126,
+            "range": "1.14",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 126.00\nmean: 126.40\nstdev: 1.14\ncv: 0.90%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 176,
+            "range": "6.38",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 176.00\nmean: 175.20\nstdev: 6.38\ncv: 3.64%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 243,
+            "range": "131.38",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 243.00\nmean: 299.60\nstdev: 131.38\ncv: 43.85%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 172,
+            "range": "0.84",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 172.00\nmean: 172.20\nstdev: 0.84\ncv: 0.49%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 343,
+            "range": "8.91",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 343.00\nmean: 342.40\nstdev: 8.91\ncv: 2.60%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 486,
+            "range": "200.80",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 486.00\nmean: 603.80\nstdev: 200.80\ncv: 33.26%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
