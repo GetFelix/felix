@@ -42,6 +42,7 @@ async fn read_bounds_hold_the_nodes_engine() {
             region: "local".to_string(),
             zone: None,
             internal: false,
+            durable_storage: true,
             region_bridges: Vec::new(),
             features: Default::default(),
         }),
@@ -159,4 +160,35 @@ fn the_hybrid_engine_keeps_a_hybrid_root() {
         .resolve(Some(crate::config::ShardEngine::Hybrid))
         .expect("resolve");
     assert_eq!(engine, crate::config::ShardEngine::Hybrid);
+}
+
+/// **A data directory that cannot be locked fails the start**, before
+/// anything is written there, naming the directory. Logs open lazily, so
+/// without the probe the broker would come up and fail every shard.
+#[test]
+fn a_root_that_cannot_be_locked_does_not_start() {
+    let root = tempfile::tempdir().expect("tempdir");
+    let durable = DurableStorageConfig {
+        root: root.path().to_path_buf(),
+        log: Default::default(),
+        offload_dir: None,
+    };
+    felix_storage::fault::fail_locks_under(root.path());
+    let opened = open_storage(&BrokerConfig::default(), Some(durable), None);
+    felix_storage::fault::stop_failing_locks_under(root.path());
+    let Err(err) = opened else {
+        panic!("a broker started on a root it cannot lock");
+    };
+    let err = format!("{err:#}");
+    assert!(
+        err.contains(&root.path().display().to_string()) && err.contains("local disk"),
+        "{err}"
+    );
+    assert!(
+        std::fs::read_dir(root.path())
+            .expect("read")
+            .next()
+            .is_none(),
+        "the start wrote to the root before the probe"
+    );
 }

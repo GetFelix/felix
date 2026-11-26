@@ -14,6 +14,7 @@ use std::path::Path;
 
 use super::{epoch_file, start};
 use crate::DiskLog;
+use crate::disk_log::dir_lock::DirLock;
 use crate::error::{Result, StorageError};
 use crate::log::{LogConfig, Offset};
 use crate::raft_log::{generation_of, snapshot};
@@ -40,6 +41,9 @@ pub async fn restore_copy(
     term: Option<u64>,
     config: LogConfig,
 ) -> Result<()> {
+    // Before the checks, so the copy cut is the one checked.
+    crate::io::create_dir_all_durable(dir)?;
+    let lock = DirLock::take(dir)?;
     if let Some(why) = past_the_point(dir, point)? {
         return Err(StorageError::Io(io::Error::other(format!(
             "{label}: cannot cut the Raft copy in {} back to {point}: {why}",
@@ -53,7 +57,7 @@ pub async fn restore_copy(
         offload: None,
         ..config
     };
-    let log = DiskLog::open(dir, label, config)?;
+    let log = DiskLog::open_holding(dir, label, config, None, lock)?;
     let cut = match term {
         Some(term) => match generation_of(term) {
             Ok(generation) => {

@@ -1,11 +1,15 @@
-//! The lock on a Raft log's directory: one open log at a time, across
-//! processes and within one.
+//! The lock on a log's directory: one open log at a time, across processes
+//! and within one. Every open takes it, so two brokers on one data
+//! directory, or a broker and `felix-log-tool`, never both write, cut or
+//! rotate a log.
 //!
 //! An exclusive `flock` on the directory itself, so no file is added to it
 //! and no segment file is touched. The kernel ties the lock to the open
 //! directory, so a second open is refused whichever path or symlink it came
 //! by, including a second open in the same process, and a process that dies
-//! gives it up.
+//! gives it up. A lock is only good while its directory is still the one at
+//! the path, so a lock taken on a directory a rotation moved away meanwhile
+//! is refused too.
 //!
 //! The simulator's filesystem has no descriptors to lock, and neither has a
 //! platform without `flock`. There the claim is a path in this process, and
@@ -28,7 +32,7 @@ static NEXT_CLAIM: AtomicU64 = AtomicU64::new(0);
 
 /// The lock on one log's directory, given up when dropped.
 #[derive(Debug)]
-pub(super) enum DirLock {
+pub(crate) enum DirLock {
     #[cfg(unix)]
     Dir(std::fs::File),
     Claim(PathBuf, u64),
@@ -37,7 +41,7 @@ pub(super) enum DirLock {
 impl DirLock {
     /// Lock `dir`, which exists. Never waits: a directory another open log
     /// holds is refused with [`io::ErrorKind::ResourceBusy`].
-    pub(super) fn take(dir: &Path) -> io::Result<Self> {
+    pub(crate) fn take(dir: &Path) -> io::Result<Self> {
         #[cfg(unix)]
         if !crate::fs::in_memory(dir) {
             return flock(dir).map(Self::Dir);
@@ -52,6 +56,28 @@ impl DirLock {
         claimed.insert(key.clone(), claim);
         Ok(Self::Claim(key, claim))
     }
+
+    /// Lock the new directory at `dir` too, after a rotation renamed the
+    /// locked one away, and hand back the lock on the old one, for the
+    /// caller to keep until it is done with it. A claim names the path, not
+    /// the directory, so it stays and `None` comes back.
+    #[cfg(feature = "raft")]
+    pub(crate) fn follow(&mut self, dir: &Path) -> io::Result<Option<Self>> {
+        #[cfg(unix)]
+        if let Self::Dir(_) = self {
+            return Ok(Some(std::mem::replace(self, Self::Dir(flock(dir)?))));
+        }
+        let _ = dir;
+        Ok(None)
+    }
+}
+
+/// Take and let go of the lock on `dir`, creating it if it is not there: a
+/// start's check that the filesystem can lock a directory, so a broker on
+/// one that cannot fails before it is ready rather than at each log's open.
+pub fn probe(dir: &Path) -> io::Result<()> {
+    crate::io::create_dir_all_durable(dir)?;
+    DirLock::take(dir).map(drop)
 }
 
 /// Give up every claim below `root`, for a simulated crash: the logs open
@@ -65,6 +91,28 @@ pub(crate) fn release_under(root: &Path) {
     if let Some(claimed) = CLAIMED.lock().as_mut() {
         claimed.retain(|dir, _| !dir.starts_with(&root));
     }
+}
+
+/// A copy of everything under `root` as it is now, for a test to open as
+/// what a process that died here leaves: the logs open under `root` hold
+/// it, and a process death would have let go of their locks.
+#[cfg(test)]
+pub(crate) fn crash_image(root: &Path) -> tempfile::TempDir {
+    fn copy(from: &Path, to: &Path) {
+        for entry in std::fs::read_dir(from).expect("list") {
+            let entry = entry.expect("entry");
+            let target = to.join(entry.file_name());
+            if entry.file_type().expect("type").is_dir() {
+                std::fs::create_dir_all(&target).expect("mkdir");
+                copy(&entry.path(), &target);
+            } else {
+                std::fs::copy(entry.path(), target).expect("copy");
+            }
+        }
+    }
+    let image = tempfile::tempdir().expect("image");
+    copy(root, image.path());
+    image
 }
 
 impl Drop for DirLock {
@@ -94,26 +142,63 @@ impl Drop for DirLock {
 fn flock(dir: &Path) -> io::Result<std::fs::File> {
     use std::os::fd::AsRawFd;
 
-    let file = std::fs::File::open(dir)?;
+    use std::os::unix::fs::MetadataExt;
+
+    let file = std::fs::File::open(dir).map_err(|err| match err.kind() {
+        io::ErrorKind::NotFound => io::Error::new(
+            err.kind(),
+            format!(
+                "{}: cannot open the log directory to lock it: {err}",
+                dir.display()
+            ),
+        ),
+        _ => unlockable(dir, err),
+    })?;
     loop {
+        #[cfg(any(debug_assertions, test, feature = "fault-injection"))]
+        if let Some(err) = crate::fault::injected_lock_failure(dir) {
+            return Err(unlockable(dir, err));
+        }
         // SAFETY: `file` is open, and `flock` only reads the descriptor.
         if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0 {
+            // A rotation can rename the directory away between the open and
+            // the lock, and the path then names a directory its holder has.
+            let (locked, at_path) = (file.metadata()?, std::fs::metadata(dir)?);
+            if (locked.dev(), locked.ino()) != (at_path.dev(), at_path.ino()) {
+                return Err(busy(dir));
+            }
             return Ok(file);
         }
         let err = io::Error::last_os_error();
         match err.kind() {
             io::ErrorKind::Interrupted => {}
             io::ErrorKind::WouldBlock => return Err(busy(dir)),
-            _ => return Err(err),
+            _ => return Err(unlockable(dir, err)),
         }
     }
+}
+
+/// A lock the filesystem cannot give, as on NFS or a FUSE mount without
+/// `flock`. Same kind as `err`, with the directory and what to do.
+#[cfg(unix)]
+fn unlockable(dir: &Path, err: io::Error) -> io::Error {
+    io::Error::new(
+        err.kind(),
+        format!(
+            "{}: cannot lock the log directory ({err}); the filesystem does not \
+             support flock on a directory. Keep the data directory on a local disk",
+            dir.display()
+        ),
+    )
 }
 
 fn busy(dir: &Path) -> io::Error {
     io::Error::new(
         io::ErrorKind::ResourceBusy,
         format!(
-            "the log in {} is already open, in this process or another",
+            "{} is locked by another open: a second broker on the same data \
+             directory, felix-log-tool, or an open in this process that was not \
+             closed yet",
             dir.display()
         ),
     )

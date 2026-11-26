@@ -1860,7 +1860,7 @@ async fn gap_snapshots(
 ) -> Vec<felix_storage::raft_log::StoredSnapshot> {
     let mut folded = Vec::new();
     for broker in BROKERS {
-        let snapshot = super::super::machine::gap_snapshot(
+        let snapshot = super::super::machine::gap_snapshot_in(
             &cluster.dir(broker, N),
             &log_config(),
             ShardKind::Cache,
@@ -1965,7 +1965,7 @@ async fn a_re_forms_gap_snapshot_folds_the_cache_through_the_base() {
         term: base.term,
         index: mid - 1,
     };
-    let refused = super::super::machine::gap_snapshot(
+    let refused = super::super::machine::gap_snapshot_in(
         &cluster.dir("b", N),
         &log_config(),
         ShardKind::Cache,

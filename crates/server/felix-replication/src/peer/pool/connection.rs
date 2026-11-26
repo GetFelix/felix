@@ -11,7 +11,7 @@ use anyhow::{Context, Result, anyhow, bail};
 use bytes::Bytes;
 use felix_storage::StorageId;
 use felix_transport::QuicConnection;
-use felix_wire::internal::{ErrorCode, Hello, InternalMessage, PeerCapabilities};
+use felix_wire::internal::{ErrorCode, Hello, InternalMessage, PeerCapabilities, RaftLayouts};
 use parking_lot::Mutex;
 use tokio::sync::{mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
@@ -38,6 +38,8 @@ pub(super) struct PeerConnection {
     /// What the peer said it can do in the handshake. `NONE` until then, and
     /// for a peer that predates the bits.
     pub(super) capabilities: Mutex<PeerCapabilities>,
+    /// The Raft layouts the peer said it reads, `None` when it did not say.
+    pub(super) raft_layouts: Mutex<Option<RaftLayouts>>,
     /// The peer's storage identity and incarnation from the handshake.
     pub(super) identity: Mutex<PeerIdentity>,
 }
@@ -218,6 +220,7 @@ impl PeerConnection {
             last_used: Mutex::new(Instant::now()),
             tasks: Mutex::new(tasks),
             capabilities: Mutex::new(PeerCapabilities::NONE),
+            raft_layouts: Mutex::new(None),
             identity: Mutex::new(PeerIdentity::default()),
         });
 
@@ -268,6 +271,7 @@ impl PeerConnection {
             InternalMessage::HelloOk(ok) if ok.node_id == self.node_id => {
                 let capabilities = ok.capabilities.unwrap_or(PeerCapabilities::NONE);
                 *self.capabilities.lock() = capabilities;
+                *self.raft_layouts.lock() = ok.raft_layouts;
                 *self.identity.lock() = PeerIdentity {
                     storage: ok.identity.map(StorageId::from_bytes),
                     incarnation: Incarnation::from_handshake(
@@ -315,6 +319,11 @@ impl PeerConnection {
     /// What the peer said it can do.
     pub(super) fn capabilities(&self) -> PeerCapabilities {
         *self.capabilities.lock()
+    }
+
+    /// The Raft layouts the peer gave in the handshake.
+    pub(super) fn raft_layouts(&self) -> Option<RaftLayouts> {
+        *self.raft_layouts.lock()
     }
 
     /// The peer's storage identity and incarnation from the handshake.

@@ -89,6 +89,7 @@ fn every_message() -> Vec<InternalMessage> {
             capabilities: None,
             identity: None,
             incarnation: None,
+            raft_layouts: None,
         }),
         InternalMessage::Hello(Hello {
             correlation_id: 42,
@@ -101,6 +102,7 @@ fn every_message() -> Vec<InternalMessage> {
             capabilities: Some(PeerCapabilities::NONE),
             identity: None,
             incarnation: None,
+            raft_layouts: None,
         }),
         InternalMessage::Fence(Fence {
             correlation_id: 42,

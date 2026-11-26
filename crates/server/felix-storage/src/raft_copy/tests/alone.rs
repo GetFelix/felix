@@ -35,7 +35,7 @@ impl GapFold for Fold {
     fn fold<'a>(
         &'a self,
         _dir: &'a Path,
-        _config: &'a LogConfig,
+        _log: &'a crate::DiskLog,
         _base: Option<LogPoint>,
         gap_end: LogPoint,
     ) -> std::pin::Pin<

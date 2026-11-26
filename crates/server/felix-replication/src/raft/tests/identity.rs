@@ -2192,3 +2192,95 @@ async fn a_member_stopped_on_a_storage_error_reopens_once_the_disk_heals() {
         log.close().await.expect("close");
     }
 }
+
+/// A follower closed while its leader replicates to it and opened again at
+/// once, round after round, finds its directory free every time: the close
+/// waits for its group to stop and the log's close lets go of the lock,
+/// whatever clone of the log a task still holds. It catches up each time.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_follower_reopens_at_once_after_a_close_under_load() {
+    let mut cluster = Cluster::new(true);
+    let roots = Roots::new();
+    let mut members = BTreeSet::new();
+    let mut logs = HashMap::new();
+    for broker in BROKERS {
+        let opened = cluster
+            .runtime(broker)
+            .open_copy(
+                group(0),
+                &roots.shard_dir(broker),
+                log_config(),
+                &roots.roots[broker],
+            )
+            .await
+            .expect("open copy");
+        members.insert(opened.member);
+        logs.insert(broker, opened.log);
+    }
+    cluster
+        .runtime("a")
+        .initialize(&shard(0), members)
+        .await
+        .expect("initialize");
+    let leader = cluster.elected(0).await;
+    let follower = *BROKERS
+        .iter()
+        .find(|broker| **broker != &*leader.broker)
+        .expect("a follower");
+    let runtime = cluster.runtime(follower);
+    for round in 0..10 {
+        let written = cluster.write(0, b"before").await;
+        cluster.committed_everywhere(0, written).await;
+        let load = {
+            let group = cluster
+                .runtime(&leader.broker)
+                .group(&shard(0))
+                .expect("group");
+            tokio::spawn(async move {
+                for _ in 0..50 {
+                    let command = Command {
+                        timestamp_micros: 1_700_000_000,
+                        payload: Bytes::from_static(b"load"),
+                        producer: None,
+                        expected: None,
+                        trim: None,
+                        commit: false,
+                        group: false,
+                        publisher: None,
+                        headers: None,
+                        written: None,
+                        cond: None,
+                    };
+                    let _ = group.raft().client_write(command).await;
+                }
+            })
+        };
+        tokio::time::sleep(Duration::from_millis(5)).await;
+        assert!(runtime.close(&shard(0)).await);
+        logs.remove(follower)
+            .expect("log")
+            .close()
+            .await
+            .expect("close");
+        let reopened = runtime
+            .open_copy(
+                group(0),
+                &roots.shard_dir(follower),
+                log_config(),
+                &roots.roots[follower],
+            )
+            .await;
+        let reopened = match reopened {
+            Ok(reopened) => reopened,
+            Err(err) => panic!("round {round}: the reopen failed: {err}"),
+        };
+        logs.insert(follower, reopened.log);
+        load.await.expect("load");
+        let written = cluster.write(0, b"after").await;
+        cluster.committed_everywhere(0, written).await;
+    }
+    cluster.stop().await;
+    for (_, log) in logs {
+        log.close().await.ok();
+    }
+}

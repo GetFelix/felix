@@ -196,6 +196,7 @@ async fn a_restores_gap_costs_no_disk() {
     let log = gapped(&dir, 6).await;
     log.append(&records(&["new-0"])).await.expect("append");
     log.shutdown().await.expect("shutdown");
+    drop(log);
     let log = open(&dir, FsyncMode::OnCommit);
     assert_eq!(read_all(&log, 0).await.len(), 7);
     assert_eq!(read_all(&log, FIRST - (1 << 40)).await, ["new-0"]);

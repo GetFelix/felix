@@ -173,8 +173,11 @@ finalizes every feature its brokers report, in order, except
 its publisher's id, `record_generations`, the one-way move to a new storage
 format (see [`record_generations`](#record_generations)), and `joint_fence` and `replica_election`, which an operator
 finalizes (see [Failover without the control
-plane](/deployment/failover-without-control-plane/#turning-it-on)). The control plane treats a cluster as new when no stream
-or cache was ever created and no broker has registered twice, and, under the
+plane](/deployment/failover-without-control-plane/#turning-it-on)). The control plane treats a cluster as new when no shard
+of a stream or cache was ever placed on a broker, the control plane was never
+restored from a backup, and no broker has registered twice. Streams and
+caches created before the first broker registers, as a seed job does, still
+leave it new, and, under the
 Raft backend, only once every member runs this release. It finalizes
 through the same checks as the command below, so a feature some broker does
 not report stays off, along with the features that need it. If a

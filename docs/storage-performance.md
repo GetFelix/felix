@@ -31,6 +31,13 @@ reports the fan-in actually achieved, in records per flush (a client batch of N
 records counts N). A value near 1 under concurrent single-record load means
 appends are serialising on the device and something has regressed.
 
+On a Raft shard the publish lane also merges publishes before they reach the
+log, as the hybrid's claim does. The plain publishes queued behind one are
+proposed with it as one batch: one proposal, one openraft write, one commit
+wait and one delivery for up to 64 publishes or 1 MiB, instead of one of each
+per publish (`docs/per-shard-raft.md`, "Publishes queued on one lane are one
+proposal").
+
 ### 2. One `write` per batch, not per record
 
 Records are encoded into a reusable staging buffer and handed to the kernel in a
@@ -310,7 +317,9 @@ graph LR
   `Unacknowledged`, and its late result is discarded. A publish to a Raft
   shard also gets the quorum wait's deadline in a second queue of the same
   sweep, which wakes for it when it passes, so the client hears
-  `quorum_timeout` on time without a timer per publish.
+  `quorum_timeout` on time without a timer per publish. Publishes merged
+  into one Raft proposal skip the timer only when every one of them is
+  bounded this way; otherwise the proposal keeps one timer for all of them.
 - An answer is sent once the batch is durable under the stream's fsync mode
   and in the replay ring, and before the batch is fanned out
   (`complete_publish_answering`). It never precedes durability. A `Quorum`

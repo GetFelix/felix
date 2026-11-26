@@ -57,7 +57,6 @@ pub(crate) fn note_torn_tail(_segment: &Path) {}
 
 /// Whether `path` is on the simulator's filesystem, where a file has no
 /// descriptor to lock. Never, without the `sim` feature.
-#[cfg(feature = "raft")]
 pub(crate) fn in_memory(path: &Path) -> bool {
     #[cfg(feature = "sim")]
     {

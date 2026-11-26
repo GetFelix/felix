@@ -41,6 +41,7 @@ pub(crate) fn assigned(key: ShardKey, incarnation: u64) -> ShardAssignment {
         raft_voters: None,
         raft_bases: None,
         raft_seed: None,
+        move_reason: None,
         placed: None,
     }
 }
@@ -3458,6 +3459,7 @@ fn a_member_counts_written_entries_only_on_a_relaxed_run_the_fleet_allows() {
     );
 }
 
+mod diskless;
 mod groups;
 mod purge;
 mod reform;

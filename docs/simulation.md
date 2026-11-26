@@ -181,8 +181,11 @@ cargo test -p felix-cluster --lib history::
    shards and a cache, all replicated three ways with quorum acknowledgement.
    Each broker opens a real durable log in its own in-memory data directory, waits
    for the stream catalog (the `seeded` gate a real broker has), registers, and
-   starts its shard tasks. Once every broker has registered, the run finalizes
-   replica election, so brokers elect a new leader themselves when one is lost.
+   starts its shard tasks. The control plane starts as an upgraded fleet's,
+   so it finalizes nothing itself: these brokers run the hybrid, whose seeds
+   predate the new-cluster rule (`SimConfig::upgraded_fleet`). Once every
+   broker has registered, the run finalizes replica election, so brokers elect
+   a new leader themselves when one is lost.
 2. **Faults.** For the first 90 seconds a schedule drawn from the seed crashes
    and kills brokers or cuts their power and restarts them, partitions them,
    freezes them, drops one direction of a link, and makes the control plane
@@ -554,11 +557,11 @@ that added them. None breaks a history rule or a cluster check other than
 | 1, 2, 5, 6, 7 | A few shards (3 to 7) are served by nobody after the heal (`ElectionSettles`, `final-reads`). Seed 6 passes without placement faults. | not filed yet |
 | 3, 4 | Most shards are served by nobody after the heal: all 178 on seed 3, where the control plane keeps a failed leader with a move to `b2` that never ends, and 103 on seed 4. | not filed yet |
 
-Seed 44, which `seed_44_abandoning_held_shards_replays_the_same_twice` pins,
-stops `b1` at 76 s, the broker the control plane has promoted for 30 held
-shards, and abandons their logs one by one from 78 s. The seed still fails
-`ElectionSettles`: 33 of 121 shards are served by nobody after the heal, with
-the control plane naming a leader in `Assigning` that never opens.
+Seed 13, which `seed_13_abandoning_held_shards_replays_the_same_twice` pins,
+stops the broker the control plane has promoted for shards held after unclean
+kills and abandons their logs one by one. It took the place of seed 44, whose
+run stopped reaching an abandon when the start began recording an upgraded
+fleet.
 
 Any change to the code a run executes can move a seed from one row to
 another, because the run takes a different path from the first difference

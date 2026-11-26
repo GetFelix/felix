@@ -308,6 +308,42 @@ fn an_operator_moves_a_raft_leader_to_a_member_in_one_write() {
     assert_eq!(step.expected_generation, existing[0].generation);
 }
 
+/// An operator's leader move within the set is marked as an operator's,
+/// so the group's leader hands over with one member down (#3234). With no
+/// majority serving it could never land, so it is refused.
+#[test]
+fn an_operator_raft_leader_move_is_marked_and_refused_without_a_majority() {
+    let streams = vec![replicated_stream("orders", 1, 3)];
+    let existing = vec![member_of(0, "broker-a")];
+    let moved = |down: &[&str]| {
+        let mut nodes = live(&ABC);
+        for node in &mut nodes {
+            if down.contains(&node.node_id.as_str()) {
+                node.status.lifecycle = NodeLifecycle::Down;
+            }
+        }
+        let catalog = Catalog {
+            streams: &streams,
+            caches: &[],
+            nodes: &nodes,
+            existing: &existing,
+            caught_up: &NothingCaughtUp,
+            policy: raft(),
+        };
+        start_move(&catalog, &existing[0].key, "broker-b")
+    };
+    let step = moved(&["broker-c"]).expect("moves");
+    assert_eq!(step.assignment.leader, "broker-b");
+    assert_eq!(
+        step.assignment.move_reason,
+        Some(crate::model::MoveReason::Operator)
+    );
+    assert!(matches!(
+        moved(&["broker-a", "broker-c"]).unwrap_err(),
+        Refused::MemberDown(_)
+    ));
+}
+
 /// **An operator move outside the set gives the destination the leader's
 /// seat.** One write names it leader in place of the old leader and keeps
 /// the followers, so the group's leader adds it as a learner and swaps the

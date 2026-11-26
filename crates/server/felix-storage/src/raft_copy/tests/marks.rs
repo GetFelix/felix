@@ -544,3 +544,35 @@ async fn the_vouched_marker_syncs_once_for_concurrent_and_cancelled_callers() {
     log.vouch_unsynced().await.expect("vouch");
     assert_eq!(log.vouch_writes(), 1);
 }
+
+/// The flush queue's exact mark is set only while the copy's log is open.
+/// Once a close returns, a reopen of the copy may cut the log below the
+/// point, so a set queued after it would leave the mark above the log.
+#[tokio::test]
+async fn an_exact_mark_is_refused_once_the_copy_is_closed() {
+    let root = Root::new();
+    let log = open(&root);
+    log.fresh(Arc::from(SHARD), 7).await.expect("fresh");
+    let marks = log.for_copy(Arc::from(SHARD), 7);
+    let dir = tempfile::tempdir().expect("dir");
+    let copy = crate::DiskLog::open(
+        dir.path(),
+        "t/ns/raft/0",
+        LogConfig {
+            raft_log: true,
+            ..LogConfig::default()
+        },
+    )
+    .expect("open");
+    marks
+        .log_while_open(&copy, Some(point(2, 9)))
+        .await
+        .expect("open copy");
+    copy.close().await.expect("close");
+    let refused = marks.log_while_open(&copy, Some(point(2, 12))).await;
+    assert!(
+        matches!(refused, Err(crate::StorageError::Closed(_))),
+        "{refused:?}"
+    );
+    assert_eq!(log.marks(SHARD).expect("marks").log, Some(point(2, 9)));
+}

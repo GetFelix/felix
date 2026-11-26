@@ -717,6 +717,7 @@ async fn a_held_new_cluster_finalize_is_retried_once_every_member_can() {
             all.clone(),
         );
         async move {
+            let never_placed = crate::cluster::fleet::never_placed(shared.as_ref()).await;
             let (_, enabled) = store
                 .register_node_in_fleet(crate::store::contract::nodes::with_features(
                     crate::store::contract::nodes::node(id, port),
@@ -724,7 +725,8 @@ async fn a_held_new_cluster_finalize_is_retried_once_every_member_can() {
                 ))
                 .await
                 .expect("register");
-            crate::cluster::fleet::finalize_new_cluster(&shared, &pending, enabled).await
+            crate::cluster::fleet::finalize_new_cluster(&shared, &pending, never_placed, enabled)
+                .await
         }
     };
     for (id, port) in [("broker-a", 7401), ("broker-b", 7402), ("broker-c", 7403)] {
@@ -780,7 +782,8 @@ async fn a_held_new_cluster_finalize_gives_up() {
         ))
         .await
         .expect("register");
-    let enabled = crate::cluster::fleet::finalize_new_cluster(&shared, &pending, enabled).await;
+    let enabled =
+        crate::cluster::fleet::finalize_new_cluster(&shared, &pending, Ok(true), enabled).await;
     assert!(enabled.is_empty(), "{enabled:?}");
     assert!(pending.retrying());
 
@@ -4877,6 +4880,58 @@ async fn an_internal_registration_waits_for_level_44() {
     }
 }
 
+/// A leader below the level would place durable shards on a node without
+/// storage, so its registration waits for every member.
+#[tokio::test]
+async fn a_diskless_registration_waits_for_level_54() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let level = super::command::NO_STORAGE_LEVEL;
+    let (store, version) = store_with_member_at(dir.path(), level - 1).await;
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while store.group_level().await.unwrap_or(0) != level - 1 {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the member never counted"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    let mut diskless = crate::store::contract::nodes::node("bare-a", 7001);
+    diskless.spec.labels.insert(
+        felix_common::membership::NODE_STORAGE_LABEL.to_string(),
+        felix_common::membership::NODE_STORAGE_NONE.to_string(),
+    );
+    let refused = store.register_node(diskless.clone()).await;
+    assert!(
+        matches!(refused, Err(StoreError::Conflict(_))),
+        "{refused:?}"
+    );
+    store
+        .register_node(crate::store::contract::nodes::node("broker-a", 7002))
+        .await
+        .expect("a node with storage still registers");
+
+    let mut state = store.machine.store().export_state().await;
+    state.nodes.push(("bare-a".to_string(), diskless.clone()));
+    let import = MetaCommand::ImportState {
+        state: Box::new(state),
+        overwrite: true,
+        mark_unplaced: true,
+        raise_incarnation: false,
+        lose_ordered: false,
+    };
+    assert_eq!(import.version(), level);
+
+    version.store(level, std::sync::atomic::Ordering::SeqCst);
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while store.register_node(diskless.clone()).await.is_err() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "never admitted at level 54"
+        );
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}
+
 /// The root sequence a group below its level does not keep is logged once
 /// per level, not once per heartbeat.
 #[test]
@@ -5464,6 +5519,29 @@ async fn the_leader_takes_an_operator_import() {
             .await
             .expect("overwrite"),
         crate::store::ImportOutcome::Imported
+    );
+}
+
+/// **An operator's restore leaves a cluster that is not new** (#1774): the
+/// import raises the placement incarnation, so the first broker to register
+/// after it finalizes nothing, whatever the backup held.
+#[tokio::test]
+async fn an_operator_import_makes_the_store_not_new() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let store = unrecorded_store(dir.path()).await;
+    assert!(
+        crate::cluster::fleet::never_placed(&*store)
+            .await
+            .expect("read")
+    );
+    ControlPlaneStore::import_state(&*store, one_tenant_export().await, false)
+        .await
+        .expect("import");
+    assert!(
+        !crate::cluster::fleet::never_placed(&*store)
+            .await
+            .expect("read"),
+        "a restored store reads as new"
     );
 }
 

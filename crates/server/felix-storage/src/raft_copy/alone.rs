@@ -19,7 +19,7 @@ use std::path::Path;
 use serde::{Deserialize, Serialize};
 
 use super::epoch_file::{self, EpochBase};
-use super::judge::{CopyRoot, kept_copies, parent_of, reached_before};
+use super::judge::{CopyRoot, kept_copies, lock_dir, parent_of, reached_before};
 use super::start::{building, start_due, started_in};
 use super::vouch::{BrokerReport, DEFAULT_OFFSET_GAP, GroupRecord, RestoreAt};
 use super::wire::{
@@ -28,6 +28,7 @@ use super::wire::{
 };
 use super::{GapFold, copy_file, stop_file};
 use crate::disk_log::crash_point;
+use crate::disk_log::dir_lock::DirLock;
 use crate::log::LogConfig;
 use crate::raft_log::state_file;
 
@@ -135,6 +136,9 @@ impl CopyRoot {
         }
         let parent = parent_of(a.dir)?;
         let step = || crash_point::reached(&parent);
+        // Held from the plan's load to the start's last write, through the
+        // rotation's open, so no other open of the copy runs in between.
+        let mut lock = lock_dir(a.dir)?;
         if let Some(plan) = a.record.load(a.dir)? {
             let current = copy_file::load(a.dir)?;
             let fresh = current
@@ -145,20 +149,31 @@ impl CopyRoot {
                 if started_in(a.dir, epoch)? {
                     return Ok(Aloned::NotOwed);
                 }
-                return self.finish(&a, &plan, &step).await;
+                return self.finish(&a, &plan, &step, lock).await;
             }
             if building(a.dir)? {
                 // Derived from a kept copy, which a start only reads, and
                 // never served: set it aside so the rotation below does not
                 // keep a half-built log as evidence.
                 discard(a.dir, &parent)?;
+                // The lock went with it; the directory the rotation opens
+                // is locked at once, as a rotation locks its new one.
+                crate::io::create_dir_all_durable(a.dir)?;
+                let _discarded = lock.follow(a.dir)?;
             }
         }
         // Rotates a copy minted under another storage id, as an open does.
         let opened = self
-            .open_copy(a.shard, a.dir, a.label, a.config.clone())
+            .open_copy_holding(a.shard, a.dir, a.label.to_owned(), a.config.clone(), lock)
             .await?;
-        opened.log.close().await.map_err(io::Error::other)?;
+        let lock = opened
+            .log
+            .close_keeping_lock()
+            .await
+            .map_err(io::Error::other)?
+            .ok_or_else(|| {
+                io::Error::other(format!("{}: closed under the re-form", a.dir.display()))
+            })?;
         let Some(restored) = self.owed(a.dir, a.config.index_spacing_bytes, &sources)? else {
             return Ok(Aloned::NotOwed);
         };
@@ -166,7 +181,7 @@ impl CopyRoot {
         step()?;
         a.record.store(a.dir, &plan)?;
         step()?;
-        self.finish(&a, &plan, &step).await
+        self.finish(&a, &plan, &step, lock).await
     }
 
     /// Whether the copy in `dir` was rotated by a relaxed crash or a restore
@@ -216,12 +231,13 @@ impl CopyRoot {
         a: &Alone<'_>,
         plan: &AlonePlan,
         step: &(dyn Fn() -> io::Result<()> + Sync),
+        lock: DirLock,
     ) -> io::Result<Aloned> {
         let bases: Vec<EpochBase> = plan.bases.iter().copied().map(EpochBase::from).collect();
         let epoch = bases.len() as u64;
         let at = super::group_epoch(a.dir)?.unwrap_or(0);
         if !building(a.dir)? && stop_file::stopped(a.dir)?.is_none() && at + 1 == epoch {
-            stop_file::stop(a.dir, plan.last)?;
+            stop_file::stop_holding(a.dir, plan.last, &lock)?;
             step()?;
         }
         if !start_due(a.dir, epoch)? {
@@ -231,7 +247,7 @@ impl CopyRoot {
             )));
         }
         let fold = (a.fold)(plan.copy);
-        self.start_stopped(
+        self.start_stopped_holding(
             a.shard,
             a.dir,
             a.incarnation,
@@ -240,6 +256,7 @@ impl CopyRoot {
             fold.as_ref(),
             &(a.member)(plan.copy),
             a.config,
+            lock,
         )
         .await?;
         Ok(Aloned::Reformed { epoch })

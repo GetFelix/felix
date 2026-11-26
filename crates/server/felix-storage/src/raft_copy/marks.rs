@@ -1010,6 +1010,28 @@ impl CopyMarks {
         self.submit(Update::Log(point)).await
     }
 
+    /// [`Self::log`], queued only while `copy` is open and refused with
+    /// `Closed` once it is not. A close waits for the queueing, so a reopen
+    /// of the copy, and any cut it makes, queues behind it: a set that
+    /// came after the cut could leave the mark above the log.
+    pub(crate) async fn log_while_open(
+        &self,
+        copy: &crate::DiskLog,
+        point: Option<LogPoint>,
+    ) -> crate::Result<()> {
+        let queued = copy.write_while_open(|| {
+            self.log.enqueue(vec![Queued {
+                shard: Arc::clone(&self.shard),
+                copy: self.copy,
+                update: Update::Log(point),
+            }])
+        })?;
+        match queued {
+            Some(ticket) => self.log.wait(ticket).await.map_err(crate::StorageError::Io),
+            None => Ok(()),
+        }
+    }
+
     /// Raise the log mark to `point` if it is below it. `point` must be on
     /// disk. Synced before this returns.
     pub(crate) async fn raise_log(&self, point: Option<LogPoint>) -> io::Result<()> {

@@ -126,7 +126,10 @@ where
                 raft_state,
             }),
             Err(err) => {
-                let _ = disk.shutdown().await;
+                // Closed, not only stopped, so the lock goes now and not when
+                // the last clone drops: a retry in this process finds the
+                // directory free.
+                let _ = disk.close().await;
                 Err(err)
             }
         }

@@ -70,6 +70,8 @@ static REWIND_FAILURE: AtomicBool = AtomicBool::new(false);
 static FROM_ENV: Once = Once::new();
 static FOLLOWING: AtomicBool = AtomicBool::new(false);
 static FOLLOWER: Mutex<Option<Follower>> = Mutex::new(None);
+/// Roots under which a directory lock fails; see [`fail_locks_under`].
+static LOCK_FAILURES: Mutex<Vec<PathBuf>> = Mutex::new(Vec::new());
 
 /// Whether flushes fail, and for how long.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -284,6 +286,36 @@ pub(crate) fn injected_rewind_failure() -> Option<std::io::Error> {
 /// `ENOSPC` while a full disk is injected, for a reservation of blocks.
 pub(crate) fn injected_no_space() -> Option<std::io::Error> {
     (WRITE_FAILURE.load(Ordering::Acquire) == WriteFailure::NoSpace as u8).then(enospc)
+}
+
+/// Make taking a log directory's lock fail with `ENOLCK` for every directory
+/// at or below `root`, as on a filesystem without `flock`, until
+/// [`stop_failing_locks_under`]. Scoped to a root, unlike the other faults,
+/// so a test of it leaves the logs of tests running beside it alone.
+pub fn fail_locks_under(root: &std::path::Path) {
+    LOCK_FAILURES
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .push(root.to_path_buf());
+}
+
+/// Undo [`fail_locks_under`] for `root`.
+pub fn stop_failing_locks_under(root: &std::path::Path) {
+    LOCK_FAILURES
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .retain(|failing| failing != root);
+}
+
+/// `ENOLCK` when [`fail_locks_under`] covers `dir`.
+pub(crate) fn injected_lock_failure(dir: &std::path::Path) -> Option<std::io::Error> {
+    let failing = LOCK_FAILURES.lock().unwrap_or_else(PoisonError::into_inner);
+    failing.iter().any(|root| dir.starts_with(root)).then(|| {
+        #[cfg(unix)]
+        return std::io::Error::from_raw_os_error(libc::ENOLCK);
+        #[cfg(not(unix))]
+        std::io::Error::other("no locks available")
+    })
 }
 
 /// Whether reading `next` after `applied` sets the failure again.

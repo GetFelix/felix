@@ -130,6 +130,7 @@ impl SimBrokerConfig {
                 region: self.region.clone(),
                 zone: None,
                 internal: false,
+                durable_storage: true,
                 region_bridges: Vec::new(),
                 features: self.features.clone(),
             }),

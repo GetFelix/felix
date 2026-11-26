@@ -112,6 +112,25 @@ impl Budget {
     }
 }
 
+/// The broker placement names as a group's leader, and whether an operator
+/// asked for it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Preferred {
+    pub(crate) broker: String,
+    /// An operator move named it. Only then does a leader hand over while
+    /// a voter is not answering (see [`placed_step`]).
+    pub(crate) by_operator: bool,
+}
+
+impl From<&str> for Preferred {
+    fn from(broker: &str) -> Self {
+        Self {
+            broker: broker.to_owned(),
+            by_operator: false,
+        }
+    }
+}
+
 /// Why a leader keeps a leadership placement would move.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Held {
@@ -130,17 +149,25 @@ pub(crate) enum Held {
 /// nothing to hand over: no preference, this member is preferred, or the
 /// preferred broker holds no voter of the group. `live` holds the members
 /// that answered this leader lately.
+///
+/// A voter that is behind or not answering holds a placement preference,
+/// but not an operator's: that one goes ahead while the voters caught up,
+/// this leader and the target among them, are a majority. Those voters can
+/// elect again whether or not the target stands, so the hand-over leaves
+/// no state a crash of the target would not have left anyway.
 pub(crate) fn placed_step(
     view: &View,
     live: &BTreeSet<MemberId>,
-    preferred: Option<&str>,
+    preferred: Option<&Preferred>,
 ) -> Option<Result<MemberId, Held>> {
     let preferred = preferred?;
-    if *view.me.broker == *preferred {
+    if *view.me.broker == *preferred.broker {
         return None;
     }
     let voters = &view.config.new;
-    let to = voters.iter().find(|voter| *voter.broker == *preferred)?;
+    let to = voters
+        .iter()
+        .find(|voter| *voter.broker == *preferred.broker)?;
     if view.config.old != view.config.new
         || !view.config_committed
         || !view.own_term_committed
@@ -157,11 +184,18 @@ pub(crate) fn placed_step(
     if !caught_up(to) {
         return Some(Err(Held::Lagging));
     }
-    if !voters
+    let others_caught_up = voters
         .iter()
         .filter(|voter| **voter != view.me)
-        .all(caught_up)
-    {
+        .all(caught_up);
+    let majority_caught_up = || {
+        voters
+            .iter()
+            .filter(|voter| **voter == view.me || caught_up(voter))
+            .count()
+            > voters.len() / 2
+    };
+    if !others_caught_up && !(preferred.by_operator && majority_caught_up()) {
         return Some(Err(Held::Degraded));
     }
     Some(Ok(to.clone()))
@@ -190,7 +224,7 @@ pub(crate) struct Placing {
     /// When a permit is given back if the term has not ended by then.
     hold_for: Duration,
     pub(crate) budget: Arc<Budget>,
-    preferred: Option<String>,
+    preferred: Option<Preferred>,
     /// The term this member was first seen leading, and when.
     led: Option<(u64, Instant)>,
     /// The preferred member, and since when it has been caught up.
@@ -234,7 +268,7 @@ impl Placing {
     }
 
     /// Placement now names `broker`. A new name starts the pacing again.
-    pub(crate) fn prefer(&mut self, broker: Option<String>) {
+    pub(crate) fn prefer(&mut self, broker: Option<Preferred>) {
         if self.preferred != broker {
             self.preferred = broker;
             self.caught_up = None;
@@ -291,7 +325,7 @@ impl Placing {
             }
             None => {}
         }
-        let step = placed_step(view, live, self.preferred.as_deref());
+        let step = placed_step(view, live, self.preferred.as_ref());
         let to = match step {
             None => {
                 self.release();

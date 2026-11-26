@@ -416,13 +416,14 @@ impl CounterStore {
                 let label = layout::shard_label(&key);
                 self.dirs
                     .created(&layout::incarnation_dir_name(&key, incarnation));
-                crate::legacy_swap::recover_legacy_swap(&dir)?;
-                let log = match base_offset {
-                    Some(base) => {
-                        DiskLog::open_at(dir.clone(), label.clone(), self.config.clone(), base)?
-                    }
-                    None => DiskLog::open(dir.clone(), label.clone(), self.config.clone())?,
-                };
+                let lock = crate::legacy_swap::recover_legacy_swap(&dir)?;
+                let log = DiskLog::open_holding(
+                    dir.clone(),
+                    label.clone(),
+                    self.config.clone(),
+                    base_offset,
+                    lock,
+                )?;
                 Ok(Arc::new(CounterShard {
                     label,
                     compactor: Arc::clone(&self.compactor),

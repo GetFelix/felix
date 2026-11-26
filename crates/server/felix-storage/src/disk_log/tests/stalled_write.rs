@@ -2,6 +2,8 @@
 //! that dirties pages faster than the device takes them, must not stall the
 //! runtime or the rest of the log. And an append whose caller gives up must
 //! leave the log as it would have when the write ran in the caller's poll.
+//! A close that lands between a write and its answer fails the write only
+//! if the write is not on disk.
 
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
@@ -175,4 +177,106 @@ async fn a_claim_whose_caller_gave_up_is_released() {
         .await
         .expect("the abandoned batch's range was never released")
         .expect("turn");
+}
+
+/// An `OnCommit` append whose batch was synced before a close finished is
+/// answered Ok, though the log closed before the answer: a reopen serves
+/// the record, and a client told it failed would send it again.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_append_synced_before_a_close_is_answered_ok() {
+    let dir = tempdir().expect("dir");
+    let log = Arc::new(open(&dir, FsyncMode::OnCommit));
+
+    let release = hold_next(&log, HoldAt::Answer);
+    let append = tokio::spawn({
+        let log = Arc::clone(&log);
+        async move { log.append(&records(&["synced"])).await }
+    });
+    wait_until_held(&log).await;
+    log.close().await.expect("close");
+    assert!(
+        log.inner.append_held.load(Ordering::Acquire),
+        "the append was answered before the close finished"
+    );
+    release.send(()).expect("release");
+    let answered = append.await.expect("task");
+    assert!(
+        answered.is_ok(),
+        "an append already on disk was answered {answered:?}"
+    );
+
+    drop(log);
+    let reopened = open(&dir, FsyncMode::OnCommit);
+    assert_eq!(read_all(&reopened, 0).await, ["synced"]);
+}
+
+/// The other side: an append that reaches the log once a close has closed
+/// its segments is answered Closed, and a reopen does not have it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_append_that_arrives_during_a_close_is_answered_closed() {
+    let dir = tempdir().expect("dir");
+    let log = Arc::new(open(&dir, FsyncMode::OnCommit));
+    log.append(&records(&["before"])).await.expect("append");
+
+    // The close closes the segments first, then waits here for its sync.
+    let flushes = log.hold_flushes().await;
+    let close = tokio::spawn({
+        let log = Arc::clone(&log);
+        async move { log.close().await }
+    });
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while log.inner.segments.read().check_open().is_ok() {
+        assert!(
+            Instant::now() < deadline,
+            "the close never closed the segments"
+        );
+        tokio::time::sleep(Duration::from_millis(1)).await;
+    }
+    assert!(!log.is_closed());
+    let late = log.append(&records(&["late"])).await;
+    assert!(
+        matches!(late, Err(StorageError::Closed(_))),
+        "an append the close shut out was answered {late:?}"
+    );
+    drop(flushes);
+    close.await.expect("task").expect("close");
+
+    drop(log);
+    let reopened = open(&dir, FsyncMode::OnCommit);
+    assert_eq!(read_all(&reopened, 0).await, ["before"]);
+}
+
+/// The dangerous side: an `OnCommit` append written but not yet synced,
+/// whose flush then fails, is answered with an error and never reported
+/// durable, with a close landing in between.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_append_whose_flush_failed_around_a_close_is_not_answered_ok() {
+    let dir = tempdir().expect("dir");
+    let log = Arc::new(open(&dir, FsyncMode::OnCommit));
+
+    let release = hold_next(&log, HoldAt::Reply);
+    let append = tokio::spawn({
+        let log = Arc::clone(&log);
+        async move { log.append(&records(&["unsynced"])).await }
+    });
+    wait_until_held(&log).await;
+    log.fail_next_flush();
+    // Waits for the append lock the held append has, then for the flush.
+    let close = tokio::spawn({
+        let log = Arc::clone(&log);
+        async move { log.close().await }
+    });
+    release.send(()).expect("release");
+    let answered = append.await.expect("task");
+    let _ = close.await.expect("task");
+    assert!(
+        answered.is_err(),
+        "an append whose flush failed was answered {answered:?}"
+    );
+    assert!(log.is_poisoned());
+    assert_eq!(
+        log.durable_offset(),
+        0,
+        "the failed flush was counted durable"
+    );
 }

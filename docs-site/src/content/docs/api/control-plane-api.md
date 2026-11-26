@@ -529,6 +529,8 @@ one is refused with `400`, and omitting it places the stream anywhere. An
 operator move to a broker outside the allowed regions is refused with `409`
 and code `region_not_allowed`. A move to a broker registered with
 `FELIX_NODE_ROLE=internal` is refused with `409` and code `internal_node`.
+A move of a durable stream's or a cache's shard to a broker registered without
+durable storage is refused with `409` and code `no_durable_storage`.
 `PATCH /v1/nodes/{id}` with `"internal": true|false` sets or clears that role and
 needs `node.manage` on `cluster:*`; `labels` edits never change it.
 

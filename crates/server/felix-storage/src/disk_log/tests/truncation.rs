@@ -350,6 +350,7 @@ async fn truncate_during_a_seal(appended_after: usize) {
         "the seal changed the length of the segment the truncation cut"
     );
     log.shutdown().await.expect("shutdown");
+    drop(log);
     let log = DiskLog::open(dir.path(), "t/ns/s/0", config).expect("reopen");
     assert_eq!(read_all(&log, 0).await, expected);
     assert!(

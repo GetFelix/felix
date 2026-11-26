@@ -92,6 +92,7 @@ impl OldBroker {
                     capabilities: None,
                     identity: None,
                     incarnation: None,
+                    raft_layouts: None,
                 })
             }
             _ => InternalMessage::ForwardPublishOk(ForwardPublishOk {
@@ -177,7 +178,7 @@ async fn two_current_brokers_learn_each_others_capabilities() {
     assert_eq!(pool.known_capabilities().get(PEER), Some(offered));
     // A caller reads an identity whether or not it gives one, replaces
     // streams it gets no answer on, and reads a learner's answer, a
-    // refusal's reason and a kept ballot.
+    // refusal's reason, a kept ballot and a Raft listener's layouts.
     assert_eq!(
         noted.get("broker-a"),
         Some(
@@ -189,6 +190,7 @@ async fn two_current_brokers_learn_each_others_capabilities() {
                 .union(PeerCapabilities::REFUSAL_REASONS)
                 .union(PeerCapabilities::KEPT_BALLOTS)
                 .union(PeerCapabilities::UNIFIED_FENCE)
+                .union(PeerCapabilities::RAFT_LAYOUTS)
         )
     );
 
@@ -272,11 +274,104 @@ async fn a_caller_without_the_bit_gets_neither_the_bit_nor_the_identity() {
         capabilities: Some(offered),
         identity: None,
         incarnation: None,
+        raft_layouts: None,
     });
     assert_eq!(frame, today.encode().expect("encode"));
 
     connection.close(0u32.into(), b"done");
     listener.stop().await;
+}
+
+/// Answers nothing; states layouts 6 to 8.
+struct Layouts;
+
+#[async_trait::async_trait]
+impl crate::peer::RaftHandler for Layouts {
+    async fn answer(&self, _from: Option<Arc<str>>, body: Bytes) -> Bytes {
+        body
+    }
+
+    fn layouts(&self) -> felix_wire::internal::RaftLayouts {
+        felix_wire::internal::RaftLayouts::new(6, 8).expect("layouts")
+    }
+}
+
+/// **A Raft listener states its layouts only to a caller that offered
+/// `RAFT_LAYOUTS`.** A caller from before the bit gets the answer it always
+/// had, byte for byte; a listener without Raft states none to anyone.
+#[tokio::test]
+async fn raft_layouts_travel_only_to_a_caller_that_offered_them() {
+    let server = Listener::bind_with_retry(PEER, Arc::new(CountingHandler::default()), &config())
+        .await
+        .with_raft(Arc::new(Layouts));
+    let addr = server.local_addr().expect("addr");
+    let shutdown = CancellationToken::new();
+    let task = tokio::spawn(server.serve(shutdown.clone()));
+    let listener = Listener {
+        addr,
+        shutdown,
+        task,
+    };
+    let raft = config()
+        .capabilities()
+        .union(PeerCapabilities::RAFT)
+        .union(PeerCapabilities::RAFT_BEATS);
+
+    let pool = pool(config());
+    let offer = pool
+        .raft_offer(PEER, listener.addr)
+        .await
+        .expect("handshake");
+    assert_eq!(
+        offer.capabilities,
+        raft.union(PeerCapabilities::RAFT_LAYOUTS)
+    );
+    assert_eq!(offer.layouts, felix_wire::internal::RaftLayouts::new(6, 8));
+    pool.shutdown().await;
+
+    let client = QuicClient::bind(
+        "127.0.0.1:0".parse().expect("addr"),
+        crate::peer::tls::client_config(None).expect("client config"),
+        TransportConfig::default(),
+    )
+    .expect("bind");
+    let connection = client
+        .connect(listener.addr, crate::peer::tls::INTERNAL_SERVER_NAME)
+        .await
+        .expect("connect");
+    let (mut send, mut recv) = connection.open_bi().await.expect("open");
+    let offered = config().capabilities();
+    write_frame(
+        &mut send,
+        &InternalMessage::Hello(Hello {
+            correlation_id: 5,
+            node_id: "broker-old".to_string(),
+            capabilities: Some(offered),
+        }),
+    )
+    .await
+    .expect("write");
+    let (_, frame) = read_raw(&mut recv).await.expect("an answer");
+    let before = InternalMessage::HelloOk(HelloOk {
+        correlation_id: 5,
+        node_id: PEER.to_string(),
+        capabilities: Some(raft),
+        identity: None,
+        incarnation: None,
+        raft_layouts: None,
+    });
+    assert_eq!(frame, before.encode().expect("encode"));
+    connection.close(0u32.into(), b"done");
+    listener.stop().await;
+
+    // Without Raft there are no layouts to state, whatever the caller offers.
+    let plain = Listener::start(PEER, Arc::new(CountingHandler::default())).await;
+    let pool = super::pool(config());
+    let offer = pool.raft_offer(PEER, plain.addr).await.expect("handshake");
+    assert!(!offer.capabilities.contains(PeerCapabilities::RAFT_LAYOUTS));
+    assert_eq!(offer.layouts, None);
+    pool.shutdown().await;
+    plain.stop().await;
 }
 
 /// A current listener that answers with `storage_id()` and the incarnation
@@ -347,6 +442,7 @@ async fn the_incarnation_travels_only_to_a_caller_that_offered_it() {
         capabilities: Some(offered),
         identity: Some(storage_id().to_bytes()),
         incarnation: None,
+        raft_layouts: None,
     });
     assert_eq!(frame, today.encode().expect("encode"));
 

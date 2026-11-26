@@ -27,8 +27,25 @@ const RAFT: &[u8] = b"raft\n";
 /// when this returns, so no entry is ever written to an unmarked directory.
 /// Refused when the directory already holds segments without a marker: the
 /// hybrid engine wrote those.
+///
+/// The marker is written under the directory's lock, so it is refused with
+/// [`std::io::ErrorKind::ResourceBusy`] while another log has an unmarked
+/// directory open. A directory already marked is left as it is, open or not.
 pub fn claim_for_raft(dir: &Path, label: &str) -> Result<()> {
     crate::fs::create_dir_all(dir).map_err(StorageError::Io)?;
+    if marked_raft(dir, label)? {
+        return Ok(());
+    }
+    let lock = super::dir_lock::DirLock::take(dir).map_err(StorageError::Io)?;
+    claim_for_raft_holding(dir, label, &lock)
+}
+
+/// [`claim_for_raft`], for a caller that holds `dir`'s lock.
+pub(crate) fn claim_for_raft_holding(
+    dir: &Path,
+    label: &str,
+    _held: &super::dir_lock::DirLock,
+) -> Result<()> {
     if marked_raft(dir, label)? {
         return Ok(());
     }

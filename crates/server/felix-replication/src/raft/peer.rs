@@ -6,9 +6,12 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use bytes::Bytes;
-use felix_wire::internal::{InternalMessage, PeerCapabilities, RaftCall};
+use felix_wire::internal::{InternalMessage, PeerCapabilities, RaftCall, RaftLayouts};
 
-use std::time::Duration;
+use std::time::{Duration, Instant};
+
+use felix_common::random::HashMap;
+use parking_lot::Mutex;
 
 use super::network::{RaftReply, RaftRequest, RaftTransport, Refused, send_each};
 use super::runtime::GroupRuntime;
@@ -33,12 +36,21 @@ where
 /// Sends Raft messages to peer brokers over their internal listeners.
 ///
 /// One per broker, shared by every group. A message goes only to a broker
-/// that offered [`PeerCapabilities::RAFT`] in its handshake; for any other
-/// the answer is [`Refused::Unreachable`] and nothing is sent.
+/// that offered [`PeerCapabilities::RAFT`] in its handshake and reads a
+/// layout this build writes; for any other the answer is
+/// [`Refused::Unreachable`] with the reason, and nothing is sent.
 pub struct PeerTransport<R> {
     requester: R,
     addresses: Arc<dyn PeerAddresses>,
+    /// When each broker's layout refusal was last logged, so a peer that is
+    /// refused on every heartbeat is logged about once a minute.
+    logged: Mutex<HashMap<Arc<str>, Instant>>,
 }
+
+/// Sends refused because the peer reads no layout this build writes, by
+/// `reason`. A refused heartbeat batch counts once.
+pub(crate) const PEER_REFUSALS_TOTAL: &str = "felix_broker_raft_peer_refusals_total";
+const LOG_EVERY: Duration = Duration::from_secs(60);
 
 impl<R> PeerTransport<R> {
     /// `requester` is normally the broker's `Arc<PeerPool>`.
@@ -46,7 +58,52 @@ impl<R> PeerTransport<R> {
         Self {
             requester,
             addresses,
+            logged: Mutex::new(HashMap::default()),
         }
+    }
+
+    /// Where `broker` listens and what it offered, once it is known to take
+    /// Raft messages in a layout this build writes. Otherwise why not, and
+    /// nothing may be sent.
+    async fn reach(&self, broker: &Arc<str>) -> Result<(SocketAddr, PeerCapabilities), String>
+    where
+        R: PeerRequester,
+    {
+        let addr = self
+            .addresses
+            .address(broker)
+            .ok_or_else(|| "no address is known".to_owned())?;
+        // Checked here as well as in the pool, so a requester that does not
+        // check cannot send one either.
+        let offer = self
+            .requester
+            .raft_offer(broker, addr)
+            .await
+            .map_err(|err| err.to_string())?;
+        if !offer.capabilities.contains(PeerCapabilities::RAFT) {
+            return Err("it has not offered Raft".into());
+        }
+        if wire::choose_layout(wire::LAYOUTS, offer.layouts).is_none() {
+            let stated = offer
+                .layouts
+                .map_or("no layouts".to_owned(), |l| format!("layouts {l}"));
+            let reason = format!(
+                "its handshake states Raft {stated} and this build writes {}",
+                wire::LAYOUTS
+            );
+            metrics::counter!(PEER_REFUSALS_TOTAL, "reason" => "layout").increment(1);
+            let now = Instant::now();
+            let mut logged = self.logged.lock();
+            if logged
+                .get(broker)
+                .is_none_or(|at| now.duration_since(*at) >= LOG_EVERY)
+            {
+                logged.insert(Arc::clone(broker), now);
+                tracing::warn!(peer = %broker, "Raft messages to this peer are refused: {reason}");
+            }
+            return Err(reason);
+        }
+        Ok((addr, offer.capabilities))
     }
 }
 
@@ -59,20 +116,7 @@ where
         let broker = Arc::clone(&request.to().broker);
         let unreachable =
             |detail: String| Refused::Unreachable(format!("broker {broker}: {detail}"));
-        let addr = self
-            .addresses
-            .address(&broker)
-            .ok_or_else(|| unreachable("no address is known".into()))?;
-        // Checked here as well as in the pool, so a requester that does not
-        // check cannot send one either.
-        let offered = self
-            .requester
-            .capabilities(&broker, addr)
-            .await
-            .map_err(|err| unreachable(err.to_string()))?;
-        if !offered.contains(PeerCapabilities::RAFT) {
-            return Err(unreachable("it has not offered Raft".into()));
-        }
+        let (addr, _) = self.reach(&broker).await.map_err(unreachable)?;
         wire::fit(&mut request);
         let body = wire::encode_request(&request).map_err(|err| unreachable(err.to_string()))?;
         let call = InternalMessage::Raft(RaftCall {
@@ -110,14 +154,11 @@ where
                 .map(|_| Err(Refused::Unreachable(format!("broker {broker}: {detail}"))))
                 .collect()
         };
-        let Some(addr) = self.addresses.address(&broker) else {
-            return all("no address is known".into());
+        let (addr, offered) = match self.reach(&broker).await {
+            Ok(reached) => reached,
+            Err(detail) => return all(detail),
         };
-        let offered = match self.requester.capabilities(&broker, addr).await {
-            Ok(offered) => offered,
-            Err(err) => return all(err.to_string()),
-        };
-        if !offered.contains(PeerCapabilities::RAFT.union(PeerCapabilities::RAFT_BEATS)) {
+        if !offered.contains(PeerCapabilities::RAFT_BEATS) {
             return send_each(self, beats).await;
         }
         let body = match wire::encode_beats(&beats, wait) {
@@ -157,6 +198,10 @@ impl RaftHandler for GroupRuntime {
             (Ok(request), Some(from)) => self.handle_from(&from, request).await,
         };
         wire::encode_reply(&reply)
+    }
+
+    fn layouts(&self) -> RaftLayouts {
+        wire::LAYOUTS
     }
 }
 
