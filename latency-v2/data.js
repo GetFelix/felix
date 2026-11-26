@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795711016459,
+  "lastUpdate": 1795711338447,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -91146,6 +91146,72 @@ window.BENCHMARK_DATA = {
             "range": "1000.81",
             "unit": "us",
             "extra": "trials: 5\nmedian: 934.00\nmean: 1206.20\nstdev: 1000.81\ncv: 82.97%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1018-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "9bb7028367a37484f0a96911e2615d1a676f5dd5",
+          "message": "fix(raft): a cache group's state is bounded under the snapshot cap, and a snapshot over the cap is not sent (#2460) (#3244)\n\n* spec(raft): a cache group's state has a bound and a write past it answers full (#2460)\n\nSpec change: FelixRaftCache.tla gains a state bound (`Bound`). A put or an\nadd that would take the state past it answers \"full\", the answer is kept\nlike any other, and nothing else changes. The size counts the record only\nif it is unexpired at the entry's stamp, and the counter once made.\nDeletes and expiry deletes are never refused.\n\nSumExact is restated: an add whose first commit answered \"full\" never\ncounts. FullFinal is new: a request one commit answered \"full\" is answered\n\"full\" or \"forgotten\" by every commit of it.\n\nNew configurations: FelixRaftCacheFull and FelixRaftCacheFullSnapshot\npass; FelixRaftCacheFullNotRecorded (the answer not kept) violates\nFullFinal; FelixRaftCacheFullSnapshotRawSize (expired records counted)\nviolates MembersAgree; FelixRaftCacheFullReachFull is the witness. Every\nexisting configuration sets Bound = 2, which a one-key, one-counter state\nnever passes, so its behaviour is unchanged.\n\n* wip(raft): bound a cache group's state, refuse sending an over-cap snapshot (#2460)\n\nTaken over from a worker that died mid-task; not yet built.\n\nSpec-Unaffected: the bound was modelled in the previous commit; this adds a comment only\n\n* docs(formal): the full-bound configurations cite their tests (#2460)\n\nSpec-Unaffected: Evidence comments only\n\n* fix(raft): docs say counters are never freed; an unsendable member is forgotten after its warning window (#2460)\n\nValue bytes are freed by deletes and expiries, counter bytes are not\n(#3243). The internal-protocol row says what a requester that predates\ncode 14 does. The unsendable metric counts refused attempts on stream and\ncache groups.\n\nSpec-Unaffected: docs, comments and the snapshot-send warning map only\n\n* fix(raft): an idle member holds no snapshot-cap state (#2460)\n\nopenraft's channels hold a SnapshotData in every slot, so the parsed\nCacheState it carried inline grew every member's queues when the PR\nadded the size accounting fields. Box it. The unsendable-snapshot\nwarnings are kept once per broker instead of once per group, and the\nreceiver's cap is only stored in tests.\n\nSpec-Unaffected: memory layout only, no behaviour change",
+          "timestamp": "2026-11-26T08:34:18-08:00",
+          "tree_id": "ac921cabe8e0a386870136b4fa5f980e40df8be0",
+          "url": "https://github.com/GetFelix/felix/commit/9bb7028367a37484f0a96911e2615d1a676f5dd5"
+        },
+        "date": 1795711324832,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 96,
+            "range": "1.14",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 96.00\nmean: 96.40\nstdev: 1.14\ncv: 1.18%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 135,
+            "range": "31.73",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 135.00\nmean: 145.60\nstdev: 31.73\ncv: 21.79%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 197,
+            "range": "63.97",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 197.00\nmean: 226.40\nstdev: 63.97\ncv: 28.26%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 132,
+            "range": "1.14",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 132.00\nmean: 131.60\nstdev: 1.14\ncv: 0.87%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 266,
+            "range": "2.45",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 266.00\nmean: 266.00\nstdev: 2.45\ncv: 0.92%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 389,
+            "range": "547.30",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 389.00\nmean: 735.00\nstdev: 547.30\ncv: 74.46%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
