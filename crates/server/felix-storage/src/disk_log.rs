@@ -1202,7 +1202,11 @@ impl DiskLog {
         if self.inner.closed.load(Ordering::Acquire) {
             return Err(StorageError::Closed(self.inner.label.clone()));
         }
-        if matches!(self.inner.config.fsync_mode, FsyncMode::OnCommit) {
+        // A Raft log in any mode: openraft awaits `save_committed` before it
+        // applies, so a write here would hold up the group. The saved id may
+        // lag what memory holds, which an open and a re-form already allow.
+        if self.inner.config.raft_log || matches!(self.inner.config.fsync_mode, FsyncMode::OnCommit)
+        {
             write_commit_behind(&self.inner);
             return Ok(());
         }
@@ -1212,6 +1216,10 @@ impl DiskLog {
                 .1
                 .is_none_or(|at| at.elapsed() >= COMMIT_PERSIST_INTERVAL)
         };
+        #[cfg(test)]
+        if due {
+            self.inner.commit_path_writes.fetch_add(1, Ordering::SeqCst);
+        }
         if due && let Err(err) = self.persist_replica_state().await {
             retry_replica_state(&self.inner);
             return Err(err);
@@ -1590,6 +1598,10 @@ impl DiskLog {
             commit_writer: std::sync::atomic::AtomicBool::new(false),
             #[cfg(test)]
             replica_writes: AtomicU64::new(0),
+            #[cfg(test)]
+            commit_path_writes: AtomicU64::new(0),
+            #[cfg(test)]
+            replica_write_delay_millis: AtomicU64::new(0),
             replica_persisted: Mutex::new((replica, None)),
             batch_open: std::sync::atomic::AtomicBool::new(producer_state.is_open()),
             producers: Mutex::new(producer_state),
@@ -1881,6 +1893,24 @@ impl DiskLog {
         }
     }
 
+    /// Replica-state writes a commit-offset raise has waited on.
+    pub(crate) fn commit_path_writes(&self) -> u64 {
+        self.inner.commit_path_writes.load(Ordering::SeqCst)
+    }
+
+    /// Replica-state writes made so far.
+    pub(crate) fn replica_writes(&self) -> u64 {
+        self.inner.replica_writes.load(Ordering::SeqCst)
+    }
+
+    /// Stall every replica-state write by `delay`, as a slow disk would.
+    pub(crate) fn slow_replica_writes(&self, delay: std::time::Duration) {
+        let millis = u64::try_from(delay.as_millis()).unwrap_or(u64::MAX);
+        self.inner
+            .replica_write_delay_millis
+            .store(millis, Ordering::Release);
+    }
+
     /// Move the commit offset and leave the generation saved with it, which
     /// nothing outside a test can do to a Raft log.
     pub(crate) fn move_commit_offset_for_tests(&self, offset: Offset) {
@@ -2015,6 +2045,10 @@ impl DiskLog {
     /// entry below it are committed. [`Self::advance_commit_offset`] with
     /// the generation kept beside the offset, so an open can tell that
     /// entry from another at the same index.
+    ///
+    /// Written behind the call in every fsync mode, at most once per
+    /// [`COMMIT_PERSIST_INTERVAL`] and at close, so the group never waits
+    /// on it before it applies.
     pub(crate) async fn save_committed(&self, index: Offset, generation: u64) -> Result<()> {
         let offset = index + 1;
         {
@@ -2420,6 +2454,14 @@ struct LogInner {
     /// Writes `persist_replica_state` made, for tests that count them.
     #[cfg(test)]
     replica_writes: AtomicU64,
+    /// Replica-state writes a commit-offset raise waited on, for tests that
+    /// count them.
+    #[cfg(test)]
+    commit_path_writes: AtomicU64,
+    /// How long each replica-state write stalls first: a slow disk, for
+    /// tests.
+    #[cfg(test)]
+    replica_write_delay_millis: AtomicU64,
     /// What `replica_state` last wrote, and when. Held only by the writer.
     /// Tokio's clock, so a simulation decides when to persist on virtual time.
     ///
@@ -2958,6 +3000,10 @@ async fn persist_replica_state(inner: Arc<LogInner>) -> Result<()> {
         // count too.
         #[cfg(test)]
         inner.replica_writes.fetch_add(1, Ordering::SeqCst);
+        #[cfg(test)]
+        std::thread::sleep(std::time::Duration::from_millis(
+            inner.replica_write_delay_millis.load(Ordering::Acquire),
+        ));
         inner.poison_on_sync_failure(
             "the replica state",
             replica_state::store(&inner.dir, &state),
