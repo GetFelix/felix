@@ -483,10 +483,17 @@ pub(crate) fn split(batch: Batch) -> Result<(Proposal, Waiting), CommitError> {
         }),
     };
     let mut bytes = 0;
+    // Each record stores the publisher; the last takes it, so a batch of
+    // one copies nothing.
+    let mut publisher = publisher;
     let commands = records
         .into_iter()
         .zip(0u32..)
         .map(|(record, index)| {
+            let publisher = match index as usize + 1 == count {
+                true => publisher.take(),
+                false => publisher.clone(),
+            };
             bytes += record.payload.len() + record.headers.as_ref().map_or(0, Bytes::len);
             Command {
                 timestamp_micros: record.timestamp_micros,
@@ -505,7 +512,7 @@ pub(crate) fn split(batch: Batch) -> Result<(Proposal, Waiting), CommitError> {
                 trim,
                 commit,
                 group: false,
-                publisher: publisher.clone(),
+                publisher,
                 headers: record.headers.map(Box::new),
                 written: None,
                 cond: cond_len.map(|len| CondPlace {

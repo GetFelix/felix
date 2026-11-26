@@ -637,7 +637,6 @@ impl LaneWork {
                 })),
         }
         .map_err(crate::shards::routing::RaftRefusal::into_anyhow);
-        let shard = shard.clone();
         match proposed {
             Ok(proposed) => {
                 // A client's ack is timed out by its control stream's
@@ -657,20 +656,27 @@ impl LaneWork {
                 };
                 // The delivery is finished on this task once the publisher
                 // is answered: one task per publish, not two.
+                // The job goes with it, shard key and all, so the key is
+                // not copied for the answer.
                 self.work.spawn(async move {
                     proposed
                         .complete_then(|result| {
                             settle(
                                 job.response,
                                 job.acked_on_enqueue,
-                                Some(&shard),
+                                job.target.shard(),
                                 result.map_err(Into::into),
                             );
                         })
                         .await;
                 });
             }
-            Err(err) => settle(job.response, job.acked_on_enqueue, Some(&shard), Err(err)),
+            Err(err) => settle(
+                job.response,
+                job.acked_on_enqueue,
+                job.target.shard(),
+                Err(err),
+            ),
         }
         None
     }
