@@ -12,6 +12,7 @@ use std::path::Path;
 
 use super::epoch_file::{self, EpochBase, EpochFile};
 use super::{copy_file, judge, stop_file};
+use crate::disk_log::dir_lock::DirLock;
 use crate::disk_log::{durable_mark, engine_marker};
 use crate::raft_log::{held, state_file};
 use crate::segment::parse_segment_file_name;
@@ -49,6 +50,10 @@ pub fn write_fresh_epoch(
             "a fresh copy's epoch needs the bases of a group past epoch 0",
         ));
     }
+    // Before the checks, so nothing opens the copy between them and the
+    // write.
+    crate::io::create_dir_all_durable(dir)?;
+    let _lock = DirLock::take(dir)?;
     // Writing the current epoch over a stop marker keyed by an earlier one
     // would spend the marker, and the copy would rejoin under its old id.
     if stop_file::stopped(dir)?.is_some() {
@@ -69,7 +74,6 @@ pub fn write_fresh_epoch(
     if let Some(why) = holds_something(dir, index_spacing_bytes)? {
         return Ok(FreshEpoch::Refused(why));
     }
-    crate::fs::create_dir_all(dir)?;
     epoch_file::store(dir, &want)?;
     Ok(FreshEpoch::Written)
 }

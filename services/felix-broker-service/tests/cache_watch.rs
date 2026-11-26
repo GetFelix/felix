@@ -110,6 +110,10 @@ impl Running {
         self.task.abort();
         let _ = self.task.await;
         drop(self.server);
+        // A process going away takes its connections with it; aborting the
+        // accept loop does not, so they would keep this broker's logs open.
+        // Stop its storage the way the binary does.
+        let _ = self.broker.shutdown_storage().await;
     }
 }
 

@@ -15,6 +15,10 @@
 //! refuses a directory that holds one, and a start run again over a crashed
 //! one redoes every step, so a half-built copy is never served. See
 //! `docs/per-shard-raft.md`, "Starting the new epoch".
+//!
+//! A start holds the directory's lock from its first check to its last
+//! write, through every open of the log on the way, so it is refused on a
+//! directory a member or another start has open, before anything is written.
 
 use std::io;
 use std::path::{Path, PathBuf};
@@ -25,7 +29,9 @@ use super::epoch_file::{self, EpochBase, EpochFile};
 use super::judge::CopyRoot;
 use super::vouch::ReformPlan;
 use super::wire::WireStart;
+use crate::DiskLog;
 use crate::disk_log::carried_floor::{self, CarriedFloor};
+use crate::disk_log::dir_lock::DirLock;
 use crate::disk_log::{crash_point, durable_mark};
 use crate::log::{AppendOnlyLog, LogConfig};
 use crate::raft_log::snapshot::{SnapshotId, StoredSnapshot};
@@ -79,12 +85,13 @@ pub(crate) struct Start {
 /// the base and nothing a start cut. See `docs/per-shard-raft.md`, "A
 /// voter's snapshot at the gap's end is a fold".
 pub trait GapFold: Send + Sync {
-    /// The snapshot at `gap_end` for the copy in `dir`, whose log ends at
-    /// `base` (`None`: it holds no entry).
+    /// The snapshot at `gap_end` for the copy in `dir`, whose log, `log`,
+    /// ends at `base` (`None`: it holds no entry). The start holds `dir`'s
+    /// lock through `log`, so the fold reads it and opens no other.
     fn fold<'a>(
         &'a self,
         dir: &'a Path,
-        config: &'a LogConfig,
+        log: &'a DiskLog,
         base: Option<LogPoint>,
         gap_end: LogPoint,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = io::Result<StoredSnapshot>> + Send + 'a>>;
@@ -187,6 +194,39 @@ impl CopyRoot {
         member: &str,
         config: &LogConfig,
     ) -> io::Result<()> {
+        // Before the first check, so what is checked is what is started.
+        let lock = DirLock::take(dir)?;
+        self.start_stopped_holding(
+            shard,
+            dir,
+            incarnation,
+            bases,
+            wire,
+            fold,
+            member,
+            config,
+            lock,
+        )
+        .await
+    }
+
+    /// [`Self::start_stopped`] under `lock`, the lock on `dir`.
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "each is one fact the start needs"
+    )]
+    pub(super) async fn start_stopped_holding(
+        &self,
+        shard: &str,
+        dir: &Path,
+        incarnation: u64,
+        bases: Vec<EpochBase>,
+        wire: &WireStart,
+        fold: &dyn GapFold,
+        member: &str,
+        config: &LogConfig,
+        lock: DirLock,
+    ) -> io::Result<()> {
         let label = dir.display();
         let epoch = EpochFile { incarnation, bases };
         let new = epoch.epoch();
@@ -252,7 +292,7 @@ impl CopyRoot {
             meta: Bytes::new(),
             data: Bytes::new(),
         };
-        start_with(dir, &start, config, Some(fold), Some(member)).await
+        start_with(dir, &start, config, Some(fold), Some(member), lock).await
     }
 }
 
@@ -298,18 +338,20 @@ pub(crate) fn building(dir: &Path) -> io::Result<bool> {
 /// or the one copied from [`Start::kept`], is cut back to the base's last
 /// log id, and must then end there in the base's term.
 pub(crate) async fn start_copy(dir: &Path, start: &Start, config: &LogConfig) -> io::Result<()> {
-    start_with(dir, start, config, None, None).await
+    start_with(dir, start, config, None, None, DirLock::take(dir)?).await
 }
 
 /// [`start_copy`], with a voter's snapshot at the gap's end from `fold`
 /// in place of [`Start::meta`] and [`Start::data`], and a voter's vote
-/// raised to the base's term for `vote_for`.
+/// raised to the base's term for `vote_for`, under `lock`, the lock on
+/// `dir`, which it keeps until it returns.
 pub(super) async fn start_with(
     dir: &Path,
     start: &Start,
     config: &LogConfig,
     fold: Option<&dyn GapFold>,
     vote_for: Option<&str>,
+    mut lock: DirLock,
 ) -> io::Result<()> {
     let index_spacing_bytes = config.index_spacing_bytes;
     let base = *start
@@ -431,7 +473,7 @@ pub(super) async fn start_with(
                         .map_err(io::Error::other)?;
                     step()?;
                 }
-                cut_to(dir, &label, config, base.base_end()).await?;
+                lock = cut_to(dir, &label, config, base.base_end(), lock).await?;
                 step()?;
             }
             let held = held::read(dir, &label, index_spacing_bytes)?;
@@ -451,7 +493,9 @@ pub(super) async fn start_with(
             // its record lands, leaving the tail past the base's end. This
             // epoch's first append would not find its base there, so the
             // empty gap goes. It holds no record: nothing is lost.
-            if tail_of(dir, &label, config).await? > base.base_end() {
+            let tail;
+            (tail, lock) = tail_of(dir, &label, config, lock).await?;
+            if tail > base.base_end() {
                 let (commit, _) = crate::disk_log::saved_commit(dir).map_err(io::Error::other)?;
                 if commit > base.base_end() {
                     let term = base.base_last.map_or(0, |last| last.term);
@@ -460,7 +504,7 @@ pub(super) async fn start_with(
                         .map_err(io::Error::other)?;
                     step()?;
                 }
-                cut_to(dir, &label, config, base.base_end()).await?;
+                lock = cut_to(dir, &label, config, base.base_end(), lock).await?;
                 step()?;
             }
         }
@@ -479,7 +523,10 @@ pub(super) async fn start_with(
                 term: last.term,
                 index: last.index,
             });
-            let folded = fold.fold(dir, config, base_last, at).await?;
+            let log = open_under(dir, &label, config, lock)?;
+            let folded = fold.fold(dir, &log, base_last, at).await;
+            lock = close_keeping(&log, dir).await?;
+            let folded = folded?;
             if folded.last != Some(SnapshotId { term, index }) {
                 return Err(invalid(format!(
                     "{label}: the snapshot folded for the gap's end {index} is at {:?}",
@@ -522,7 +569,9 @@ pub(super) async fn start_with(
         }
     }
     check_started(dir, start)?;
-    state_file::remove(dir, BUILDING)
+    state_file::remove(dir, BUILDING)?;
+    drop(lock);
+    Ok(())
 }
 
 /// The two promises the vouch rule depends on (#2640), checked before the
@@ -694,20 +743,44 @@ fn copy_kept(kept: &Path, dir: &Path, step: &dyn Fn() -> io::Result<()>) -> io::
     Ok(())
 }
 
-/// Cut every record at or after `end` from `dir`'s log.
-/// One past the last offset the log in `dir` holds or has opened a gap to.
-async fn tail_of(dir: &Path, label: &str, config: &LogConfig) -> io::Result<u64> {
-    let log = crate::DiskLog::open(dir, label, config.clone()).map_err(io::Error::other)?;
-    let tail = log.tail_offset().await.map_err(io::Error::other);
-    let closed = log.close().await.map_err(io::Error::other);
-    closed.and(tail)
+/// `dir`'s log, opened under `lock`, which the start holds throughout.
+fn open_under(dir: &Path, label: &str, config: &LogConfig, lock: DirLock) -> io::Result<DiskLog> {
+    DiskLog::open_holding(dir, label, config.clone(), None, lock).map_err(io::Error::other)
 }
 
-async fn cut_to(dir: &Path, label: &str, config: &LogConfig, end: u64) -> io::Result<()> {
-    let log = crate::DiskLog::open(dir, label, config.clone()).map_err(io::Error::other)?;
+/// Close `log`, handing back the lock it was opened under.
+async fn close_keeping(log: &DiskLog, dir: &Path) -> io::Result<DirLock> {
+    log.close_keeping_lock()
+        .await
+        .map_err(io::Error::other)?
+        .ok_or_else(|| io::Error::other(format!("{}: closed under the start", dir.display())))
+}
+
+/// One past the last offset the log in `dir` holds or has opened a gap to.
+async fn tail_of(
+    dir: &Path,
+    label: &str,
+    config: &LogConfig,
+    lock: DirLock,
+) -> io::Result<(u64, DirLock)> {
+    let log = open_under(dir, label, config, lock)?;
+    let tail = log.tail_offset().await.map_err(io::Error::other);
+    let lock = close_keeping(&log, dir).await?;
+    Ok((tail?, lock))
+}
+
+/// Cut every record at or after `end` from `dir`'s log.
+async fn cut_to(
+    dir: &Path,
+    label: &str,
+    config: &LogConfig,
+    end: u64,
+    lock: DirLock,
+) -> io::Result<DirLock> {
+    let log = open_under(dir, label, config, lock)?;
     let cut = log.truncate(end).await.map_err(io::Error::other);
-    let closed = log.close().await.map_err(io::Error::other);
-    cut.and(closed)
+    let lock = close_keeping(&log, dir).await?;
+    cut.map(|()| lock)
 }
 
 fn invalid(message: String) -> io::Error {

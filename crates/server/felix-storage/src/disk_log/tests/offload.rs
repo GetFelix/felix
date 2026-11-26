@@ -162,6 +162,7 @@ async fn a_pass_copies_every_sealed_segment_and_keeps_them_without_a_bound() {
     log.enforce_retention_now().await.expect("pass");
     assert_eq!(*log.inner.manifest.lock(), recorded);
     log.shutdown().await.expect("shutdown");
+    drop(log);
     assert_nothing_lost(dir.path(), &config, "after a pass")
         .await
         .shutdown()
@@ -191,6 +192,7 @@ async fn retention_with_offload_deletes_only_recorded_segments() {
         .expect_err("trimmed");
     assert!(matches!(err, StorageError::Trimmed { .. }), "{err}");
     log.shutdown().await.expect("shutdown");
+    drop(log);
     assert_nothing_lost(dir.path(), &config, "after retention")
         .await
         .shutdown()
@@ -305,6 +307,7 @@ async fn a_copy_that_fails_verification_is_not_recorded_and_its_segment_stays() 
     log.enforce_retention_now().await.expect("pass");
     assert!(log.base_offset() > 0);
     log.shutdown().await.expect("shutdown");
+    drop(log);
     assert_nothing_lost(dir.path(), &config, "after a retried copy")
         .await
         .shutdown()
@@ -352,6 +355,7 @@ async fn crash_at(stop: Stop) {
     recovered.enforce_retention_now().await.expect("pass");
     assert!(recovered.base_offset() > 0);
     recovered.shutdown().await.expect("shutdown");
+    drop(recovered);
     assert_nothing_lost(image.path(), &config, &format!("{stop:?}, then a pass"))
         .await
         .shutdown()

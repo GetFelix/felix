@@ -310,6 +310,8 @@ pub(super) enum HoldAt {
     Write,
     /// After the batch is kept, before the caller hears of it.
     Reply,
+    /// After an `OnCommit` append's durability wait, before its answer.
+    Answer,
 }
 
 /// An append that failed, with its records when the caller can have them
@@ -597,26 +599,52 @@ impl LogInner {
     /// the append that earned it does not wait on the call. Best effort: a
     /// failure only means later writes allocate their own blocks, which the
     /// write path already handles down to a full disk.
+    ///
+    /// Not awaited by anyone, so it holds the log only weakly, and a close
+    /// waits for it through `extending`: it must neither keep the directory
+    /// locked after the last handle goes nor reserve after a close returns.
     fn extend_reservation(self: Arc<Self>, extension: Extension) {
+        let weak = Arc::downgrade(&self);
+        drop(self);
         felix_common::blocking::spawn(move || {
             #[cfg(test)]
             {
-                let hold = self.hold_next_extension.lock().take();
+                let hold = weak
+                    .upgrade()
+                    .and_then(|inner| inner.hold_next_extension.lock().take());
                 if let Some(release) = hold {
                     let _ = release.recv();
                 }
             }
+            let Some(inner) = weak.upgrade() else {
+                return;
+            };
+            let extending = inner.extending.read();
+            if inner.segments.read().check_open().is_err() {
+                #[cfg(test)]
+                inner.extensions_done.fetch_add(1, Ordering::AcqRel);
+                return;
+            }
             #[cfg(test)]
-            let applied = if self.fail_extensions.load(Ordering::Acquire) {
+            {
+                let hold = inner.hold_extension_apply.lock().take();
+                if let Some((parked, release)) = hold {
+                    let _ = parked.send(());
+                    let _ = release.recv();
+                }
+            }
+            #[cfg(test)]
+            let applied = if inner.fail_extensions.load(Ordering::Acquire) {
                 Err(std::io::ErrorKind::StorageFull.into())
             } else {
                 extension.apply()
             };
             #[cfg(not(test))]
             let applied = extension.apply();
+            drop(extending);
             if let Err(err) = applied {
                 tracing::warn!(
-                    shard = %self.label,
+                    shard = %inner.label,
                     error = %err,
                     reserve_to = extension.to(),
                     "could not extend the active segment's block reservation; appends will allocate as they write",
@@ -624,7 +652,7 @@ impl LogInner {
                 metrics::counter!(metrics_names::SEGMENT_RESERVE_FAILED_TOTAL).increment(1);
             }
             #[cfg(test)]
-            self.extensions_done.fetch_add(1, Ordering::AcqRel);
+            inner.extensions_done.fetch_add(1, Ordering::AcqRel);
         });
     }
 
@@ -719,7 +747,7 @@ impl LogInner {
     /// Bounded, so a test whose runtime the hold stalls fails instead of
     /// hanging.
     #[cfg(test)]
-    fn hold_append_at(&self, at: HoldAt) {
+    pub(super) fn hold_append_at(&self, at: HoldAt) {
         let release = {
             let mut hold = self.hold_next_append.lock();
             match hold.take() {
@@ -737,7 +765,7 @@ impl LogInner {
 
     #[cfg(not(test))]
     #[inline]
-    fn hold_append_at(&self, _at: HoldAt) {}
+    pub(super) fn hold_append_at(&self, _at: HoldAt) {}
 
     /// Sync the segment a background roll retired but has not sealed yet.
     ///
@@ -875,8 +903,29 @@ impl LogInner {
         Ok(())
     }
 
+    /// The answer for a write whose wait for `target` to be durable has
+    /// ended. A close since then does not fail a write it left on disk: a
+    /// reopen serves the record, and a client told otherwise would retry it
+    /// into a duplicate. Only a write still short of `target` hears Closed.
+    #[cfg(feature = "raft")]
+    pub(super) fn check_synced(&self, target: Offset) -> Result<()> {
+        if self.durability.durable_upto() >= target {
+            self.check_not_poisoned()
+        } else {
+            self.check_healthy()
+        }
+    }
+
+    /// Whether [`Self::check_synced`] has an answer for `target` yet.
+    #[cfg(feature = "raft")]
+    pub(super) fn synced_or_stopped(&self, target: Offset) -> bool {
+        self.durability.durable_upto() >= target
+            || self.is_poisoned()
+            || self.closed.load(Ordering::Acquire)
+    }
+
     /// [`Self::check_healthy`] without the closed check, for the state
-    /// writes a closing log still makes.
+    /// writes a closing log still makes, and for a write already durable.
     pub(super) fn check_not_poisoned(&self) -> Result<()> {
         if let Some(reason) = self.failure.lock().as_deref() {
             return Err(StorageError::Poisoned {

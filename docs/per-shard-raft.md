@@ -2029,6 +2029,46 @@ keeps N+1 only if it keeps N.
 > `a_stopped_groups_publisher_stops_waiting` and
 > `a_batch_not_reported_whole_is_an_unknown_outcome`.
 
+**Publishes queued on one lane are one proposal.** The broker's publish
+lane for a Raft shard does what the hybrid's claim does. When a plain
+publish's turn comes, the plain publishes already queued behind it on the
+lane join it, up to 64 publishes or 1 MiB of payload. They are then one
+batch: one `propose`, one place in the commit order, one openraft write,
+one wait and one delivery. Nothing waits for more to arrive, so a lone
+publish costs what it did. A publish joins only if it is for the same
+shard, was admitted at the same term, has records and no headers, has the
+first one's publisher when publishers are recorded, and its connection
+has no idempotent batch waiting for its turn on the shard. The first one
+that does not qualify ends the batch, so lane order holds. Idempotent
+batches, conditional publishes, commits and trims never join.
+
+Each publish gets its own offsets, sliced from the batch's first by record
+count, and is answered when the batch is: at the point the stream's ack
+level names for the batch's last record. The level belongs to the stream,
+so all members share it. If the batch fails, every member gets the same
+error: failed when openraft refused the whole write before appending any of
+it, and outcome unknown otherwise. When a leader change cuts a merged
+batch, every publish in it is answered outcome unknown, including one whose
+records were kept, where that publish sent alone and fully inside the kept
+part would have been acknowledged. It never goes the other way: no publish
+in a merged batch is acknowledged, or told nothing was written, when alone
+it would not have been. Refusals of one publish (authorisation, quotas, rates,
+size) happen at admission, before the publish is queued, so one bad
+publish cannot fail its neighbours.
+
+> `services/felix-broker-service/src/serving/quic/handlers/publish/worker/tests.rs`,
+> `queued_publishes_to_a_raft_shard_are_one_proposal`,
+> `a_merge_stops_at_its_cap`,
+> `a_refused_publish_does_not_refuse_its_neighbours`,
+> `a_refused_merged_proposal_fails_every_publish_in_it`,
+> `a_cancelled_publisher_keeps_its_place_in_the_merge`,
+> `an_idempotent_batch_is_never_merged`,
+> `a_merged_batch_that_cannot_commit_leaves_every_member_unknown`,
+> `a_mixed_merged_proposal_keeps_one_bound_per_member`,
+> `an_all_bounded_merged_proposal_drops_the_engine_deadline`,
+> `merged_members_timed_out_by_their_sweeps_are_each_answered_once` and
+> `a_shared_raft_error_keeps_its_class_for_every_member`.
+
 **A token never leaves the broker.** The codec does not encode it, and the
 router clears it from every append it sends. A transport inside one
 process hands a message over as it is. A token that went with it would be
@@ -3712,8 +3752,17 @@ been had it waited for the write.
   also runs the longer ack timeout, so it arms no timer of its own.
   Idempotent, forwarded, direct, Kafka and MQTT publishes, and those
   acknowledged on enqueue, keep a timer per publish for it.
+- A merged batch (see "Publishes queued on one lane are one proposal")
+  arms no timer only if every publish in it is such a QUIC ack. Then each
+  one's deadline goes into its own control stream's sweep. If any publish
+  in it is not, none is put in a sweep and the batch keeps one timer, which
+  answers them all. Every publish in the batch has exactly one bound, and
+  either way a timeout is `quorum_timeout`, outcome unknown. A sweep answers
+  only its own publish, and the batch's later commit answers none of them
+  again.
 - A publish looks its shard's group up in the runtime's registry once, when
-  the publish lane picks the Raft path (`RaftEngine::shard`). The proposal,
+  the publish lane picks the Raft path (`RaftEngine::shard`), and a merged
+  batch once for all its publishes. The proposal,
   the skip count, the lease or majority answer and the commit wait all use
   the group it found. A close or a shutdown marks the group released under
   the registry's lock, before the shard can be opened again, and every one
@@ -6319,7 +6368,12 @@ The planner refuses this mode unless the group's only placed broker is this
 one and every voter set it reads names only it. `FelixRaftReform` checks it
 with `Alone`: `FelixRaftReformAlone` holds `KeptLossBound`, and
 `FelixRaftReformAloneCutToCommit`, which cuts at the saved commit, breaks it.
-`FelixRaftReform` does not model a standalone restore. Its first index is
+`FelixRaftReformAloneTwoCuts` allows a second relaxed crash, between any two
+steps of the re-form or after it finished, and holds the same checks. In the
+model a crash after the epoch is written and before the start leaves the copy
+to start as a learner and re-form once more, where the broker replaces the
+unstarted plan under the same epoch; nothing was served under that plan, and
+both read the same kept copies. `FelixRaftReform` does not model a standalone restore. Its first index is
 the rule `FelixRaftRestoreRepeated` checks with `Line`, with the broker's
 clock as the planner's.
 

@@ -473,7 +473,7 @@ async fn a_re_forms_gap_snapshot_folds_the_group_table_through_the_base() {
     let voters: BTreeSet<_> = [MemberId::new("a", 9), MemberId::new("d", 4)].into();
     let mut stored = Vec::new();
     for broker in BROKERS {
-        let snapshot = super::super::machine::gap_snapshot(
+        let snapshot = super::super::machine::gap_snapshot_in(
             &cluster.dir(broker, 0),
             &log_config(),
             ShardKind::Stream,

@@ -102,10 +102,17 @@ pub fn reboot(root: &Path) -> io::Result<bool> {
     Ok(rebooted)
 }
 
+/// The process that had logs open under `root` died, as a kill or a crash
+/// ends one, and with it every lock it held on a log directory there. The
+/// files stay as they are. A handle of the dead process dropped later
+/// leaves a newer lock alone.
+pub fn process_died(root: &Path) {
+    gone(root);
+}
+
 /// The process that had logs open under `root` is gone, and with it their
 /// locks on its directories.
-fn gone(#[cfg_attr(not(feature = "raft"), allow(unused_variables))] root: &Path) {
-    #[cfg(feature = "raft")]
+fn gone(root: &Path) {
     crate::disk_log::dir_lock::release_under(root);
 }
 

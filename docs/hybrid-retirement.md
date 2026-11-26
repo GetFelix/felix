@@ -403,7 +403,7 @@ twin that must fail where there is one.
 | `SetChangesJoint`, `NoCutOverInPiece`, `StagedCopyNeverDelaysAck` | The joint consensus configs and the learner-counted twin (#2244) | Landed: `FelixRaftMembership*.cfg`; `FelixRaftMembershipLearnerCounts` fails `AckedSurvive` |
 | Wipe, vouch, doubted, readmit and `FollowerTrusted` configs | The member identity twins (#2244) | Landed: `FelixRaftIdentity*.cfg` |
 | Suspicion and pre-vote configs | The sleep liveness configs (#2244). openraft's pre-vote is not modelled by Felix | Landed: `FelixRaftSleep*.cfg` |
-| `EventuallyServes`, `ElectionSettles` | Election liveness | Missing. `FelixRaft` checks only that a quiet group is served (`QuiescentServed`), not that a leader is eventually elected |
+| `EventuallyServes`, `ElectionSettles` | `ElectionSettles` and `EventuallyServes` in `FelixRaftElect.tla`, temporal under weak fairness: three voters, at most two crashes or cuts that stop, at most one colliding round, terms unbounded (`FelixRaftElectLive*.cfg`; the `Slack` configs show the term bound is never reached). `FelixRaftElectLiveSplits` drops the randomised timeout and fails `ElectionSettles`; `FelixRaftElectLiveNoOpen` drops the commit's fairness and fails `EventuallyServes`. Not shown: more faults or voters, other partitions, lost messages, repeated collisions | Landed |
 | Ballot, kept-set, adoption, rename, reissue, report-order and control-plane-down configs (`AdoptedMatchesOpened`, `CpLeaderServes`, `OwnBallotCaughtUp`, `NeverRename*`, `CpDown*` and the rest) | Retired. Each guards a step between the control plane and a broker that no longer exists: the control plane does not name leaders | Retired |
 | `Counters*` | Retired. A cache shard has one log and one commit index | Retired |
 | `NoStaleRead`, `NoStaleGroupCommit`, `NoLostDelivery` | The same properties in `FelixRaftReads.cfg`, `FelixRaftReadsWritten.cfg`, `FelixRaftSessionsSubscriber.cfg` and `FelixRaftSessionsGroup.cfg`, each with a twin that drops the rule and fails (#2266) | Landed |
@@ -490,7 +490,7 @@ is closed or kept.
 | #1998 fsync error must poison the log | Own storage fix, before #2233. A group stops on a storage error, so the error must be sticky |
 | #1931 crash between purge and snapshot install | Track 2 (#2221, pull request #2255) |
 | #1820 balancer moves caches back and forth | Placement. Re-tested after #2235, when leader balance is a transfer |
-| #1774 creating streams before a broker registers skips the feature finalize | Re-tested under Raft, which needs no replication feature finalized |
+| #1774 creating streams before a broker registers skips the feature finalize | Fixed for both engines: Raft needs it too, since a member opens strict (fsync on every commit) until `raft_written_commit` is finalized. A cluster is new until a shard is placed |
 | #1615 a counted copy dropped as staged | Resolved in PR 6. Staged and counted become learner and voter, read from the membership |
 | #1006 lone unbatched publisher slower on a per-log thread | Measured by the single-node cell of #2243 |
 | #2164 publishes time out forever after a whole-cluster wipe | Resolved by #2250: no voter is left, so the shard is re-formed or reported, not retried |

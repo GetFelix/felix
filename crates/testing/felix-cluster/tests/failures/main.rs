@@ -38,3 +38,4 @@ mod restart_ports;
 mod retention_floor;
 mod wiped;
 mod writes;
+mod written_commit;

@@ -408,6 +408,7 @@ async fn compaction_under_concurrent_writers_loses_nothing() {
 
     // Replay of the compacted log is the same cache.
     cache.shutdown().await.expect("shutdown");
+    drop((shard, cache));
     let reopened = super::cache(dir.path()).await;
     for writer in 0..4 {
         let value = reopened

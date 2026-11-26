@@ -717,6 +717,7 @@ async fn a_held_new_cluster_finalize_is_retried_once_every_member_can() {
             all.clone(),
         );
         async move {
+            let never_placed = crate::cluster::fleet::never_placed(shared.as_ref()).await;
             let (_, enabled) = store
                 .register_node_in_fleet(crate::store::contract::nodes::with_features(
                     crate::store::contract::nodes::node(id, port),
@@ -724,7 +725,8 @@ async fn a_held_new_cluster_finalize_is_retried_once_every_member_can() {
                 ))
                 .await
                 .expect("register");
-            crate::cluster::fleet::finalize_new_cluster(&shared, &pending, enabled).await
+            crate::cluster::fleet::finalize_new_cluster(&shared, &pending, never_placed, enabled)
+                .await
         }
     };
     for (id, port) in [("broker-a", 7401), ("broker-b", 7402), ("broker-c", 7403)] {
@@ -780,7 +782,8 @@ async fn a_held_new_cluster_finalize_gives_up() {
         ))
         .await
         .expect("register");
-    let enabled = crate::cluster::fleet::finalize_new_cluster(&shared, &pending, enabled).await;
+    let enabled =
+        crate::cluster::fleet::finalize_new_cluster(&shared, &pending, Ok(true), enabled).await;
     assert!(enabled.is_empty(), "{enabled:?}");
     assert!(pending.retrying());
 
@@ -5516,6 +5519,29 @@ async fn the_leader_takes_an_operator_import() {
             .await
             .expect("overwrite"),
         crate::store::ImportOutcome::Imported
+    );
+}
+
+/// **An operator's restore leaves a cluster that is not new** (#1774): the
+/// import raises the placement incarnation, so the first broker to register
+/// after it finalizes nothing, whatever the backup held.
+#[tokio::test]
+async fn an_operator_import_makes_the_store_not_new() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let store = unrecorded_store(dir.path()).await;
+    assert!(
+        crate::cluster::fleet::never_placed(&*store)
+            .await
+            .expect("read")
+    );
+    ControlPlaneStore::import_state(&*store, one_tenant_export().await, false)
+        .await
+        .expect("import");
+    assert!(
+        !crate::cluster::fleet::never_placed(&*store)
+            .await
+            .expect("read"),
+        "a restored store reads as new"
     );
 }
 

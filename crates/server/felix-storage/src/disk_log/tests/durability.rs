@@ -389,6 +389,41 @@ async fn a_failed_rollover_wakes_a_waiting_flush() {
     assert!(synced.is_err(), "the log failed");
 }
 
+/// A `synced` wait the close's final sync does not cover ends with the
+/// close, answered `Closed`, instead of waiting for a sync that will not
+/// come. The target past the tail stands for such a batch.
+#[cfg(feature = "raft")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_close_ends_a_synced_wait_it_did_not_cover() {
+    let dir = tempdir().expect("dir");
+    let log = open(
+        &dir,
+        FsyncMode::Periodic {
+            interval: std::time::Duration::from_secs(3600),
+        },
+    );
+    let written = log.append_pending(&records(&["a"])).await.expect("append");
+    let beyond = PendingAppend {
+        durable_target: written.durable_target + 1,
+        ..written
+    };
+    let waiter = {
+        let log = log.clone();
+        tokio::spawn(async move { log.synced(&beyond).await })
+    };
+    tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    assert!(!waiter.is_finished());
+    log.close().await.expect("close");
+    let synced = tokio::time::timeout(std::time::Duration::from_secs(5), waiter)
+        .await
+        .expect("the close did not end the wait")
+        .expect("joined");
+    assert!(
+        matches!(synced, Err(StorageError::Closed(_))),
+        "an uncovered wait was answered {synced:?}"
+    );
+}
+
 /// A restart in the boot that poisoned the log: the failed flush's bytes are
 /// still in the page cache and read back as valid records. They were never
 /// acknowledged under `OnCommit`, so the log opens without them and takes

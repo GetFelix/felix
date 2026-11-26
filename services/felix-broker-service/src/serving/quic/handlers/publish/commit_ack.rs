@@ -173,6 +173,12 @@ impl CommitAcks {
         )
     }
 
+    /// How many publish-path deadlines are queued, answered or not.
+    #[cfg(test)]
+    pub(crate) fn commit_deadlines(&self) -> usize {
+        self.inner.commit_deadlines.lock().len()
+    }
+
     /// Commit acks whose answers go nowhere, for tests of what happens
     /// before the answer.
     #[cfg(test)]

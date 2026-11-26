@@ -10,6 +10,7 @@ use super::gate::GatePassed;
 use super::marks::{CopyMarks, MarkLog};
 use super::rotated_by::{self, RotatedBy};
 use super::{VoteMark, log_below};
+use crate::disk_log::dir_lock::DirLock;
 use crate::disk_log::layout::{KEPT_DIR, kept_name, kept_of};
 use crate::disk_log::{crash_point, engine_marker};
 use crate::log::LogConfig;
@@ -136,12 +137,39 @@ impl CopyRoot {
     /// with fresh marks synced before this returns. The old directory, if it
     /// held more than a copy file, is moved into `.kept` beside `dir` (see
     /// [`kept_copies`]). A crash part way leaves the old directory, or one this rotates again.
+    ///
+    /// `dir` is locked before anything in it is judged, and the lock passes
+    /// through any rotation to the open log. Another open of the copy, in
+    /// this process or another, fails with [`io::ErrorKind::ResourceBusy`].
     pub async fn open_copy(
         &self,
         shard: &str,
         dir: &Path,
         label: impl Into<String>,
         config: LogConfig,
+    ) -> io::Result<OpenedCopy> {
+        if shard.len() > MAX_SHARD_NAME {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("a shard name of {} bytes is too long", shard.len()),
+            ));
+        }
+        // Held from the first check through any rotation into the open log,
+        // so no other open can change what was judged.
+        let lock = lock_dir(dir)?;
+        self.open_copy_holding(shard, dir, label.into(), config, lock)
+            .await
+    }
+
+    /// [`Self::open_copy`] under `lock`, the lock on `dir`, which passes to
+    /// the open log.
+    pub(super) async fn open_copy_holding(
+        &self,
+        shard: &str,
+        dir: &Path,
+        label: String,
+        config: LogConfig,
+        mut lock: DirLock,
     ) -> io::Result<OpenedCopy> {
         if shard.len() > MAX_SHARD_NAME {
             return Err(io::Error::new(
@@ -157,7 +185,6 @@ impl CopyRoot {
             )));
         }
         let shard: Arc<str> = Arc::from(shard);
-        let label = label.into();
         let (found, reason) = self.judge_files(&shard, dir)?;
         let reason = match (found, reason) {
             // Every other reason rotates it anyway, which is the rejoin.
@@ -165,7 +192,7 @@ impl CopyRoot {
                 return Err(io::Error::other(stopped));
             }
             (Some(found), None) => {
-                let log = open_log(dir, &label, config.clone())?;
+                let log = open_log(dir, &label, config.clone(), lock)?;
                 match judge_log(&log, &self.marks, &shard).await {
                     Ok(None) => {
                         return Ok(OpenedCopy {
@@ -176,7 +203,10 @@ impl CopyRoot {
                         });
                     }
                     Ok(Some(reason)) => {
-                        log.close().await.map_err(io::Error::other)?;
+                        let kept = log.close_keeping_lock().await;
+                        lock = kept.map_err(io::Error::other)?.ok_or_else(|| {
+                            io::Error::other(format!("{}: closed while judged", dir.display()))
+                        })?;
                         reason
                     }
                     Err(err) => {
@@ -188,7 +218,7 @@ impl CopyRoot {
             (_, Some(reason)) => reason,
             (None, None) => unreachable!("a directory with no copy file has a reason"),
         };
-        self.rotate_and_open(shard, dir, label, config, reason)
+        self.rotate_and_open(shard, dir, label, config, reason, lock)
             .await
     }
 
@@ -205,6 +235,8 @@ impl CopyRoot {
         label: impl Into<String>,
         config: LogConfig,
     ) -> io::Result<OpenedCopy> {
+        // Before the check, so the copy rotated is the one found stopped.
+        let lock = lock_dir(dir)?;
         if super::start::building(dir)? || super::stop_file::stopped(dir)?.is_none() {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
@@ -220,6 +252,7 @@ impl CopyRoot {
             label.into(),
             config,
             RotateReason::Stopped,
+            lock,
         )
         .await
     }
@@ -231,9 +264,12 @@ impl CopyRoot {
         label: String,
         config: LogConfig,
         reason: RotateReason,
+        mut lock: DirLock,
     ) -> io::Result<OpenedCopy> {
         let replaced = copy_file::load(dir).ok().flatten().map(|found| found.copy);
-        let (copy, kept) = self.rotate(&shard, dir, replaced, reason).await?;
+        let (copy, kept) = self
+            .rotate(&shard, dir, replaced, reason, &mut lock)
+            .await?;
         tracing::info!(
             %shard,
             dir = %dir.display(),
@@ -244,7 +280,7 @@ impl CopyRoot {
         );
         Ok(OpenedCopy {
             copy,
-            log: open_log(dir, &label, config)?,
+            log: open_log(dir, &label, config, lock)?,
             marks: self.marks.for_copy(shard, copy),
             rotation: Some(Rotation {
                 reason,
@@ -290,6 +326,7 @@ impl CopyRoot {
         dir: &Path,
         replaced: Option<u64>,
         reason: RotateReason,
+        lock: &mut DirLock,
     ) -> io::Result<(u64, Option<PathBuf>)> {
         let parent = parent_of(dir)?;
         let step = || crash_point::reached(&parent);
@@ -316,6 +353,13 @@ impl CopyRoot {
             let kept = kept_path(dir, &parent, replaced)?;
             crate::fs::rename(dir, &kept)?;
             step()?;
+            // Locked at once, and the old one held until it is finished
+            // with. Another open that takes the new, empty directory first
+            // makes this fail before anything is written to it, which leaves
+            // what a crash at the step above leaves.
+            crate::fs::create_dir_all(dir)?;
+            let _old = lock.follow(dir)?;
+            step()?;
             crate::io::sync_dir(&parent.join(KEPT_DIR))?;
             crate::io::sync_dir(&parent)?;
             // After the rename, so a crash leaves a kept copy without it,
@@ -335,7 +379,7 @@ impl CopyRoot {
         // The poisoned log is in `.kept` or gone; the new copy starts clean.
         crate::disk_log::forget_poisoned_dir(dir);
         if marked && kept.is_some() {
-            engine_marker::claim_for_raft(dir, shard).map_err(io::Error::other)?;
+            engine_marker::claim_for_raft_holding(dir, shard, lock).map_err(io::Error::other)?;
         }
         // Before the copy file, so the new copy never votes without it.
         if let Some(epoch) = &epoch {
@@ -471,9 +515,14 @@ async fn judge_log(
     Ok(None)
 }
 
-fn open_log(dir: &Path, label: &str, config: LogConfig) -> io::Result<DiskLog> {
-    crate::fs::create_dir_all(dir)?;
-    DiskLog::open(dir, label.to_string(), config).map_err(io::Error::other)
+fn open_log(dir: &Path, label: &str, config: LogConfig, lock: DirLock) -> io::Result<DiskLog> {
+    DiskLog::open_holding(dir, label.to_string(), config, None, lock).map_err(io::Error::other)
+}
+
+/// Lock `dir`, creating it if it is not there.
+pub(super) fn lock_dir(dir: &Path) -> io::Result<DirLock> {
+    crate::io::create_dir_all_durable(dir)?;
+    DirLock::take(dir)
 }
 
 /// Missing, or holding at most a copy file and a reservation: what a crash

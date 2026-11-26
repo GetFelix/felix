@@ -1049,6 +1049,16 @@ shard's log and its counters, and drops the broker's in-memory `StreamState`.
 
 - A handle given out earlier fails every read, append and flush with
   `StorageError::Closed`.
+- A write already waiting for its sync when the close runs is answered by
+  whether its batch is on disk, not by the close. This covers appends,
+  commits and syncs under fsync-on-commit, and Raft's waits for a sync.
+  A batch the close's final flush covered is answered Ok, so the client
+  does not retry a record a reopen will serve. A batch written before the
+  close that the final flush did not cover is answered `Closed`, or with
+  the flush's error, never as written. An append that reaches the log
+  after the close shut its segments is answered `Closed` and is not in the
+  log. Under periodic and no fsync an append is answered when it is
+  written, as always, and the close's final flush is what puts it on disk.
 - An open of the shard while the close is running also fails with `Closed`
   rather than opening a second writer over files still being flushed. It is
   retryable: once the close finishes, the next open recovers the shard afresh
@@ -1932,6 +1942,59 @@ felix-log-tool verify --dir /var/lib/felix/streams/shard --payload-bytes 128
 # Measure one policy.
 felix-log-tool bench  --dir /tmp/bench --records 20000 --concurrency 8 --fsync on_commit
 ```
+
+Every log directory has a lock: an exclusive `flock` on the directory
+itself. Whatever writes inside a log directory holds it while it writes:
+
+- an open log, from its open until it is closed or shut down. Stream,
+  cache, counter, dead-letter and Raft logs all take it, before recovery
+  looks at the tail. A close or a shutdown lets go of it before it
+  returns, whatever clones of the log are still alive: those clones can no
+  longer write. A log that is only dropped lets go when its last clone goes
+  and any file work it started (a roll, a flush, a read) has finished. A
+  reservation extension waiting to start does not hold it; one already
+  reserving holds the log until its fallocate returns, and a close waits
+  for it before letting go. A broker stopping,
+  a shard closing and a store shutting down all close their logs, so an
+  open in the same process right after never finds the directory busy.
+- a Raft copy's open, from the first look at its copy file through any
+  rotation into the open log.
+- a re-form's stop, its start, and a group of one's re-form, from the
+  first check to the last write, including the opens they make on the way.
+- `felix-broker restore-point` cutting a Raft copy back, and an older
+  build's half-finished cache or counter compaction being settled before
+  the log opens.
+
+A second taker is refused at once with "resource busy" and the directory's
+name; nothing waits for the lock. That includes a second open in the same
+process.
+
+Every `felix-log-tool` mode opens the log for writing, `verify` included:
+opening runs recovery, which cuts a torn tail. So each one is refused on a
+directory a running broker holds. Stop the broker first, or use
+`felixctl data inspect`, which only reads.
+
+Two brokers pointed at one data directory are caught per log directory, as
+each opens it, not at startup. The second broker starts, and each shard it
+tries to open that the first holds fails. The data directory's own files
+(the run record, the storage id and the marks) are not covered by these
+locks: a second broker started on the same directory writes its run record
+and may rotate the storage id under the first before any log refuses it. A
+lock on the whole data directory for the life of the process is tracked in
+#3250.
+
+The lock goes away with the process that holds it, so a crash leaves no
+stale lock behind. See "One open at a time" in `docs/storage-format.md`.
+
+Some filesystems cannot lock a directory. On Linux NFS `flock` is emulated
+with byte-range locks, which a directory cannot take, and some FUSE mounts
+do not support it. A broker checks this at startup: it takes and lets go of
+the lock on its data directory before it reports ready, and on a filesystem
+that refuses it the broker does not start. The error names the directory
+and says to keep it on a local disk. `felix-log-tool` fails the same way at
+its open. Other network filesystems may grant the lock on each host
+separately, which keeps two opens on one host apart but not two hosts that
+mount the same share. Keep the data directory on a local disk.
 
 The end-to-end demo (publish, crash, restart, recover) is:
 

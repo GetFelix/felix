@@ -502,7 +502,7 @@ async fn a_committed_id_is_not_another_terms_entry_at_its_index() {
     let old: Vec<_> = (0..6).map(|index| normal(1, index, "old")).collect();
     append_flushed(&mut raft, &old).await;
     raft.save_committed(Some(log_id(1, 2))).await.expect("save");
-    raft.disk_log().shutdown().await.expect("shutdown");
+    raft.disk_log().flush_as_if_stopping().await.expect("flush");
     let segments = |dir: &TempDir| {
         std::fs::read_dir(dir.path())
             .expect("dir")

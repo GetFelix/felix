@@ -1301,7 +1301,14 @@ async fn a_wiped_copy_refuses_a_deposed_leaders_fence_across_restarts() {
     std::fs::remove_dir_all(dir.path()).expect("wipe");
     std::fs::create_dir_all(dir.path()).expect("recreate");
 
+    let mut dir = dir;
     for start in ["after the wipe", "after a second restart"] {
+        // Each start on a copy of what the last one left: its server's
+        // connection tasks can hold the old broker, and with it the lock on
+        // the directory, for a moment after the cancel.
+        let image = tempfile::tempdir().expect("image");
+        copy_tree(dir.path(), image.path());
+        dir = image;
         let broker = broker_on(dir.path());
         let handler = ReplicaHandler::new(Arc::clone(&broker), no_routes());
         let config = crate::peer::PeerTransportConfig {
@@ -1324,7 +1331,22 @@ async fn a_wiped_copy_refuses_a_deposed_leaders_fence_across_restarts() {
             .await
             .expect("fence");
         assert_eq!(refusal(&answer).code, ErrorCode::StaleRoute, "{start}");
+        // The restart opens the same directory, which this broker holds
+        // until the server that serves it has stopped.
         shutdown.cancel();
+    }
+}
+
+fn copy_tree(from: &std::path::Path, to: &std::path::Path) {
+    for entry in std::fs::read_dir(from).expect("list") {
+        let entry = entry.expect("entry");
+        let target = to.join(entry.file_name());
+        if entry.file_type().expect("type").is_dir() {
+            std::fs::create_dir_all(&target).expect("mkdir");
+            copy_tree(&entry.path(), &target);
+        } else {
+            std::fs::copy(entry.path(), target).expect("copy");
+        }
     }
 }
 
