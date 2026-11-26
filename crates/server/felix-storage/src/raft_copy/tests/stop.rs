@@ -448,3 +448,75 @@ fn a_learners_start_is_two_flags_on_the_wire() {
         r#"{"needs_accept_loss":false,"accepted":false}"#
     );
 }
+
+/// Every file directly in `dir`, by name, with its bytes.
+fn files_in(dir: &Path) -> BTreeMap<String, Vec<u8>> {
+    std::fs::read_dir(dir)
+        .expect("list")
+        .map(|entry| entry.expect("entry").path())
+        .filter(|path| path.is_file())
+        .map(|path| {
+            let name = path
+                .file_name()
+                .expect("name")
+                .to_string_lossy()
+                .into_owned();
+            (name, std::fs::read(&path).expect("read"))
+        })
+        .collect()
+}
+
+/// **A start is refused on a directory another open holds**, a member's
+/// log or another start, before it writes anything. Two brokers on one data
+/// directory must never both change a copy: a learner's start empties the
+/// log the other one is serving.
+#[tokio::test]
+async fn a_start_is_refused_before_it_writes_while_another_open_holds_the_copy() {
+    let root = Root::new();
+    let copies = root.open();
+    let dir = root.shard_dir();
+    stopped_copy(&copies, &dir).await;
+
+    let member = crate::DiskLog::open(&dir, LABEL, config()).expect("open");
+    let before = files_in(&dir);
+    let err = start_stopped(&copies, &dir, bases(0), &learner())
+        .await
+        .expect_err("started under an open log");
+    assert_eq!(err.kind(), std::io::ErrorKind::ResourceBusy, "{err}");
+    assert_eq!(files_in(&dir), before, "a refused start wrote");
+    member.close().await.expect("close");
+
+    let starting = crate::disk_log::dir_lock::DirLock::take(&dir).expect("lock");
+    let before = files_in(&dir);
+    let err = start_stopped(&copies, &dir, bases(0), &learner())
+        .await
+        .expect_err("started under another start");
+    assert_eq!(err.kind(), std::io::ErrorKind::ResourceBusy, "{err}");
+    assert_eq!(files_in(&dir), before, "a refused start wrote");
+    drop(starting);
+
+    start_stopped(&copies, &dir, bases(0), &learner())
+        .await
+        .expect("start once nothing holds the copy");
+}
+
+/// **A stop, and a fresh copy's epoch, are refused while a log holds the
+/// copy**, so neither marks a directory another broker serves.
+#[tokio::test]
+async fn a_stop_and_a_fresh_epoch_are_refused_while_a_log_holds_the_copy() {
+    let root = Root::new();
+    let copies = root.open();
+    let dir = root.shard_dir();
+    voted_copy(&copies, &dir).await;
+
+    let member = crate::DiskLog::open(&dir, LABEL, config()).expect("open");
+    let before = files_in(&dir);
+    let err = stop(&dir, Some(1)).expect_err("stopped under an open log");
+    assert_eq!(err.kind(), std::io::ErrorKind::ResourceBusy, "{err}");
+    let err = write_fresh_epoch(&dir, 1, &bases(0), config().index_spacing_bytes)
+        .expect_err("a fresh epoch under an open log");
+    assert_eq!(err.kind(), std::io::ErrorKind::ResourceBusy, "{err}");
+    assert_eq!(files_in(&dir), before, "a refused write landed");
+    member.close().await.expect("close");
+    stop(&dir, Some(1)).expect("stop once closed");
+}
