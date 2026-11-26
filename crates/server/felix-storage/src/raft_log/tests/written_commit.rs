@@ -2,6 +2,7 @@
 //! reservation covers the entries, and `flushed` still waits for an fsync.
 
 use std::path::Path;
+use std::sync::Arc;
 use std::time::Duration;
 
 use openraft::storage::{IOFlushed, RaftLogStorage};
@@ -494,4 +495,195 @@ async fn a_poisoned_written_commit_log_leaves_flushed_where_it_was() {
     );
     assert_eq!(raft.positions().borrow().flushed, None);
     assert!(raft.disk_log().is_poisoned());
+}
+
+/// Run `work` on its own thread and fail, rather than hang the suite, if it
+/// does not return: a lock taken twice inside the sync hook blocks for ever.
+fn within_bound<T: Send + 'static>(what: &str, work: impl FnOnce() -> T + Send + 'static) -> T {
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = tx.send(work());
+    });
+    rx.recv_timeout(BOUND)
+        .unwrap_or_else(|_| panic!("{what} hung with the sync hook registered"))
+}
+
+/// Run `test` on a runtime of its own on another thread, so a deadlock in
+/// the log fails the test instead of hanging the runtime's shutdown.
+fn on_own_runtime<F: Future<Output = ()> + 'static>(
+    what: &str,
+    test: impl FnOnce() -> F + Send + 'static,
+) {
+    within_bound(what, move || {
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(4)
+            .enable_all()
+            .build()
+            .expect("runtime");
+        runtime.block_on(test());
+    });
+}
+
+/// A written-commit log under `None` with appends waiting in the hook.
+async fn waiting_on_sync(root: &Path, entries: u64) -> Raft {
+    begin(root, true);
+    let mut raft = open_under(root, FsyncMode::None).expect("open");
+    for index in 0..entries {
+        append(&mut raft, vec![normal(1, index, "a")])
+            .await
+            .expect("append");
+    }
+    assert!(raft.shared.waits_for_sync(), "the appends wait for a sync");
+    raft
+}
+
+/// **A poison with appends waiting does not block.** `poison` wakes the
+/// durable watch after it lets go of the failure mutex, and the hook reads
+/// that mutex, so a poison taken inside the wake would deadlock.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_poison_with_appends_waiting_returns() {
+    let root = tempdir().expect("dir");
+    let raft = waiting_on_sync(root.path(), 3).await;
+    let log = raft.disk_log().clone();
+    within_bound("a poison", move || log.poison("test".to_string()));
+    // Twice: the second finds the log stopped and must still return.
+    let log = raft.disk_log().clone();
+    within_bound("a second poison", move || log.poison("again".to_string()));
+    assert!(!raft.shared.waits_for_sync(), "the poison answered them");
+    assert_eq!(raft.positions().borrow().flushed, None, "nothing synced");
+    assert!(raft.disk_log().is_poisoned());
+}
+
+/// **A failed flush with appends waiting stops the log without blocking.**
+/// The flush fails inside the group-commit path, holding the flush lock,
+/// and poisons from there.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_failed_sync_with_appends_waiting_returns() {
+    let root = tempdir().expect("dir");
+    let raft = waiting_on_sync(root.path(), 3).await;
+    let log = raft.disk_log().clone();
+    log.fail_next_flush();
+    let synced = tokio::time::timeout(BOUND, tokio::spawn(async move { log.sync().await }))
+        .await
+        .expect("the failed sync returns")
+        .expect("join");
+    assert!(synced.is_err());
+    assert!(raft.disk_log().is_poisoned());
+    assert_eq!(raft.positions().borrow().flushed, None);
+}
+
+/// **A sync under the segments write lock raises `flushed` without
+/// blocking.** Opening a re-form gap seals the active segment and raises
+/// the durable bound with the segments lock held; the hook must not take
+/// it.
+#[test]
+fn a_gap_raised_under_the_segments_lock_raises_flushed() {
+    on_own_runtime("a gap", || async {
+        let root = tempdir().expect("dir");
+        let raft = waiting_on_sync(root.path(), 3).await;
+        let log = raft.disk_log().clone();
+        tokio::time::timeout(BOUND, tokio::spawn(async move { log.open_gap(10).await }))
+            .await
+            .expect("the gap opens")
+            .expect("join")
+            .expect("open gap");
+        assert_eq!(
+            raft.positions().borrow().flushed,
+            Some(LogPoint { term: 1, index: 2 }),
+            "the seal synced the waiting appends"
+        );
+    });
+}
+
+/// **A truncation lowers `flushed` and no sync raises it past the cut.**
+/// The truncation syncs, takes the hook's queue and only then cuts, under
+/// the flush lock and the segments lock; the cut's own bound reset calls
+/// the hook too.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn no_sync_raises_flushed_past_a_truncation() {
+    let root = tempdir().expect("dir");
+    let mut raft = waiting_on_sync(root.path(), 4).await;
+    tokio::time::timeout(BOUND, raft.truncate_after(Some(log_id(1, 1))))
+        .await
+        .expect("the truncation finishes")
+        .expect("truncate");
+    let kept = Some(LogPoint { term: 1, index: 1 });
+    assert_eq!(raft.positions().borrow().flushed, kept);
+    assert!(!raft.shared.waits_for_sync());
+    // The late sync, and an append after the cut that waits for one.
+    tokio::time::timeout(BOUND, raft.disk_log().sync())
+        .await
+        .expect("sync returns")
+        .expect("sync");
+    assert_eq!(raft.positions().borrow().flushed, kept, "not past the cut");
+    append(&mut raft, vec![normal(2, 2, "b")])
+        .await
+        .expect("append");
+    assert_eq!(raft.positions().borrow().flushed, kept);
+    raft.disk_log().sync().await.expect("sync");
+    assert_eq!(
+        raft.positions().borrow().flushed,
+        Some(LogPoint { term: 2, index: 2 })
+    );
+}
+
+/// **Appends racing syncs on other threads neither block nor lose a raise.**
+/// An append holds the hook's queue while it reads the durable bound; a
+/// sync raises the bound and then takes the queue. Neither holds what the
+/// other waits for.
+#[test]
+fn appends_racing_syncs_raise_flushed_in_order() {
+    on_own_runtime("appends racing syncs", || async {
+        let root = tempdir().expect("dir");
+        begin(root.path(), true);
+        let mut raft = open_under(root.path(), FsyncMode::None).expect("open");
+        let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let syncers: Vec<_> = (0..2)
+            .map(|_| {
+                let (log, stop) = (raft.disk_log().clone(), Arc::clone(&stop));
+                tokio::spawn(async move {
+                    while !stop.load(std::sync::atomic::Ordering::Relaxed) {
+                        log.sync().await.expect("sync");
+                        tokio::time::sleep(Duration::from_millis(1)).await;
+                    }
+                })
+            })
+            .collect();
+        let mut seen = raft.positions();
+        let watcher = tokio::spawn(async move {
+            let mut last = None;
+            while seen.changed().await.is_ok() {
+                let now = seen.borrow_and_update().flushed.map(|at| at.index);
+                assert!(now >= last, "flushed fell from {last:?} to {now:?}");
+                last = now;
+            }
+        });
+        tokio::time::timeout(BOUND, async {
+            for index in 0..200 {
+                append(&mut raft, vec![normal(1, index, "a")])
+                    .await
+                    .expect("append");
+            }
+        })
+        .await
+        .expect("the appends finish");
+        stop.store(true, std::sync::atomic::Ordering::Relaxed);
+        for syncer in syncers {
+            tokio::time::timeout(BOUND, syncer)
+                .await
+                .expect("the syncers stop")
+                .expect("syncer");
+        }
+        raft.disk_log().sync().await.expect("sync");
+        assert_eq!(
+            raft.positions().borrow().flushed,
+            Some(LogPoint {
+                term: 1,
+                index: 199
+            })
+        );
+        assert_eq!(raft.shared.flushes.pushed(), 0);
+        drop(raft);
+        let _ = tokio::time::timeout(BOUND, watcher).await;
+    });
 }

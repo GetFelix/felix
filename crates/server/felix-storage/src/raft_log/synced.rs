@@ -7,7 +7,6 @@
 use std::collections::VecDeque;
 
 use super::{LogPoint, Shared};
-use crate::StorageError;
 use crate::log::Offset;
 
 pub(super) struct Synced {
@@ -55,14 +54,19 @@ impl<K> Shared<K> {
     }
 
     /// Answer the covered appends at the front, as the flush queue's task
-    /// would: one raise to the newest covered, and on a failure the log
-    /// stops, since Raft already counted these entries.
+    /// would: one raise to the newest covered, and none once the log has
+    /// failed or closed.
+    ///
+    /// Runs inside the log's sync and poison paths, some holding the
+    /// segments lock, so it takes only `waiting` and what `synced_now` and
+    /// the positions watch take (the durable watch, the failure mutex),
+    /// none of which is held across a call into this. It never calls back
+    /// into the log: a failure `synced_now` reports has already stopped it.
     fn settle_synced(
         &self,
         mut waiting: parking_lot::MutexGuard<'_, VecDeque<(Offset, LogPoint)>>,
     ) {
         let mut newest = None;
-        let mut failed = None;
         while let Some(&(target, last)) = waiting.front() {
             match self.log.synced_now(target) {
                 None => break,
@@ -70,27 +74,15 @@ impl<K> Shared<K> {
                     newest = Some(last);
                     waiting.pop_front();
                 }
-                Some(Err(err)) => {
-                    waiting.clear();
-                    failed = Some(err);
-                }
+                // Poisoned, so the copy stops; or closed, and the close
+                // synced everything itself.
+                Some(Err(_)) => waiting.clear(),
             }
         }
         // Under the lock, so a truncation that takes it after the sync
         // finds no raise still to come.
         if let Some(last) = newest {
             self.raise_flushed(Some(last));
-        }
-        drop(waiting);
-        match failed {
-            // A close flushes everything itself, so a sync it beat to the
-            // log lost nothing.
-            None | Some(StorageError::Closed(_)) => {}
-            // Poisoning again calls back here, which finds nothing waiting.
-            Some(err) => self.log.poison(format!(
-                "a written-commit flush or exact log mark failed ({})",
-                super::writer::io_error(err)
-            )),
         }
     }
 }
