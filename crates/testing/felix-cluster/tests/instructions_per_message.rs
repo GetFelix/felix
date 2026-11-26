@@ -31,7 +31,9 @@
 //! - Every cell is paced at a fixed rate for a fixed time, so its per-second
 //!   work is a constant that is part of the baseline. An unpaced rep finishes
 //!   sooner on a faster runner and picks up less of it. A rep that could not
-//!   hold the pace is a failed measurement, not a regression.
+//!   hold the pace is a failed measurement. A slow runner does that, and so
+//!   can a broker that got much costlier per message; the gate prints the
+//!   counts either way.
 //!
 //! Each fresh broker gets an unmeasured, unpaced warm-up of a fixed number of
 //! messages before counting starts, the same in every rep and every run. It
@@ -639,7 +641,7 @@ async fn broker_instructions_per_message() {
     // Written first, so the reps that did not hold are in the artifact.
     assert!(
         problems.is_empty(),
-        "the measurement failed, so it says nothing about a regression:\n{}",
+        "the measurement failed, so it is not a clean comparison with the baseline (a pace that keeps failing may be a real slowdown; see the counts in the result):\n{}",
         problems.join("\n")
     );
 }

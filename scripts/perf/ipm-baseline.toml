@@ -14,6 +14,9 @@ tolerance_pct = 3.0
 commit = "c4a7a3fa30b739d55e6f42d03459151736e3fe4b"
 toolchain = "rustc 1.100.0 (0ef1bc386 2026-11-09)"
 runs = 5
+reps = 5
+run_ids = [45826230871, 45826259315, 45826287188, 45826314102, 45826342981]
+cpus = ["AMD EPYC 7763 64-Core Processor", "AMD EPYC 9V74 80-Core Processor", "Intel(R) Xeon(R) Platinum 8370C CPU @ 2.80GHz"]
 b1 = 262977
 b64 = 11108
 
@@ -25,6 +28,9 @@ b64 = 4000
 commit = "c4a7a3fa30b739d55e6f42d03459151736e3fe4b"
 toolchain = "rustc 1.100.0 (0ef1bc386 2026-11-09)"
 runs = 5
+reps = 5
+run_ids = [45826230871, 45826259315, 45826287188, 45826314102, 45826342981]
+cpus = ["0x41 0xd49"]
 b1 = 487638
 b64 = 10477
 
