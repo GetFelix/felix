@@ -14,7 +14,7 @@ pub use fields::{
 };
 pub use inspect::{
     InspectedAssignment, InspectedFence, InspectedLease, InspectedRaft, InspectedReplica,
-    InspectedSubscription, ShardInspection, SubscriptionCursor, SubscriptionFilter,
+    InspectedStop, InspectedSubscription, ShardInspection, SubscriptionCursor, SubscriptionFilter,
 };
 
 use bytes::Bytes;

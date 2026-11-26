@@ -2,6 +2,7 @@
 use felix_common::random::HashMap;
 use std::sync::Arc;
 
+use super::in_memory::in_memory_step;
 use super::leadership::{Leadership, Owner, Shares};
 use super::moves::{
     DEFAULT_RESTORE_AFTER_MILLIS, MovePolicy, Moves, keep_copy_pins, keeps_destination, move_step,
@@ -294,8 +295,11 @@ fn plan_once(
         }
         let placeable = placeable_of.get(owner_of(&assignment.key).as_str());
         // An RF 1 Raft move names its destination leader only at its end,
-        // so it counts for the destination from the start (#3118).
-        let will_lead = if raft_leaders::on_raft(
+        // so it counts for the destination from the start (#3118). An
+        // in-memory shard's owner is never staged out, only replaced.
+        let will_lead = if placeable.is_some_and(|p| p.in_memory()) {
+            assignment.leader.as_str()
+        } else if raft_leaders::on_raft(
             assignment,
             policy.raft_streams,
             placeable.is_none_or(|p| p.durable),
@@ -444,6 +448,27 @@ fn plan_once(
             placeable.map_or(1, |p| p.shards),
             eligible.len(),
         );
+
+        // Only a stream the catalog lists as not durable: one whose record
+        // is missing counts as durable above, and keeps the log's rules.
+        if let Some(placeable) = placeable.filter(|p| p.in_memory()) {
+            let decision = in_memory_step(
+                &key,
+                placeable.owner(),
+                current.get(&key).copied(),
+                &eligible,
+                &is_live,
+                &counted,
+                &mut load,
+                &mut leaders,
+                cap,
+                shares,
+                &|| unplaced(&eligible, home, is_empty_cluster),
+            );
+            shards.push(ShardPlan { key, decision });
+            note_spread(&mut unspread, shards.last(), &current, &eligible);
+            continue;
+        }
 
         // A Raft group elects and keeps its own members: placement only
         // names the member it wants leading. A new shard is placed below like
@@ -724,15 +749,7 @@ fn plan_once(
                 );
                 Decision::Place(leader.to_string(), replicas)
             }
-            None if eligible.is_empty() => match home {
-                Some(region) if !is_empty_cluster => {
-                    Decision::Unplaceable(Unplaceable::NoNodeInRegion {
-                        region: region.clone(),
-                    })
-                }
-                _ => Decision::Unplaceable(Unplaceable::NoEligibleNode),
-            },
-            None => Decision::Unplaceable(Unplaceable::AllNodesAtCapacity),
+            None => Decision::Unplaceable(unplaced(&eligible, home, is_empty_cluster)),
         };
         shards.push(ShardPlan { key, decision });
         note_spread(&mut unspread, shards.last(), &current, &eligible);
@@ -778,6 +795,17 @@ fn plan_once(
         },
         stream_wanted,
     )
+}
+
+/// Why no node in `eligible` can take a shard `choose` found nowhere for.
+fn unplaced(eligible: &[&Node], home: Option<&String>, is_empty_cluster: bool) -> Unplaceable {
+    match home {
+        _ if !eligible.is_empty() => Unplaceable::AllNodesAtCapacity,
+        Some(region) if !is_empty_cluster => Unplaceable::NoNodeInRegion {
+            region: region.clone(),
+        },
+        _ => Unplaceable::NoEligibleNode,
+    }
 }
 
 /// Re-admit a member whose storage was replaced, once its leader reports it
@@ -936,6 +964,7 @@ pub fn assignment_for(key: &ShardKey, leader: &str, replicas: Vec<String>) -> Sh
         raft_voters: None,
         raft_seed: None,
         raft_bases: None,
+        raft_leader: None,
         raft_ordered: None,
     }
 }
@@ -1137,8 +1166,8 @@ struct Placeable<'a> {
     kind: ShardKind,
     shards: u32,
     replication_factor: u32,
-    /// Whether there is a log to hand off. An ephemeral stream is reassigned
-    /// outright.
+    /// Whether there is a log to hand off. An in-memory stream is placed
+    /// again outright.
     durable: bool,
     /// The home region, for a stream that has one.
     region: Option<&'a String>,
@@ -1158,7 +1187,13 @@ impl<'a> Placeable<'a> {
             name: &stream.stream,
             kind: ShardKind::Stream,
             shards: stream.shards,
-            replication_factor: stream.replication_factor.max(1),
+            // An in-memory shard is never replicated: its owner is its one
+            // copy, whatever factor the stream was created with.
+            replication_factor: if stream.durable {
+                stream.replication_factor.max(1)
+            } else {
+                1
+            },
             durable: stream.durable,
             region: stream.region.as_ref(),
             fenced: stream.durable && matches!(stream.consistency, ConsistencyLevel::Quorum),
@@ -1182,6 +1217,11 @@ impl<'a> Placeable<'a> {
             fenced: matches!(cache.consistency, ConsistencyLevel::Quorum),
             quorum: matches!(cache.consistency, ConsistencyLevel::Quorum),
         }
+    }
+
+    /// An in-memory stream's shard, placed by [`in_memory_step`].
+    fn in_memory(&self) -> bool {
+        !self.durable
     }
 
     fn owner(&self) -> Owner<'a> {

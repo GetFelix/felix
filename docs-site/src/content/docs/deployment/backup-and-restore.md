@@ -32,6 +32,20 @@ brokers keep running, are cut back to the point on restore.
   replaced. A shard its leader cannot vouch for yet (just taken, lease lapsed)
   is asked about again a few times, and then the command fails naming it. A
   partial point is not a point.
+- **A Raft shard is read on its elected leader.** Every broker is asked each
+  round, and a shard is read as a Raft one when any broker lists a member
+  of it. That is decided again every round, so a shard whose members are
+  not listed yet is asked about again rather than read on the broker
+  placement names, which need not lead it.
+- **A Raft shard needs a majority of its brokers reachable.** Its point is
+  taken only when most of the brokers that vote in its group answered in
+  the same round, and while a membership change is in progress, most of the
+  old set and most of the new one. A broker that has lost its leadership
+  without hearing so yet cannot then pass for the leader, because one of
+  the brokers that answered has already seen the newer leader. A broker
+  that only copies the log and does not vote counts for nothing. Short of
+  a majority the shard is asked about again a few times, and then the
+  command fails naming it. A single-broker shard needs only that broker.
 
 "Acknowledged" means what the ack promised. A durable `Leader` publish is acknowledged
 after the write unless the broker runs with `FELIX_ACK_ON_COMMIT=0`, so with
@@ -61,7 +75,9 @@ any log. See
   first, right after taking the point; if a restore refuses one, take a new
   point and copy again.
 - **Brokers with no cluster** have no assignments, so there is nothing to take
-  a point of. Stop a single broker and copy its data directory instead.
+  a point of. Stop a single broker and copy its data directory instead, and
+  restore it as described under
+  [Restoring a standalone broker](#restoring-a-standalone-broker).
 
 ## Taking a backup
 
@@ -123,6 +139,11 @@ any log. See
    [Backups](/deployment/kubernetes/#backups) notes). The manifest's
    `metadata_version` is the assignment change sequence the point was read
    against.
+
+A broker still running when the control plane's metadata is restored needs
+no restart, even if it registered after the backup was taken. Its next
+heartbeat answer asks it to register again, and it does without giving up
+its lease. A broker that is draining is not asked while the drain lasts.
 
 ## Restoring
 
@@ -274,6 +295,48 @@ from the last second with no election since. That window is longer while the
 mark writer is backed up, up to about six seconds. A whole data directory put
 back in the same run to such a state is not detected either, so restore whole
 data directories only while the broker is stopped.
+:::
+
+## Restoring a standalone broker
+
+A broker with no `FELIX_NODE_ID` keeps everything in its one data directory,
+so its backup is a copy of that directory, taken with the broker stopped.
+
+1. Stop the broker.
+2. Replace its whole `FELIX_DURABLE_STORAGE_DIR` with the copy.
+3. Run the restore tool on it, with the broker still stopped. This step is
+   required: a copy put back without it is not detected, and the broker can
+   hand out again offsets it already handed out. `felix-broker restore-point`
+   counts too, but a standalone broker has no backup point to give it.
+
+   ```bash
+   felix-broker rotate-storage-id --dir /var/lib/felix
+   ```
+
+4. Start the broker.
+
+Each stream and cache shard starts again from the records in the copy.
+Anything acknowledged after the copy was taken is gone, and so are its
+offsets: the first record published after the restore gets an offset of at
+least 2^14 per millisecond of the broker's clock plus 2^40. A consumer that
+kept an offset from after the copy finds no record there, and no new record
+ever takes it. This holds under every fsync mode, as long as a shard
+averaged at most 2^13 offsets per millisecond since its last restore and the
+broker's clock has not gone back between the two restores. If the clock was
+set back, fix it, or wait until it is past the time of the last restore,
+before starting the broker.
+
+:::caution[Always run the tool]
+Step 3 is what tells the broker the directory was put back. Nothing inside
+the directory can show that on its own, so a copy started without it, a
+rolled-back volume snapshot or a restored VM included, hands out again the
+offsets it handed out after the copy was taken. A reader that stored one of
+them then reads a different record there.
+
+If the tool stops part way, it leaves `restore-pending` in the directory and
+the broker refuses to start until you run the tool again. Deleting
+`storage-id` by hand is not the same: it records no restore, and the
+broker's shards stay closed.
 :::
 
 ## Rebuilding one broker's copy

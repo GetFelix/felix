@@ -21,6 +21,7 @@ fn raise(shard: &crate::model::ShardAssignment, index: u64) -> MetaCommand {
         floors: vec![entry(shard, index, 1)],
         mark_formed: false,
         vouched_voters: false,
+        note_leader: false,
     }
 }
 

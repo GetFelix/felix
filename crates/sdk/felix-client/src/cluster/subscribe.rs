@@ -2,6 +2,7 @@
 //! broker that owns it.
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
@@ -161,6 +162,11 @@ impl Client {
     /// majority. That is a moment, not an answer about the stream, so it and
     /// the other retryable refusals get the policy's attempts and backoff, as
     /// a publish does. A fatal refusal is returned at once.
+    ///
+    /// A broker that keeps answering `not_ready` must not pin the client to
+    /// it: each further `not_ready` moves the next attempt to the next broker
+    /// in the book, starting from the entry broker. A redirect or a named
+    /// leader is still followed at once, inside each attempt.
     pub(crate) async fn open_shard(
         &self,
         tenant_id: &str,
@@ -173,9 +179,10 @@ impl Client {
         let mut retrying = Retrying::default();
         let attempts = self.policy.attempts.max(1);
         let mut attempt = 0;
+        let cursor = AtomicUsize::new(0);
         loop {
             let error = match self
-                .subscribe_shard_following_redirects(tenant_id, namespace, stream, shard, start)
+                .subscribe_shard_rotating(&cursor, tenant_id, namespace, stream, shard, start)
                 .await
             {
                 Ok(opened) => return Ok(opened),
@@ -202,29 +209,97 @@ impl Client {
         }
     }
 
-    /// One shard, following the cluster to whichever broker owns *that shard*.
+    /// One attempt to open a shard, asking the broker `cursor` points at in
+    /// the book: the entry broker, then every other endpoint in order,
+    /// wrapping round. Each `not_ready` moves `cursor` on, so a retry loop
+    /// that keeps `cursor` between attempts never stays on a broker that is
+    /// still opening the shard. A broker that cannot be dialled is stepped
+    /// over within the attempt. A success resets `cursor`; any other refusal
+    /// leaves it on the broker that gave it.
     ///
-    /// The redirect loop is per shard because ownership is: two shards of one
-    /// stream can live on two brokers, and an answer about one says nothing
-    /// about the other.
-    pub(crate) async fn subscribe_shard_following_redirects(
+    /// Shared by every loop that waits for a shard to open, so they rotate
+    /// the same way. The resume position is `start`, passed through as is.
+    pub(crate) async fn subscribe_shard_rotating(
         &self,
+        cursor: &AtomicUsize,
         tenant_id: &str,
         namespace: &str,
         stream: &str,
         shard: u32,
         start: Option<felix_wire::StartPosition>,
     ) -> Result<(Arc<Connection>, crate::Subscription)> {
+        let from = cursor.load(Ordering::Relaxed);
         let entry = self.client().await;
-        self.subscribe_shard_via(entry, tenant_id, namespace, stream, shard, start)
-            .await
+        let entry_addr = entry.dialled();
+        let mut book = vec![entry_addr];
+        book.extend(
+            self.endpoints()
+                .await
+                .into_iter()
+                .filter(|addr| *addr != entry_addr),
+        );
+        let mut unreachable = None;
+        for step in 0..book.len() {
+            let at = from + step;
+            let addr = book[at % book.len()];
+            let first = if addr == entry_addr {
+                Arc::clone(&entry)
+            } else {
+                match self.connect_to(addr).await {
+                    Ok(client) => client,
+                    Err(err) => {
+                        unreachable = Some(
+                            err.context(format!("connect to {addr} to ask for shard {shard}")),
+                        );
+                        continue;
+                    }
+                }
+            };
+            // A redirect target that has lost the shard sends the ask back to
+            // the broker this attempt started from, not to the entry broker,
+            // which may be the one that is not ready.
+            let back = Some(Arc::clone(&first));
+            let opened = self
+                .subscribe_shard_from(first, back, tenant_id, namespace, stream, shard, start)
+                .await;
+            let next = match &opened {
+                Ok(_) => 0,
+                Err(error) if is_not_ready(error) => at + 1,
+                Err(_) => at,
+            };
+            cursor.store(next, Ordering::Relaxed);
+            return opened;
+        }
+        cursor.store(from + book.len(), Ordering::Relaxed);
+        Err(unreachable.expect("the book is never empty"))
     }
 
-    /// [`Self::subscribe_shard_following_redirects`], asking `first` before
-    /// anyone else.
+    /// One shard, following the cluster to whichever broker owns *that shard*,
+    /// asking `first` before anyone else.
+    ///
+    /// The redirect loop is per shard because ownership is: two shards of one
+    /// stream can live on two brokers, and an answer about one says nothing
+    /// about the other.
     pub(crate) async fn subscribe_shard_via(
         &self,
         first: Arc<Connection>,
+        tenant_id: &str,
+        namespace: &str,
+        stream: &str,
+        shard: u32,
+        start: Option<felix_wire::StartPosition>,
+    ) -> Result<(Arc<Connection>, crate::Subscription)> {
+        self.subscribe_shard_from(first, None, tenant_id, namespace, stream, shard, start)
+            .await
+    }
+
+    /// [`Self::subscribe_shard_via`], going back to `back` instead of the
+    /// entry broker when a redirect target turns out to have lost the shard.
+    #[allow(clippy::too_many_arguments)]
+    async fn subscribe_shard_from(
+        &self,
+        first: Arc<Connection>,
+        back: Option<Arc<Connection>>,
         tenant_id: &str,
         namespace: &str,
         stream: &str,
@@ -252,7 +327,10 @@ impl Client {
             if !visited.is_empty() && !went_back && super::route_went_stale(&error) {
                 went_back = true;
                 visited.clear();
-                client = self.client().await;
+                client = match &back {
+                    Some(back) => Arc::clone(back),
+                    None => self.client().await,
+                };
                 continue;
             }
             let Some(redirect) = error.downcast_ref::<crate::NotLeaderError>().cloned() else {
@@ -448,4 +526,14 @@ impl Client {
         })
         .await
     }
+}
+
+/// Whether `error` is a broker saying the shard is still opening.
+fn is_not_ready(error: &anyhow::Error) -> bool {
+    error
+        .downcast_ref::<crate::BrokerError>()
+        .is_some_and(|broker| {
+            broker.code == felix_wire::ErrorCode::ShardUnavailable
+                && broker.reason() == Some("not_ready")
+        })
 }

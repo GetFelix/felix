@@ -6,7 +6,14 @@ use super::*;
 
 /// Records the last value each gauge was set to.
 #[derive(Clone, Default)]
-struct Gauges(Arc<Mutex<std::collections::HashMap<String, f64>>>);
+pub(super) struct Gauges(Arc<Mutex<std::collections::HashMap<String, f64>>>);
+
+impl Gauges {
+    /// The last value `name` was set to.
+    pub(super) fn get(&self, name: &str) -> Option<f64> {
+        self.0.lock().expect("gauges").get(name).copied()
+    }
+}
 
 struct GaugeHandle {
     name: String,

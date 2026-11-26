@@ -813,7 +813,12 @@ pub(super) async fn settled(
     // that are in it.
     let written = written.await.map_err(|unacked| match unacked.written_end {
         Some(end) => ProposalFailed::written(unacked.error, end),
-        None => ProposalFailed::unwritten(unacked.told()),
+        None => match unacked.told() {
+            // Nothing was appended, so the publisher hears at once, not
+            // behind an earlier batch that may never settle.
+            refused @ CommitError::NotAppended { .. } => ProposalFailed::refused(refused),
+            unknown => ProposalFailed::unwritten(unknown),
+        },
     })?;
     // openraft refuses the write at another term. Should one land all the
     // same, it is not delivered.

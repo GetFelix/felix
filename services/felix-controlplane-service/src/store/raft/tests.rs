@@ -901,6 +901,7 @@ async fn shard_renewal_waits_for_every_member() {
                     raft_voters: None,
                     raft_seed: None,
                     raft_bases: None,
+                    raft_leader: None,
                     raft_ordered: None,
                 })
                 .await
@@ -1000,6 +1001,7 @@ async fn deletes_take_shard_state_only_once_every_member_does() {
                     raft_voters: None,
                     raft_seed: None,
                     raft_bases: None,
+                    raft_leader: None,
                     raft_ordered: None,
                 })
                 .await
@@ -1211,6 +1213,7 @@ async fn halted_copies_wait_for_every_member_and_the_report_does_not() {
             raft_voters: None,
             raft_seed: None,
             raft_bases: None,
+            raft_leader: None,
             raft_ordered: None,
         })
         .await
@@ -1342,6 +1345,7 @@ async fn a_refused_ballot_waits_for_every_member() {
         raft_voters: None,
         raft_seed: None,
         raft_bases: None,
+        raft_leader: None,
         raft_ordered: None,
     };
     let assigned = store
@@ -1487,6 +1491,7 @@ async fn a_previous_generation_waits_for_every_member() {
         raft_voters: None,
         raft_seed: None,
         raft_bases: None,
+        raft_leader: None,
         raft_ordered: None,
     };
     let assigned = store
@@ -1593,6 +1598,7 @@ async fn readmitted_copies_wait_for_every_member_and_survive_a_snapshot() {
             raft_voters: None,
             raft_seed: None,
             raft_bases: None,
+            raft_leader: None,
             raft_ordered: None,
         })
         .await
@@ -1735,6 +1741,7 @@ async fn the_placed_record_waits_for_every_member_and_survives_a_snapshot() {
         raft_voters: None,
         raft_seed: None,
         raft_bases: None,
+        raft_leader: None,
         raft_ordered: None,
     };
     let first = |shard: u32| {
@@ -1994,6 +2001,7 @@ async fn under_joint_fence_a_ballot_floor_waits_for_every_member() {
         raft_voters: None,
         raft_seed: None,
         raft_bases: None,
+        raft_leader: None,
         raft_ordered: None,
     };
     let assigned = store
@@ -2115,6 +2123,7 @@ async fn fence_storage_ids_wait_for_every_member() {
         raft_voters: None,
         raft_seed: None,
         raft_bases: None,
+        raft_leader: None,
         raft_ordered: None,
     };
 
@@ -2205,6 +2214,7 @@ async fn by_round_waits_for_every_member_and_the_rest_of_the_report_does_not() {
             raft_voters: None,
             raft_seed: None,
             raft_bases: None,
+            raft_leader: None,
             raft_ordered: None,
         })
         .await
@@ -2346,6 +2356,7 @@ async fn pending_sets_wait_for_every_member() {
             raft_voters: None,
             raft_seed: None,
             raft_bases: None,
+            raft_leader: None,
             raft_ordered: None,
         })
         .await
@@ -2527,6 +2538,7 @@ async fn an_adoption_on_another_set_waits_for_every_member() {
             raft_voters: None,
             raft_seed: None,
             raft_bases: None,
+            raft_leader: None,
             raft_ordered: None,
         })
         .await
@@ -2641,6 +2653,7 @@ async fn its_own_leader_on_another_set_waits_for_every_member() {
             raft_voters: None,
             raft_seed: None,
             raft_bases: None,
+            raft_leader: None,
             raft_ordered: None,
         })
         .await
@@ -2756,6 +2769,7 @@ async fn inherited_storage_waits_for_every_member() {
             raft_voters: None,
             raft_seed: None,
             raft_bases: None,
+            raft_leader: None,
             raft_ordered: None,
         })
         .await
@@ -2884,6 +2898,7 @@ async fn learners_wait_for_every_member() {
         raft_voters: None,
         raft_seed: None,
         raft_bases: None,
+        raft_leader: None,
         raft_ordered: None,
     };
     let assigned = store
@@ -3042,6 +3057,7 @@ async fn a_refusal_waits_for_every_member() {
             raft_voters: None,
             raft_seed: None,
             raft_bases: None,
+            raft_leader: None,
             raft_ordered: None,
         })
         .await
@@ -3189,6 +3205,7 @@ async fn storage_ids_wait_for_every_member() {
             raft_voters: None,
             raft_seed: None,
             raft_bases: None,
+            raft_leader: None,
             raft_ordered: None,
         })
         .await
@@ -3526,6 +3543,7 @@ async fn confirmed_shard_assignments_are_read_on_the_leader() {
             raft_voters: None,
             raft_seed: None,
             raft_bases: None,
+            raft_leader: None,
             raft_ordered: None,
         })
         .await
@@ -4453,6 +4471,7 @@ async fn adoption_waits_for_every_member() {
             raft_voters: None,
             raft_seed: None,
             raft_bases: None,
+            raft_leader: None,
             raft_ordered: None,
         })
         .await
@@ -5257,6 +5276,7 @@ async fn raft_floors_wait_for_every_member_known_at_level_38() {
             floors: floors.clone(),
             mark_formed: false,
             vouched_voters: false,
+            note_leader: false,
         });
         let answer = store.handle.write(raw).await.expect("answered");
         let result = crate::store::raft::command::decode_result(&answer).expect("decodes");
@@ -5524,4 +5544,46 @@ async fn a_member_that_does_not_lead_refuses_an_import() {
         axum::http::StatusCode::MISDIRECTED_REQUEST
     );
     assert!(inner.is_unused().await, "a follower wrote the import");
+}
+
+/// **Below level 53 an explicit revocation is the one older builds write.**
+/// It still refuses the principal's broker tokens, and records no assertion
+/// cutoff a member below the level would drop. At the level it records one.
+#[tokio::test]
+async fn an_explicit_revocation_keeps_its_assertion_cutoff_for_its_level() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let (store, version) = store_with_member_at(dir.path(), ASSERTION_CUTOFF_LEVEL - 1).await;
+    store
+        .revoke_principals_explicitly("t1", vec!["alice".into()], 100)
+        .await
+        .expect("revoke below the level");
+    assert_eq!(
+        store.principal_cutoffs("t1", "alice").await.expect("read"),
+        crate::store::PrincipalCutoffs {
+            tokens: Some(100),
+            assertions: None,
+        }
+    );
+
+    version.store(
+        crate::store::raft::command::METADATA_VERSION,
+        std::sync::atomic::Ordering::SeqCst,
+    );
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        store
+            .revoke_principals_explicitly("t1", vec!["alice".into()], 200)
+            .await
+            .expect("revoke");
+        let cutoffs = store.principal_cutoffs("t1", "alice").await.expect("read");
+        if cutoffs.assertions == Some(200) {
+            assert_eq!(cutoffs.tokens, Some(200));
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "no assertion cutoff once every member reported the level: {cutoffs:?}"
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
 }

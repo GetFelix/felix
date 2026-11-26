@@ -256,6 +256,12 @@ fn assignment() -> ShardAssignment {
                 first_index: 1,
             }],
         }),
+        raft_leader: Some(crate::model::RaftLeader {
+            incarnation: 1,
+            epoch: 1,
+            term: 1,
+            node: s("leader"),
+        }),
     }
 }
 
@@ -528,6 +534,7 @@ fn exported() -> ExportedState {
             tenant_id: s("t"),
             principal_id: s("p"),
             revoked_at: 1,
+            assertions_revoked_at: Some(1),
         }],
         stream_tombstones: vec![crate::model::StreamTombstone {
             tenant_id: s("t"),
@@ -739,6 +746,7 @@ fn commands() -> Vec<MetaCommand> {
             }],
             mark_formed: true,
             vouched_voters: true,
+            note_leader: true,
         },
         MetaCommand::SealShard {
             key: shard_key(),
@@ -872,6 +880,7 @@ fn commands() -> Vec<MetaCommand> {
             tenant_id: s("t"),
             principal_ids: vec![s("p")],
             revoked_at: 1,
+            assertions: true,
         },
         MetaCommand::ChangeAuthAndRevoke {
             tenant_id: s("t"),

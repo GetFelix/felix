@@ -195,7 +195,7 @@ fn a_draining_hybrid_leader_still_stages_a_successor() {
     let mut nodes = live(&["broker-a", "broker-b", "broker-c", "broker-d"]);
     nodes[0].status.lifecycle = NodeLifecycle::Draining;
 
-    // A stream in memory has no group, so it stays on the hybrid's path.
+    // A stream in memory has no group: it takes the in-memory step.
     let in_memory = vec![Stream {
         durable: false,
         ..streams[0].clone()

@@ -47,6 +47,15 @@ async fn a_stream_homed_in_one_region_is_refused_by_another() {
         "{refused:#}"
     );
 
+    // `Cluster::start` proves only shard 0 serves. The unkeyed publish below
+    // can land on any shard, and one still opening on its eu owner refuses it.
+    // Bounded by the harness's ready timeout; a refusal that never clears
+    // fails here instead of being retried past the assertion.
+    cluster
+        .await_every_shard_serving(STREAM, 4)
+        .await
+        .expect("every eu shard serves");
+
     // Inside the region a publish is served, forwarded or not.
     let eu = cluster.node(IN_EU[0]).expect("eu broker");
     let client =

@@ -365,6 +365,7 @@ async fn forward_shard(
         // Re-establish, indefinitely. Giving up would turn a recoverable
         // failure into permanent silence on this shard, and the application has
         // already been told it is down.
+        let cursor = std::sync::atomic::AtomicUsize::new(0);
         loop {
             if stop.load(Ordering::Relaxed) {
                 return;
@@ -387,8 +388,8 @@ async fn forward_shard(
             // answers before asking again. Asking the dead one never succeeds.
             let reopened = cluster
                 .reopen_after_loss(&feed.0, || {
-                    cluster.subscribe_shard_following_redirects(
-                        &tenant_id, &namespace, &stream, shard, at,
+                    cluster.subscribe_shard_rotating(
+                        &cursor, &tenant_id, &namespace, &stream, shard, at,
                     )
                 })
                 .await;

@@ -104,9 +104,9 @@ close an open connection at `notAfter`
 ([#2899](https://github.com/GetFelix/felix/issues/2899)).
 Clients should refresh before expiry and reconnect. Internal broker-to-broker
 connections close the same way when a node certificate expires, each up to 30
-seconds early so they do not all drop at once. One exception: a Kafka
-connection under the anonymous-tenant development switch has no credential,
-so nothing ends it ([#2903](https://github.com/GetFelix/felix/issues/2903)).
+seconds early so they do not all drop at once. A Kafka or MQTT connection
+under its anonymous-tenant development switch closes at its client
+certificate's `notAfter` too; one with no certificate has nothing to end it.
 Details:
 [When a credential expires](https://github.com/GetFelix/felix/blob/main/docs/auth.md#when-a-credential-expires).
 

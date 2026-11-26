@@ -75,6 +75,10 @@ const SHARD_RENEWAL_LEVEL: u16 = 17;
 /// (#1447).
 const DELETED_NAMES_LEVEL: u16 = 18;
 
+/// The metadata level whose members keep an explicit revocation's assertion
+/// cutoff (`RevokePrincipals::assertions`).
+const ASSERTION_CUTOFF_LEVEL: u16 = 53;
+
 /// The metadata level whose members advance the placement token when a
 /// stream's consistency or durability changes (#1253).
 const PATCH_FENCE_LEVEL: u16 = 19;
@@ -204,6 +208,10 @@ const REFORM_RECORD_LEVEL: u16 = 47;
 /// reporter its stored target vouches for, or a kept voter still placed
 /// while no target is stored (#2909).
 const VOUCHED_VOTERS_LEVEL: u16 = 48;
+
+/// The metadata level whose members record the broker each Raft group
+/// elected from its leader's floor report (`ShardAssignment::raft_leader`).
+const RAFT_LEADER_LEVEL: u16 = 52;
 
 /// A Raft shard's set change keeps the dropped target's counter
 /// (`ShardAssignment::raft_target_counter`).
@@ -367,6 +375,7 @@ impl RaftStore {
         assignment.raft_formed = None;
         assignment.raft_voters = None;
         assignment.raft_ordered = None;
+        assignment.raft_leader = None;
     }
 
     /// Whether `report` shows caught up a learner the local assignment holds
@@ -1407,6 +1416,7 @@ impl ControlPlaneStore for RaftStore {
                 floors,
                 mark_formed: level >= FIRST_FORM_LEVEL,
                 vouched_voters: level >= VOUCHED_VOTERS_LEVEL,
+                note_leader: level >= RAFT_LEADER_LEVEL,
             })
             .await?
         {
@@ -2367,9 +2377,62 @@ impl AuthStore for RaftStore {
             tenant_id: tenant_id.to_string(),
             principal_ids,
             revoked_at,
+            assertions: false,
         })
         .await?;
         Ok(())
+    }
+
+    async fn revoke_principals_explicitly(
+        &self,
+        tenant_id: &str,
+        principal_ids: Vec<String>,
+        revoked_at: i64,
+    ) -> StoreResult<()> {
+        // Below the level a member would drop the assertion cutoff, so the
+        // revocation is the one older builds write.
+        let assertions = self.group_level().await? >= ASSERTION_CUTOFF_LEVEL;
+        self.propose(MetaCommand::RevokePrincipals {
+            tenant_id: tenant_id.to_string(),
+            principal_ids,
+            revoked_at,
+            assertions,
+        })
+        .await?;
+        Ok(())
+    }
+
+    /// Read on the leader like [`AuthStore::principals_revoked_at`]. A leader
+    /// that predates assertion cutoffs leads a group below their level,
+    /// where none is written, so its answer counts as none.
+    async fn principal_cutoffs(
+        &self,
+        tenant_id: &str,
+        principal_id: &str,
+    ) -> StoreResult<crate::store::PrincipalCutoffs> {
+        match self
+            .ask_leader(LeaderRequest::RevocationCutoffs {
+                tenant_id: tenant_id.to_string(),
+                principal_ids: vec![principal_id.to_string()],
+                assertions: true,
+            })
+            .await?
+        {
+            Some(MetaResponse::RevokedAt {
+                cutoffs,
+                assertion_cutoffs,
+            }) if cutoffs.len() == 1 => Ok(crate::store::PrincipalCutoffs {
+                tokens: cutoffs[0],
+                assertions: assertion_cutoffs
+                    .and_then(|cutoffs| cutoffs.first().copied().flatten()),
+            }),
+            Some(_) => Err(unexpected_shape("revocation cutoffs")),
+            None => {
+                self.local()?
+                    .principal_cutoffs(tenant_id, principal_id)
+                    .await
+            }
+        }
     }
 
     async fn principal_revocations(
@@ -2403,10 +2466,13 @@ impl AuthStore for RaftStore {
             .ask_leader(LeaderRequest::RevocationCutoffs {
                 tenant_id: tenant_id.to_string(),
                 principal_ids: principal_ids.to_vec(),
+                assertions: false,
             })
             .await?
         {
-            Some(MetaResponse::RevokedAt { cutoffs }) if cutoffs.len() == principal_ids.len() => {
+            Some(MetaResponse::RevokedAt { cutoffs, .. })
+                if cutoffs.len() == principal_ids.len() =>
+            {
                 Ok(cutoffs)
             }
             Some(_) => Err(unexpected_shape("revocation cutoffs")),

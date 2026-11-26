@@ -55,6 +55,13 @@ impl BackupOffsets {
                 shard: key.shard,
                 kind: kind_name(key.kind),
                 term: member.term,
+                member: Voter::of(&member.member),
+                voters: member
+                    .voter_sets
+                    .iter()
+                    .map(|set| set.iter().map(Voter::of).collect())
+                    .collect(),
+                membership_at: member.membership_at.map(|at| [at.term, at.index]),
             });
             if let Some(end) = member.committed_end {
                 response.shards.push(ShardOffsets {
@@ -200,6 +207,31 @@ struct RaftMember {
     shard: u32,
     kind: &'static str,
     term: u64,
+    /// This member, as its group's membership names it.
+    member: Voter,
+    /// The voter sets of the last membership in the member's log: one, or
+    /// two while a change is joint. Learners are in none.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    voters: Vec<Vec<Voter>>,
+    /// `[term, index]` of the entry that membership is from.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    membership_at: Option<[u64; 2]>,
+}
+
+/// A group member: a broker and the copy of the shard it holds.
+#[derive(Debug, Serialize)]
+struct Voter {
+    broker: String,
+    copy: u64,
+}
+
+impl Voter {
+    fn of(member: &felix_replication::raft::MemberId) -> Self {
+        Self {
+            broker: member.broker.to_string(),
+            copy: member.copy,
+        }
+    }
 }
 
 #[derive(Debug, Serialize)]

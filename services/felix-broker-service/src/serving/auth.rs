@@ -168,13 +168,44 @@ impl BrokerAuth {
         context: &mut AuthContext,
         chain: &[rustls::pki_types::CertificateDer<'_>],
     ) -> Result<()> {
+        context.revocable = self.ending_with_chain(context.revocable.clone(), chain)?;
+        Ok(())
+    }
+
+    /// `revocable`, ending by the end of `chain` too. Refuses a chain that has
+    /// already ended or whose leaf cannot be read.
+    fn ending_with_chain(
+        &self,
+        revocable: Revocable,
+        chain: &[rustls::pki_types::CertificateDer<'_>],
+    ) -> Result<Revocable> {
         match self.client_chain_ends(chain) {
-            Ok(Some(not_after)) => bound_by_certificate(context, not_after),
-            Ok(None) => Ok(()),
+            Ok(Some(not_after)) => ending_with_certificate(revocable, not_after),
+            Ok(None) => Ok(revocable),
             Err(_) => Err(anyhow::Error::new(CredentialRefused(
                 "token refused: the client certificate does not parse".to_string(),
             ))),
         }
+    }
+
+    /// What ends a connection that holds no credential but whose client
+    /// presented `chain`: the chain's end, exactly as it bounds a token.
+    /// Refuses the chain as [`Self::authenticate_peer`] would.
+    pub(crate) fn chain_only(
+        &self,
+        tenant_id: &str,
+        chain: &[rustls::pki_types::CertificateDer<'_>],
+    ) -> Result<Revocable> {
+        // No principal, so nothing can revoke it: its own empty revocations
+        // never move, and only the chain's end ends it.
+        let unrevocable = Revocable::new(
+            Arc::new(Revocations::default()),
+            tenant_id.to_string(),
+            String::new(),
+            None,
+            0,
+        );
+        self.ending_with_chain(unrevocable, chain)
     }
 
     /// Mint and accept lease tokens with these keys.
@@ -371,13 +402,18 @@ impl BrokerAuth {
 /// refuse it if that has passed: the handshake checked the certificate once,
 /// but a long-lived connection can open a stream after it expired.
 fn bound_by_certificate(context: &mut AuthContext, not_after: i64) -> Result<()> {
-    context.revocable = context.revocable.clone().ending_at(not_after);
-    if context.revocable.has_ended() {
+    context.revocable = ending_with_certificate(context.revocable.clone(), not_after)?;
+    Ok(())
+}
+
+fn ending_with_certificate(revocable: Revocable, not_after: i64) -> Result<Revocable> {
+    let revocable = revocable.ending_at(not_after);
+    if revocable.has_ended() {
         return Err(anyhow::Error::new(CredentialRefused(
             "token refused: the client certificate has expired".to_string(),
         )));
     }
-    Ok(())
+    Ok(revocable)
 }
 
 fn client_chains(roots: Option<Arc<rustls::RootCertStore>>) -> felix_common::tls::ChainExpiry {

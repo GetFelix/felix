@@ -62,7 +62,8 @@ a segment, should be rejected on its first four bytes rather than misparsed.
   replaced-storage                           ← the node was once registered under another storage id
   lost-copy                                  ← whether this directory ever replaced a copy the node lost
   rotated-ids                                ← ids a crash rotated away while every ballot was kept
-  relaxed-crash-id                           ← the id a relaxed crash gave the directory, and the ids it rotated away
+  relaxed-crash-id                           ← the id a relaxed crash or a restore gave the directory, and the ids they rotated away
+  restore-pending                            ← a restore tool is rotating the id; no start runs while it is there
   last-rotation                              ← the id the last rotation gave the directory, the one before, and the registration then
   minted-id                                  ← an id a start wrote new, and the registration that bound it
   registered-at                              ← the node record's registration time, beside the incarnation
@@ -1489,21 +1490,28 @@ reads. Absent means the copy never reserved anything. What a damaged file
 stops depends on where it is:
 
 - **In a kept directory.** The next rotation of that shard fails, and
-  reclaim holds that kept directory as unreadable. If the current copy's
-  `raft-reserved` decodes, the rotation that made the current copy read
-  the kept file while it was still whole and carried its value, and a
-  reservation is never lowered after that. A copy raising its own value
-  does not prove the carry by itself: an older build could have rotated
-  without it. That is the downgrade ruled out below, so this holds only
-  while no broker of the fleet ran a build without the
-  file after the shard took a reservation. Then stop the
-  broker and delete only the damaged `raft-reserved` file in that kept
-  directory, not the directory. An absent file reads as no reservation,
-  and reclaim still checks the kept records and removes the directory only
-  once the current copy covers them. If the current copy has no
-  `raft-reserved`, an older build made it without the carry and the value
-  is lost: delete the damaged file the same way, then start the copy over,
-  as below.
+  reclaim holds that kept directory as unreadable. Every line the broker logs for a
+  held kept directory carries a `held` field ending in
+  `raft-reserved kept <value>, current <value>`: the kept
+  directory's reservation and the current copy's, as that pass read them,
+  where a value is a Raft index, `absent` or `unreadable`. A damaged file
+  reads as `unreadable`, never as a number. To decide, find the last line
+  for that kept directory from before it was damaged, and read the current
+  copy's value now:
+  - If the current value is at or above the kept one, the current copy
+    already covers what the kept file held. Stop the broker and delete only
+    the damaged `raft-reserved` file in that kept directory, not the
+    directory. An absent file reads as no reservation, and reclaim still
+    checks the kept records and removes the directory only once the current
+    copy covers them.
+  - Otherwise, or if no line shows the kept value whole, or the current
+    copy has no `raft-reserved`, the kept value may be lost. Do not guess
+    it. Delete the damaged file the same way, then start the copy over, as
+    below. The rotation fails on the damaged file, so it has to go first.
+
+  A current file that decodes does not prove the kept value was carried:
+  an older build could have rotated without the carry, and the current
+  copy then reserved a lower value of its own. Compare the two numbers.
 - **In the current shard directory.** The copy does not open, and reclaim
   holds every kept directory of the shard as unreadable, with a warning
   that names the current directory's file. Start the copy over: stop the
@@ -1521,7 +1529,8 @@ reservation. Its rotation also leaves a kept directory whose reservation is
 above the new copy's, and reclaim holds that directory as reserved. A
 copy raises its own reservation only as its log grows, so until it passes
 the kept one or another rotation carries it, the directory stays on
-disk, and the only sign is its line in the held report. A copy takes a reservation from its first open
+disk, and the only sign is its line in the held report, which shows both
+reservations. A copy takes a reservation from its first open
 or append by a build that carries this file, with no fleet gate: no
 released build runs Raft shards (the engine is behind the `raft` build
 feature), so no older build meets the file. Going back to a build
@@ -2697,14 +2706,15 @@ no id, so such a set reads as naming a lost copy, which only costs a
 readmission. So does a crash after the id rotated but before the old id was
 recorded. An older release neither reads nor writes the file.
 
-## `relaxed-crash-id`: what a relaxed crash rotated
+## `relaxed-crash-id`: what a relaxed crash or a restore rotated
 
 Written by the start that rotated the storage id after a relaxed crash
-(`run_state::begin`), and not by an operator's rotation. A standalone broker
-cannot tell a restored volume from a relaxed crash: restoring a volume
-snapshot taken while it ran writes it too, and the re-form that follows can
-give out offsets handed out after the snapshot. Text: the line `relaxed_crash`, then the new id in hex, then the ids relaxed
-crashes rotated away, newest first, one per line in hex. Synced with the
+(`run_state::begin`), and by `felix-broker rotate-storage-id` and
+`felix-broker restore-point` (`run_state::rotate_for_restore`), each before
+the new id is written. Not written when `storage-id` is deleted by hand. Text:
+the line `relaxed_crash`, then the new id in hex, then the ids relaxed
+crashes and restores rotated away, newest first, one per line in hex. An id
+a restore rotated away is followed by ` restore` on its line. Synced with the
 directory. It keeps the newest 8 of those ids, and an older one for as long as
 a Raft copy under the root (in a shard directory, kept or set aside) was
 minted under it, so the file is bounded by the copies on disk and a crash
@@ -2713,10 +2723,20 @@ loop of any length cannot drop an id a copy still waits on
 cannot be read, that start drops no id.
 
 It counts only while its first id is the current storage id
-(`run_state::relaxed_crash_sources`), so any later rotation voids it. A
-standalone broker re-forms a Raft group only on this evidence (see
-`docs/per-shard-raft.md`, "A standalone broker re-forms itself"). A missing
-or unreadable file means no evidence.
+(`run_state::reform_evidence`), so any other rotation voids it. A
+standalone broker re-forms a Raft group only on this evidence, and starts the
+group on the restore time line when a restore is among the rotations since
+its kept copy was minted (see `docs/per-shard-raft.md`, "A standalone broker
+re-forms itself"). A missing or unreadable file means no evidence.
+
+## `restore-pending`: a restore tool is running
+
+Written and synced by `run_state::rotate_for_restore` before it records the
+restore or rotates the id, and removed, with the directory synced, once both
+are on disk. Text: the line `restore_pending`, then the id the tool found, in
+hex. `run_state::begin` refuses to start while the file exists, whatever it
+holds, and names `felix-broker rotate-storage-id` as the way to finish. Run
+again, the tool keeps the first run's evidence.
 
 ## `raft-reform-alone`: a standalone group's re-form plan
 

@@ -151,6 +151,12 @@ impl UpstreamOidcValidator {
         self.allow_insecure_http
     }
 
+    /// The clock skew, in seconds, allowed between this control plane and an
+    /// IdP.
+    pub fn clock_skew_seconds(&self) -> u64 {
+        self.clock_skew_seconds
+    }
+
     /// Validate an upstream bearer token against the tenant's configured
     /// issuers: allowlisted algorithm, resolved JWKS, then signature and
     /// `iss`/`aud`/`iat` checks.
@@ -265,6 +271,7 @@ impl UpstreamOidcValidator {
             issuer,
             subject,
             groups,
+            issued_at: iat,
         })
     }
 
@@ -286,6 +293,9 @@ pub struct ValidatedToken {
     pub issuer: String,
     pub subject: String,
     pub groups: Vec<String>,
+    /// The token's `iat`, seconds since the epoch. A token without one does
+    /// not validate.
+    pub issued_at: i64,
 }
 
 /// Upstream validation failures. Messages never include token contents.

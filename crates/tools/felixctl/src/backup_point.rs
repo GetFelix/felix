@@ -64,18 +64,29 @@ impl BackupPoint<'_> {
             let nodes = node_addresses(admin).await?;
             // A Raft shard's leader is whichever member won its election, not
             // the broker placement names, so every broker is asked.
-            let (mut shards, raft) = collect_raft(&http, self, &nodes, &snapshot.items).await?;
-            let mut leaders: BTreeMap<&str, Vec<&Assignment>> = BTreeMap::new();
-            for assignment in snapshot.items.iter().filter(|a| !raft.contains(&a.key())) {
-                leaders
-                    .entry(assignment.leader.as_str())
-                    .or_default()
-                    .push(assignment);
-            }
-            for (leader, assigned) in leaders {
-                let url = broker_url(leader, &nodes, &self.brokers, self.metrics_port)?;
-                shards.extend(collect_from(&http, leader, &url, &assigned).await?);
-            }
+            let mut ids: Vec<&str> = nodes.iter().map(|n| n.node_id.as_str()).collect();
+            ids.extend(self.brokers.keys().map(String::as_str));
+            ids.extend(snapshot.items.iter().map(|a| a.leader.as_str()));
+            ids.sort_unstable();
+            ids.dedup();
+            let urls = ids
+                .iter()
+                .map(|id| {
+                    Ok((
+                        id.to_string(),
+                        broker_url(id, &nodes, &self.brokers, self.metrics_port)?,
+                    ))
+                })
+                .collect::<Result<Vec<_>>>()?;
+            let (urls, http) = (&urls, &http);
+            let round = move || async move {
+                let mut answers = Vec::new();
+                for (id, url) in urls {
+                    answers.push((id.clone(), fetch_offsets(http, url).await));
+                }
+                answers
+            };
+            let mut shards = collect_rounds(round, &snapshot.items, BROKER_BACKOFF).await?;
             let after = assignment_snapshot(admin).await?;
             if leadership_changed(&snapshot.items, &after.items) {
                 continue;
@@ -326,6 +337,25 @@ struct RaftMember {
     shard: u32,
     kind: String,
     term: u64,
+    /// This member, as its group's membership names it. Absent from a
+    /// broker that predates it, whose answer then counts toward no majority.
+    #[serde(default)]
+    member: Option<Voter>,
+    /// The voter sets of the last membership in the member's log: one, or
+    /// two while a change is joint.
+    #[serde(default)]
+    voters: Vec<Vec<Voter>>,
+    /// `[term, index]` of the entry that membership is from.
+    #[serde(default)]
+    membership_at: Option<[u64; 2]>,
+}
+
+/// A group member: a broker and the copy of the shard it holds. A broker
+/// that lost its copy comes back as another member, which is not a voter.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Deserialize)]
+struct Voter {
+    broker: String,
+    copy: u64,
 }
 
 #[derive(Debug, Deserialize)]
@@ -361,38 +391,28 @@ struct BrokerSkipped {
 
 type Key<'a> = (&'a str, &'a str, &'a str, &'a str, u32);
 
-/// Collect the point of every shard the Raft engine runs, asking every
-/// broker until each such shard has a leader at its newest term. Returns
-/// those shards and their keys; the rest are read from placement's leader.
-async fn collect_raft<'a>(
-    http: &reqwest::Client,
-    point: &BackupPoint<'_>,
-    nodes: &[NodeAddress],
-    assigned: &'a [Assignment],
-) -> Result<(Vec<PointShard>, std::collections::HashSet<Key<'a>>)> {
-    let mut ids: Vec<&str> = nodes.iter().map(|n| n.node_id.as_str()).collect();
-    ids.extend(point.brokers.keys().map(String::as_str));
-    ids.sort_unstable();
-    ids.dedup();
-    let mut backoff = BROKER_BACKOFF;
+/// Every broker's answer in one round, or why it gave none.
+type Round = Vec<(String, Result<BrokerOffsets>)>;
+
+/// Ask every broker, round after round, until every assigned shard has an
+/// entry. Which shards the Raft engine runs is decided again each round
+/// from that round's answers: a shard no broker listed a Raft member of
+/// yet would otherwise be sent to placement's leader for good, which never
+/// leads it (#2995).
+async fn collect_rounds<F, Fut>(
+    mut round: F,
+    assigned: &[Assignment],
+    backoff: Duration,
+) -> Result<Vec<PointShard>>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = Round>,
+{
+    let mut backoff = backoff;
     let mut last = String::new();
     for attempt in 1..=BROKER_ATTEMPTS {
-        let mut answers = Vec::new();
-        // A broker that does not answer is left out: if it leads a Raft
-        // shard, that shard has no leader in this round and is asked again.
-        for id in &ids {
-            let url = broker_url(id, nodes, &point.brokers, point.metrics_port)?;
-            if let Ok(offsets) = fetch_offsets(http, &url).await {
-                answers.push((id.to_string(), offsets));
-            }
-        }
-        let raft = raft_keys(assigned, &answers);
-        let on_raft: Vec<&Assignment> = assigned
-            .iter()
-            .filter(|a| raft.contains(&a.key()))
-            .collect();
-        match match_raft(&on_raft, &answers) {
-            Ok(shards) => return Ok((shards, raft)),
+        match match_round(assigned, &round().await) {
+            Ok(shards) => return Ok(shards),
             Err(missing) => last = missing.join(", "),
         }
         if attempt < BROKER_ATTEMPTS {
@@ -400,13 +420,58 @@ async fn collect_raft<'a>(
             backoff *= 2;
         }
     }
-    bail!("no Raft leader had committed offsets to give for: {last}")
+    bail!("no committed offsets to give for: {last}")
+}
+
+/// The point from one round of answers: each Raft shard from its leader at
+/// the newest term, each other shard from placement's leader. A broker
+/// that did not answer is left out: a Raft shard it leads has no leader
+/// this round, and a hybrid shard it leads is missing.
+fn match_round(assigned: &[Assignment], round: &Round) -> Result<Vec<PointShard>, Vec<String>> {
+    let answers: Vec<(String, &BrokerOffsets)> = round
+        .iter()
+        .filter_map(|(id, answer)| answer.as_ref().ok().map(|offsets| (id.clone(), offsets)))
+        .collect();
+    let raft = raft_keys(assigned, &answers);
+    let (on_raft, hybrid): (Vec<&Assignment>, Vec<&Assignment>) =
+        assigned.iter().partition(|a| raft.contains(&a.key()));
+    let mut missing = Vec::new();
+    let mut shards = match_raft(&on_raft, &answers).unwrap_or_else(|gone| {
+        missing.extend(gone);
+        Vec::new()
+    });
+    let mut leaders: BTreeMap<&str, Vec<&Assignment>> = BTreeMap::new();
+    for assignment in hybrid {
+        leaders
+            .entry(assignment.leader.as_str())
+            .or_default()
+            .push(assignment);
+    }
+    for (leader, assigned) in leaders {
+        match round
+            .iter()
+            .find(|(id, _)| id == leader)
+            .map(|(_, answer)| answer)
+        {
+            Some(Ok(offsets)) => match match_leader(leader, &assigned, offsets) {
+                Ok(found) => shards.extend(found),
+                Err(gone) => missing.extend(gone.into_iter().map(|m| format!("{m} on {leader}"))),
+            },
+            Some(Err(err)) => missing.push(format!("{leader}: {err:#}")),
+            None => missing.push(format!("{leader}: not asked")),
+        }
+    }
+    if missing.is_empty() {
+        Ok(shards)
+    } else {
+        Err(missing)
+    }
 }
 
 /// The assignments some broker holds a Raft member of.
 fn raft_keys<'a>(
     assigned: &'a [Assignment],
-    answers: &[(String, BrokerOffsets)],
+    answers: &[(String, &BrokerOffsets)],
 ) -> std::collections::HashSet<Key<'a>> {
     assigned
         .iter()
@@ -423,24 +488,35 @@ fn raft_keys<'a>(
 }
 
 /// Each Raft shard's entry, from the broker that leads it at the highest
-/// term any member reported. A broker leading at a lower term may be deposed
-/// without knowing it, and its commit index may then miss a write the newer
-/// leader acknowledged.
+/// term any member reported, once a majority of each of the shard's voter
+/// sets answered (see [`majority_answered`]). A broker leading at a lower
+/// term may be deposed without knowing it, and its commit index may then
+/// miss a write the newer leader acknowledged.
 fn match_raft(
     assigned: &[&Assignment],
-    answers: &[(String, BrokerOffsets)],
+    answers: &[(String, &BrokerOffsets)],
 ) -> Result<Vec<PointShard>, Vec<String>> {
     let mut shards = Vec::new();
     let mut missing = Vec::new();
     for assignment in assigned {
         let key = assignment.key();
-        let newest = answers
+        let members: Vec<&RaftMember> = answers
             .iter()
             .flat_map(|(_, offsets)| &offsets.raft_members)
             .filter(|m| (&*m.tenant_id, &*m.namespace, &*m.kind, &*m.name, m.shard) == key)
-            .map(|m| m.term)
-            .max()
-            .unwrap_or(0);
+            .collect();
+        if let Err(short) = majority_answered(&members) {
+            missing.push(format!(
+                "{}/{}/{}/{} ({}): {short}",
+                assignment.tenant_id,
+                assignment.namespace,
+                assignment.stream,
+                assignment.shard,
+                assignment.kind
+            ));
+            continue;
+        }
+        let newest = members.iter().map(|m| m.term).max().unwrap_or(0);
         let led = answers.iter().find_map(|(broker, offsets)| {
             offsets
                 .shards
@@ -482,29 +558,34 @@ fn match_raft(
     }
 }
 
-/// Ask `leader` until it has an answer for every shard assigned to it.
-async fn collect_from(
-    http: &reqwest::Client,
-    leader: &str,
-    url: &str,
-    assigned: &[&Assignment],
-) -> Result<Vec<PointShard>> {
-    let mut backoff = BROKER_BACKOFF;
-    let mut last = String::new();
-    for attempt in 1..=BROKER_ATTEMPTS {
-        match fetch_offsets(http, url).await {
-            Ok(offsets) => match match_leader(leader, assigned, &offsets) {
-                Ok(shards) => return Ok(shards),
-                Err(missing) => last = missing.join(", "),
-            },
-            Err(err) => last = format!("{err:#}"),
-        }
-        if attempt < BROKER_ATTEMPTS {
-            tokio::time::sleep(backoff).await;
-            backoff *= 2;
+/// Whether the answering `members` of one shard include a majority of each
+/// voter set of its newest membership: the one from the latest entry any of
+/// them holds. Every answer is read after the barrier and terms only grow,
+/// so a majority intersects the voters that elected any leader that
+/// acknowledged a write before it, and the newest term is seen. A joint
+/// membership needs both majorities. A learner, or a copy that came back
+/// under a new id, is in no voter set and counts for nothing.
+fn majority_answered(members: &[&RaftMember]) -> Result<(), String> {
+    let Some(newest) = members
+        .iter()
+        .filter(|m| !m.voters.is_empty())
+        .max_by_key(|m| m.membership_at)
+    else {
+        return Err("no answering member reports its voters".to_string());
+    };
+    let answered: std::collections::BTreeSet<&Voter> =
+        members.iter().filter_map(|m| m.member.as_ref()).collect();
+    for set in &newest.voters {
+        let set: std::collections::BTreeSet<&Voter> = set.iter().collect();
+        let heard = set.intersection(&answered).count();
+        if heard * 2 <= set.len() {
+            return Err(format!(
+                "{heard} of its {} voters answered; a point needs a majority",
+                set.len()
+            ));
         }
     }
-    bail!("{leader} ({url}) had no committed offsets to give for: {last}")
+    Ok(())
 }
 
 async fn fetch_offsets(http: &reqwest::Client, url: &str) -> Result<BrokerOffsets> {
