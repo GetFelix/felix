@@ -30,6 +30,18 @@ on:
         description: "Diagnostic: after each cell, restart the broker on its data and time one more rep"
         type: boolean
         default: false
+      native:
+        description: "Diagnostic: measure the uninstrumented broker at light load instead"
+        type: boolean
+        default: false
+      cells:
+        description: "Diagnostic: comma-separated cells to measure (empty = all)"
+        type: string
+        default: ""
+      reps:
+        description: "Diagnostic: reps per cell"
+        type: string
+        default: "6"
 
 concurrency:
   group: ipm-${{ github.ref }}-${{ github.event_name == 'workflow_dispatch' && github.run_id || '' }}
@@ -40,6 +52,8 @@ permissions:
 
 env:
   CARGO_TERM_COLOR: always
+  # Diagnostic: line tables give callgrind_annotate inlined call sites.
+  CARGO_PROFILE_RELEASE_DEBUG: line-tables-only
 
 jobs:
   ipm:
@@ -85,12 +99,26 @@ jobs:
           cargo build --locked --release -p felix-loadgen
           cargo test --locked --release -p felix-cluster --test instructions_per_message --no-run
 
+      - name: Measure natively
+        if: inputs.native
+        run: |
+          sudo apt-get install -y -qq linux-tools-common "linux-tools-$(uname -r)" || sudo apt-get install -y -qq linux-tools-azure || true
+          sudo sysctl -w kernel.perf_event_paranoid=-1 || true
+          perf stat -e instructions,task-clock -- true || true
+          FELIX_IPM_OUT="$RUNNER_TEMP/ipm-result.json" \
+            cargo test --locked --release -p felix-cluster --test instructions_per_message \
+            broker_light_load_cpu -- --ignored --nocapture --exact
+          cp "$RUNNER_TEMP/ipm-result.json" ipm-result.json
+
       - name: Measure
+        if: ${{ !inputs.native }}
         run: |
           mkdir -p "$RUNNER_TEMP/cg"
           # Callgrind runs the broker tens of times slower than native, and the
           # harness's start-up waits are sized for native speed.
           export FELIX_TEST_TIMEOUT_SCALE=10
+          export FELIX_IPM_REPS="${{ inputs.reps || '6' }}"
+          if [ -n "${{ inputs.cells }}" ]; then export FELIX_IPM_CELLS="${{ inputs.cells }}"; fi
           export FELIX_IPM_RESTART_PROBE="${{ inputs.restart_probe && '1' || '0' }}"
           FELIX_BROKER_WRAPPER="valgrind --tool=callgrind --fair-sched=yes --callgrind-out-file=$RUNNER_TEMP/cg/cg.%p" \
             FELIX_IPM_DIR="$RUNNER_TEMP/cg" \
@@ -109,5 +137,26 @@ jobs:
           path: ipm-result.json
           if-no-files-found: warn
 
+      # Diagnostic: per-function cost of every callgrind part (one per rep).
+      - name: Annotate profiles
+        if: always()
+        run: |
+          mkdir -p prof
+          for f in "$RUNNER_TEMP"/cg/cg.*; do
+            b=$(basename "$f")
+            head -c 2000 "$f" | grep -E "^(cmd|part|desc|summary|totals):" > "prof/$b.head" || true
+            callgrind_annotate --inclusive=yes --threshold=99.9 "$f" 2>/dev/null | head -400 > "prof/$b.incl.txt" || true
+            callgrind_annotate --threshold=99.9 "$f" 2>/dev/null | head -300 > "prof/$b.self.txt" || true
+          done
+          tar czf prof/raw.tgz -C "$RUNNER_TEMP/cg" . || true
+
+      - name: Upload profiles
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: ipm-prof-${{ matrix.arch }}
+          path: prof
+
       - name: Compare with the baseline
+        if: ${{ !inputs.native }}
         run: python3 scripts/perf/ipm_gate.py check ipm-result.json

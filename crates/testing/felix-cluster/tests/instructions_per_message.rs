@@ -108,10 +108,15 @@ fn run_ingest(
     rate: Option<u64>,
     must_be_clean: bool,
 ) -> Result<Ingest> {
-    let node = &cluster.nodes[0];
+    let brokers = cluster
+        .nodes
+        .iter()
+        .map(|node| node.client_addr.to_string())
+        .collect::<Vec<_>>()
+        .join(",");
     let mut command = Command::new(loadgen_binary()?);
     command
-        .args(["--brokers", &node.client_addr.to_string()])
+        .args(["--brokers", &brokers])
         .args(["--tenant", &cluster.tenant_id])
         .args(["--namespace", &cluster.namespace])
         .args(["--token", &cluster.client_token()])
@@ -647,8 +652,24 @@ async fn broker_instructions_per_message() {
             .expect("set FELIX_IPM_DIR to the callgrind output directory"),
     );
     let mut cells = serde_json::Map::new();
+    // Diagnostic: FELIX_IPM_CELLS=b1 measures only the named cells.
+    let only = std::env::var("FELIX_IPM_CELLS").ok();
+    let wanted = |name: &str| {
+        only.as_deref()
+            .is_none_or(|o| o.split(',').any(|c| c == name))
+    };
     for cell in CELLS.chunks(1) {
+        if !wanted(cell[0].name) {
+            continue;
+        }
         cells.extend(measure_cells(&dir, reps, restart_probe, Vec::new(), cell).await);
+    }
+    if !wanted("b64_mqtt_idle") {
+        let result = serde_json::json!({
+            "arch": std::env::consts::ARCH, "commit": commit, "toolchain": toolchain, "cells": cells,
+        });
+        std::fs::write(&out, serde_json::to_string_pretty(&result).unwrap()).expect("write result");
+        return;
     }
     let mqtt_env = vec![
         (
@@ -665,6 +686,179 @@ async fn broker_instructions_per_message() {
         "cells": cells,
     });
     std::fs::write(&out, serde_json::to_string_pretty(&result).unwrap()).expect("write result");
+}
+
+/// The diagnostic ShardSleep counters a broker exports.
+const SLEEP_COUNTERS: [&str; 3] = [
+    "felix_diag_shard_sleep_soon_total",
+    "felix_diag_shard_sleep_yields_total",
+    "felix_diag_shard_sleep_timer_total",
+];
+
+fn node_counters(cluster: &Cluster) -> Vec<Vec<f64>> {
+    let handle = tokio::runtime::Handle::current();
+    cluster
+        .nodes
+        .iter()
+        .map(|node| {
+            SLEEP_COUNTERS
+                .iter()
+                .map(|name| {
+                    handle
+                        .block_on(cluster.metric(&node.node_id, name))
+                        .ok()
+                        .flatten()
+                        .unwrap_or(0.0)
+                })
+                .collect()
+        })
+        .collect()
+}
+
+/// `perf stat` over `pids` for `secs`, if perf runs here. Its raw CSV output.
+fn spawn_perf(pids: &[u32], secs: f64) -> Option<std::process::Child> {
+    let pids = pids
+        .iter()
+        .map(u32::to_string)
+        .collect::<Vec<_>>()
+        .join(",");
+    Command::new("perf")
+        .args([
+            "stat",
+            "-x",
+            ",",
+            "-e",
+            "instructions,task-clock",
+            "-p",
+            &pids,
+            "--",
+        ])
+        .args(["sleep", &format!("{secs:.1}")])
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .ok()
+}
+
+fn perf_output(child: Option<std::process::Child>) -> String {
+    child
+        .and_then(|child| child.wait_with_output().ok())
+        .map(|out| String::from_utf8_lossy(&out.stderr).into_owned())
+        .unwrap_or_else(|| "perf unavailable".to_string())
+}
+
+/// One native window: CPU of each broker, perf, and the sleep counters.
+fn native_window(
+    cluster: &Cluster,
+    label: &str,
+    secs: f64,
+    work: impl FnOnce() -> Result<u64>,
+) -> Result<serde_json::Value> {
+    let pids: Vec<u32> = cluster.nodes.iter().filter_map(|n| n.pid()).collect();
+    let before: Vec<ProcSample> = pids.iter().map(|&p| ProcSample::read(p)).collect();
+    let counters_before = node_counters(cluster);
+    let perf = spawn_perf(&pids, secs);
+    let started = Instant::now();
+    let acked = work()?;
+    let wall = started.elapsed().as_secs_f64();
+    let perf = perf_output(perf);
+    let after: Vec<ProcSample> = pids.iter().map(|&p| ProcSample::read(p)).collect();
+    let counters_after = node_counters(cluster);
+    let cpu_pct: Vec<f64> = before
+        .iter()
+        .zip(&after)
+        .map(|(b, a)| (a.cpu_s - b.cpu_s) / wall * 100.0)
+        .collect();
+    let deltas: Vec<Vec<f64>> = counters_before
+        .iter()
+        .zip(&counters_after)
+        .map(|(b, a)| b.iter().zip(a).map(|(b, a)| a - b).collect())
+        .collect();
+    eprintln!(
+        "native {label}: wall {wall:.1}s acked {acked} cpu% per broker {cpu_pct:.2?} sleep soon/yields/timer per broker {deltas:?}\nperf: {}",
+        perf.replace('\n', " | ")
+    );
+    Ok(serde_json::json!({
+        "label": label, "wall_s": wall, "acked": acked, "cpu_pct": cpu_pct,
+        "sleep_counters": deltas, "perf": perf,
+    }))
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[serial]
+#[ignore = "native light-load CPU; run by the Instructions per message workflow"]
+async fn broker_light_load_cpu() {
+    let out = std::env::var("FELIX_IPM_OUT").expect("set FELIX_IPM_OUT");
+    let window = Duration::from_secs(env_usize("FELIX_NATIVE_WINDOW_SECS", 20) as u64);
+    let mut results = Vec::new();
+    for rf in [1u32, 3] {
+        let stream = if rf == 1 {
+            StreamSpec::new(STREAM, SHARDS)
+        } else {
+            StreamSpec::quorum(STREAM, SHARDS, rf)
+        };
+        let cluster = Cluster::start(ClusterConfig {
+            nodes: rf as usize,
+            streams: vec![stream],
+            broker_env: vec![(
+                "FELIX_DURABLE_FSYNC_MODE".to_string(),
+                "periodic".to_string(),
+            )],
+            sync_interval_ms: 2000,
+            node_expiry: Duration::from_secs(15),
+            ..Default::default()
+        })
+        .await
+        .expect("start cluster");
+        let label = format!("rf{rf}");
+        let rows = tokio::task::spawn_blocking(move || -> Result<Vec<serde_json::Value>> {
+            let cluster = cluster;
+            run_ingest(&cluster, 1, 5_000, None, false)?;
+            let mut rows = Vec::new();
+            std::thread::sleep(Duration::from_secs(10));
+            rows.push(native_window(
+                &cluster,
+                &format!("{label} idle"),
+                window.as_secs_f64(),
+                || {
+                    std::thread::sleep(window);
+                    Ok(0)
+                },
+            )?);
+            for rate in [100u64, 1000] {
+                let total = (rate * window.as_secs()) as usize;
+                rows.push(native_window(
+                    &cluster,
+                    &format!("{label} paced {rate}/s"),
+                    window.as_secs_f64(),
+                    || Ok(run_ingest(&cluster, 1, total, Some(rate), false)?.acked),
+                )?);
+                std::thread::sleep(Duration::from_secs(6));
+                rows.push(native_window(
+                    &cluster,
+                    &format!("{label} after {rate}/s, idle"),
+                    window.as_secs_f64(),
+                    || {
+                        std::thread::sleep(window);
+                        Ok(0)
+                    },
+                )?);
+            }
+            let started = Instant::now();
+            let unpaced = run_ingest(&cluster, 1, 20_000, None, false)?;
+            eprintln!(
+                "native {label} unpaced: {:.0} msg/s in {:.1}s",
+                unpaced.msg_s,
+                started.elapsed().as_secs_f64()
+            );
+            Ok(rows)
+        })
+        .await
+        .expect("join")
+        .expect("native measurement");
+        results.extend(rows);
+    }
+    std::fs::write(&out, serde_json::to_string_pretty(&results).unwrap()).expect("write result");
 }
 
 /// Reps on a runner that slows down: the same per-message and per-second

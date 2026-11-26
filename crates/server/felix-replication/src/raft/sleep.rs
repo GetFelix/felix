@@ -38,9 +38,33 @@ pub(crate) enum ShardSleep {
     Timer(Pin<Box<tokio::time::Sleep>>),
 }
 
+// Diagnostic counters (#3204), exported once a second.
+static SOON: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static YIELDED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static TIMED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+fn export_counters() {
+    static STARTED: std::sync::Once = std::sync::Once::new();
+    STARTED.call_once(|| {
+        std::thread::spawn(|| {
+            use std::sync::atomic::Ordering::Relaxed;
+            loop {
+                metrics::counter!("felix_diag_shard_sleep_soon_total").absolute(SOON.load(Relaxed));
+                metrics::counter!("felix_diag_shard_sleep_yields_total")
+                    .absolute(YIELDED.load(Relaxed));
+                metrics::counter!("felix_diag_shard_sleep_timer_total")
+                    .absolute(TIMED.load(Relaxed));
+                std::thread::sleep(Duration::from_secs(1));
+            }
+        });
+    });
+}
+
 impl ShardSleep {
     pub(crate) fn until(deadline: TokioInstant) -> Self {
+        export_counters();
         if deadline < TokioInstant::now() + TICK {
+            SOON.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             Self::Soon {
                 deadline,
                 yields: 0,
@@ -76,11 +100,13 @@ impl Future for ShardSleep {
             }
             if *yields < YIELDS {
                 *yields += 1;
+                YIELDED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 cx.waker().wake_by_ref();
                 return Poll::Pending;
             }
             // Yielding on would spin, and under a paused test clock
             // nothing would ever move the clock.
+            TIMED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             *this = Self::timer(*deadline);
         }
         match this {
