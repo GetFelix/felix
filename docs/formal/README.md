@@ -213,7 +213,8 @@ newcomer as a top-up instead of undoing it; that case is a unit test only.
 | `SetChangesJoint` | Once a set change opened, a majority of the new set and of the set before it know the new set. A history invariant over consecutive sets, checked under `SetCheck`. |
 | `CountersOnSetMajority` | Under `Counters`, every acknowledged counter update is on a majority of the set the control plane records, as `AckedOnMajority` for the cache log: the old set while a change is pending, the new set after the flip. |
 | `QuorumReportNamesASuccessor` | Under `Quorum`, a report from a leader still serving names a follower that may take over, whenever a majority is still replicating. A liveness property in invariant form, checked in `FelixShard.cfg`. |
-| `ElectionSettles` | With the control plane down, elections end with a live leader that stays open and that no live broker has promised past. A temporal property (`<>[]LeaderSettled`), checked under `LiveSpec` in `FelixShardElectLive.cfg`. |
+| `ElectionSettles` | In `FelixRaftElect.tla`: once a majority of the voters stays up and connected, a leader among them is elected that none of them has outvoted, and it stays. A temporal property, checked under `LiveSpec` in `FelixRaftElectLive.cfg` and `FelixRaftElectLiveFaults.cfg`. The hybrid's version, with the control plane down, was checked in `FelixShardElectLive.cfg`, deleted with the hybrid. See [Raft election liveness](#raft-election-liveness). |
+| `EventuallyServes` (Raft) | In `FelixRaftElect.tla`: the same leader's blank entry is committed, so the shard is open, and every member of that majority follows it. Checked with `ElectionSettles`. |
 | `NoStandAgainstHeardLeader` | Nobody starts fencing against an open leader that a majority of its set still hears. An action property, checked with the liveness configurations. |
 | `OwnBallotCaughtUp` | The control plane's leader does not stay open at its generation while its own copy holds its own ballot above it. While it does, it never counts its own copy, so with one follower down nothing it writes is acknowledged (#1933). A temporal property, checked under `RenameSpec` in the `FelixShardElectRouteLag*.cfg` configurations. |
 | `OwnBallotFenceCaughtUp` | Nor does it stay fencing at its generation while its own copy holds its own ballot above it. The code's open takes the generation's ballot on its own copy, which refuses it, so it never opens there (#1940). Checked under `RenameSpec` in the `FelixShardElectRouteLagFence*.cfg` configurations. |
@@ -324,6 +325,10 @@ registered, run by a workflow, nor listed there.
 | `FelixRaftReachInstallCrash.cfg` | witness: a crash between an install's second and third write | violate `NeverCrashesMidInstall` |
 | `FelixRaftReachSnapshotReplace.cfg` | witness: a broker replaces a snapshot it stored | violate `NeverReplacesSnapshot` |
 | `FelixRaftReachDeliverFailover.cfg` | witness: two deliveries in a row from leaders of different terms | violate `NeverDeliversAcrossFailover` |
+| `FelixRaftElectLive.cfg` | `FelixRaftElect.tla`: three voters, one crash or cut, one timeout while a round is open, five terms, under weak fairness (`LiveSpec`, no symmetry) | pass `ElectionSettles` and `EventuallyServes` |
+| `FelixRaftElectLiveFaults.cfg` | the same with two faults and six terms | pass the same |
+| `FelixRaftElectLiveSplits.cfg` | no faults, three terms, timeouts not staggered (`Staggered = FALSE`) | violate `ElectionSettles`: all three pass their pre-vote before any stands, stand in one term, and do it again until no term is left |
+| `FelixRaftElectLiveNoOpen.cfg` | no faults, two terms, the commit of the blank entry not owed (`NoOpenSpec`) | violate `EventuallyServes`: a leader is elected and never opens |
 | `FelixRaftMembership.cfg` | `FelixRaftMembership.tla`: three voters and a newcomer, two terms, one write, two membership calls (a whole move), every rule on | pass `OneLeaderPerTerm`, `LogMatching`, `LeaderCompleteness`, `StateMachineSafety`, `AckedSurvive`, `NeverStops` (4.5M distinct states) |
 | `FelixRaftMembershipFailover.cfg` | the newcomer already a learner, two terms, no write, three calls: a joint change and a new leader's repeat of it | pass the same (7.1M distinct states) |
 | `FelixRaftMembershipTerms.cfg` | the newcomer already a learner, three terms, one write, one joint change | pass the same (91.4M distinct states, 109 min in CI) |
@@ -2503,6 +2508,52 @@ install takes no other step until the three writes land or it crashes. The
 `SnapshotTwoRenames` rule is dropped for a snapshot the broker builds, not
 for one it installs. The order of writes inside one adapter call is left to
 the simulator's power-loss crash points.
+
+### Raft election liveness
+
+`FelixRaft.tla` checks liveness only on states where nothing more can happen
+(`QuiescentServed`), and only for a leader that stands there: a state with no
+leader passes it, so it never asks whether one is elected.
+`FelixRaftSleep.tla`'s `QuiescentLed` does ask, on the same kind of state, but
+that model is deferred with sleep. `FelixRaftElect.tla` asks as temporal
+properties under weak fairness, for elections as openraft 0.10 runs them with
+Felix's timers: pre-vote, the leader lease, a restarted leader standing again
+at once (`enable_leader_restore`), and a randomised election timeout.
+
+- `ElectionSettles`: if from some point on a majority of the voters is up and
+  connected, the group ends up with a leader among them that none of them has
+  outvoted, and keeps it.
+- `EventuallyServes`: under the same condition that leader's blank entry is
+  committed, so the shard is open (`opened` in `raft/lead.rs`), and every
+  member of the majority follows it and holds its log.
+
+Faults are crashes and cuts, a cut being one member that reaches no other.
+There are at most `MaxFaults` of them. A crashed member may come back and a cut
+may heal, but nothing makes either happen. "Stays so" is the suffix after the
+last fault: who is up and connected never changes again. Weak fairness covers
+the election timeout, the pre-vote, each vote answer, the step to leader, each
+append and the commit of the blank entry. Each needs its member up, and each
+message needs both ends up and connected, so a crashed or cut member is owed
+nothing. Faults, restarts and heals are never owed.
+
+Time is abstract. An election timeout fires only while no leader the member
+would follow can reach it, since that leader's heartbeat comes first. The
+randomised timeout is what keeps rounds apart, and the model cannot say how
+long that takes. So with `Staggered` at most `Splits` timeouts in a behaviour
+fire while another round is open (a pre-vote that passed and has not stood, or
+a candidate that can still win). `FelixRaftElectLiveSplits.cfg` drops the rule:
+all three members pass their pre-vote before any of them stands, they split the
+term three ways, and they do it again until the terms run out. Pre-vote does
+not prevent that. It only stops a member nobody would elect from raising its
+term.
+
+Terms are bounded too, and a behaviour that uses them all with no leader
+fails the check, so the passing configurations allow more terms than their
+faults and the one split can spend. What they do not show: more than two faults,
+more than three voters, a partition other than one member cut off, lost or
+reordered messages, membership changes, and the lease's own timing, which
+`FelixRaftLease.tla` covers. The bound on splits is an assumption about the
+randomised timeout, not something the model proves.
 
 ### Raft membership change and the fence around it
 
