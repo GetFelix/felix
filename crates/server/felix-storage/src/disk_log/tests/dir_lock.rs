@@ -218,6 +218,52 @@ async fn an_aborted_task_with_an_extension_in_flight_lets_go_of_the_directory() 
     reopened.close().await.expect("close");
 }
 
+/// A reservation extension already reserving when a close runs holds the
+/// log for the length of its fallocate. The close waits for it, then lets
+/// go of the directory, so the reopen after the close succeeds.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_close_waits_out_an_extension_mid_reservation() {
+    let dir = tempdir().expect("tempdir");
+    let config = LogConfig {
+        preallocate_segments: true,
+        ..config(FsyncMode::None)
+    };
+    let log = DiskLog::open(dir.path(), "t/ns/orders/0", config.clone()).expect("open");
+    let (parked_tx, parked) = std::sync::mpsc::channel();
+    let (release, held) = std::sync::mpsc::channel();
+    *log.inner.hold_extension_apply.lock() = Some((parked_tx, held));
+    let payload = "x".repeat(64 * 1024);
+    while log.inner.hold_extension_apply.lock().is_some() {
+        log.append(&records(&[payload.as_str()]))
+            .await
+            .expect("append");
+    }
+    parked
+        .recv_timeout(std::time::Duration::from_secs(5))
+        .expect("an extension parked mid-reservation");
+
+    let close = tokio::spawn({
+        let log = log.clone();
+        async move { log.close().await }
+    });
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    assert!(
+        !close.is_finished(),
+        "the close finished while an extension was still reserving"
+    );
+    assert!(is_busy(DiskLog::open(
+        dir.path(),
+        "t/ns/orders/0",
+        config.clone()
+    )));
+    release.send(()).expect("release");
+    close.await.expect("task").expect("close");
+    let reopened =
+        DiskLog::open(dir.path(), "t/ns/orders/0", config).expect("reopen after the close");
+    reopened.close().await.expect("close");
+    drop(log);
+}
+
 const CHILD_DIR: &str = "FELIX_TEST_DIR_LOCK_CHILD";
 
 /// Run by [`a_holder_that_dies_without_closing_does_not_block_the_next_open`]

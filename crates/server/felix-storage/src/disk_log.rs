@@ -739,7 +739,7 @@ impl DiskLog {
             return Ok(());
         }
         self.inner.ensure_durable(offset).await?;
-        self.inner.check_healthy()
+        self.inner.check_not_poisoned()
     }
 
     /// Wait until a [`PendingAppend`] satisfies the configured fsync policy.
@@ -751,8 +751,9 @@ impl DiskLog {
         self.inner.ensure_durable(pending.durable_target).await?;
         // `ensure_durable` returns immediately when the target is already
         // covered, which skips the check inside `flush`. A rollover that failed
-        // since then still has to be reported rather than acknowledged.
-        self.inner.check_healthy()
+        // since then still has to be reported rather than acknowledged. A
+        // close does not undo the sync, so it is no failure here.
+        self.inner.check_not_poisoned()
     }
 
     /// As [`Self::commit`], except that under a mode that acknowledges before
@@ -763,11 +764,12 @@ impl DiskLog {
         if !self.inner.durability.acknowledges_before_sync() || pending.holds_trim {
             return self.commit(pending).await;
         }
+        let target = pending.durable_target;
         self.inner
             .durability
-            .reached(pending.durable_target, || self.inner.is_poisoned())
+            .reached(target, || self.inner.synced_or_stopped(target))
             .await;
-        self.inner.check_healthy()
+        self.inner.check_synced(target)
     }
 
     /// The tail once every append already handed to the append thread has
@@ -791,7 +793,7 @@ impl DiskLog {
             .durability
             .force_flush(|| Arc::clone(&self.inner).flush())
             .await?;
-        self.inner.check_healthy()
+        self.inner.check_not_poisoned()
     }
 
     /// Run one retention pass now, instead of waiting for the timer.
@@ -1361,6 +1363,8 @@ impl DiskLog {
         })
         .await
         .map_err(|err| StorageError::Io(std::io::Error::other(err)))?;
+        // A `synced` wait the final sync did not cover stops on the close.
+        self.inner.durability.wake();
         flushed.and(marked).map(|()| lock)
     }
 
@@ -1663,6 +1667,8 @@ impl DiskLog {
             hold_next_seal: Mutex::new(None),
             #[cfg(test)]
             hold_next_extension: Mutex::new(None),
+            #[cfg(test)]
+            hold_extension_apply: Mutex::new(None),
             extending: parking_lot::RwLock::new(()),
             #[cfg(test)]
             fail_extensions: std::sync::atomic::AtomicBool::new(false),
@@ -1821,8 +1827,9 @@ impl DiskLog {
     #[cfg(feature = "raft")]
     pub(crate) fn synced_now(&self, target: Offset) -> Option<Result<()>> {
         let inner = &self.inner;
-        (inner.durability.durable_upto() >= target || inner.is_poisoned())
-            .then(|| inner.check_healthy())
+        inner
+            .synced_or_stopped(target)
+            .then(|| inner.check_synced(target))
     }
 
     /// What [`Self::commit`] answers when it has nothing to wait for, and
@@ -1833,7 +1840,8 @@ impl DiskLog {
         if durability.acknowledges_before_sync() && !pending.holds_trim {
             return Some(Ok(()));
         }
-        (durability.durable_upto() >= pending.durable_target).then(|| self.inner.check_healthy())
+        (durability.durable_upto() >= pending.durable_target)
+            .then(|| self.inner.check_not_poisoned())
     }
 
     /// The read behind both `read_range` methods, and the tail it ran to.
@@ -2250,11 +2258,12 @@ impl AppendOnlyLog for DiskLog {
             // trim waits whatever the policy, so its floor applies by then.
             if !inner.durability.acknowledges_before_sync() || pending.holds_trim {
                 inner.ensure_durable(pending.durable_target).await?;
-                // Checked again after the wait: `check_healthy` at the top of
+                inner.hold_append_at(append::HoldAt::Answer);
+                // Checked again after the wait: the check at the top of
                 // `write_batch` only covers rollovers that had already failed
                 // when this append started, and this one may have been in flight
-                // across the failure.
-                inner.check_healthy()?;
+                // across the failure. Not for a close: the batch is on disk.
+                inner.check_not_poisoned()?;
             }
 
             metrics::histogram!(metrics_names::APPEND_DURATION_SECONDS)
@@ -2627,6 +2636,12 @@ struct LogInner {
     /// until the sender is used or dropped.
     #[cfg(test)]
     hold_next_extension: Mutex<Option<std::sync::mpsc::Receiver<()>>>,
+    /// Stops the next reservation extension once it holds the log, just
+    /// before it reserves: it says so on the sender, then waits on the
+    /// receiver.
+    #[cfg(test)]
+    hold_extension_apply:
+        Mutex<Option<(std::sync::mpsc::Sender<()>, std::sync::mpsc::Receiver<()>)>>,
     /// Held by a reservation extension while it runs. A close takes it after
     /// closing the segment set, so no extension touches a file once the close
     /// has let go of the directory.

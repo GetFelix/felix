@@ -310,6 +310,8 @@ pub(super) enum HoldAt {
     Write,
     /// After the batch is kept, before the caller hears of it.
     Reply,
+    /// After an `OnCommit` append's durability wait, before its answer.
+    Answer,
 }
 
 /// An append that failed, with its records when the caller can have them
@@ -624,6 +626,14 @@ impl LogInner {
                 return;
             }
             #[cfg(test)]
+            {
+                let hold = inner.hold_extension_apply.lock().take();
+                if let Some((parked, release)) = hold {
+                    let _ = parked.send(());
+                    let _ = release.recv();
+                }
+            }
+            #[cfg(test)]
             let applied = if inner.fail_extensions.load(Ordering::Acquire) {
                 Err(std::io::ErrorKind::StorageFull.into())
             } else {
@@ -737,7 +747,7 @@ impl LogInner {
     /// Bounded, so a test whose runtime the hold stalls fails instead of
     /// hanging.
     #[cfg(test)]
-    fn hold_append_at(&self, at: HoldAt) {
+    pub(super) fn hold_append_at(&self, at: HoldAt) {
         let release = {
             let mut hold = self.hold_next_append.lock();
             match hold.take() {
@@ -755,7 +765,7 @@ impl LogInner {
 
     #[cfg(not(test))]
     #[inline]
-    fn hold_append_at(&self, _at: HoldAt) {}
+    pub(super) fn hold_append_at(&self, _at: HoldAt) {}
 
     /// Sync the segment a background roll retired but has not sealed yet.
     ///
@@ -893,8 +903,29 @@ impl LogInner {
         Ok(())
     }
 
+    /// The answer for a write whose wait for `target` to be durable has
+    /// ended. A close since then does not fail a write it left on disk: a
+    /// reopen serves the record, and a client told otherwise would retry it
+    /// into a duplicate. Only a write still short of `target` hears Closed.
+    #[cfg(feature = "raft")]
+    pub(super) fn check_synced(&self, target: Offset) -> Result<()> {
+        if self.durability.durable_upto() >= target {
+            self.check_not_poisoned()
+        } else {
+            self.check_healthy()
+        }
+    }
+
+    /// Whether [`Self::check_synced`] has an answer for `target` yet.
+    #[cfg(feature = "raft")]
+    pub(super) fn synced_or_stopped(&self, target: Offset) -> bool {
+        self.durability.durable_upto() >= target
+            || self.is_poisoned()
+            || self.closed.load(Ordering::Acquire)
+    }
+
     /// [`Self::check_healthy`] without the closed check, for the state
-    /// writes a closing log still makes.
+    /// writes a closing log still makes, and for a write already durable.
     pub(super) fn check_not_poisoned(&self) -> Result<()> {
         if let Some(reason) = self.failure.lock().as_deref() {
             return Err(StorageError::Poisoned {
