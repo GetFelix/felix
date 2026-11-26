@@ -1389,8 +1389,7 @@ impl EngineShards for RaftShards {
             let mut placed = HashMap::default();
             for key in streams {
                 let wanted = match self.durable_rf(&key).await {
-                    // A stream or cache in memory has no log for a group to
-                    // run on.
+                    // A stream in memory has no log for a group to run on.
                     Some(Durable::No) => continue,
                     Some(Durable::Yes(wanted)) => wanted,
                     // Not registered here yet, so not known to be durable.
