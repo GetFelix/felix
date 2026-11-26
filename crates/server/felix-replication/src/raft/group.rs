@@ -1957,6 +1957,16 @@ impl Group {
         written: Written,
         timeout: Duration,
     ) -> impl Future<Output = Result<(), CommitError>> + Send + use<> {
+        self.await_commit_within(written, Some(timeout))
+    }
+
+    /// [`Self::await_commit`] with no deadline: only the commit, a lost
+    /// leadership or the member's stop ends it.
+    pub(crate) fn await_commit_within(
+        &self,
+        written: Written,
+        timeout: Option<Duration>,
+    ) -> impl Future<Output = Result<(), CommitError>> + Send + use<> {
         commit::committed(
             written,
             self.commits.clone(),

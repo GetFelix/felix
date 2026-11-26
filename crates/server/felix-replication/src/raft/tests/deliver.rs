@@ -291,6 +291,62 @@ async fn a_batch_committed_after_its_timeout_goes_out_before_the_next() {
     led.cluster.stop().await;
 }
 
+/// **Publishes dropped while their leader cannot commit leave no task or
+/// waiter behind once the shard closes.** The commit wait behind a delivery
+/// has no deadline, so nothing but the commit, a lost leadership or the
+/// member's stop ends it; a dropped publisher's delivery runs on a task of
+/// its own until one does. Closing the stream ends its release of the gaps
+/// they leave.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn publishes_dropped_on_a_leader_that_cannot_commit_end_when_the_shard_closes() {
+    let mut led = led().await;
+    let (broker, handle) = broker_on(&led.engine).await;
+    // Only the publishes run here, so its live tasks are theirs.
+    let publishers = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(1)
+        .enable_all()
+        .build()
+        .expect("runtime");
+
+    led.cut_followers();
+    let mut publishing = Vec::new();
+    for _ in 0..8 {
+        let proposed = led.engine.publish(
+            &broker,
+            &handle,
+            &shard(0),
+            None,
+            vec![Bytes::from_static(b"never")],
+            AckAt::Flushed,
+            AnswerAt::Commit,
+            PATIENCE,
+        );
+        publishing.push(publishers.spawn(proposed.expect("proposed").complete()));
+    }
+    // The publishers' connections drop before any commit.
+    for publish in &publishing {
+        publish.abort();
+    }
+    for publish in publishing {
+        assert!(publish.await.expect_err("aborted").is_cancelled());
+    }
+    let metrics = publishers.metrics();
+    assert!(
+        metrics.num_alive_tasks() > 0,
+        "the deliveries ended before the shard closed"
+    );
+
+    let runtime = led.cluster.runtime(&led.leader.broker);
+    assert!(runtime.close(&shard(0)).await, "the shard was open");
+    // As a broker closes a shard: its group, then the stream's state, whose
+    // release of held batches ends with it.
+    let close = broker.close_stream_shard("t", "ns", "orders", 0, None);
+    close.await.expect("closed");
+    eventually(|| (metrics.num_alive_tasks() == 0).then_some(())).await;
+    publishers.shutdown_background();
+    led.cluster.stop().await;
+}
+
 /// **Offsets the log used for entries holding no record reach subscribers
 /// as skipped.** A new group's first entries are its membership and the
 /// leader's blank entry; reported as nothing, the first record would arrive

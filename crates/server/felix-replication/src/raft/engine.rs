@@ -176,6 +176,22 @@ impl RaftEngine {
         async move { committed?.await }
     }
 
+    /// [`Self::await_commit`] with no deadline. It still ends when this
+    /// broker stops leading the term that wrote `written`, or the shard's
+    /// member here stops or closes.
+    pub(crate) fn await_commit_unbounded(
+        &self,
+        shard: &ShardKey,
+        written: Written,
+    ) -> impl Future<Output = Result<(), CommitError>> + Send + use<> {
+        let committed = self
+            .runtime
+            .group(shard)
+            .map(|group| group.await_commit_within(written, None))
+            .ok_or_else(|| propose::lost(NO_GROUP));
+        async move { committed?.await }
+    }
+
     /// Wait until a `Quorum` write of `written`, as [`Self::propose`]
     /// returned it, may be acknowledged. `ack` is the batch's.
     ///
