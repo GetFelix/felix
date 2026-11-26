@@ -9,32 +9,17 @@
 //!
 //! Run with `cargo test -p felix-broker-service --test kafka_kcat`.
 
-use std::collections::HashMap;
-use std::net::SocketAddr;
+#[path = "kafka_kcat/fixture.rs"]
+mod fixture;
+
 use std::path::Path;
 use std::process::Output;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use base64::Engine;
-use base64::engine::general_purpose::URL_SAFE_NO_PAD;
-use bytes::Bytes;
-use ed25519_dalek::SigningKey;
-use felix_authz::{
-    FelixTokenIssuer, Jwk, Jwks, KeyUse, TenantId, TenantKeyCache, TenantKeyMaterial,
-};
-use felix_broker::{Broker, DurableStorage, StreamMetadata};
-use felix_broker_service::config::KafkaListenerConfig;
-use felix_broker_service::serving::auth::{BrokerAuth, ControlPlaneKeyStore};
-use felix_broker_service::serving::kafka::{BrokerCluster, KafkaListener, tls_config};
-use felix_storage::EphemeralCache;
-use felix_storage::log::{FsyncMode, LogConfig, LogRecord, RecordMark};
-use jsonwebtoken::Algorithm;
-use rustls::pki_types::{PrivateKeyDer, PrivatePkcs8KeyDer};
-use tempfile::TempDir;
+use fixture::{Felix, Fixture, Listener};
+use serial_test::serial;
 use tokio::process::Command;
-use tokio_util::sync::CancellationToken;
-use tokio_util::task::TaskTracker;
 
 // Fully qualified: Podman may refuse a short name it has to guess at.
 const KCAT_IMAGE: &str = "docker.io/edenhill/kcat:1.7.1";
@@ -44,51 +29,7 @@ const SHARDS: u32 = 3;
 /// Generous: the image may run under emulation, and each kcat is a container.
 const KCAT_BOUND: Duration = Duration::from_secs(60);
 
-struct Felix {
-    broker: Arc<Broker>,
-    token: String,
-    /// `host:port` a kcat container dials.
-    plain: String,
-    tls: String,
-    anonymous: String,
-    certs: TempDir,
-    _data: TempDir,
-    shutdown: CancellationToken,
-}
-
-impl Drop for Felix {
-    fn drop(&mut self) {
-        self.shutdown.cancel();
-    }
-}
-
 impl Felix {
-    async fn publish(&self, shard: u32, values: &[&str]) {
-        let payloads: Vec<Bytes> = values
-            .iter()
-            .map(|v| Bytes::copy_from_slice(v.as_bytes()))
-            .collect();
-        self.broker
-            .publish_batch(TENANT, "orders", "created", shard, &payloads)
-            .await
-            .expect("publish");
-    }
-
-    /// Every record of one shard, from the broker's log.
-    async fn log_records(&self, shard: u32) -> Vec<LogRecord> {
-        let handle = self
-            .broker
-            .resolve_stream_handle(TENANT, "orders", "created", shard)
-            .await
-            .expect("handle");
-        handle
-            .log()
-            .expect("durable")
-            .read_from(0, usize::MAX)
-            .await
-            .expect("read")
-    }
-
     /// kcat against the SASL/PLAIN listener, with this tenant's token.
     async fn kcat(&self, args: &[&str]) -> Output {
         self.kcat_with_input(args, "").await
@@ -96,22 +37,63 @@ impl Felix {
 
     /// [`Self::kcat`], with `input` on kcat's stdin: what `-P` produces.
     async fn kcat_with_input(&self, args: &[&str], input: &str) -> Output {
+        let username = format!("sasl.username={TENANT}");
+        let password = format!("sasl.password={}", self.token);
         let mut all = vec![
             "-b",
-            self.plain.as_str(),
+            self.plain(),
             "-X",
             "security.protocol=SASL_PLAINTEXT",
             "-X",
             "sasl.mechanisms=PLAIN",
             "-X",
-            "sasl.username=t1",
+            username.as_str(),
+            "-X",
+            password.as_str(),
         ];
-        let password = format!("sasl.password={}", self.token);
-        all.extend(["-X", password.as_str()]);
         all.extend_from_slice(args);
         kcat_fed(&all, None, input).await
     }
 }
+
+/// Run a test body against both fixtures: `<name>::on_a_local_broker` and
+/// `<name>::on_a_raft_shard`. The Raft runs each start a cluster, so they take
+/// turns.
+macro_rules! on_both {
+    ($($name:ident),* $(,)?) => {$(
+        mod $name {
+            use super::*;
+
+            #[tokio::test]
+            async fn on_a_local_broker() {
+                super::$name(Fixture::Local).await;
+            }
+
+            #[serial(raft_fixture)]
+            #[tokio::test]
+            async fn on_a_raft_shard() {
+                super::$name(Fixture::RaftShard).await;
+            }
+        }
+    )*};
+}
+
+on_both!(
+    kcat_lists_the_topic_with_a_partition_per_shard,
+    kcat_consumes_every_partition_from_the_beginning_and_from_an_offset,
+    kcat_queries_offsets,
+    kcat_receives_a_record_published_while_its_fetch_waits,
+    kcat_reads_over_sasl_ssl_and_anonymously_when_allowed,
+    kcat_with_a_bad_token_fails_with_the_reason,
+    kcat_joining_a_group_exits_with_a_readable_error,
+    kcat_produces_and_felix_and_kcat_read_the_same_records,
+    kcat_produces_with_every_compression_codec,
+    kcat_produces_with_acks_zero_one_and_all,
+    kcat_produces_idempotently,
+    kcat_produces_keyed_records_and_the_value_is_kept,
+    kcat_keys_and_headers_are_kept_when_the_listener_opts_in,
+    kcat_transactional_producer_is_refused_readably,
+);
 
 /// The same choice as `felix_cluster::container::engine`, which this crate
 /// cannot depend on.
@@ -200,184 +182,6 @@ fn stderr(output: &Output) -> String {
     String::from_utf8_lossy(&output.stderr).into_owned()
 }
 
-fn is_addr_in_use(err: &anyhow::Error) -> bool {
-    err.chain().any(|cause| {
-        cause
-            .downcast_ref::<std::io::Error>()
-            .is_some_and(|io| io.kind() == std::io::ErrorKind::AddrInUse)
-    })
-}
-
-fn free_port() -> u16 {
-    std::net::TcpListener::bind("0.0.0.0:0")
-        .expect("bind")
-        .local_addr()
-        .expect("addr")
-        .port()
-}
-
-async fn start() -> Felix {
-    start_with(false).await
-}
-
-/// `record_headers` opts the listener in to storing keys and headers, and
-/// makes the broker accept them.
-async fn start_with(record_headers: bool) -> Felix {
-    let data = tempfile::tempdir().expect("dir");
-    let storage = DurableStorage::open(
-        data.path(),
-        LogConfig {
-            fsync_mode: FsyncMode::None,
-            preallocate_segments: false,
-            ..LogConfig::default()
-        },
-    )
-    .expect("storage");
-    let broker = Arc::new(Broker::new(EphemeralCache::new().into()).with_durable_storage(storage));
-    if record_headers {
-        broker.record_headers_when(|| true);
-        broker.read_record_headers_when(|| true);
-    }
-    broker.register_tenant(TENANT).await.expect("tenant");
-    broker
-        .register_namespace(TENANT, "orders")
-        .await
-        .expect("ns");
-    broker
-        .register_stream(
-            TENANT,
-            "orders",
-            "created",
-            StreamMetadata {
-                durable: true,
-                shards: SHARDS,
-                ..Default::default()
-            },
-        )
-        .await
-        .expect("stream");
-
-    let (auth, token) = auth_and_token();
-    let cert = rcgen::generate_simple_self_signed(vec!["localhost".into()]).expect("cert");
-    let certs = tempfile::tempdir().expect("certs");
-    std::fs::write(certs.path().join("ca.pem"), cert.cert.pem()).expect("write cert");
-    let tls = tls_config(
-        cert.cert.der().clone(),
-        PrivateKeyDer::from(PrivatePkcs8KeyDer::from(cert.signing_key.serialize_der())),
-    )
-    .expect("tls");
-
-    let shutdown = CancellationToken::new();
-    let connections = TaskTracker::new();
-    let mut addrs = Vec::new();
-    for (tls_on, anonymous) in [(false, None), (true, None), (false, Some(TENANT))] {
-        // The advertised address has to name the port before the bind, so the
-        // port comes from a probe socket that is closed again. Another test can
-        // take it in between; pick a fresh one when that happens.
-        let mut attempt = 0;
-        let (listener, advertise) = loop {
-            attempt += 1;
-            let port = free_port();
-            let advertise = format!("{}:{port}", container_host());
-            let config = KafkaListenerConfig {
-                listen: SocketAddr::from(([0, 0, 0, 0], port)),
-                advertise: advertise.clone(),
-                tls: tls_on,
-                anonymous_tenant: anonymous.map(str::to_string),
-                default_namespace: None,
-                max_connections: 64,
-                max_connections_per_ip: 64,
-                auth_timeout_ms: 10_000,
-                record_headers,
-            };
-            let cluster = BrokerCluster::new(
-                Arc::clone(&auth),
-                Arc::new(felix_broker_service::shards::routing::StreamEngine::default()),
-                None,
-                "felix",
-                &advertise,
-            )
-            .expect("cluster");
-            match KafkaListener::bind(
-                &config,
-                Some(Arc::clone(&tls)),
-                Arc::clone(&broker),
-                Arc::new(cluster),
-                "felix-test".to_string(),
-            )
-            .await
-            {
-                Ok(listener) => break (listener, advertise),
-                Err(err) if attempt < 5 && is_addr_in_use(&err) => continue,
-                Err(err) => panic!("bind: {err:?}"),
-            }
-        };
-        tokio::spawn(listener.serve(shutdown.clone(), connections.clone()));
-        addrs.push(advertise);
-    }
-    let anonymous = addrs.pop().expect("anonymous");
-    let tls = addrs.pop().expect("tls");
-    let plain = addrs.pop().expect("plain");
-    Felix {
-        broker,
-        token,
-        plain,
-        tls,
-        anonymous,
-        certs,
-        _data: data,
-        shutdown,
-    }
-}
-
-/// A broker auth that knows one tenant key, and a token signed by it that may
-/// read and write the tenant's streams.
-fn auth_and_token() -> (Arc<BrokerAuth>, String) {
-    let private_key = [9u8; 32];
-    let public_key = SigningKey::from_bytes(&private_key)
-        .verifying_key()
-        .to_bytes();
-    let jwks = Jwks {
-        keys: vec![Jwk {
-            kty: "OKP".to_string(),
-            kid: "k1".to_string(),
-            alg: "EdDSA".to_string(),
-            use_field: KeyUse::Sig,
-            crv: Some("Ed25519".to_string()),
-            x: Some(URL_SAFE_NO_PAD.encode(public_key)),
-        }],
-    };
-    let key_store = Arc::new(ControlPlaneKeyStore::new(
-        "http://127.0.0.1:1".to_string(),
-        Arc::new(TenantKeyCache::default()),
-    ));
-    key_store.insert_jwks(&TenantId::new(TENANT), jwks.clone());
-    let material = TenantKeyMaterial {
-        kid: "k1".to_string(),
-        alg: Algorithm::EdDSA,
-        private_key,
-        public_key,
-        jwks,
-    };
-    let issuer = FelixTokenIssuer::new(
-        "felix-auth",
-        "felix-broker",
-        Duration::from_secs(900),
-        Arc::new(HashMap::from([(TENANT.to_string(), material)])),
-    );
-    let token = issuer
-        .mint(
-            &TenantId::new(TENANT),
-            "p:kafka-test",
-            vec![
-                "stream.subscribe:stream:t1/orders/*".to_string(),
-                "stream.publish:stream:t1/orders/*".to_string(),
-            ],
-        )
-        .expect("mint");
-    (Arc::new(BrokerAuth::with_key_store(key_store)), token)
-}
-
 /// `partition:offset:value` lines, sorted.
 fn records(output: &Output) -> Vec<String> {
     let mut lines: Vec<String> = stdout(output)
@@ -389,12 +193,11 @@ fn records(output: &Output) -> Vec<String> {
     lines
 }
 
-#[tokio::test]
-async fn kcat_lists_the_topic_with_a_partition_per_shard() {
+async fn kcat_lists_the_topic_with_a_partition_per_shard(fixture: Fixture) {
     if !kcat_available().await {
         return;
     }
-    let felix = start().await;
+    let felix = Felix::start(fixture).await;
     let output = felix.kcat(&["-L", "-t", TOPIC]).await;
     let text = stdout(&output);
     assert!(output.status.success(), "{text}\n{}", stderr(&output));
@@ -403,17 +206,16 @@ async fn kcat_lists_the_topic_with_a_partition_per_shard() {
         "{text}"
     );
     assert!(
-        text.contains(&felix.plain),
+        text.contains(felix.plain()),
         "the broker's advertised address: {text}"
     );
 }
 
-#[tokio::test]
-async fn kcat_consumes_every_partition_from_the_beginning_and_from_an_offset() {
+async fn kcat_consumes_every_partition_from_the_beginning_and_from_an_offset(fixture: Fixture) {
     if !kcat_available().await {
         return;
     }
-    let felix = start().await;
+    let felix = Felix::start(fixture).await;
     felix.publish(0, &["a0", "a1"]).await;
     felix.publish(1, &["b0", "b1", "b2"]).await;
     felix.publish(2, &["c0"]).await;
@@ -473,12 +275,11 @@ async fn kcat_consumes_every_partition_from_the_beginning_and_from_an_offset() {
     assert!(records(&output).is_empty(), "{:?}", records(&output));
 }
 
-#[tokio::test]
-async fn kcat_queries_offsets() {
+async fn kcat_queries_offsets(fixture: Fixture) {
     if !kcat_available().await {
         return;
     }
-    let felix = start().await;
+    let felix = Felix::start(fixture).await;
     felix.publish(1, &["b0", "b1", "b2"]).await;
     let latest = format!("{TOPIC}:1:-1");
     let output = felix.kcat(&["-Q", "-t", latest.as_str()]).await;
@@ -494,12 +295,11 @@ async fn kcat_queries_offsets() {
     );
 }
 
-#[tokio::test]
-async fn kcat_receives_a_record_published_while_its_fetch_waits() {
+async fn kcat_receives_a_record_published_while_its_fetch_waits(fixture: Fixture) {
     if !kcat_available().await {
         return;
     }
-    let felix = Arc::new(start().await);
+    let felix = Arc::new(Felix::start(fixture).await);
     felix.publish(0, &["old"]).await;
     let consumer = {
         let felix = Arc::clone(&felix);
@@ -537,18 +337,19 @@ async fn kcat_receives_a_record_published_while_its_fetch_waits() {
     assert!(published.elapsed() < Duration::from_secs(3));
 }
 
-#[tokio::test]
-async fn kcat_reads_over_sasl_ssl_and_anonymously_when_allowed() {
+async fn kcat_reads_over_sasl_ssl_and_anonymously_when_allowed(fixture: Fixture) {
     if !kcat_available().await {
         return;
     }
-    let felix = start().await;
+    let mut felix = Felix::start(fixture).await;
     felix.publish(2, &["c0"]).await;
+    let username = format!("sasl.username={TENANT}");
     let password = format!("sasl.password={}", felix.token);
+    let tls = felix.listener(Listener::Tls).await;
     let output = kcat(
         &[
             "-b",
-            felix.tls.as_str(),
+            tls.as_str(),
             "-X",
             "security.protocol=SASL_SSL",
             "-X",
@@ -556,7 +357,7 @@ async fn kcat_reads_over_sasl_ssl_and_anonymously_when_allowed() {
             "-X",
             "sasl.mechanisms=PLAIN",
             "-X",
-            "sasl.username=t1",
+            username.as_str(),
             "-X",
             password.as_str(),
             "-C",
@@ -571,16 +372,18 @@ async fn kcat_reads_over_sasl_ssl_and_anonymously_when_allowed() {
             "-f",
             "%o:%s\\n",
         ],
-        Some(felix.certs.path()),
+        Some(felix.certs()),
     )
     .await;
     assert!(output.status.success(), "{}", stderr(&output));
     assert_eq!(records(&output), ["0:c0"]);
 
+    let anonymous = felix.listener(Listener::Anonymous).await;
+
     let output = kcat(
         &[
             "-b",
-            felix.anonymous.as_str(),
+            anonymous.as_str(),
             "-C",
             "-t",
             TOPIC,
@@ -600,16 +403,15 @@ async fn kcat_reads_over_sasl_ssl_and_anonymously_when_allowed() {
     assert_eq!(records(&output), ["0:c0"]);
 }
 
-#[tokio::test]
-async fn kcat_with_a_bad_token_fails_with_the_reason() {
+async fn kcat_with_a_bad_token_fails_with_the_reason(fixture: Fixture) {
     if !kcat_available().await {
         return;
     }
-    let felix = start().await;
+    let felix = Felix::start(fixture).await;
     let output = kcat(
         &[
             "-b",
-            felix.plain.as_str(),
+            felix.plain(),
             "-X",
             "security.protocol=SASL_PLAINTEXT",
             "-X",
@@ -630,12 +432,11 @@ async fn kcat_with_a_bad_token_fails_with_the_reason() {
     assert!(text.contains("token rejected"), "{text}");
 }
 
-#[tokio::test]
-async fn kcat_joining_a_group_exits_with_a_readable_error() {
+async fn kcat_joining_a_group_exits_with_a_readable_error(fixture: Fixture) {
     if !kcat_available().await {
         return;
     }
-    let felix = start().await;
+    let felix = Felix::start(fixture).await;
     let started = Instant::now();
     let output = felix.kcat(&["-G", "kcat-group", TOPIC]).await;
     let text = format!("{}{}", stdout(&output), stderr(&output));
@@ -656,10 +457,10 @@ fn produce_args<'a>(partition: &'a str, extra: &[&'a str]) -> Vec<&'a str> {
     args
 }
 
-/// `offset:value` for every record in one shard, read with Felix's own log.
+/// `offset:value` for every record in one shard, as Felix stored it.
 async fn logged(felix: &Felix, shard: u32) -> Vec<String> {
     felix
-        .log_records(shard)
+        .stored(shard)
         .await
         .into_iter()
         .map(|record| {
@@ -695,12 +496,11 @@ async fn consume(felix: &Felix, partition: &str) -> Vec<String> {
 /// **What kcat produces, Felix and kcat read back at the same offsets.** A
 /// record already published through Felix keeps offset 0; the produced ones
 /// follow it.
-#[tokio::test]
-async fn kcat_produces_and_felix_and_kcat_read_the_same_records() {
+async fn kcat_produces_and_felix_and_kcat_read_the_same_records(fixture: Fixture) {
     if !kcat_available().await {
         return;
     }
-    let felix = start().await;
+    let felix = Felix::start(fixture).await;
     felix.publish(0, &["felix"]).await;
     let output = felix
         .kcat_with_input(&produce_args("0", &[]), "a\nb\nc\n")
@@ -711,12 +511,11 @@ async fn kcat_produces_and_felix_and_kcat_read_the_same_records() {
     assert_eq!(consume(&felix, "0").await, expected);
 }
 
-#[tokio::test]
-async fn kcat_produces_with_every_compression_codec() {
+async fn kcat_produces_with_every_compression_codec(fixture: Fixture) {
     if !kcat_available().await {
         return;
     }
-    let felix = start().await;
+    let felix = Felix::start(fixture).await;
     let mut expected = Vec::new();
     for codec in ["gzip", "snappy", "lz4", "zstd"] {
         let setting = format!("compression.codec={codec}");
@@ -737,12 +536,11 @@ async fn kcat_produces_with_every_compression_codec() {
 
 /// acks=0, 1 and all each land their records; only 1 and all were answered,
 /// and kcat does not care either way.
-#[tokio::test]
-async fn kcat_produces_with_acks_zero_one_and_all() {
+async fn kcat_produces_with_acks_zero_one_and_all(fixture: Fixture) {
     if !kcat_available().await {
         return;
     }
-    let felix = start().await;
+    let felix = Felix::start(fixture).await;
     for acks in ["0", "1", "all"] {
         let setting = format!("acks={acks}");
         let output = felix
@@ -762,12 +560,11 @@ async fn kcat_produces_with_acks_zero_one_and_all() {
 /// An idempotent kcat gets a producer id and its records go through the
 /// log's producer sequences: each record carries the id and the next
 /// sequence, which is what lets a re-send be recognised on any leader.
-#[tokio::test]
-async fn kcat_produces_idempotently() {
+async fn kcat_produces_idempotently(fixture: Fixture) {
     if !kcat_available().await {
         return;
     }
-    let felix = start().await;
+    let felix = Felix::start(fixture).await;
     let input: String = (0..50).map(|i| format!("r{i}\n")).collect();
     let output = felix
         .kcat_with_input(
@@ -776,30 +573,34 @@ async fn kcat_produces_idempotently() {
         )
         .await;
     assert!(output.status.success(), "{}", stderr(&output));
-    let stored = felix.log_records(0).await;
+    let stored = felix.stored(0).await;
     assert_eq!(stored.len(), 50, "each record once");
-    let mut producer = None;
     for (sequence, record) in stored.iter().enumerate() {
         assert_eq!(record.payload, format!("r{sequence}").as_bytes());
-        let RecordMark::Opens(batch) = record.mark else {
+    }
+    // No client is shown producer marks, so on a cluster only the records
+    // are checked here. A Raft shard's sequences are checked by
+    // `an_idempotent_produce_is_one_proposal` (src/serving/kafka/tests.rs).
+    let Some(marks) = felix.producer_marks(0).await else {
+        return;
+    };
+    let mut producer = None;
+    for (sequence, (record, mark)) in stored.iter().zip(marks).enumerate() {
+        let Some((producer_id, batch_sequence)) = mark else {
             panic!("record {} carries no producer mark", record.offset);
         };
-        assert_eq!(batch.sequence, sequence as u64);
-        assert_eq!(
-            *producer.get_or_insert(batch.producer_id),
-            batch.producer_id
-        );
+        assert_eq!(batch_sequence, sequence as u64);
+        assert_eq!(*producer.get_or_insert(producer_id), producer_id);
     }
 }
 
 /// kcat -K splits each line into a key and a value. The listener has not opted
 /// in to keys and headers, so the key is dropped and the value kept.
-#[tokio::test]
-async fn kcat_produces_keyed_records_and_the_value_is_kept() {
+async fn kcat_produces_keyed_records_and_the_value_is_kept(fixture: Fixture) {
     if !kcat_available().await {
         return;
     }
-    let felix = start().await;
+    let felix = Felix::start(fixture).await;
     let output = felix
         .kcat_with_input(&produce_args("1", &["-K", ":"]), "k1:v1\nk2:v2\n")
         .await;
@@ -826,12 +627,11 @@ async fn kcat_produces_keyed_records_and_the_value_is_kept() {
 /// **With the listener opted in, a key and headers survive kcat's round
 /// trip**: -K, -H on the way in, %k and %h on the way out, and a header with no
 /// value comes back empty.
-#[tokio::test]
-async fn kcat_keys_and_headers_are_kept_when_the_listener_opts_in() {
+async fn kcat_keys_and_headers_are_kept_when_the_listener_opts_in(fixture: Fixture) {
     if !kcat_available().await {
         return;
     }
-    let felix = start_with(true).await;
+    let felix = Felix::start_with(fixture, true).await;
     let output = felix
         .kcat_with_input(
             &produce_args("1", &["-K", ":", "-H", "trace=t-1", "-H", "nil"]),
@@ -864,12 +664,11 @@ async fn kcat_keys_and_headers_are_kept_when_the_listener_opts_in() {
 }
 
 /// A transactional producer fails fast, and says why.
-#[tokio::test]
-async fn kcat_transactional_producer_is_refused_readably() {
+async fn kcat_transactional_producer_is_refused_readably(fixture: Fixture) {
     if !kcat_available().await {
         return;
     }
-    let felix = start().await;
+    let felix = Felix::start(fixture).await;
     let started = Instant::now();
     let output = felix
         .kcat_with_input(
