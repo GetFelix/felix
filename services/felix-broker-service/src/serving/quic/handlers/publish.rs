@@ -308,6 +308,24 @@ pub(crate) enum PublishReply {
 }
 
 impl PublishReply {
+    /// Have the client answered with `timed_out(timeout)` if the publish
+    /// has not settled `timeout` from now, with no timer of its own. False
+    /// when this reply cannot, and the caller must bound the wait itself.
+    pub(crate) fn answer_within(
+        &self,
+        timeout: Duration,
+        timed_out: fn(Duration) -> anyhow::Error,
+    ) -> bool {
+        match self {
+            PublishReply::Ack(reply) => {
+                reply.answer_within(timeout, timed_out);
+                true
+            }
+            #[cfg(test)]
+            PublishReply::Channel(_) => false,
+        }
+    }
+
     pub(crate) fn send(self, result: PublishResult) {
         match self {
             PublishReply::Ack(reply) => reply.send(result),

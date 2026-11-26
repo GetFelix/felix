@@ -1,0 +1,1 @@
+- The broker-to-broker peer pool no longer allocates a key string on every request (#3229). A pooled peer is found by a borrowed lookup, and the key is built only when a peer is first seen.

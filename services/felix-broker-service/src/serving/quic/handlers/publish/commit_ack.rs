@@ -10,6 +10,10 @@
 //! in the order publishes are queued and all have the same length, so the
 //! queue is already in deadline order.
 //!
+//! A publish whose engine would otherwise arm a timer of its own to answer it
+//! late (a Raft shard's quorum wait) is given that deadline here instead, in a
+//! second queue swept the same way, and answered with the engine's own error.
+//!
 //! Each answer is sent at most once. The publish's settle, its timeout, and the
 //! control loop's own refusals race for it through `Slot::state`.
 
@@ -63,6 +67,8 @@ struct Inner {
     waiters: Arc<Semaphore>,
     timeout: Duration,
     deadlines: Mutex<VecDeque<Deadline>>,
+    /// Deadlines the publish path set, each answered with its own error.
+    commit_deadlines: Mutex<VecDeque<CommitDeadline>>,
     sweeper_idle: AtomicBool,
     wake: Notify,
     closed: AtomicBool,
@@ -71,6 +77,13 @@ struct Inner {
 struct Deadline {
     at: Instant,
     slot: Arc<Slot>,
+}
+
+struct CommitDeadline {
+    at: Instant,
+    slot: Arc<Slot>,
+    timeout: Duration,
+    timed_out: fn(Duration) -> anyhow::Error,
 }
 
 struct Slot {
@@ -137,6 +150,7 @@ impl CommitAcks {
                 waiters,
                 timeout,
                 deadlines: Mutex::new(VecDeque::new()),
+                commit_deadlines: Mutex::new(VecDeque::new()),
                 sweeper_idle: AtomicBool::new(false),
                 wake: Notify::new(),
                 closed: AtomicBool::new(false),
@@ -222,7 +236,10 @@ impl CommitAcks {
                 inner.sweeper_idle.store(true, Ordering::SeqCst);
                 // Re-checked after going idle: an arm in between saw the
                 // sweeper busy and did not wake it.
-                if inner.deadlines.lock().is_empty() && !inner.closed.load(Ordering::SeqCst) {
+                if inner.deadlines.lock().is_empty()
+                    && inner.commit_deadlines.lock().is_empty()
+                    && !inner.closed.load(Ordering::SeqCst)
+                {
                     tokio::select! {
                         _ = inner.wake.notified() => {}
                         _ = cancelled(&mut cancel_rx) => return,
@@ -231,8 +248,14 @@ impl CommitAcks {
                 inner.sweeper_idle.store(false, Ordering::SeqCst);
                 continue;
             }
+            // An engine's deadline is answered when it passes, as the
+            // engine's own timer would have, not up to a tick late.
+            let mut wake = Instant::now() + tick;
+            if let Some(front) = inner.commit_deadlines.lock().front() {
+                wake = wake.min(front.at);
+            }
             tokio::select! {
-                _ = tokio::time::sleep(tick) => {}
+                _ = tokio::time::sleep_until(wake) => {}
                 _ = cancelled(&mut cancel_rx) => return,
             }
         }
@@ -263,6 +286,7 @@ impl Inner {
             }
             !deadlines.is_empty()
         };
+        let commits_left = self.sweep_commits(now);
         for slot in expired {
             if slot.take(|state| state == ARMED) {
                 count_publish("error");
@@ -280,7 +304,65 @@ impl Inner {
                 );
             }
         }
+        left || commits_left
+    }
+
+    /// Answer the engine deadlines that passed, and say whether any remain.
+    fn sweep_commits(self: &Arc<Self>, now: Instant) -> bool {
+        let mut expired = Vec::new();
+        let left = {
+            let mut deadlines = self.commit_deadlines.lock();
+            while let Some(front) = deadlines.front() {
+                if front.slot.is_answered() {
+                    deadlines.pop_front();
+                } else if front.at <= now {
+                    expired.extend(deadlines.pop_front());
+                } else {
+                    break;
+                }
+            }
+            if deadlines.len() > 2 * ACK_WAITERS_MAX {
+                deadlines.retain(|deadline| !deadline.slot.is_answered());
+            }
+            !deadlines.is_empty()
+        };
+        for deadline in expired {
+            let slot = deadline.slot;
+            // As `CommitReply::send` answers the engine's error.
+            if slot.take(|state| state == PENDING || state == ARMED) {
+                count_publish("error");
+                t_consume_instant(slot.start);
+                let err = (deadline.timed_out)(deadline.timeout);
+                self.answer(&slot, slot.encoding.refuse(slot.request_id, &err));
+            }
+        }
         left
+    }
+
+    fn arm_commit(
+        &self,
+        slot: Arc<Slot>,
+        timeout: Duration,
+        timed_out: fn(Duration) -> anyhow::Error,
+    ) {
+        {
+            let mut deadlines = self.commit_deadlines.lock();
+            if deadlines.len() > 4 * ACK_WAITERS_MAX {
+                deadlines.retain(|deadline| !deadline.slot.is_answered());
+            }
+            // Read under the lock, so the queue stays in deadline order
+            // while every publish path gives the same `timeout`.
+            let at = Instant::now() + timeout;
+            deadlines.push_back(CommitDeadline {
+                at,
+                slot,
+                timeout,
+                timed_out,
+            });
+        }
+        if self.sweeper_idle.swap(false, Ordering::SeqCst) {
+            self.wake.notify_one();
+        }
     }
 
     fn arm(&self, slot: Arc<Slot>) {
@@ -387,6 +469,20 @@ impl Slot {
 }
 
 impl CommitReply {
+    /// Answer with `timed_out(timeout)` if the publish has not settled
+    /// `timeout` from now. Swept with the ack timeout, so it arms no timer.
+    pub(crate) fn answer_within(
+        &self,
+        timeout: Duration,
+        timed_out: fn(Duration) -> anyhow::Error,
+    ) {
+        if let Some(slot) = &self.slot
+            && !slot.is_answered()
+        {
+            self.inner.arm_commit(Arc::clone(slot), timeout, timed_out);
+        }
+    }
+
     /// Answer the client with the publish's result, unless it was already
     /// answered (timed out, or refused by the control loop).
     pub(crate) fn send(mut self, result: PublishResult) {

@@ -964,3 +964,40 @@ async fn an_unknown_failure_waits_behind_an_unsettled_batch() {
     engine.commit(0, Ok(()));
     assert!(matches!(unknown.await.expect("joined"), Err("unknown")));
 }
+
+/// **`answer_within` answers an uncommitted batch when its timeout passes,
+/// on one timer, and `without_deadline` arms none.** Forwarded, direct,
+/// Kafka and MQTT publishes are bounded by the first; a caller that bounds
+/// the answer itself, as a client's control stream does, uses the second.
+#[tokio::test(start_paused = true)]
+async fn answer_within_bounds_the_answer_on_one_timer_and_without_deadline_on_none() {
+    let (broker, handle, _) = broker(ReadBound::Unbounded).await;
+    let engine = Arc::new(Engine::default());
+    let publish = |payload: &'static [u8]| {
+        let engine = Arc::clone(&engine);
+        broker
+            .propose_publish(
+                &handle,
+                vec![Bytes::from_static(payload)],
+                Duration::MAX,
+                move |_| engine.propose(1),
+            )
+            .expect("handed over")
+    };
+    let timeout = Duration::from_secs(5);
+
+    let armed = crate::timer_probe::armed();
+    let started = tokio::time::Instant::now();
+    let bounded = publish(b"bounded").answer_within(timeout, || "timed out");
+    assert!(matches!(bounded.complete().await, Err("timed out")));
+    assert_eq!(started.elapsed(), timeout);
+    assert_eq!(crate::timer_probe::armed() - armed, 1);
+
+    let armed = crate::timer_probe::armed();
+    let unbounded = publish(b"unbounded")
+        .answer_within(timeout, || "timed out")
+        .without_deadline();
+    let waited = tokio::time::timeout(10 * timeout, unbounded.complete()).await;
+    assert!(waited.is_err(), "answered with no commit: {waited:?}");
+    assert_eq!(crate::timer_probe::armed() - armed, 0);
+}

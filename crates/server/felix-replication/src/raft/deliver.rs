@@ -853,17 +853,10 @@ pub(super) async fn settled(
         }
         std::future::pending::<()>().await;
     };
-    // The publisher's own wait is bounded by `answer_within`. Delivery is
-    // not: a batch skipped here and committed later would reach no live
-    // subscriber, while the one behind it did.
-    let committed = async {
-        loop {
-            match engine.await_commit(&shard, written, timeout).await {
-                Err(CommitError::TimedOut { .. }) => continue,
-                outcome => break outcome,
-            }
-        }
-    };
+    // No deadline: the publisher's own wait is bounded by `answer_within` or
+    // by its caller. Delivery is not: a batch skipped here and committed
+    // later would reach no live subscriber, while the one behind it did.
+    let committed = engine.await_commit_unbounded(&shard, written);
     let committed = tokio::select! {
         biased;
         committed = committed => committed,

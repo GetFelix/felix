@@ -307,7 +307,10 @@ graph LR
   It never waits for more, so a lone ack is not held back.
 - The ack timeout is one deadline queue per control stream, swept on a coarse
   tick while anything is owed. A publish that outlives it is answered with
-  `Unacknowledged`, and its late result is discarded.
+  `Unacknowledged`, and its late result is discarded. A publish to a Raft
+  shard also gets the quorum wait's deadline in a second queue of the same
+  sweep, which wakes for it when it passes, so the client hears
+  `quorum_timeout` on time without a timer per publish.
 - An answer is sent once the batch is durable under the stream's fsync mode
   and in the replay ring, and before the batch is fanned out
   (`complete_publish_answering`). It never precedes durability. A `Quorum`
