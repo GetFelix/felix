@@ -1433,8 +1433,8 @@ The answer has the same first byte, then:
 | 3 snapshot | the member's vote |
 | 4 transferred | `u8` 0 accepted; 1 the vote changed (expected and actual votes); 2 the log is not flushed yet (expected and actual last log ids, optional) |
 | 5 written position taken | nothing |
-| 9 base | the voter's first index `u64`, then a `u32` count (at most 4,096) and that many entries. The entries run in order from the asked index and stop at the base's last entry, at the asked count, or past the asked bytes (8 MiB at most), but always carry the first. Empty when the first index is above the asked one |
 | 6 read index | the index (optional `u64`): one past the last entry the follower must apply before it reads. Absent when the member cannot give one: it does not lead, or a majority did not confirm in time that it still does |
+| 9 base | the lowest index the voter serves `u64` (the higher of its log's first entry and the trim floor at the base), then a `u32` count (at most 4,096) and that many entries. The entries run in order from the asked index and stop at the base's last entry, at the asked count, or past the asked bytes (8 MiB at most), but always carry the first. Empty when that index is above the asked one, and the learner starts again there |
 | 16 unreachable | a reason (name layout, up to 1,024 bytes) |
 | 17 no such member | the group and member. The broker holds no member for that copy and epoch |
 | 18 stopped | the group and member, and a reason |
