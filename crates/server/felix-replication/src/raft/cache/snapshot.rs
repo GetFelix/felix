@@ -13,7 +13,9 @@ use super::layers::{Layers, Tables};
 use super::state::{Answer, CacheState, Entry, Producer};
 use super::{Fields, invalid, put_key};
 
-const VERSION: u8 = 1;
+/// Version 2 added the mark's end after the log's time. Version 1 is still
+/// read, as a snapshot with no live mark.
+const VERSION: u8 = 2;
 
 const WRITTEN: u8 = 0;
 const REMOVED: u8 = 1;
@@ -83,13 +85,13 @@ pub(crate) fn restores_of(data: &[u8]) -> usize {
 }
 
 /// The bytes of a state with time `time` and maps `maps`.
-pub(super) fn encode(time: u64, maps: Layers<'_>) -> Bytes {
+pub(super) fn encode(time: u64, marked_until: u64, maps: Layers<'_>) -> Bytes {
     #[cfg(test)]
     ENCODED.with(|encoded| encoded.set(encoded.get() + 1));
     // An expired value is left out. No write or read can tell: each
     // treats it as absent.
     let live = || maps.entries().filter(|(_, entry)| entry.live(time));
-    let (mut count, mut len) = (0u64, 1 + 8 + 8);
+    let (mut count, mut len) = (0u64, 1 + 8 + 8 + 8);
     for (key, entry) in live() {
         count += 1;
         len += 4 + key.len() + 8 + 8 + 4 + entry.value.len();
@@ -107,6 +109,7 @@ pub(super) fn encode(time: u64, maps: Layers<'_>) -> Bytes {
     let mut buf = BytesMut::with_capacity(len);
     buf.put_u8(VERSION);
     buf.put_u64_le(time);
+    buf.put_u64_le(marked_until);
     buf.put_u64_le(count);
     for (key, entry) in live() {
         put_key(&mut buf, key);
@@ -139,7 +142,7 @@ impl CacheState {
     /// [`super::Cut`] instead.
     #[cfg(test)]
     pub(crate) fn snapshot(&self) -> Bytes {
-        encode(self.time, self.view())
+        encode(self.time, self.marked_until, self.view())
     }
 
     /// The state a snapshot holds. `applied` says whether the snapshot is
@@ -164,10 +167,14 @@ impl CacheState {
             rest: &mut rest,
         };
         let version = fields.u8()?;
-        if version != VERSION {
+        if version != VERSION && version != 1 {
             return Err(invalid(format!("a cache snapshot has version {version}")));
         }
         let time = fields.u64()?;
+        let marked_until = match version {
+            1 => 0,
+            _ => fields.u64()?,
+        };
         let mut state = Tables::default();
         for _ in 0..fields.u64()? {
             let key = fields.key()?;
@@ -200,6 +207,8 @@ impl CacheState {
             state.producers.insert(producer, known);
         }
         fields.end()?;
-        Ok(Self::from_tables(time, state))
+        let mut restored = Self::from_tables(time, state);
+        restored.marked_until = marked_until;
+        Ok(restored)
     }
 }

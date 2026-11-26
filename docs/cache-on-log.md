@@ -308,10 +308,10 @@ would deliver every value twice.
 
 On a Raft cache shard any member serves a watch, and a follower's applied
 state can trail a put its leader already acknowledged. There is no shard
-log to replay, so a member that recently served a watch of the shard keeps
-its latest applied changes in memory (see
+log to replay, so while the shard is watched on any member every member
+keeps its latest applied changes in memory (see
 [per-shard-raft.md](per-shard-raft.md), "Watches"), and a resume from an
-offset still kept is replayed from them. A join that hands out state, a
+offset still kept is replayed from them, on whichever member it lands. A join that hands out state, a
 retained watch or a resume from below the oldest kept change (answered with
 a resnapshot), passes the group's read barrier first, the same one a
 history read uses: the follower applies the leader's read index before it
@@ -343,9 +343,10 @@ needs no commit gate and survives a change of leader. The live edge is one
 past the last applied entry, and offsets are entry indexes. Three things
 differ. The edge is the serving member's own, so a watch on a follower that
 is behind can start from a value older than the leader's latest; the newer
-one follows as a change. The group keeps no change history, so a resume
-from below the edge is a resnapshot rather than a replay, and a resume from
-past it waits for the member to catch up. And a snapshot install replaces the
+one follows as a change. The group keeps change history only in each
+member's memory while the shard is watched, so a resume from below the
+oldest change a member kept is a resnapshot rather than a replay, and a
+resume from past the edge waits for the member to catch up. And a snapshot install replaces the
 state whole, so it ends the shard's watches as `cache_watch_lagged` at the
 first entry they were not told of, as does a member that loses its leader.
 See [per-shard-raft.md](per-shard-raft.md#cache-and-counters).
