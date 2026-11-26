@@ -5157,8 +5157,8 @@ later by no report a Raft shard sends:
 **What placement does with a Raft shard.** On a cluster whose
 `shard_engine` is `raft`, the control plane leaves a durable stream's group
 alone and names the member it wants leading. It changes a placed shard's
-set only by the one-member swaps below, and drops the copy a move from an
-older control plane added:
+set only by the one-member swaps and additions below, and drops the copy a
+move from an older control plane added:
 
 - A balance pass, a drain and an operator move each name another member of
   the set as leader, in one write that changes only `leader`. Nothing is
@@ -5177,6 +5177,16 @@ older control plane added:
   set and every other member is serving, so the group's leader adds the new
   member as a learner and then changes the voters (see "Membership"). A lost
   member goes first. With no such node the set stays and the shard waits.
+- A set with fewer members than the replication factor grows by one live
+  node outside it a write (`raft_top_up`), under the same checks as a
+  follower replacement and from the same budget. An abandon leaves a set
+  like this, since it places the leader alone, and so does a shard placed
+  while too few brokers were live. Until it grows, a `Quorum` write is
+  acknowledged by a majority of the members the set has, not of its
+  factor. The new member joins as a learner and votes once it has caught
+  up, so the voters the leader reported always hold at least half of the
+  next set. With no node outside the set the shard stays short and shows as
+  under-replicated.
 - A balance pass gives a seat to a live broker outside the set when it
   leads two fewer than the shard's leader and no member does (#3113). A
   broker a drain swapped out of every set, then restarted, is that broker:
