@@ -6,4 +6,6 @@
   refused with `no_durable_storage`. The registration needs every
   control-plane member at metadata level 54, and the broker refuses a control
   plane that predates it. A cache request through it goes to the cache's Raft
-  group (#3067).
+  group (#3067). The same placement rules apply under the hybrid engine, so
+  a hybrid broker without storage no longer holds cache shards, and a cluster
+  of only such brokers places no cache.

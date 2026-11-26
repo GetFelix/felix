@@ -1594,6 +1594,14 @@ the way it treats a region the shard may not use:
   is replaced through the group's membership change.
 - An in-memory stream's shard may be placed on it as on any other broker, and
   is served there (`docs/hybrid-retirement.md`, "In-memory shards").
+- A shard with nowhere else to go reports "every live node this shard may use
+  has no durable storage" instead of being placed.
+- A stream create counts only brokers with storage when it warns that the
+  replication factor is more than the live brokers.
+
+These rules hold under the deprecated hybrid engine too, where a broker
+without storage used to hold caches in memory: it now holds no cache shard,
+and a cluster whose only live brokers have no storage places no cache.
 
 Every cache is a Raft group on brokers with storage, so a broker without
 storage only routes a cache request to the group's leader. A durable stream

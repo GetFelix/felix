@@ -165,3 +165,63 @@ fn an_operator_moves_only_in_memory_shards_onto_a_diskless_node() {
     }
     assert!(start_move(&catalog, &existing[1].key, "bare").is_ok());
 }
+
+/// A copy on a diskless node, left by an older control plane, is not one
+/// the shard's spread can count on: an operator move's zone report leaves it
+/// out.
+#[test]
+fn an_operator_moves_zone_report_leaves_out_a_diskless_node() {
+    let zoned = |id: &str| {
+        let mut node = if id.starts_with('d') {
+            diskless(id)
+        } else {
+            node(id, NodeLifecycle::Live, None)
+        };
+        node.spec.zone = Some(id[..1].to_string());
+        node
+    };
+    let nodes: Vec<Node> = ["a1", "b1", "c1", "d1"]
+        .iter()
+        .map(|id| zoned(id))
+        .collect();
+    let streams = vec![replicated_stream("orders", 1, 3)];
+    let existing = vec![assigned("orders", "a1", &["b1", "d1"])];
+    let catalog = Catalog {
+        streams: &streams,
+        caches: &[],
+        nodes: &nodes,
+        existing: &existing,
+        caught_up: &NothingCaughtUp,
+        policy: MovePolicy::default(),
+    };
+
+    let decided = start_move(&catalog, &existing[0].key, "c1").expect("started");
+    let zones = decided.zones.expect("brokers report zones");
+    assert_eq!(zones.before, 2, "{zones:?}");
+}
+
+/// A durable shard with nowhere to go but diskless nodes says that is why,
+/// with or without a home region.
+#[test]
+fn a_durable_shard_on_only_diskless_nodes_reports_the_storage() {
+    let mut nodes = vec![diskless("bare")];
+    nodes.push(node("away", NodeLifecycle::Live, None));
+    nodes[1].spec.region = "eu-west-1".to_string();
+    let homed = Stream {
+        region: Some("us-west-2".to_string()),
+        ..stream("orders", 1)
+    };
+    for streams in [vec![homed], vec![stream("orders", 1)]] {
+        let only_bare = if streams[0].region.is_some() {
+            nodes.clone()
+        } else {
+            vec![diskless("bare")]
+        };
+        let plan = plan(&streams, &[], &only_bare, &[], &NothingCaughtUp);
+        assert_eq!(
+            plan.shards[0].decision,
+            Decision::Unplaceable(Unplaceable::NoDurableStorage),
+            "{streams:?}"
+        );
+    }
+}

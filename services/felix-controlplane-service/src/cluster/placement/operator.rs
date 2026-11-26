@@ -499,6 +499,8 @@ fn zone_impact(
     replication_factor: u32,
     home: Option<&String>,
 ) -> Option<ZoneImpact> {
+    // A node without storage never holds a durable shard's copy.
+    let durable = placeable_of(catalog, &existing.key).is_none_or(|(_, durable, _)| durable);
     let eligible: Vec<&Node> = catalog
         .nodes
         .iter()
@@ -507,6 +509,7 @@ fn zone_impact(
         .filter(|node| {
             home.is_none_or(|home| catalog.policy.regions.can_route(home, &node.spec.region))
         })
+        .filter(|node| !durable || node.spec.has_durable_storage())
         .collect();
     if !eligible.iter().any(|node| node.spec.zone.is_some()) {
         return None;
