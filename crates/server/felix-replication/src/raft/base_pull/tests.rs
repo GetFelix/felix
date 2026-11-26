@@ -432,3 +432,33 @@ async fn no_capable_voter_means_no_pull() {
     assert_eq!(none, Pulled::GaveUp);
     assert!(!dir.path().join("base-staging").exists());
 }
+
+/// **A member that took a snapshot or entries is never told to adopt a
+/// base**: once its pull is abandoned, a staged base no longer signals and
+/// no other pull starts.
+#[tokio::test]
+async fn an_abandoned_pull_signals_nothing_and_starts_no_other() {
+    let dir = tempfile::tempdir().expect("dir");
+    let state = Arc::new(PullState::default());
+    state.staged.store(true, Ordering::Release);
+    assert!(state.staged());
+    state.abandon();
+    assert!(!state.staged(), "an abandoned pull still signals its base");
+    state.staged.store(false, Ordering::Release);
+    spawn(
+        &tokio::runtime::Handle::current(),
+        Arc::clone(&state),
+        source(vec![("a", good())]),
+        vec![voter("a")],
+        dir.path().to_path_buf(),
+        staging_config(),
+        0,
+        CancellationToken::new(),
+        "learner".into(),
+    );
+    // On this one-thread runtime a started pull is still running here.
+    assert!(
+        !state.running.load(Ordering::Acquire),
+        "a pull started after the member caught up another way"
+    );
+}

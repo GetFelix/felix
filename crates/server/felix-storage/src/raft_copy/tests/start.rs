@@ -1047,3 +1047,74 @@ async fn an_open_adopts_a_staged_base_or_rolls_its_adoption_forward() {
         assert!(!dir.join(STAGING_DIR).exists(), "{case}");
     }
 }
+
+/// **A staged base is never adopted over a copy that caught up another
+/// way.** The member took entries (or a snapshot) while its pull ran, then
+/// the pull finished and the member reopened, or crashed between the two:
+/// the open discards the staging log and leaves the log as it was.
+#[tokio::test]
+async fn an_open_discards_a_staged_base_over_a_copy_that_holds_records() {
+    use crate::raft_copy::epoch_file::EpochLogId;
+    use crate::raft_copy::staging::{STAGING_DIR, Staging};
+
+    let last = EpochLogId {
+        index: 4,
+        epoch: 0,
+        term: 1,
+    };
+    let root = Root::new();
+    let dir = root.shard_dir();
+    std::fs::create_dir_all(&dir).expect("dir");
+    let opened = root
+        .open()
+        .open_copy("orders/0", &dir, "t/ns/orders/0", config())
+        .await
+        .expect("first open");
+    opened.log.close().await.expect("close");
+    log_in_terms(&dir, &[2, 2, 2]).await;
+    epoch_file::store(
+        &dir,
+        &EpochFile {
+            incarnation: 1,
+            bases: vec![EpochBase {
+                base_last: Some(last),
+                first_index: 8,
+            }],
+        },
+    )
+    .expect("epoch");
+    let entries: Vec<_> = (0..=4).map(|index| normal(1, index, "base")).collect();
+    let mut staging = Staging::begin(&dir, 0, &config()).await.expect("begin");
+    staging
+        .append::<Types, Codec>(&Codec, &entries, 5)
+        .await
+        .expect("append");
+    staging.finish(last).await.expect("finish");
+
+    assert!(!adopt_staged(&dir, (4, 1), &|| Ok(())).expect("adopt"));
+    assert!(!dir.join(STAGING_DIR).exists());
+    let opened = root
+        .open()
+        .open_copy("orders/0", &dir, "t/ns/orders/0", config())
+        .await
+        .expect("open");
+    assert_eq!(
+        crate::log::AppendOnlyLog::tail_offset(&opened.log)
+            .await
+            .expect("tail"),
+        3
+    );
+    opened.log.close().await.expect("close");
+    let log = DiskLog::open(&dir, "t/ns/orders/0", config()).expect("open");
+    let raft = RaftLog::<Types, Codec>::new(log, Codec).expect("a Raft log");
+    let mut reader = raft.reader();
+    let held = openraft::storage::RaftLogReader::try_get_log_entries(&mut reader, 0..3)
+        .await
+        .expect("read");
+    let terms: Vec<u64> = held
+        .iter()
+        .map(|entry| entry.log_id.leader_id.term)
+        .collect();
+    assert_eq!(terms, [2, 2, 2], "the copy's own records were replaced");
+    raft.disk_log().close().await.expect("close");
+}
