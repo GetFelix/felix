@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use crate::auth::rbac::policy_store::PolicyRule;
 use crate::auth::revocation::{ALL_PRINCIPALS, PrincipalRevocation};
-use crate::store::{AuthChange, ControlPlaneAuthStore, Revocation, StoreError};
+use crate::store::{AuthChange, ControlPlaneAuthStore, PrincipalCutoffs, Revocation, StoreError};
 
 const TENANT: &str = "revocation-t";
 /// Its own tenant, so the tenant-wide revocation above does not mask it.
@@ -112,6 +112,101 @@ pub(crate) async fn run_revocation_contract(store: Arc<dyn ControlPlaneAuthStore
     );
 
     a_change_and_its_revocation_commit_together(store.as_ref()).await;
+    only_an_explicit_revocation_cuts_off_assertions(store.as_ref()).await;
+}
+
+/// Its own tenant, so the rows above do not mask it.
+const ASSERTION_TENANT: &str = "revocation-assertion-t";
+
+async fn only_an_explicit_revocation_cuts_off_assertions(store: &dyn ControlPlaneAuthStore) {
+    let cutoffs = |principal: &'static str| async move {
+        store
+            .principal_cutoffs(ASSERTION_TENANT, principal)
+            .await
+            .expect("read")
+    };
+    let both = |tokens, assertions| PrincipalCutoffs { tokens, assertions };
+    let mut since = 0;
+    loop {
+        let page = store.principal_revocations(since).await.expect("feed");
+        if page.items.is_empty() {
+            break;
+        }
+        since = page.next_seq;
+    }
+
+    store
+        .revoke_principals(ASSERTION_TENANT, vec!["erin".into()], 100)
+        .await
+        .expect("revoke");
+    assert_eq!(cutoffs("erin").await, both(Some(100), None));
+
+    store
+        .revoke_principals_explicitly(ASSERTION_TENANT, vec!["erin".into()], 90)
+        .await
+        .expect("revoke");
+    assert_eq!(
+        cutoffs("erin").await,
+        both(Some(100), Some(90)),
+        "an explicit revocation keeps a later token cutoff"
+    );
+    // A later RBAC cutoff leaves the assertion cutoff where it was, and an
+    // earlier explicit one does not move it back.
+    store
+        .revoke_principals(ASSERTION_TENANT, vec!["erin".into()], 150)
+        .await
+        .expect("revoke");
+    store
+        .revoke_principals_explicitly(ASSERTION_TENANT, vec!["erin".into()], 80)
+        .await
+        .expect("revoke");
+    assert_eq!(cutoffs("erin").await, both(Some(150), Some(90)));
+
+    // The whole tenant's count for each principal, each kind on its own.
+    store
+        .revoke_principals_explicitly(ASSERTION_TENANT, vec![ALL_PRINCIPALS.into()], 120)
+        .await
+        .expect("revoke");
+    assert_eq!(cutoffs("erin").await, both(Some(150), Some(120)));
+    assert_eq!(cutoffs("frank").await, both(Some(120), Some(120)));
+
+    // A change's revocation is an RBAC one.
+    let _ = store
+        .create_tenant(crate::model::Tenant {
+            tenant_id: ASSERTION_TENANT.to_string(),
+            display_name: "Revocation assertions".to_string(),
+        })
+        .await;
+    let policy = PolicyRule {
+        subject: "gina".to_string(),
+        object: format!("tenant:{ASSERTION_TENANT}"),
+        action: "stream.publish".to_string(),
+    };
+    store
+        .add_rbac_policy(ASSERTION_TENANT, policy.clone())
+        .await
+        .expect("policy");
+    store
+        .change_auth(
+            ASSERTION_TENANT,
+            AuthChange::RemovePolicy(policy),
+            Some(Revocation {
+                principal_ids: vec!["gina".into()],
+                revoked_at: 400,
+            }),
+        )
+        .await
+        .expect("change");
+    assert_eq!(cutoffs("gina").await, both(Some(400), Some(120)));
+
+    // The feed carries the assertion cutoff, so an export keeps it.
+    let rows = store.principal_revocations(since).await.expect("feed");
+    let erin = rows
+        .items
+        .iter()
+        .find(|row| row.tenant_id == ASSERTION_TENANT && row.principal_id == "erin")
+        .expect("erin's row");
+    assert_eq!(erin.assertions_revoked_at, Some(90));
 }
 
 async fn a_change_and_its_revocation_commit_together(store: &dyn ControlPlaneAuthStore) {

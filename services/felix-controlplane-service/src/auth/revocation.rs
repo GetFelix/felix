@@ -38,6 +38,11 @@ pub struct PrincipalRevocation {
     pub principal_id: String,
     /// Seconds since the epoch. Tokens issued at or before it are revoked.
     pub revoked_at: i64,
+    /// Set only by an explicit revocation, never by an RBAC edit: an IdP
+    /// token of the principal issued at or before it, plus the IdP clock
+    /// skew, is refused at exchange. Seconds since the epoch.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub assertions_revoked_at: Option<i64>,
 }
 
 #[derive(Debug, Serialize, ToSchema)]
@@ -78,8 +83,9 @@ pub(crate) fn reached_by(groupings: &[GroupingRule], subject: &str) -> Vec<Strin
     reached.into_iter().map(str::to_string).collect()
 }
 
-/// Revoke `principal_ids` of `tenant_id` as of now.
-pub(crate) async fn revoke(
+/// Revoke `principal_ids` of `tenant_id` as of now, explicitly: their IdP
+/// tokens issued until now stop exchanging too.
+pub(crate) async fn revoke_explicitly(
     state: &AppState,
     tenant_id: &str,
     principal_ids: Vec<String>,
@@ -87,30 +93,42 @@ pub(crate) async fn revoke(
     let count = principal_ids.len() as u64;
     state
         .store
-        .revoke_principals(tenant_id, principal_ids, crate::auth::refresh::now_secs())
+        .revoke_principals_explicitly(tenant_id, principal_ids, crate::auth::refresh::now_secs())
         .await?;
     metrics::counter!("felix_principal_revocations_total").increment(count);
     Ok(())
 }
 
-/// Hold a mint for `principal_id` until a revocation made this second is in
-/// the past. Token times are whole seconds, so a token minted in the same
-/// second as a revocation would be refused with the ones it replaced.
-pub(crate) async fn wait_out_revocation(
+/// Both of `principal_id`'s cutoffs, counting the whole tenant's.
+pub(crate) async fn cutoffs(
     state: &AppState,
     tenant_id: &str,
     principal_id: &str,
-) -> Result<(), ApiError> {
-    let revoked_at = state
+) -> Result<crate::store::PrincipalCutoffs, ApiError> {
+    state
         .store
-        .principal_revoked_at(tenant_id, principal_id)
+        .principal_cutoffs(tenant_id, principal_id)
         .await
-        .map_err(|err| api_internal("failed to load revocations", &err))?;
-    wait_past(revoked_at).await;
-    Ok(())
+        .map_err(|err| api_internal("failed to load revocations", &err))
 }
 
-/// [`wait_out_revocation`] for a cutoff already read.
+/// Whether an IdP token issued at `issued_at` predates `revoked_at`, its
+/// principal's assertion cutoff, and so must not be exchanged.
+///
+/// The cutoff is a control-plane clock reading and `issued_at` an IdP's, so
+/// `skew_secs` is added to the cutoff: an IdP clock running ahead would
+/// otherwise stamp a token issued before the revocation with a later `iat`.
+/// The cost is on the safe side: a fresh IdP token is refused until
+/// `skew_secs` after the revocation.
+pub(crate) fn assertion_revoked(issued_at: i64, revoked_at: Option<i64>, skew_secs: u64) -> bool {
+    revoked_at.is_some_and(|cutoff| {
+        issued_at <= cutoff.saturating_add(i64::try_from(skew_secs).unwrap_or(i64::MAX))
+    })
+}
+
+/// Hold a mint until a revocation made this second is in the past. Token
+/// times are whole seconds, so a token minted in the same second as a
+/// revocation would be refused with the ones it replaced.
 pub(crate) async fn wait_past(revoked_at: Option<i64>) {
     let Some(revoked_at) = revoked_at else {
         return;

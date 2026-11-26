@@ -861,6 +861,7 @@ mod engine_log {
                     Err::<ProposalCommitted, _>(ProposalFailed {
                         error: (),
                         written_end: Some(1),
+                        refused: false,
                     })
                 },
             )
@@ -906,6 +907,7 @@ mod engine_log {
                     Err::<ProposalCommitted, _>(ProposalFailed {
                         error: (),
                         written_end: Some(1),
+                        refused: false,
                     })
                 },
             )
@@ -982,6 +984,7 @@ mod engine_log {
                     Err::<ProposalCommitted, _>(ProposalFailed {
                         error: (),
                         written_end: Some(1),
+                        refused: false,
                     })
                 },
             )

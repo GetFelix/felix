@@ -288,6 +288,21 @@ async fn raft_leader_stream_refuses_on_a_lapsed_lease() {
         .await
         .expect("the leader reports its member")
         .term;
+    // The cut must land after "before" has committed. A batch still in flight
+    // never settles once the followers are gone, and the next write then waits
+    // out its timeout instead of being refused for the lease.
+    felix_cluster::wait::until(
+        Duration::from_secs(30),
+        "the leader to commit everything it holds",
+        || async {
+            cluster
+                .raft_member(&leader, LEADER_STREAM)
+                .await
+                .is_some_and(|m| m.committed.is_some() && m.committed == m.last_index)
+        },
+    )
+    .await
+    .expect("the leader commits what it acknowledged before the cut");
 
     for follower in cluster.node_ids().into_iter().filter(|id| *id != leader) {
         for fault in Fault::partition(Endpoint::node(&leader), Endpoint::node(&follower)) {
@@ -315,7 +330,9 @@ async fn raft_leader_stream_refuses_on_a_lapsed_lease() {
     let why = format!("{refused:#}");
     assert!(
         why.contains("lease") || why.contains("no majority has answered this leader"),
-        "refused, but not for the lease: {why}"
+        "refused, but not for the lease: {why} (committed {:?}, last index {:?})",
+        raft.committed,
+        raft.last_index
     );
     cluster.shutdown().await;
 }

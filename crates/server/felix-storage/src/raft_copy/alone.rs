@@ -4,10 +4,13 @@
 //! relaxed crash rotated its copies there is nobody to ask. The one voter
 //! plans its own next epoch from its kept copies with the rule every
 //! re-form uses, records the plan, stops, and starts in the new epoch. It
-//! acts only on durable evidence that a relaxed crash rotated the copy
-//! ([`crate::run_state::relaxed_crash_sources`]), and accepts the loss that
-//! allows: the records the crash took before they were synced. See
-//! `docs/per-shard-raft.md`, "A standalone broker re-forms itself".
+//! acts only on durable evidence that a relaxed crash or a restore rotated
+//! the copy ([`crate::run_state::reform_evidence`]), and accepts the loss
+//! that allows: the records the crash took before they were synced, or the
+//! ones the restore went back past. After a restore the epoch starts on the
+//! time line a backup-point restore uses, since offsets given out after the
+//! copy was taken are in no file it holds. See `docs/per-shard-raft.md`, "A
+//! standalone broker re-forms itself".
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::io;
@@ -18,7 +21,7 @@ use serde::{Deserialize, Serialize};
 use super::epoch_file::{self, EpochBase};
 use super::judge::{CopyRoot, kept_copies, parent_of, reached_before};
 use super::start::{building, start_due, started_in};
-use super::vouch::{BrokerReport, GroupRecord};
+use super::vouch::{BrokerReport, DEFAULT_OFFSET_GAP, GroupRecord, RestoreAt};
 use super::wire::{
     PlanView, SurveyStep, WireBase, WireReport, WireStart, first_probes, plan_starts_alone,
     survey_step_alone,
@@ -126,8 +129,7 @@ impl CopyRoot {
     /// which a second crash left, is dropped with the copy it was made for
     /// and the group is planned again above everything the first reserved.
     pub async fn reform_alone(&self, a: Alone<'_>) -> io::Result<Aloned> {
-        let sources =
-            crate::run_state::relaxed_crash_sources(self.root()).map_err(io::Error::other)?;
+        let sources = crate::run_state::reform_evidence(self.root()).map_err(io::Error::other)?;
         if sources.is_empty() {
             return Ok(Aloned::NotOwed);
         }
@@ -157,23 +159,30 @@ impl CopyRoot {
             .open_copy(a.shard, a.dir, a.label, a.config.clone())
             .await?;
         opened.log.close().await.map_err(io::Error::other)?;
-        if !self.owed(a.dir, a.config.index_spacing_bytes, &sources)? {
+        let Some(restored) = self.owed(a.dir, a.config.index_spacing_bytes, &sources)? else {
             return Ok(Aloned::NotOwed);
-        }
-        let plan = plan(&a, self.storage_id().to_hex())?;
+        };
+        let plan = plan(&a, self.storage_id().to_hex(), restored)?;
         step()?;
         a.record.store(a.dir, &plan)?;
         step()?;
         self.finish(&a, &plan, &step).await
     }
 
-    /// Whether the copy in `dir` was rotated by a relaxed crash and is not
-    /// yet in an epoch past the copies that rotation kept. A kept copy minted
-    /// under an id no relaxed crash rotated away was rotated for another
-    /// reason, which this does not re-form.
-    fn owed(&self, dir: &Path, spacing: u64, sources: &[crate::StorageId]) -> io::Result<bool> {
+    /// Whether the copy in `dir` was rotated by a relaxed crash or a restore
+    /// and is not yet in an epoch past the copies that rotation kept: `None`
+    /// if not, else whether a restore is among the rotations since the
+    /// newest kept copies were minted. A kept copy minted under an id no
+    /// such rotation took away was rotated for another reason, which this
+    /// does not re-form.
+    fn owed(
+        &self,
+        dir: &Path,
+        spacing: u64,
+        sources: &[crate::run_state::Rotated],
+    ) -> io::Result<Option<bool>> {
         if !reached_before(dir, spacing)? {
-            return Ok(false);
+            return Ok(None);
         }
         let epoch_of =
             |dir: &Path| Ok::<_, io::Error>(epoch_file::load(dir)?.map_or(0, |file| file.epoch()));
@@ -183,18 +192,23 @@ impl CopyRoot {
             newest = newest.max(epoch_of(&copy.path)?);
         }
         if epoch_of(dir)? > newest {
-            return Ok(false);
+            return Ok(None);
         }
+        // Newest first, so every rotation since a copy was minted is at or
+        // before its own id.
+        let mut deepest = 0;
         for copy in kept
             .iter()
             .filter(|copy| epoch_of(&copy.path).is_ok_and(|e| e == newest))
         {
             let minted = copy_file::load(&copy.path)?.map(|file| file.minted);
-            if !minted.is_some_and(|minted| sources.contains(&minted)) {
-                return Ok(false);
-            }
+            let Some(at) = minted.and_then(|minted| sources.iter().position(|s| s.id == minted))
+            else {
+                return Ok(None);
+            };
+            deepest = deepest.max(at);
         }
-        Ok(true)
+        Ok(Some(sources[..=deepest].iter().any(|s| s.restore)))
     }
 
     async fn finish(
@@ -232,8 +246,10 @@ impl CopyRoot {
     }
 }
 
-/// Plan the next epoch of the group of one from `a.dir`'s kept copies.
-fn plan(a: &Alone<'_>, minted: String) -> io::Result<AlonePlan> {
+/// Plan the next epoch of the group of one from `a.dir`'s kept copies. After
+/// a restore the epoch starts no lower than the backup-point restore's time
+/// line at this broker's clock.
+fn plan(a: &Alone<'_>, minted: String, restored: bool) -> io::Result<AlonePlan> {
     let me = a.broker.to_owned();
     let copy = copy_file::load(a.dir)?
         .ok_or_else(|| io::Error::other(format!("{}: no copy id", a.dir.display())))?
@@ -266,6 +282,19 @@ fn plan(a: &Alone<'_>, minted: String) -> io::Result<AlonePlan> {
                     .and_then(|mut starts| starts.remove(&me))
                     .ok_or_else(|| refuse("no plan for this broker".into()))?;
                 let last = reports[&me].copies.current.last.map(|last| last.index);
+                let mut base = new_base(&view);
+                if restored {
+                    let line = time_line()
+                        .ok_or_else(|| refuse("the clock is past the time line".into()))?;
+                    base.first_index = base.first_index.max(line);
+                    tracing::warn!(
+                        shard = a.label,
+                        first_index = base.first_index,
+                        "a restore rotated this copy; the next epoch starts on the restore time \
+                         line, so no offset given out after the restored copy was taken is \
+                         given out again"
+                    );
+                }
                 return Ok(AlonePlan {
                     copy,
                     minted,
@@ -273,7 +302,7 @@ fn plan(a: &Alone<'_>, minted: String) -> io::Result<AlonePlan> {
                         .iter()
                         .copied()
                         .map(WireBase::from)
-                        .chain([new_base(&view)])
+                        .chain([base])
                         .collect(),
                     start,
                     last,
@@ -284,6 +313,21 @@ fn plan(a: &Alone<'_>, minted: String) -> io::Result<AlonePlan> {
         }
     }
     Err(refuse("the plan needed more reads than allowed".into()))
+}
+
+/// `RESTORE_OFFSETS_PER_MILLI` times this broker's clock in Unix
+/// milliseconds, plus the default gap: the first index a backup-point
+/// restore planned now takes. `None` past the last index.
+fn time_line() -> Option<u64> {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()?;
+    RestoreAt {
+        end: 0,
+        gap: DEFAULT_OFFSET_GAP,
+        planned_at_millis: u64::try_from(now.as_millis()).ok()?,
+    }
+    .first_index()
 }
 
 fn new_base(view: &PlanView) -> WireBase {

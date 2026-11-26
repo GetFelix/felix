@@ -102,6 +102,9 @@ pub(crate) enum Request {
     /// A follower asking its leader for a read index before it serves a
     /// read that could start below a head trim's floor.
     ReadIndex,
+    /// A member serving a cache watch asking its leader to append a
+    /// [`super::cache::CacheCommand::Watched`], so every member records.
+    Watched,
 }
 
 impl RaftRequest {
@@ -132,6 +135,7 @@ impl fmt::Debug for RaftRequest {
             Request::TransferLeader(_) => "transfer-leader",
             Request::Written { .. } => "written",
             Request::ReadIndex => "read-index",
+            Request::Watched => "watched",
         };
         write!(f, "{kind} for {} of {}", self.to, self.group)
     }
@@ -153,6 +157,8 @@ pub(crate) enum Reply {
     ReadIndex {
         index: Option<u64>,
     },
+    /// A watched ask was taken. Whether a mark follows shows in the log.
+    Watched,
 }
 
 /// Why a message got no answer. Raft treats each the same way: the member
@@ -261,7 +267,7 @@ impl RaftTransport for AgreeingPeers {
                 return Err(Refused::Unreachable("no peer to lead".into()));
             }
             Request::Written { .. } => Reply::Written,
-            Request::ReadIndex => {
+            Request::ReadIndex | Request::Watched => {
                 return Err(Refused::Unreachable("no peer leads".into()));
             }
         }))
@@ -466,7 +472,8 @@ pub(crate) fn named(reply: &Reply, pre_vote: bool) -> Option<u64> {
         | Reply::Vote(_)
         | Reply::TransferLeader(_)
         | Reply::Written
-        | Reply::ReadIndex { .. } => None,
+        | Reply::ReadIndex { .. }
+        | Reply::Watched => None,
     }
 }
 

@@ -18,6 +18,7 @@ const DELETE: u8 = 1;
 const EXPIRE: u8 = 2;
 const ADD: u8 = 3;
 const RETIRE: u8 = 4;
+const WATCHED: u8 = 5;
 
 const COND_NONE: u8 = 0;
 const COND_ABSENT: u8 = 1;
@@ -61,6 +62,11 @@ pub(crate) enum CacheCommand {
     /// last sequence. Its answers go; the floor stays, so a copy of an
     /// answered request still in flight is not applied again.
     Retire { producer: u64, floor: u64 },
+    /// A watch of the shard took a change on some member. Every member
+    /// that applies it records the shard's changes for a while past its
+    /// stamp, so a watch can resume on any of them. Changes no key, answer
+    /// or floor.
+    Watched,
 }
 
 fn put_request(buf: &mut BytesMut, request: &Request) {
@@ -150,6 +156,7 @@ impl CacheCommand {
                 buf.put_u64_le(*producer);
                 buf.put_u64_le(*floor);
             }
+            Self::Watched => buf.put_u8(WATCHED),
         }
         buf.freeze()
     }
@@ -215,6 +222,7 @@ impl CacheCommand {
                 producer: fields.u64()?,
                 floor: fields.u64()?,
             },
+            WATCHED => Self::Watched,
             found => return Err(invalid(format!("a cache entry has kind {found}"))),
         };
         fields.end()?;

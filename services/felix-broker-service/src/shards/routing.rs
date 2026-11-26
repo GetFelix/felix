@@ -78,6 +78,12 @@ pub enum Reason {
     /// Deliberately not `Local`: serving now would acknowledge a write against
     /// a log that is not yet recovered.
     NotReady,
+    /// This node's copy of a Raft shard was stopped by a storage error.
+    /// Retryable like [`Self::NotReady`]: another copy takes over, or this
+    /// one rejoins once it is reopened. The error is not in the message: it
+    /// can name the broker's data paths, so it goes to the broker log and
+    /// `shard_inspect` only.
+    CopyStopped,
     /// This node's routing view is behind the caller's.
     Stale { have: u64, wanted: u64 },
     /// The shard is moving to another broker and has not cut over yet.
@@ -95,7 +101,7 @@ impl Reason {
         match self {
             Self::NotAssigned => wire::NOT_ASSIGNED,
             Self::OwnerUnavailable(_) => wire::OWNER_UNAVAILABLE,
-            Self::NotReady => wire::NOT_READY,
+            Self::NotReady | Self::CopyStopped => wire::NOT_READY,
             Self::Stale { .. } => wire::STALE,
             Self::Moving => wire::MOVING,
             Self::RegionNotRoutable { .. } => wire::REGION_NOT_ROUTABLE,
@@ -109,6 +115,10 @@ impl std::fmt::Display for Reason {
             Self::NotAssigned => write!(f, "shard is not assigned to any broker"),
             Self::OwnerUnavailable(detail) => write!(f, "shard owner is unavailable: {detail}"),
             Self::NotReady => write!(f, "this broker is still opening the shard"),
+            Self::CopyStopped => write!(
+                f,
+                "this broker's copy of the shard was stopped by a storage error"
+            ),
             Self::Stale { have, wanted } => {
                 write!(
                     f,
@@ -888,8 +898,17 @@ pub struct BackupMember {
     pub key: ShardKey,
     /// The stream or cache incarnation the group runs.
     pub incarnation: u64,
+    /// This member, as its group's membership names it.
+    pub member: felix_replication::raft::MemberId,
     /// The member's current term.
     pub term: u64,
+    /// The voter sets of the last membership in the member's log: one, or
+    /// two while a change is joint. A backup point needs a majority of
+    /// each to answer before it trusts the newest term it sees.
+    pub voter_sets: Vec<std::collections::BTreeSet<felix_replication::raft::MemberId>>,
+    /// The entry that membership is from, so the collector can tell which
+    /// of several members' memberships is the newest.
+    pub membership_at: Option<felix_replication::raft::LogPoint>,
     /// One past the furthest entry this member acknowledged (its commit
     /// index, or a write answered before its commit), while it leads `term`
     /// and serves it. Every write acknowledged before the read is below it.

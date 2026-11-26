@@ -1284,6 +1284,21 @@ impl GroupRuntime {
         self.inner.registry.get(shard)?.storage_failure()
     }
 
+    /// The voter sets of the last membership in this broker's member of
+    /// `shard`, committed or not (one, or two while a change is joint;
+    /// learners are in none), with the entry that membership is from. Empty
+    /// sets and `None` for a copy that holds no membership yet. Read for a
+    /// backup point only, so it is not part of [`Self::status`].
+    pub fn voter_sets(
+        &self,
+        shard: &ShardKey,
+    ) -> Option<(Vec<BTreeSet<MemberId>>, Option<LogPoint>)> {
+        self.inner
+            .registry
+            .get(shard)
+            .map(|group| group.voter_sets())
+    }
+
     /// The brokers that vote in `shard`'s group, as this member's log has
     /// them. Empty until the member has heard from a group.
     pub fn voters(&self, shard: &ShardKey) -> Option<BTreeSet<MemberId>> {

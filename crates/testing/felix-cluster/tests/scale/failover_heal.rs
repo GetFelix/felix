@@ -44,10 +44,15 @@ const RESTART_BOUND: Duration = Duration::from_secs(45);
 #[ignore = "dispatch: scale-nightly.yml, variant failover"]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn with_election_every_shard_of_a_killed_leader_serves_again() {
+    // On Raft the group always elects, so the other test is this one there.
+    if felix_cluster::skip_on_raft_retire_with_hybrid("replica_election is a hybrid switch") {
+        return;
+    }
     run(true).await;
 }
 
 /// **Without election, the control plane's placement alone does the same.**
+/// On Raft, with no flag or fleet feature, the groups elect.
 #[serial]
 #[ignore = "dispatch: scale-nightly.yml, variant failover"]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -82,17 +87,20 @@ async fn run(election: bool) {
     })
     .await
     .expect("start cluster");
-    let mut features = vec!["majority_ack", "lease_free_reads"];
-    if election {
-        features.push("replica_election");
+    let raft = felix_cluster::suite_runs_on_raft();
+    if !raft {
+        let mut features = vec!["majority_ack", "lease_free_reads"];
+        if election {
+            features.push("replica_election");
+        }
+        cluster
+            .finalize_fleet_features(
+                &features,
+                felix_cluster::wait::budget(Duration::from_secs(30)),
+            )
+            .await
+            .expect("finalize fleet features");
     }
-    cluster
-        .finalize_fleet_features(
-            &features,
-            felix_cluster::wait::budget(Duration::from_secs(30)),
-        )
-        .await
-        .expect("finalize fleet features");
     cluster.run_placement(Duration::from_secs(1));
 
     let client = Arc::new(
@@ -128,16 +136,11 @@ async fn run(election: bool) {
     .await
     .expect("every stream serves before the kill");
 
-    let owners = cluster.shard_assignments().await.expect("assignments");
-    let mut led: BTreeMap<String, Vec<String>> = BTreeMap::new();
-    for name in &streams {
-        let key = format!("{}/{}/{name}/0", cluster.tenant_id, cluster.namespace);
-        let owner = owners
-            .get(&key)
-            .map(|a| a.leader.clone())
-            .expect("assigned");
-        led.entry(owner).or_default().push(name.clone());
-    }
+    let led = if raft {
+        raft_leaders(&cluster, &streams).await
+    } else {
+        assigned_leaders(&cluster, &streams).await
+    };
     let (victim, victims) = led
         .iter()
         .max_by_key(|(_, names)| names.len())
@@ -183,6 +186,43 @@ async fn run(election: bool) {
     }
     cluster.shutdown().await;
     assert!(problems.is_empty(), "{}", problems.join("; "));
+}
+
+/// The streams each broker leads, as placement assigned them.
+async fn assigned_leaders(cluster: &Cluster, streams: &[String]) -> BTreeMap<String, Vec<String>> {
+    let owners = cluster.shard_assignments().await.expect("assignments");
+    let mut led: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    for name in streams {
+        let key = format!("{}/{}/{name}/0", cluster.tenant_id, cluster.namespace);
+        let owner = owners
+            .get(&key)
+            .map(|a| a.leader.clone())
+            .expect("assigned");
+        led.entry(owner).or_default().push(name.clone());
+    }
+    led
+}
+
+/// The streams each broker leads, by the members' own reports. Placement
+/// names a Raft group's leader but the group elects it, so the broker to kill
+/// is the one the groups chose.
+async fn raft_leaders(cluster: &Cluster, streams: &[String]) -> BTreeMap<String, Vec<String>> {
+    let mut led: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    for name in streams {
+        let mut leader: Option<(u64, String)> = None;
+        for node in cluster.node_ids() {
+            if let Some(member) = cluster.raft_member(&node, name).await
+                && member.role == "leader"
+                && leader.as_ref().is_none_or(|(term, _)| member.term > *term)
+            {
+                leader = Some((member.term, node));
+            }
+        }
+        if let Some((_, node)) = leader {
+            led.entry(node).or_default().push(name.clone());
+        }
+    }
+    led
 }
 
 /// The streams in `names` that took no publish within `bound` of `since`.

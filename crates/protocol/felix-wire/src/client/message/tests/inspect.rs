@@ -270,6 +270,10 @@ fn a_raft_members_view_round_trips() {
         last_index: Some(12),
         committed: Some(11),
         voters: vec!["broker-a".to_string(), "broker-b".to_string()],
+        stopped: Some(crate::InspectedStop {
+            term: 3,
+            error: "a flush failed".to_string(),
+        }),
     });
     let frame = Message::ShardInspectInfo {
         view: Box::new(view.clone()),
@@ -284,7 +288,7 @@ fn a_raft_members_view_round_trips() {
     assert_eq!(*back, view);
 }
 
-/// A member's view from a broker that sends no voter list decodes with none,
+/// A member's view from a broker that sends no voter list or stop decodes with neither,
 /// and an empty list is left out, so the two exchange the same JSON.
 #[test]
 fn a_raft_view_without_voters_is_the_older_shape() {
@@ -293,5 +297,6 @@ fn a_raft_view_without_voters_is_the_older_shape() {
     });
     let raft: crate::InspectedRaft = serde_json::from_value(older.clone()).expect("decode");
     assert!(raft.voters.is_empty());
+    assert!(raft.stopped.is_none());
     assert_eq!(serde_json::to_value(&raft).expect("encode"), older);
 }
