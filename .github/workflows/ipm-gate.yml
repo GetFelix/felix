@@ -51,7 +51,7 @@ on:
         type: string
         default: "6"
       arms:
-        description: "Diagnostic A/B: space-separated ref:engine arms, interleaved (e.g. main:raft main:hybrid)"
+        description: "Diagnostic A/B: space-separated ref:engine arms, interleaved (e.g. main:raft main:raft-wc main:hybrid)"
         type: string
         default: ""
       record_arms:
@@ -160,6 +160,10 @@ jobs:
               cp "$RUNNER_TEMP/tgt-rel/release/felix-broker" "$out"
             fi
           }
+          # Engine `raft-wc`: Raft with every broker reopened after the harness
+          # finalizes the fleet features, so its logs open written-commit.
+          engine() { local e=${1##*:}; echo "${e%-wc}"; }
+          reopen() { case "$1" in *:raft-wc) echo 1 ;; *) echo 0 ;; esac; }
           use_arm() { cp "$RUNNER_TEMP/bin/$1-$(slug "${2%%:*}")" target/release/felix-broker; }
           run_test() {
             cargo test --locked --release -p felix-cluster --test instructions_per_message \
@@ -170,7 +174,7 @@ jobs:
           for pass in $(seq 1 "$PASSES"); do
             for arm in $ARMS; do
               use_arm release "$arm"
-              FELIX_TEST_SHARD_ENGINE="${arm##*:}" FELIX_PROF_RECORD=0 FELIX_PROF_DIR="$RUNNER_TEMP/perf-rel" \
+              FELIX_TEST_SHARD_ENGINE="$(engine "$arm")" FELIX_IPM_REOPEN="$(reopen "$arm")" FELIX_PROF_RECORD=0 FELIX_PROF_DIR="$RUNNER_TEMP/perf-rel" \
                 FELIX_IPM_OUT="$PWD/prof/ab/$pass-$(slug "$arm").json" run_test | tee "prof/ab/$pass-$(slug "$arm").log" | grep -E "^profile " || true
             done
           done
@@ -187,7 +191,7 @@ jobs:
               s=$(slug "$arm"); first=${first:-$s}
               use_arm diag "$arm"
               sudo rm -f "$RUNNER_TEMP"/perf-rec/*.data
-              FELIX_TEST_SHARD_ENGINE="${arm##*:}" FELIX_PROF_ARM="$s" FELIX_PROF_RECORD=1 FELIX_PROF_DIR="$RUNNER_TEMP/perf-rec" \
+              FELIX_TEST_SHARD_ENGINE="$(engine "$arm")" FELIX_IPM_REOPEN="$(reopen "$arm")" FELIX_PROF_ARM="$s" FELIX_PROF_RECORD=1 FELIX_PROF_DIR="$RUNNER_TEMP/perf-rec" \
                 FELIX_IPM_OUT="$PWD/prof/rec/$s.json" run_test | tee "prof/rec/$s.log" | grep -E "^profile " || true
               # Symbolised now, while this arm's binary is the one in place.
               for f in "$RUNNER_TEMP"/perf-rec/*.data; do

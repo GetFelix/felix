@@ -1132,6 +1132,29 @@ async fn broker_light_load_profile() {
         })
         .await
         .expect("start cluster");
+        // Diagnostic: a Raft member picks its fsync mode when it opens, and the
+        // harness finalizes `raft_written_commit` only after every member is
+        // open, so they all run strict. Reopening each broker picks it up.
+        let cluster = if std::env::var("FELIX_IPM_REOPEN").is_ok_and(|v| v == "1") {
+            let mut cluster = cluster;
+            let ids: Vec<String> = cluster.nodes.iter().map(|n| n.node_id.clone()).collect();
+            for id in &ids {
+                cluster.terminate_node(id).expect("terminate broker");
+                cluster
+                    .wait_for_exit(id, Duration::from_secs(60))
+                    .await
+                    .expect("broker exits");
+                cluster.restart_node(id).await.expect("restart broker");
+            }
+            cluster
+                .await_every_shard_serving(STREAM, SHARDS)
+                .await
+                .expect("every shard serving after the reopen");
+            eprintln!("profile: reopened {} brokers", ids.len());
+            cluster
+        } else {
+            cluster
+        };
         let prof_dir = prof_dir.clone();
         let wanted = wanted.clone();
         let rows = tokio::task::spawn_blocking(move || -> Result<Vec<serde_json::Value>> {

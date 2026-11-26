@@ -44,10 +44,12 @@ def main():
                 batches = sum(c.get("felix_storage_append_batch_records_count", 0) for c in counters)
                 records = sum(c.get("felix_storage_append_batch_records_sum", 0) for c in counters)
                 per_batch = records / batches if batches else 0.0
-                data.setdefault((label, arm), []).append((instr, cpu, row["msg_s"], syncs, per_batch))
+                # Recorded only by an OnCommit log, so it names a strict arm.
+                strict = sum(c.get("felix_storage_sync_batch_appends_count", 0) for c in counters)
+                data.setdefault((label, arm), []).append((instr, cpu, row["msg_s"], syncs, per_batch, strict))
     hybrid = next((a for a in arms if a.endswith(":hybrid")), None)
-    print("| cell | arm | instr/msg (passes) | CPU/broker | msg/s | syncs/msg | records/batch | vs hybrid |")
-    print("|---|---|---|---|---|---|---|---|")
+    print("| cell | arm | instr/msg (passes) | CPU/broker | msg/s | syncs/msg | records/batch | on-commit syncs/msg | vs hybrid |")
+    print("|---|---|---|---|---|---|---|---|---|")
     for cell in cells:
         ref = data.get((cell, hybrid))
         ref_i = statistics.mean(x[0] for x in ref) if ref else None
@@ -55,7 +57,7 @@ def main():
         for arm in arms:
             v = data.get((cell, arm))
             if not v:
-                print(f"| {cell} | {arm} | - | - | - | - | - | - |")
+                print(f"| {cell} | {arm} | - | - | - | - | - | - | - |")
                 continue
             ins = [x[0] for x in v]
             mi = statistics.mean(ins)
@@ -63,6 +65,7 @@ def main():
             ms = statistics.mean(x[2] for x in v)
             sy = statistics.mean(x[3] for x in v)
             pb = statistics.mean(x[4] for x in v)
+            st = statistics.mean(x[5] for x in v)
             spread = f"{min(ins) / 1e3:.0f}-{max(ins) / 1e3:.0f}k" if len(ins) > 1 else ""
             if ref_i and arm != hybrid and mi:
                 gap = f"instr {(mi / ref_i - 1) * 100:+.0f}%, cpu {(mc / ref_c - 1) * 100:+.0f}%"
@@ -70,7 +73,7 @@ def main():
                 gap = f"cpu {(mc / ref_c - 1) * 100:+.0f}%"
             else:
                 gap = ""
-            print(f"| {cell} | {arm} | {mi / 1e3:.0f}k {spread} | {mc:.0f}% | {ms:.0f} | {sy:.2f} | {pb:.2f} | {gap} |")
+            print(f"| {cell} | {arm} | {mi / 1e3:.0f}k {spread} | {mc:.0f}% | {ms:.0f} | {sy:.2f} | {pb:.2f} | {st:.2f} | {gap} |")
 
 
 if __name__ == "__main__":
