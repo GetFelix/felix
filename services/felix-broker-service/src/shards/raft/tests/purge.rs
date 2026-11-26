@@ -485,11 +485,14 @@ async fn a_member_restarted_after_a_purge_serves_from_its_floor() {
             .expect("trimmed");
         let log = shards.log_of(&orders).await.expect("log");
         until("the trim applies", || log.readable_base() == floor).await;
-        // A pass reports only a purge that ran. One the device holds past
-        // the pass's wait is reported by a later pass.
+        // A pass reports a purge once its purged id is on disk. The
+        // segments go behind it, so a device that holds their removal does
+        // not hold the pass or the member's Raft core (#3263).
         let held = log.hold_head_trims().await;
+        let segments = log.segments().len();
         let early = shards.runtime.purge_below_floor(&orders).await;
-        assert_eq!(early, None, "a pass reported a purge that had not run");
+        assert!(early.is_some_and(|at| at < floor), "{early:?}");
+        assert_eq!(log.segments().len(), segments, "removed while held");
         drop(held);
         let purged = purged_on(&shards).await;
         assert!(purged < floor, "purged to {purged}");

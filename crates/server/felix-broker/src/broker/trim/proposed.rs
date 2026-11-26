@@ -16,6 +16,8 @@ use super::{TrimOutcome, await_committed, refuse_commit_stream};
 use crate::broker::Broker;
 use crate::broker::publish::{Expected, HeldTrim};
 use crate::broker::shards::StreamHandle;
+use crate::broker::subscribe::await_pending_trim;
+use crate::durable::StreamLog;
 use crate::error::{BrokerError, Result};
 use crate::{ProposalCommitted, ProposalFailed, ProposedPublish};
 
@@ -70,6 +72,7 @@ impl Broker {
                 offset: expected,
             });
         }
+        settle_pending_trims(handle, log).await?;
         // Read in the hybrid's order: the floor only rises, so if the tail
         // is still `expected` after it, the no-op answer held then.
         let floor = log.head_trim().map_or(0, |trim| trim.floor);
@@ -151,6 +154,7 @@ impl Broker {
                 feature: felix_common::fleet::RAFT_HEAD_TRIM.name(),
             });
         }
+        settle_pending_trims(handle, log).await?;
         let floor = log.head_trim().map_or(0, |trim| trim.floor);
         let tail = log.tail_offset().await?;
         if before > tail {
@@ -190,6 +194,16 @@ impl Broker {
             },
         })
     }
+}
+
+/// Wait until every trim `log` holds has applied its floor, before the floor
+/// is read. A leader answers a trim once a majority holds it, which can be
+/// before its own log has synced the entry, and the floor applies only then:
+/// read earlier, it would let a trim the client was already told about be
+/// overtaken by a lower one.
+async fn settle_pending_trims(handle: &StreamHandle, log: &StreamLog) -> Result<()> {
+    let (stream, shard) = handle.state.held.shard().unwrap_or_default();
+    await_pending_trim(log, None, stream, shard).await
 }
 
 /// A trim handed to a shard's engine, on its way to an answer. See
