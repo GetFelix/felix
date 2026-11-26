@@ -1049,11 +1049,16 @@ shard's log and its counters, and drops the broker's in-memory `StreamState`.
 
 - A handle given out earlier fails every read, append and flush with
   `StorageError::Closed`.
-- An append, commit or sync already in flight is answered by whether its
-  batch is on disk, not by the close. One the close's final flush covered
-  is answered Ok, so the client does not retry a record a reopen will
-  serve; one that reached the log after the close shut its segments is
-  answered `Closed` and is not in the log.
+- A write already waiting for its sync when the close runs is answered by
+  whether its batch is on disk, not by the close. This covers appends,
+  commits and syncs under fsync-on-commit, and Raft's waits for a sync.
+  A batch the close's final flush covered is answered Ok, so the client
+  does not retry a record a reopen will serve. A batch written before the
+  close that the final flush did not cover is answered `Closed`, or with
+  the flush's error, never as written. An append that reaches the log
+  after the close shut its segments is answered `Closed` and is not in the
+  log. Under periodic and no fsync an append is answered when it is
+  written, as always, and the close's final flush is what puts it on disk.
 - An open of the shard while the close is running also fails with `Closed`
   rather than opening a second writer over files still being flushed. It is
   retryable: once the close finishes, the next open recovers the shard afresh

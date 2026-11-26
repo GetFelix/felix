@@ -245,3 +245,38 @@ async fn an_append_that_arrives_during_a_close_is_answered_closed() {
     let reopened = open(&dir, FsyncMode::OnCommit);
     assert_eq!(read_all(&reopened, 0).await, ["before"]);
 }
+
+/// The dangerous side: an `OnCommit` append written but not yet synced,
+/// whose flush then fails, is answered with an error and never reported
+/// durable, with a close landing in between.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_append_whose_flush_failed_around_a_close_is_not_answered_ok() {
+    let dir = tempdir().expect("dir");
+    let log = Arc::new(open(&dir, FsyncMode::OnCommit));
+
+    let release = hold_next(&log, HoldAt::Reply);
+    let append = tokio::spawn({
+        let log = Arc::clone(&log);
+        async move { log.append(&records(&["unsynced"])).await }
+    });
+    wait_until_held(&log).await;
+    log.fail_next_flush();
+    // Waits for the append lock the held append has, then for the flush.
+    let close = tokio::spawn({
+        let log = Arc::clone(&log);
+        async move { log.close().await }
+    });
+    release.send(()).expect("release");
+    let answered = append.await.expect("task");
+    let _ = close.await.expect("task");
+    assert!(
+        answered.is_err(),
+        "an append whose flush failed was answered {answered:?}"
+    );
+    assert!(log.is_poisoned());
+    assert_eq!(
+        log.durable_offset(),
+        0,
+        "the failed flush was counted durable"
+    );
+}
