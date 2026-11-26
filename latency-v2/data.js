@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795673701995,
+  "lastUpdate": 1795674580234,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -89892,6 +89892,72 @@ window.BENCHMARK_DATA = {
             "range": "598.94",
             "unit": "us",
             "extra": "trials: 5\nmedian: 594.00\nmean: 947.80\nstdev: 598.94\ncv: 63.19%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "55f8d27ea605be12098dd4cadc731a5b19d79147",
+          "message": "test(cluster): no offset is held as two records across leader faults (history rule 22) (#2258) (#3221)\n\n* test(sim): no Raft offset is delivered as two values or at a blank entry (#2258)\n\nThe Raft simulation judged each delivery against the final log only up to\nthe final read. Deliveries are now also compared with each other, so two\nsubscribers handed different records at one offset is a finding past the\nfinal read and on a list with no final read. That is the subscriber half of\nthe duplicate-offset nemesis.\n\nThe judgement moves into raft/deliveries.rs with unit tests over hand-built\ndeliveries, including one at a blank entry's offset, which is the Raft check\nfor routing/generation_start.rs: the blank of a term takes no offset a\nconsumer sees.\n\nSpec-Unaffected: simulator checker only; no modelled code changes\n\n* test(cluster): failover heal runs on Raft with no flag (#2258)\n\nOn Raft the broker to kill is the one the groups elected, read from each\nmember's report, since placement's assigned leader is only a hint there. No\nfleet feature is finalized and FELIX_INTERNAL_ELECTION is not set. The\nelection variant is the hybrid's switch and skips on Raft, where the other\nvariant is the same test.\n\nSpec-Unaffected: cluster test only; no modelled code changes\n\n* docs(replication): the coverage hand-off says where each Raft check is (#2258)\n\nRows the tables still called Missing have Raft checks on main: the cluster\nharness runs Raft by default, so the history checks, rule 21 by term and the\nelection nemesis run on Raft, and the wiped-copy and deposed-leader read and\ngroup-ack tests run there too. The blank-entry row is held by the\nsimulator's delivery check, and failover heal is ported on this branch.\nWhat waits on another issue is marked Blocked with the issue.\n\nSpec-Unaffected: docs only\n\n* test(history): rule 22, no offset is held as two records (#2258)\n\nEvery observation of an offset is held against every other: the final\nread, reads from any broker, every subscriber delivery, and a Quorum\nappend's acknowledged offset. Leader lists get the rule too; a Leader\nacknowledgement may be lost across a change of leader, so it is not an\nobservation. A Quorum list with a final read is left to rules 1, 3 and 10.\n\nSpec-Unaffected: test-only checker rule; no protocol or model change\n\n* test(history): an offset-reuse campaign on a Leader stream's leader (#2258)\n\nA Leader list joins the campaign's Quorum lists, two subscribers follow\neach list, and every list is read from every broker after each recovery\nand before the final reads. The nemesis kills, partitions, machine-crashes\nand wipes whichever broker leads the Leader list; the two new fault kinds\nwait on heal until every copy the broker holds votes again. Rule 22 judges\nthe result.\n\nSpec-Unaffected: test harness and docs only; no protocol or model change",
+          "timestamp": "2026-11-26T06:24:02Z",
+          "tree_id": "1378e59bf2437925eb92a29515db86e12380f479",
+          "url": "https://github.com/GetFelix/felix/commit/55f8d27ea605be12098dd4cadc731a5b19d79147"
+        },
+        "date": 1795674567226,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 73,
+            "range": "0.84",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 73.00\nmean: 72.80\nstdev: 0.84\ncv: 1.15%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 127,
+            "range": "5.07",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 127.00\nmean: 128.80\nstdev: 5.07\ncv: 3.94%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 205,
+            "range": "285.70",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 205.00\nmean: 304.60\nstdev: 285.70\ncv: 93.80%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 89,
+            "range": "0.71",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 89.00\nmean: 89.00\nstdev: 0.71\ncv: 0.79%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 195,
+            "range": "19.42",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 195.00\nmean: 200.40\nstdev: 19.42\ncv: 9.69%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 370,
+            "range": "717.37",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 370.00\nmean: 841.60\nstdev: 717.37\ncv: 85.24%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
