@@ -20,10 +20,11 @@ use crate::api::types::{
 use crate::auth::bearer::require_cluster_action;
 use crate::auth::rbac::authorize::ACTION_NODE_MANAGE;
 use crate::cluster::placement::{
-    CaughtUp, Decision, OperatorError, OperatorStep, PlacementRead, Refused, abandon_log,
-    cancel_move, preview_operator, run_operator, start_move,
+    CaughtUp, Decision, MoveStep, OperatorError, OperatorStep, PlacementRead, Refused, abandon_log,
+    abandon_raft_log, abandons_on_raft, cancel_move, preview_operator, run_operator, start_move,
 };
 use crate::model::{MoveReason, ShardKey, ShardKind, ShardState};
+use crate::store::StoreError;
 
 #[utoipa::path(
     get,
@@ -230,7 +231,10 @@ pub(crate) async fn abandon_shard_log(
         shard,
         kind: query.kind,
     };
-    let response = run(&state, |catalog| abandon_log(catalog, &key)).await?;
+    let response = match abandon_on_raft(&state, &key).await? {
+        Some(response) => response,
+        None => run(&state, |catalog| abandon_log(catalog, &key)).await?,
+    };
     tracing::warn!(
         kind = %key.kind,
         name = %key.stream,
@@ -240,6 +244,64 @@ pub(crate) async fn abandon_shard_log(
         "an operator abandoned a shard's log; records only its previous leader held are lost",
     );
     Ok(response)
+}
+
+/// The abandon of a shard on Raft, or `None` for one placement places. One
+/// command the store checks and writes in one compare and swap; see
+/// [`crate::cluster::placement::abandon_raft_log`].
+async fn abandon_on_raft(
+    state: &AppState,
+    key: &ShardKey,
+) -> Result<Option<Json<ShardMoveResponse>>, ApiError> {
+    let refused = |refused: Refused| operator_error(OperatorError::Refused(refused));
+    // Read before the catalog, which is not held across an await.
+    let finalized =
+        crate::api::streams::fleet_finalized(state, felix_common::fleet::RAFT_ABANDON).await?;
+    let dead = state
+        .store
+        .dead_nodes()
+        .await
+        .map_err(|ref err| api_internal("read the dead brokers", err))?;
+    let read = PlacementRead::load(state.store.as_ref(), &state.node_liveness)
+        .await
+        .map_err(|ref err| api_internal("read placement state", err))?;
+    let (start, from) = {
+        let catalog = read.catalog(state.move_policy.clone());
+        if !abandons_on_raft(&catalog, key) {
+            return Ok(None);
+        }
+        if !finalized {
+            return Err(refused(Refused::AbandonUnsupported));
+        }
+        let start = abandon_raft_log(&catalog, key, &dead, felix_common::clock::wall_millis())
+            .map_err(refused)?;
+        let from = catalog
+            .existing
+            .iter()
+            .find(|assignment| &assignment.key == key)
+            .map(|assignment| assignment.leader.clone())
+            .unwrap_or_default();
+        (start, from)
+    };
+    drop(read);
+    let to = start.leader.clone();
+    let assignment = state
+        .store
+        .abandon_raft_epoch(key, start)
+        .await
+        .map_err(|err| match err {
+            StoreError::Conflict(why) => refused(Refused::AbandonRefused(why)),
+            StoreError::NotFound(_) => refused(Refused::UnknownShard),
+            ref other => api_internal("abandon a Raft shard's log", other),
+        })?;
+    state.placement_wakes.assignment_written();
+    state.placement_wakes.request_pass();
+    Ok(Some(Json(response(OperatorStep {
+        step: MoveStep::Discard { from, to },
+        assignment,
+        expected_generation: 0,
+        zones: None,
+    }))))
 }
 
 #[utoipa::path(

@@ -98,6 +98,10 @@ fn an_abandon_starts_the_next_epoch_empty_on_the_new_leader() {
     assert_eq!(next.placed.as_ref().unwrap().brokers, set(&["b"]));
     assert!(next.raft_copy_ids.is_empty(), "no old copy is a voter");
     assert!(next.raft_target.is_none());
+    assert_eq!(
+        next.raft_target_counter, 1,
+        "the next target counts on from the dropped one"
+    );
     let bases = &next.raft_bases.as_ref().unwrap().bases;
     assert_eq!(bases.len(), 1);
     assert_eq!(bases[0].base_last, None);

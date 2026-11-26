@@ -482,6 +482,41 @@ async fn a_fresh_copy_past_epoch_zero_takes_the_records_epoch() {
     shards.shutdown().await;
 }
 
+/// **A blank copy of a group past epoch 0 never forms it from index 0.**
+/// An abandoned epoch has an empty base, so its only copy is blank and its
+/// set is full; forming would give out offsets the lost epoch may have
+/// acknowledged.
+#[tokio::test]
+async fn a_blank_copy_past_epoch_zero_does_not_form_the_group() {
+    use crate::shards::watch::{RaftBases, RaftEpochBase};
+    let root = tempfile::tempdir().expect("tempdir");
+    let broker = broker(root.path()).await;
+    let shards = shards(&broker);
+    let orders = key("orders", 0);
+    let mut placed = assigned(orders.clone(), INCARNATION);
+    placed.placed = Some(crate::shards::watch::PlacedEpoch { epoch: 1 });
+    placed.raft_bases = Some(RaftBases {
+        incarnation: INCARNATION,
+        bases: vec![RaftEpochBase {
+            base_last: None,
+            first_index: 1 << 30,
+        }],
+    });
+    shards.take(&mut assignments([placed.clone()])).await;
+    let stored = stored(placed, &[&shards]);
+    for _ in 0..10 {
+        shards.take(&mut assignments([stored.clone()])).await;
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    let status = shards.runtime.status(&orders).expect("open");
+    assert_eq!(
+        (status.term, status.last_index),
+        (0, None),
+        "formed a group past epoch 0 from index 0"
+    );
+    shards.shutdown().await;
+}
+
 /// **A shard restored from an export has no placed record, but its bases
 /// still say it re-formed.** Read as epoch 0, a copy without `raft-epoch`
 /// would send its copy id and could vote (#2882).

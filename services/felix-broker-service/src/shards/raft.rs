@@ -1625,7 +1625,14 @@ impl EngineShards for RaftShards {
                 if !*full && blank {
                     short.push(held());
                 }
-                if *full && blank && brokers.first() == Some(&self.local.as_str()) {
+                // Forming writes the group's first entries from index 0. Past
+                // epoch 0 an index below the epoch's first one may have been
+                // given out, so only a start at that index may begin it.
+                let past_zero = assignment.epoch_bases().is_some();
+                if *full && blank && past_zero && self.held_warn.lock().due(key) {
+                    tracing::warn!(shard = ?key, epoch = assignment.group_epoch(), "not forming the shard's Raft group from index 0: it is past epoch 0");
+                }
+                if *full && blank && !past_zero && brokers.first() == Some(&self.local.as_str()) {
                     let brokers = brokers.iter().map(|broker| broker.to_string()).collect();
                     let target = stored_target(assignment);
                     self.form(key.clone(), brokers, assignment.incarnation, target);

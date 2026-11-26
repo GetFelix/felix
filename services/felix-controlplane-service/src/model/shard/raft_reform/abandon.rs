@@ -181,6 +181,13 @@ impl ShardAssignment {
         // Nothing of the lost group names a voter of the new one. The new
         // leader's first copy id report seeds the epoch, as at epoch 0.
         next.raft_copy_ids = Default::default();
+        // The count goes on from the dropped target, as for a set change, so
+        // no later target reads as older than one a copy already acted on.
+        next.raft_target_counter = self
+            .raft_target
+            .as_ref()
+            .map_or(self.raft_target_counter, |target| target.counter)
+            .max(self.raft_target_counter);
         next.raft_target = None;
         next.raft_formed = None;
         next.raft_voters = None;
