@@ -303,8 +303,11 @@ commit on a written majority (`per-shard-raft.md`, "Proposal: commit on a
 written majority on relaxed brokers"), so its log fsyncs on the broker's
 periodic schedule, or once a second under `none`, rather than on every
 commit. Every build reports it and a new
-cluster finalizes it. Brokers act on it only when they open a member, so a
-member opened before the finalize fsyncs on commit until it opens again.
+cluster finalizes it, at its first registration whether its streams were
+created before the brokers or after. Brokers act on it only when they open a
+member, so a member opened before the finalize, on an upgraded cluster or
+one whose new-cluster finalize was held back, fsyncs on commit until it opens
+again.
 Once it is finalized, no broker may be downgraded to a build without the
 reservation file, since that build would rotate or reclaim a copy without
 carrying it.
@@ -369,10 +372,18 @@ registration it finalizes every feature its brokers report except
 write on `majority_ack` from the first stream: without it the leader waits
 for a replica report to reach the control plane before it acknowledges.
 
-The registration handler checks that the cluster is new: no stream or cache
-was ever created (the change feeds and snapshots are empty) and every node
-record is at node incarnation 0, which a broker leaves when it registers
-again, as every broker of an upgraded cluster does. Under Raft it also waits
+The registration handler checks that the cluster is new: no broker has
+served it yet, and every node record is at node incarnation 0, which a
+broker leaves when it registers again, as every broker of an upgraded
+cluster does. No broker has served it when no stream or cache shard was
+ever placed (the assignment feed has never written anything), the store was
+never restored (its placement incarnation is 0), and under Raft its group
+did not adopt brokers' existing data when it formed. Streams and caches
+created before any broker registers, as a seed job does, do not count: no
+broker holds anything of theirs until a shard is placed. The handler reads
+placement before it registers the broker, since the registration wakes a
+placement pass that can put a shard on that broker before the finalize
+runs (`cluster::fleet::never_placed`). Under Raft it also waits
 for every member to report this build's metadata level, since the upgrade
 runbook finalizes `majority_ack` and the features after it only once every
 control-plane member is upgraded. It then finalizes each feature in the
@@ -388,7 +399,7 @@ When the member check or a store error holds the finalize back, the
 instance that took the registration retries it in the background, from one
 second apart up to thirty, until nothing that passes holds it
 (`cluster::fleet::NewClusterFinalize`). The retry does not check again that
-the cluster is new. Brokers re-registering or streams created meanwhile do
+the cluster is new. Brokers re-registering or shards placed meanwhile do
 not make it one that could roll back to an older build, and an operator's
 finalize at that point passes the same checks. Members starting together
 with their brokers, as a Kubernetes rollout does, would otherwise leave
@@ -417,11 +428,18 @@ The registration answers with the enabled set after the finalize, so the
 broker uses it from its first stream
 (`a_new_cluster_finalizes_every_feature_at_its_first_registration`,
 `a_new_cluster_finalizes_only_what_its_brokers_report`,
-`a_store_with_streams_is_not_finalized_on_registration`,
+`a_store_seeded_before_its_first_broker_is_finalized_on_registration`,
+`a_store_that_placed_a_shard_is_not_finalized_on_registration`,
 `a_store_whose_brokers_registered_before_is_not_finalized`,
-`a_new_cluster_waits_for_every_member_to_finalize`). A cluster that creates
-streams before any broker registers is not new by then, and is finalized by
-the operator as an upgraded one is.
+`a_new_cluster_waits_for_every_member_to_finalize`). A broker opens its
+storage and Raft members only after that answer, so in a cluster seeded
+before its brokers, as in one seeded after, they open with
+`raft_written_commit` already on
+(`streams_created_before_the_first_broker_are_finalized_before_it_opens_a_member`).
+A cluster that was restored, or that placed a shard on a broker since gone,
+is finalized by the operator as an upgraded one is
+(`a_restored_store_is_not_new`,
+`a_store_that_placed_a_shard_on_a_broker_since_gone_is_not_new`).
 
 **Atomicity.** Registration is the only way a node starts serving, so a
 finalize only has to be serialized with registrations. The memory store holds
