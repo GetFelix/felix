@@ -1673,4 +1673,286 @@ mod on_raft {
         at.stop().await;
         Ok(())
     }
+
+    /// Plain publishes queued on one Raft shard's lane: merged into one
+    /// proposal, each answered with its own offsets.
+    mod merged {
+        use super::*;
+        use crate::serving::quic::client_error::ClientError;
+
+        impl Leading {
+            /// Batches handed to the group, and openraft writes made, so far.
+            fn counts(&self) -> (u64, u64) {
+                let engine = self.shards.engine_for(&self.orders).expect("a member");
+                let status = engine.status(&self.orders).expect("a group");
+                (engine.proposals(&self.orders), status.client_writes)
+            }
+
+            fn job_of(&self, records: usize) -> (PublishJob, Answer) {
+                let (mut job, answer) = job(&self.handle, &self.orders, self.term, b"", None);
+                job.payloads = (0..records)
+                    .map(|n| Bytes::from(format!("r{n}")))
+                    .collect();
+                (job, answer)
+            }
+
+            async fn subscribe(&self) -> felix_broker::SubscriptionReceiver {
+                let (receiver, guard) = self
+                    .broker
+                    .subscribe("t1", "ns", "orders", 0)
+                    .await
+                    .expect("subscribed")
+                    .into_parts();
+                std::mem::forget(guard);
+                receiver
+            }
+        }
+
+        fn offset(answer: Result<Result<Option<u64>>, oneshot::error::RecvError>) -> u64 {
+            answer
+                .expect("answered")
+                .expect("acknowledged")
+                .expect("an offset")
+        }
+
+        /// **Publishes queued on one Raft shard's lane are one proposal,
+        /// one openraft write and one delivery**, each answered with its
+        /// own offsets in lane order, whether its publisher waits for the
+        /// commit, was answered on enqueue, or asked for no answer. A lone
+        /// publish is still exactly one of each.
+        #[tokio::test]
+        async fn queued_publishes_to_a_raft_shard_are_one_proposal() -> Result<()> {
+            let at = Leading::new().await?;
+            let mut receiver = at.subscribe().await;
+
+            let before = at.counts();
+            let lone = at.plain(b"lone").await;
+            let after = at.counts();
+            assert_eq!(
+                (after.0 - before.0, after.1 - before.1),
+                (1, 1),
+                "a lone publish is one proposal and one write"
+            );
+            assert_eq!(fixture::delivered(&mut receiver).await.0, lone);
+
+            // Three records in the middle, so answers are sliced by count.
+            let sizes = [1, 1, 3, 1, 1, 1, 1, 1];
+            let mut answers = Vec::new();
+            for (n, records) in sizes.into_iter().enumerate() {
+                let (mut job, answer) = at.job_of(records);
+                match n {
+                    // Asked for no answer.
+                    4 => job.response = None,
+                    // Told it succeeded when it was queued.
+                    5 => {
+                        job.response = None;
+                        job.acked_on_enqueue = true;
+                    }
+                    _ => {}
+                }
+                at.publish_ctx.scheduler.send(job).await;
+                answers.push(answer);
+            }
+            let mut expected = lone + 1;
+            for (n, (answer, records)) in answers.into_iter().zip(sizes).enumerate() {
+                if n != 4 && n != 5 {
+                    assert_eq!(offset(answer.await), expected, "publish {n}");
+                }
+                expected += records as u64;
+            }
+            let after_merge = at.counts();
+            assert_eq!(
+                (after_merge.0 - after.0, after_merge.1 - after.1),
+                (1, 1),
+                "the queued publishes were proposed one by one"
+            );
+            let envelope = tokio::time::timeout(Duration::from_secs(10), receiver.recv())
+                .await
+                .expect("delivered in time")
+                .expect("subscription open");
+            assert_eq!(envelope.base_offset(), Some(lone + 1));
+            assert_eq!(envelope.len() as u64, expected - lone - 1);
+            assert_eq!(
+                at.log_from(lone + 1).await.len() as u64,
+                expected - lone - 1
+            );
+            at.stop().await;
+            Ok(())
+        }
+
+        /// **A merge stops at its cap**: 70 queued publishes are two
+        /// proposals, 64 and 6, with offsets in lane order.
+        #[tokio::test]
+        async fn a_merge_stops_at_its_cap() -> Result<()> {
+            let at = Leading::new().await?;
+            let before = at.counts();
+            let mut answers = Vec::new();
+            for _ in 0..70 {
+                let (job, answer) = at.job_of(1);
+                at.publish_ctx.scheduler.send(job).await;
+                answers.push(answer);
+            }
+            let mut offsets = Vec::new();
+            for answer in answers {
+                offsets.push(offset(answer.await));
+            }
+            let first = offsets[0];
+            assert_eq!(offsets, (first..first + 70).collect::<Vec<_>>());
+            assert_eq!(at.counts().0 - before.0, 2, "64 then 6");
+            at.stop().await;
+            Ok(())
+        }
+
+        /// **A publish refused alone does not refuse its neighbours**: one
+        /// admitted at a term the group moved past and one with headers
+        /// this broker does not take sit between good ones. They are
+        /// refused, and the good ones get the offsets they would have had.
+        #[tokio::test]
+        async fn a_refused_publish_does_not_refuse_its_neighbours() -> Result<()> {
+            let at = Leading::new().await?;
+            let before = at.counts();
+            let (good, first) = at.job_of(1);
+            let (stale, refused_term) = job(&at.handle, &at.orders, at.term + 1, b"stale", None);
+            let headers = Some(vec![Some(Bytes::from_static(b"h"))]);
+            let (headered, refused_headers) =
+                job(&at.handle, &at.orders, at.term, b"headered", headers);
+            let (two, second) = at.job_of(1);
+            let (three, third) = at.job_of(1);
+            for job in [good, stale, headered, two, three] {
+                at.publish_ctx.scheduler.send(job).await;
+            }
+            let first = offset(first.await);
+            let err = refused_term.await?.expect_err("a stale term was written");
+            assert!(err.to_string().contains("does not serve"), "{err}");
+            let err = refused_headers.await?.expect_err("headers were dropped");
+            assert!(err.to_string().contains("record headers"), "{err}");
+            assert_eq!(offset(second.await), first + 1);
+            assert_eq!(offset(third.await), first + 2);
+            // The first alone, then the two after the refusals together.
+            assert_eq!(at.counts().0 - before.0, 2);
+            at.stop().await;
+            Ok(())
+        }
+
+        /// **A merged proposal the group refuses fails every publish in it,
+        /// each as it would have failed alone**, and nothing is written.
+        #[tokio::test]
+        async fn a_refused_merged_proposal_fails_every_publish_in_it() -> Result<()> {
+            let at = Leading::new().await?;
+            let before = at.counts();
+            let (lone, lone_answer) = job(&at.handle, &at.orders, at.term + 1, b"x", None);
+            at.publish_ctx.scheduler.send(lone).await;
+            let alone = ClientError::from_anyhow(&lone_answer.await?.expect_err("written"));
+            let mut answers = Vec::new();
+            for _ in 0..4 {
+                let (job, answer) = job(&at.handle, &at.orders, at.term + 1, b"x", None);
+                at.publish_ctx.scheduler.send(job).await;
+                answers.push(answer);
+            }
+            for answer in answers {
+                let err = answer.await?.expect_err("a refused publish was acknowledged");
+                let err = ClientError::from_anyhow(&err);
+                assert_eq!(err.code(), alone.code(), "{err:?}");
+                assert_eq!(err.retry(), alone.retry(), "{err:?}");
+            }
+            assert_eq!(at.counts().0, before.0, "a refused batch was proposed");
+            at.stop().await;
+            Ok(())
+        }
+
+        /// **A publisher that stops waiting keeps its place in the merge**:
+        /// its record is still written, and the others keep their offsets.
+        #[tokio::test]
+        async fn a_cancelled_publisher_keeps_its_place_in_the_merge() -> Result<()> {
+            let at = Leading::new().await?;
+            let mut answers = Vec::new();
+            for _ in 0..4 {
+                let (job, answer) = at.job_of(1);
+                at.publish_ctx.scheduler.send(job).await;
+                answers.push(answer);
+            }
+            drop(answers.remove(1));
+            let offsets: Vec<_> = futures::future::join_all(answers)
+                .await
+                .into_iter()
+                .map(offset)
+                .collect();
+            let first = offsets[0];
+            assert_eq!(offsets, [first, first + 2, first + 3]);
+            assert_eq!(at.log_from(first).await.len(), 4);
+            at.stop().await;
+            Ok(())
+        }
+
+        /// **An idempotent batch between plain publishes is proposed on its
+        /// own**, so its producer marks stay its own, and a re-send of it is
+        /// answered with where it first landed.
+        #[tokio::test]
+        async fn an_idempotent_batch_is_never_merged() -> Result<()> {
+            let at = Leading::new().await?;
+            let before = at.counts();
+            let (a, first) = at.job_of(1);
+            let (b, second) = at.job_of(1);
+            let (idem, sequenced) = idempotent(&at.handle, &at.orders, at.term, 0, b"once");
+            let (c, third) = at.job_of(1);
+            let (d, fourth) = at.job_of(1);
+            for job in [a, b, idem, c, d] {
+                at.publish_ctx.scheduler.send(job).await;
+            }
+            let first = offset(first.await);
+            assert_eq!(offset(second.await), first + 1);
+            assert_eq!(offset(sequenced.await), first + 2);
+            assert_eq!(offset(third.await), first + 3);
+            assert_eq!(offset(fourth.await), first + 4);
+            assert_eq!(at.counts().0 - before.0, 3, "plain, idempotent, plain");
+            let again = at
+                .send(0, &[b"once"], felix_broker::SequenceReuse::AnswerDuplicate)
+                .await?;
+            assert_eq!(again, Some(first + 2));
+            at.stop().await;
+            Ok(())
+        }
+
+        /// **A merged batch whose outcome is unknown leaves every member
+        /// unknown, and one refused before it was appended leaves every
+        /// member failed**, each classified as it would be alone.
+        #[test]
+        fn a_shared_raft_error_keeps_its_class_for_every_member() {
+            use felix_replication::engine::CommitError;
+            let cases = [
+                CommitError::LeadershipLost {
+                    what: "write",
+                    detail: "the entry was not reported written",
+                },
+                CommitError::NotAppended {
+                    what: "write",
+                    detail: "no majority has answered this leader lately",
+                },
+            ];
+            for error in cases {
+                let alone = ClientError::from_anyhow(&error.clone().into());
+                let mut answers = Vec::new();
+                let mut members = Vec::new();
+                for _ in 0..3 {
+                    let (tx, rx) = oneshot::channel();
+                    members.push(GroupMember {
+                        response: Some(tx.into()),
+                        acked_on_enqueue: false,
+                        records: 1,
+                    });
+                    answers.push(rx);
+                }
+                settle_group(members, None, Err(error.clone().into()));
+                for mut answer in answers {
+                    let err = answer
+                        .try_recv()
+                        .expect("answered")
+                        .expect_err("acknowledged");
+                    let err = ClientError::from_anyhow(&err);
+                    assert_eq!(err.code(), alone.code(), "{error:?}");
+                    assert_eq!(err.retry(), alone.retry(), "{error:?}");
+                }
+            }
+        }
+    }
 }
