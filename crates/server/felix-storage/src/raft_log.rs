@@ -40,6 +40,7 @@ pub(crate) mod purged;
 mod reader;
 pub(crate) mod reserved;
 pub(crate) mod snapshot;
+mod synced;
 pub(crate) use crate::state_file;
 mod tail_cache;
 #[cfg(test)]
@@ -185,6 +186,9 @@ struct Shared<K> {
     /// Appends whose callback has not fired. A truncation waits for it to
     /// empty.
     flushes: FlushQueue,
+    /// Written-commit appends that wait for nothing but a sync to raise
+    /// `flushed`.
+    synced: synced::Synced,
     /// The newest entries, so replication reads them without the segments.
     tail: Arc<Tail>,
     /// Holds the next paged read after its first page: the read signals the
@@ -354,28 +358,40 @@ where
             reserved = Some(next);
         }
         Ok(Self {
-            shared: Arc::new(Shared {
-                log,
-                codec,
-                positions: Positions::default(),
-                bounds: parking_lot::Mutex::new(Bounds {
-                    on_disk: purged,
-                    hidden: None,
-                }),
-                covering: std::sync::OnceLock::new(),
-                flushes: FlushQueue::default(),
-                tail: Tail::new(budget),
-                #[cfg(test)]
-                pause_after_page: parking_lot::Mutex::new(None),
-                #[cfg(test)]
-                segment_reads: std::sync::atomic::AtomicU64::new(0),
-                marking: std::sync::OnceLock::new(),
-                written_commit,
-                reserved: tokio::sync::Mutex::new(reserved),
-                trim_marked: std::sync::atomic::AtomicBool::new(false),
-                headers_marked: std::sync::atomic::AtomicBool::new(false),
-                vote_timer: std::sync::OnceLock::new(),
-                stopping: tokio::sync::watch::Sender::new(false),
+            shared: Arc::new_cyclic(|shared: &std::sync::Weak<Shared<K>>| {
+                // Weak: the log holds the hook, and the hook must not keep
+                // this adapter alive.
+                let shared = shared.clone();
+                let told = written_commit
+                    && log.on_durable(move || {
+                        if let Some(shared) = shared.upgrade() {
+                            shared.on_synced();
+                        }
+                    });
+                Shared {
+                    log,
+                    codec,
+                    positions: Positions::default(),
+                    bounds: parking_lot::Mutex::new(Bounds {
+                        on_disk: purged,
+                        hidden: None,
+                    }),
+                    covering: std::sync::OnceLock::new(),
+                    flushes: FlushQueue::default(),
+                    synced: synced::Synced::new(told),
+                    tail: Tail::new(budget),
+                    #[cfg(test)]
+                    pause_after_page: parking_lot::Mutex::new(None),
+                    #[cfg(test)]
+                    segment_reads: std::sync::atomic::AtomicU64::new(0),
+                    marking: std::sync::OnceLock::new(),
+                    written_commit,
+                    reserved: tokio::sync::Mutex::new(reserved),
+                    trim_marked: std::sync::atomic::AtomicBool::new(false),
+                    headers_marked: std::sync::atomic::AtomicBool::new(false),
+                    vote_timer: std::sync::OnceLock::new(),
+                    stopping: tokio::sync::watch::Sender::new(false),
+                }
             }),
             types: std::marker::PhantomData,
         })
@@ -610,7 +626,21 @@ impl<K> Shared<K> {
             self.log.sync().await.map_err(writer::io_error)?;
         }
         self.flushes.drained().await;
+        self.forget_synced();
         Ok(())
+    }
+
+    /// Raise `flushed` to `last` unless it is already there. Flushes can
+    /// answer out of order, so it only rises.
+    fn raise_flushed(&self, last: Option<LogPoint>) {
+        self.positions.send_modify(|at| {
+            if at
+                .flushed
+                .is_none_or(|f| last.is_some_and(|last| last.index > f.index))
+            {
+                at.flushed = last;
+            }
+        });
     }
 
     /// Raise the reservation, synced, to [`reserved::STEP`] past `index`
