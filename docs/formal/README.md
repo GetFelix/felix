@@ -2547,16 +2547,35 @@ term three ways, and they do it again until the terms run out. Pre-vote does
 not prevent that. It only stops a member nobody would elect from raising its
 term.
 
+`Splits = 1` excludes a behaviour in which two rounds collide. openraft draws
+each timeout from 1 to 2 seconds on top of a fixed per-member offset, and a
+vote round takes one round trip, so a collision is rare and two in one election
+are taken as none. Repeated collisions are unlikely but possible, and the model
+does not show that an election ends under them.
+
 Terms are bounded too, and a behaviour that uses them all with no leader
 fails the check, so the passing configurations allow more terms than their
-faults and the one split can spend. That takes more than it seems: a pre-vote
-that passed before a new leader's heartbeat reached the member still stands,
-and deposes that leader, so one fault can cost several terms. Two faults and
-six terms fail this way, and `FelixRaftElectLiveFaults.cfg` runs with eight. What they do not show: more than two faults,
-more than three voters, a partition other than one member cut off, lost or
-reordered messages, membership changes, and the lease's own timing, which
-`FelixRaftLease.tla` covers. The bound on splits is an assumption about the
-randomised timeout, not something the model proves.
+faults and the one split can spend. The count: one term for the first
+election, one for the split, and at most three for each fault (the election it
+forces, the term a crashed leader restores itself at, and one pre-vote that
+passed before a new leader's heartbeat reached the member and stands anyway,
+deposing that leader). One fault makes five, two make eight. Two faults and six
+terms fail on exactly that stale stand.
+
+The count is not taken on trust. `FelixRaftElectLiveSlack.cfg` and
+`FelixRaftElectLiveFaultsSlack.cfg` give one term more (six and nine) and check
+`TermsLeft`, that no member ever reaches the last term. It holds, so the bound
+never stops a step in those runs, and their verdict is the verdict with terms
+unbounded. `FelixRaftElectLiveFaultsTight.cfg` shows that two faults do reach
+the eighth term, so eight is the real cost, not a guess.
+
+What is proven, then: with three voters, at most two crashes or cuts, and at
+most one colliding round, once a majority stays up and connected a leader is
+elected among them, stays, opens, and is followed by all of them, for any
+number of terms. What is not shown: more than two faults, more than three
+voters, a partition other than one member cut off, lost or reordered messages,
+membership changes, repeated colliding rounds, and the lease's own timing,
+which `FelixRaftLease.tla` covers.
 
 ### Raft membership change and the fence around it
 
