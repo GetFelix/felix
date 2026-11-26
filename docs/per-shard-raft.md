@@ -673,6 +673,9 @@ A kept directory is also held while its reservation (`raft-reserved`, see
 highest reservation into the new copy, so this holds only a directory some
 other path left uncovered, and deleting it would lose how far a re-form must
 pad.
+Each held directory is logged with both reservations, the kept one's and the
+current copy's, so an operator can check the damaged-file step in
+`docs/storage-format.md` against them.
 
 The first index comes from the running member, so a purge held only in memory
 counts. The flushed tail is read from the log's durable offset, so a copy

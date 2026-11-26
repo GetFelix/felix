@@ -1489,21 +1489,28 @@ reads. Absent means the copy never reserved anything. What a damaged file
 stops depends on where it is:
 
 - **In a kept directory.** The next rotation of that shard fails, and
-  reclaim holds that kept directory as unreadable. If the current copy's
-  `raft-reserved` decodes, the rotation that made the current copy read
-  the kept file while it was still whole and carried its value, and a
-  reservation is never lowered after that. A copy raising its own value
-  does not prove the carry by itself: an older build could have rotated
-  without it. That is the downgrade ruled out below, so this holds only
-  while no broker of the fleet ran a build without the
-  file after the shard took a reservation. Then stop the
-  broker and delete only the damaged `raft-reserved` file in that kept
-  directory, not the directory. An absent file reads as no reservation,
-  and reclaim still checks the kept records and removes the directory only
-  once the current copy covers them. If the current copy has no
-  `raft-reserved`, an older build made it without the carry and the value
-  is lost: delete the damaged file the same way, then start the copy over,
-  as below.
+  reclaim holds that kept directory as unreadable. Every line the broker logs for a
+  held kept directory carries a `held` field ending in
+  `raft-reserved kept <value>, current <value>`: the kept
+  directory's reservation and the current copy's, as that pass read them,
+  where a value is a Raft index, `absent` or `unreadable`. A damaged file
+  reads as `unreadable`, never as a number. To decide, find the last line
+  for that kept directory from before it was damaged, and read the current
+  copy's value now:
+  - If the current value is at or above the kept one, the current copy
+    already covers what the kept file held. Stop the broker and delete only
+    the damaged `raft-reserved` file in that kept directory, not the
+    directory. An absent file reads as no reservation, and reclaim still
+    checks the kept records and removes the directory only once the current
+    copy covers them.
+  - Otherwise, or if no line shows the kept value whole, or the current
+    copy has no `raft-reserved`, the kept value may be lost. Do not guess
+    it. Delete the damaged file the same way, then start the copy over, as
+    below. The rotation fails on the damaged file, so it has to go first.
+
+  A current file that decodes does not prove the kept value was carried:
+  an older build could have rotated without the carry, and the current
+  copy then reserved a lower value of its own. Compare the two numbers.
 - **In the current shard directory.** The copy does not open, and reclaim
   holds every kept directory of the shard as unreadable, with a warning
   that names the current directory's file. Start the copy over: stop the
@@ -1521,7 +1528,8 @@ reservation. Its rotation also leaves a kept directory whose reservation is
 above the new copy's, and reclaim holds that directory as reserved. A
 copy raises its own reservation only as its log grows, so until it passes
 the kept one or another rotation carries it, the directory stays on
-disk, and the only sign is its line in the held report. A copy takes a reservation from its first open
+disk, and the only sign is its line in the held report, which shows both
+reservations. A copy takes a reservation from its first open
 or append by a build that carries this file, with no fleet gate: no
 released build runs Raft shards (the engine is behind the `raft` build
 feature), so no older build meets the file. Going back to a build

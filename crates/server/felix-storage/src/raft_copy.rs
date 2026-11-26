@@ -65,7 +65,9 @@ pub use placement_ack::{
     all_acked_placement_incarnation, copy_delete_is_void, placement_ack_in_bound,
     restored_placement_incarnation,
 };
-pub use reclaim::{CurrentCopy, HeldCopy, HeldReason, KeptReport, reclaim_kept};
+pub use reclaim::{
+    CurrentCopy, HeldCopy, HeldReason, HeldReservations, KeptReport, ReservationRead, reclaim_kept,
+};
 #[allow(
     unused_imports,
     reason = "the re-form command, not built yet, uses them"
