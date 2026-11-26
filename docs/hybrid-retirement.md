@@ -68,7 +68,8 @@ confirmed when stream shards on Raft (#2233) lands.
 | `shards/confirmed.rs` | 155 | Deleted | Serves confirmed assignment reads |
 | `cluster/lease.rs` | 470 | Kept | The control-plane lease. Durable shards stop using it, but an in-memory shard's owner still needs it to refuse once cut off. See "In-memory shards" |
 | `shards/lifecycle/fence.rs` | 663 | Part | The write fence stays as `opened`, `deposed` and `quiesced`. The withheld, probed and gave-up callbacks go. The lease gate (`ShardFence::enter`, `check_lease`) stays for in-memory shards |
-| `shards/lifecycle.rs` | 2,445 | Part | Ownership follows the engine's `opened` and `deposed`. The fencing states go. `ShardReaders::watch_leadership` and `close_stream_shard` stay for in-memory shards, with the watch no longer taking `QuorumMarks` and covering the shards `shards::memory` serves, not only `lifecycle.active()` (#3065) |
+| `shards/lifecycle.rs` | 2,445 | Part | Ownership follows the engine's `opened` and `deposed`. The fencing states go. `ShardReaders::watch_leadership` and `close_stream_shard` stay for in-memory shards. The watch takes no `QuorumMarks` (only an optional round check, which goes with the hybrid) and ends the readers of the shards `shards::memory` serves as well as `lifecycle.active()` |
+| `shards/memory.rs` | | Kept | Serves in-memory stream shards on a Raft broker. See "In-memory shards" |
 | `shards/routing.rs` | 1,181 | Part | The router stays. `ShardServing` and the generation it serves at go; the leader is a hint from broker reports |
 | `node/cluster.rs`, `node/startup.rs`, `node/peer_dispatch.rs` | | Part | Wire one engine. No `Hybrid::start`, no read-round binding, no election table |
 | `node/handoff.rs` | 218 | Part | Shutdown handoff becomes a Raft leadership transfer |
@@ -243,23 +244,26 @@ plane, no offsets, an ack on enqueue and at-most-once delivery, and it is
 placed again at once when its owner is lost. That stays in 0.8 (#3064).
 Replicated in-memory streams are out of scope.
 
-Today a Raft broker serves one on the hybrid path, end to end:
+A Raft broker serves one on a path of its own, `shards::memory` (#3065):
 
-| Stage | Code it runs today | Hybrid only? |
+| Stage | Code it runs | Hybrid code left |
 | --- | --- | --- |
-| Placement intake | `RaftShards::take` skips it. The hybrid lifecycle opens it through the promote fence (`lifecycle/promotion.rs`), Opening, Fencing, Active. `DurableShardStore` opens no log for a stream registered as in memory. `Hybrid::start`'s driver walks it like any led shard. The feed runs the confirmed-reads prefetch | Yes, all of it. Nothing here needs a fence round, a log or the driver |
-| Owner lease | `cluster/lease.rs`, checked by the lease gate (`ShardFence::enter` and `check_lease`) at enqueue (`publish/worker.rs`). A lapse ends subscribers (`ShardReaders::watch_leadership`, spawned in `node/cluster.rs` with `QuorumMarks`) | No. It is the only thing that stops a cut-off owner. The watch's `QuorumMarks` argument is |
-| Lease-free serving | The driver lets a `Quorum` shard serve past a lapse when its followers vouch (`driver/shard.rs`, `serve_without_lease`). `acknowledges_at_quorum` ignores durability, so an in-memory `Quorum` stream can be granted it | Yes, and wrong for a shard with no log: a lease-free grant must be limited to shards with one (#3069) |
-| Ingress | `IngressRouter::dispatch_in`: local only when the servable generation is the route's, else forward | No. The move hold's `awaiting_promotion` and Fencing checks are |
-| Generation | From the assignment. Owner change closes the shard (`close_stream_shard`), and subscribers end with the handoff or no-owner reason and the generation | No |
-| Publish and fanout | `publish_in_memory` and the broker's fanout. A `Leader` stream is acknowledged on enqueue. A `Quorum` stream takes the other branch of `publish_in_memory`, whose ack passes `Hybrid::await_commit`, which returns at once with no offsets | Only the `Quorum` branch's `await_commit` call |
-| Idempotent sequences | The stream's `ProducerTable`, in memory, empty on a new owner | No |
+| Placement intake | The routing feed hands `shards::memory` every stream shard `RaftShards::take` leaves, which is only `Durable::No` ones. It opens a shard at the assigned generation when this broker is named leader and the stream is registered in memory at the assignment's incarnation. A stream that is not, such as one recreated durable, is routed and not served until the Raft engine takes it. There is no fence round, no disk log and no engine. The hybrid lifecycle, the elections and the confirmed-reads prefetch never see the shard, and replication passes skip it (`ShardFence::withheld`) | None |
+| Owner lease | `cluster/lease.rs`, checked by the lease gate (`ShardFence::enter` and `check_lease`) at enqueue. A lapse ends the shard's readers (`ShardReaders::watch_leadership`), naming no owner and the generation served | The watch's optional round check, for the hybrid's lease-free shards. An in-memory shard never serves without its lease |
+| Ingress | `IngressRouter::dispatch_in`: local only when the servable generation is the route's, else forward | The move hold's `awaiting_promotion` and Fencing checks, which an in-memory shard never meets |
+| Generation | From the assignment. The next generation on the same owner carries on. Any other change of generation, owner or assignment closes the shard (`close_stream_shard`), and readers end with the new owner, or none, and the generation. A new owner starts empty | None |
+| Publish and fanout | `publish_in_memory` and the broker's fanout. Acknowledged on enqueue. `StreamEngine::await_commit` returns at once for a publish with no offsets, so neither branch reaches the hybrid | None |
+| Idempotent sequences | The stream's `ProducerTable`, in memory, empty on a new owner | None |
+| Reports | Each feed pass reports every shard led here as a replication pass over an empty log would: tail 0, every follower level, and drained once a move has stopped its writes. A move of an in-memory shard waits on that report until #3066 | The report itself, which goes with #3066 |
 | Caches without logs | Not reachable on a Raft broker: durable storage always opens a `LogCache` | n/a |
-| Control plane | Not `raft_step` (`on_raft` needs durable). `readmit` and `move_step` while the owner lives; `promote` on hybrid catch-up reports, or a fresh `choose`, when it is lost. Every write bumps the generation | `promote`, catch-up and reports are. The assigned leader and the bump are not |
+| Control plane | Not `raft_step` (`on_raft` needs durable). `readmit` and `move_step` while the owner lives; `promote` on the reports above, or a fresh `choose`, when it is lost. Every write bumps the generation | `promote`, catch-up and reports are. The assigned leader and the bump are not |
+
+A hybrid broker (`FELIX_SHARD_ENGINE=hybrid`) still serves in-memory shards
+through the hybrid lifecycle until it is deleted.
 
 The design, in three issues that block the deletion:
 
-1. **Broker (#3065).** A `shards::memory` module takes every `Durable::No`
+1. **Broker (#3065, done).** A `shards::memory` module takes every `Durable::No`
    shard from the routing feed. It opens at the assigned generation with no
    fence round, no disk log and no engine, serves only while the control-plane
    lease holds and the servable generation is the route's, and closes with
