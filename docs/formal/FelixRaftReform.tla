@@ -1282,4 +1282,16 @@ OldKeptShape ==
     /\ dead' \ dead # {} => cpEpoch = 0
     /\ returns' # returns => cpEpoch = 1
     /\ elected' # elected => cpEpoch = 0
+
+\* The shape of the SnapshotMembership configs (ACTION_CONSTRAINT). Epoch 0
+\* finishes its move and its writes before a copy is lost, a broker is
+\* declared dead, a snapshot purges or the command plans: the StaleMembership
+\* configs check faults during a move. ChangeOut takes no append, so the
+\* voter sets come from the copies of the brokers that stay. With no power
+\* cut, how far a log is synced decides nothing, so Sync does not run.
+SnapshotShape ==
+    /\ (rotations' # rotations \/ dead' # dead \/ plans' # plans \/ purges' # purges)
+          => (writes = MaxWrites /\ steps = MaxChangeSteps)
+    /\ log'[ChangeOut] = log[ChangeOut]
+    /\ synced' # synced => (purges' # purges \/ log' # log)
 ================================================================================
