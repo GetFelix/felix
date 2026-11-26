@@ -305,6 +305,10 @@ async fn a_group_whose_relaxed_followers_lose_power_re_forms_with_every_ack() {
     if !opted_in() {
         return;
     }
+    if !cfg!(target_os = "linux") {
+        eprintln!("skipped: a simulated power loss needs Linux");
+        return;
+    }
     let mut cluster = Cluster::start(ClusterConfig {
         power_loss: true,
         broker_env: vec![
