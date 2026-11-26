@@ -37,6 +37,7 @@ fault-injection = ["felix-storage/fault-injection"]
 test-support = []
 
 [dev-dependencies]
+tokio = { workspace = true, features = ["test-util"] }
 felix-storage = { path = "../felix-storage", version = "0.8.0-preview.2", features = ["fault-injection"] }
 tempfile = { workspace = true }
 serial_test = { workspace = true }

@@ -3666,7 +3666,15 @@ been had it waited for the write.
 
 - A batch that times out keeps its place. The publisher is answered with
   the timeout, but delivery keeps waiting for the commit, so the batches
-  behind it still go out after it.
+  behind it still go out after it. That wait has no deadline and arms no
+  timer: only the commit, a lost leadership, or the group stopping or
+  closing ends it.
+- The publisher's timeout is `FELIX_PUBLISH_QUORUM_TIMEOUT_MS` on every
+  path, answered with `quorum_timeout`. A plain publish a QUIC client waits
+  on an ack for gets it from its control stream's ack sweep, the one that
+  also runs the longer ack timeout, so it arms no timer of its own.
+  Idempotent, forwarded, direct, Kafka and MQTT publishes, and those
+  acknowledged on enqueue, keep a timer per publish for it.
 - A batch whose `await_commit` fails because this broker stopped leading,
   or the group stopped, is never delivered: a deposed leader's record may
   have been replaced. It may also have committed, so in its place in the
