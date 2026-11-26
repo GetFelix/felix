@@ -178,6 +178,10 @@ const AUDIT_LEVEL: u16 = 49;
 /// (`MetaCommand::StartReformedEpoch`).
 const REFORM_EPOCH_LEVEL: u16 = 51;
 
+/// The metadata level that lets a group of one start its next epoch on its
+/// broker's word (`MetaCommand::StartAloneEpoch`).
+const REFORM_ALONE_LEVEL: u16 = 55;
+
 /// The metadata level that lets an operator abandon a lost Raft group's log
 /// (`MetaCommand::AbandonRaftEpoch`).
 const ABANDON_EPOCH_LEVEL: u16 = 56;
@@ -991,6 +995,35 @@ impl ControlPlaneStore for RaftStore {
         match self
             .propose(MetaCommand::StartReformedEpoch {
                 key: key.clone(),
+                start,
+            })
+            .await?
+        {
+            MetaResponse::Assignment { assignment } => Ok(assignment),
+            _ => Err(unexpected_shape("assignment")),
+        }
+    }
+
+    async fn start_alone_epoch(
+        &self,
+        key: &ShardKey,
+        node_id: &str,
+        start: crate::model::ReformEpochStart,
+    ) -> StoreResult<ShardAssignment> {
+        if self
+            .handle
+            .cluster_version_if_known()
+            .await
+            .is_none_or(|level| level < REFORM_ALONE_LEVEL)
+        {
+            return Err(StoreError::Conflict(format!(
+                "a control-plane member is below metadata version {REFORM_ALONE_LEVEL}"
+            )));
+        }
+        match self
+            .propose(MetaCommand::StartAloneEpoch {
+                key: key.clone(),
+                node_id: node_id.to_string(),
                 start,
             })
             .await?

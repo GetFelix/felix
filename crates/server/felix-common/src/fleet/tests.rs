@@ -268,6 +268,8 @@ fn every_feature_is_safe_to_read_as_off_before_registration() {
         | "raft_consumer_groups"
         // Off, a conditional publish of several records is refused.
         | "raft_conditional_batches"
+        // Off, an RF 1 group stays not ready after a crash, as before.
+        | "raft_alone_reform"
         // Off, a follower sends such reads to the leader.
         | "raft_follower_read"
         | "atomic_commit"

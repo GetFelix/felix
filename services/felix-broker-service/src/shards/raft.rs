@@ -39,6 +39,7 @@ use super::watch::ShardAssignment;
 use super::{ShardKey, ShardKind};
 use crate::cluster::lease::{Head, LeaseState};
 
+pub(crate) mod alone_cluster;
 pub(crate) mod copy_id;
 pub(crate) mod floor;
 mod groups;
@@ -181,6 +182,10 @@ pub(crate) struct RaftShards {
     /// Set by [`standalone::run`]: every group here has this broker as its
     /// only voter, so a relaxed crash is re-formed locally.
     alone: std::sync::atomic::AtomicBool,
+    /// Where a cluster's RF 1 shard asks the control plane to start its
+    /// re-formed epoch. Unset on a standalone broker and in a build with
+    /// no control plane link.
+    alone_writer: std::sync::OnceLock<Arc<dyn alone_cluster::AloneWriter>>,
 }
 
 /// Whether a copy of `copy_epoch` is left behind by a record at `epoch`
@@ -363,6 +368,7 @@ impl RaftShards {
             fed_voters: parking_lot::Mutex::default(),
             held_copies: parking_lot::Mutex::default(),
             alone: std::sync::atomic::AtomicBool::new(false),
+            alone_writer: std::sync::OnceLock::new(),
         });
         shards
             .broker
@@ -727,11 +733,18 @@ impl RaftShards {
         self.claims.fetch_add(1, Ordering::AcqRel);
         let (dir, config) = claim.context("claim task")??;
         let retention_interval = config.retention_check_interval;
+        let mut sent = None;
         if self.alone.load(Ordering::Acquire) {
             self.reform_alone(key, incarnation, root, &dir, &config)
                 .await
                 .context("re-form the group of one after a relaxed crash")?;
+        } else {
+            sent = self
+                .reform_alone_in_cluster(key, assignment, root, &dir, &config)
+                .await
+                .context("re-form the group of one through the control plane")?;
         }
+        let assignment = sent.as_ref().unwrap_or(assignment);
         self.start_reformed(key, assignment, root, &dir, &config)
             .await
             .context("start the re-formed copy")?;

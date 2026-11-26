@@ -6,6 +6,7 @@
 //! Run with `cargo test -p felix-cluster --test failures`, or one module with
 //! `--test failures fencing::`.
 
+mod alone_reform;
 mod clocks;
 mod failover;
 mod faults;

@@ -434,6 +434,62 @@ pub(super) async fn start_reformed_epoch(
     Ok(stored)
 }
 
+/// [`crate::store::ControlPlaneStore::start_alone_epoch`]. The aloneness
+/// checks and the epoch compare and swap are one decision under the shard
+/// lock, so a placement write cannot land between them. A request already
+/// written answers the record without a second write.
+pub(super) async fn start_alone_epoch(
+    store: &InMemoryStore,
+    key: &ShardKey,
+    node_id: &str,
+    start: &crate::model::ReformEpochStart,
+) -> StoreResult<crate::model::ShardAssignment> {
+    // The stream or cache, read before the locks below, as in
+    // `record_raft_copy_id`. A recreated one has another incarnation.
+    let owner = match key.kind {
+        ShardKind::Stream => store
+            .streams
+            .read()
+            .await
+            .get(&crate::model::StreamKey {
+                tenant_id: key.tenant_id.clone(),
+                namespace: key.namespace.clone(),
+                stream: key.stream.clone(),
+            })
+            .map(|stream| (stream.incarnation, stream.replication_factor)),
+        ShardKind::Cache => store
+            .caches
+            .read()
+            .await
+            .get(&crate::model::CacheKey {
+                tenant_id: key.tenant_id.clone(),
+                namespace: key.namespace.clone(),
+                cache: key.stream.clone(),
+            })
+            .map(|cache| (cache.incarnation, cache.replication_factor)),
+    };
+    let nodes = store.nodes.read().await;
+    let mut state = store.shards.write().await;
+    let Some(existing) = state.records.get(key) else {
+        return Err(StoreError::NotFound("shard assignment".into()));
+    };
+    let facts = crate::model::AloneFacts {
+        replication_factor: owner
+            .filter(|(incarnation, _)| *incarnation == existing.incarnation)
+            .map(|(_, factor)| factor),
+        declared_dead: nodes.dead.iter().any(|dead| dead.node_id == node_id),
+    };
+    let mut stored = existing.clone();
+    let written = stored
+        .start_alone(node_id, facts, start)
+        .map_err(|err| StoreError::Conflict(err.to_string()))?;
+    if written {
+        state.records.insert(key.clone(), stored.clone());
+        state.record(ShardAssignmentChangeOp::Updated, key, Some(stored.clone()));
+    }
+    Ok(stored)
+}
+
 /// [`crate::store::ControlPlaneStore::abandon_raft_epoch`]. Decided from the
 /// store's records and the command alone, so every member writes the same
 /// epoch.
@@ -475,6 +531,16 @@ impl InMemoryStore {
         start: &crate::model::ReformEpochStart,
     ) -> StoreResult<crate::model::ShardAssignment> {
         start_reformed_epoch(self, key, start).await
+    }
+
+    /// `StartAloneEpoch`.
+    pub(crate) async fn apply_start_alone_epoch(
+        &self,
+        key: &ShardKey,
+        node_id: &str,
+        start: &crate::model::ReformEpochStart,
+    ) -> StoreResult<crate::model::ShardAssignment> {
+        start_alone_epoch(self, key, node_id, start).await
     }
 
     /// `AbandonRaftEpoch`.

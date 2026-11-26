@@ -734,6 +734,26 @@ fn commands() -> Vec<MetaCommand> {
                 starts: any_map(wire_start()),
             },
         },
+        MetaCommand::StartAloneEpoch {
+            key: shard_key(),
+            node_id: s("b"),
+            start: crate::model::ReformEpochStart {
+                incarnation: 1,
+                expected_epoch: 1,
+                planned_floor: Some(1),
+                base: crate::model::RaftEpochBase {
+                    base_last: Some(crate::model::RaftLogId {
+                        index: 1,
+                        epoch: 1,
+                        term: 1,
+                    }),
+                    first_index: 2,
+                },
+                voters: any_map(1),
+                dead: BTreeSet::from([s("b")]),
+                starts: any_map(wire_start()),
+            },
+        },
         MetaCommand::AbandonRaftEpoch {
             key: shard_key(),
             start: crate::model::AbandonEpochStart {
@@ -968,6 +988,7 @@ fn op_of(command: &MetaCommand) -> &'static str {
         MetaCommand::DeclareNodeDead { .. } => "declare_node_dead",
         MetaCommand::RecordAudit { .. } => "record_audit",
         MetaCommand::StartReformedEpoch { .. } => "start_reformed_epoch",
+        MetaCommand::StartAloneEpoch { .. } => "start_alone_epoch",
         MetaCommand::AbandonRaftEpoch { .. } => "abandon_raft_epoch",
         MetaCommand::SealShard { .. } => "seal_shard",
         MetaCommand::AcceptSealReport { .. } => "accept_seal_report",

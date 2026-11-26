@@ -41,6 +41,7 @@ pub(crate) fn assigned(key: ShardKey, incarnation: u64) -> ShardAssignment {
         raft_voters: None,
         raft_bases: None,
         raft_seed: None,
+        raft_floor: None,
         move_reason: None,
         placed: None,
     }
@@ -422,7 +423,10 @@ async fn a_copy_without_an_epoch_file_counts_only_at_epoch_zero() {
 
     // Bases that kept the log, so the member is not left behind.
     let mut reformed = assigned(orders.clone(), INCARNATION);
-    reformed.placed = Some(crate::shards::watch::PlacedEpoch { epoch: 1 });
+    reformed.placed = Some(crate::shards::watch::PlacedEpoch {
+        epoch: 1,
+        ..Default::default()
+    });
     reformed.raft_bases = Some(reformed_once());
     shards.take(&mut assignments([reformed])).await;
     assert!(shards.runtime.status(&orders).is_some(), "still open");
@@ -470,7 +474,10 @@ async fn a_fresh_copy_past_epoch_zero_takes_the_records_epoch() {
     let shards = shards(&broker);
     let orders = key("orders", 0);
     let mut placed = assigned(orders.clone(), INCARNATION);
-    placed.placed = Some(crate::shards::watch::PlacedEpoch { epoch: 1 });
+    placed.placed = Some(crate::shards::watch::PlacedEpoch {
+        epoch: 1,
+        ..Default::default()
+    });
     placed.raft_bases = Some(reformed_once());
     shards.take(&mut assignments([placed])).await;
     assert!(shards.runtime.status(&orders).is_some(), "open");
@@ -507,7 +514,10 @@ async fn blank_copy_past_epoch_zero(epoch: u64) {
     let shards = shards(&broker);
     let orders = key("orders", 0);
     let mut placed = assigned(orders.clone(), INCARNATION);
-    placed.placed = Some(crate::shards::watch::PlacedEpoch { epoch });
+    placed.placed = Some(crate::shards::watch::PlacedEpoch {
+        epoch,
+        ..Default::default()
+    });
     placed.raft_bases = Some(RaftBases {
         incarnation: INCARNATION,
         bases: vec![RaftEpochBase {
@@ -548,7 +558,10 @@ async fn a_blank_copy_of_an_abandoned_epoch_starts_at_its_first_index() {
     let shards = shards(&broker);
     let orders = key("orders", 0);
     let mut placed = assigned(orders.clone(), INCARNATION);
-    placed.placed = Some(crate::shards::watch::PlacedEpoch { epoch: 1 });
+    placed.placed = Some(crate::shards::watch::PlacedEpoch {
+        epoch: 1,
+        ..Default::default()
+    });
     placed.raft_bases = Some(RaftBases {
         incarnation: INCARNATION,
         bases: vec![RaftEpochBase {
@@ -624,7 +637,10 @@ async fn abandoned_copy_returns(epoch: u64) {
     abandoned.leader = "broker-b".to_string();
     abandoned.replicas = vec!["broker-b".to_string()];
     abandoned.generation = 2;
-    abandoned.placed = Some(crate::shards::watch::PlacedEpoch { epoch });
+    abandoned.placed = Some(crate::shards::watch::PlacedEpoch {
+        epoch,
+        ..Default::default()
+    });
     abandoned.raft_bases = Some(RaftBases {
         incarnation: INCARNATION,
         bases: vec![RaftEpochBase {
@@ -1721,7 +1737,10 @@ async fn a_member_the_copy_id_report_leaves_out_is_still_in_a_backup_point() {
     assert_eq!(read.term, term);
 
     let mut reformed = assigned(orders.clone(), INCARNATION);
-    reformed.placed = Some(crate::shards::watch::PlacedEpoch { epoch: 1 });
+    reformed.placed = Some(crate::shards::watch::PlacedEpoch {
+        epoch: 1,
+        ..Default::default()
+    });
     reformed.raft_bases = Some(reformed_once());
     shards.take(&mut assignments([reformed])).await;
     assert!(shards.held_copies().is_empty(), "an unproven epoch");
@@ -3645,6 +3664,7 @@ fn a_member_counts_written_entries_only_on_a_relaxed_run_the_fleet_allows() {
     );
 }
 
+mod alone_in_cluster;
 mod diskless;
 mod groups;
 mod purge;

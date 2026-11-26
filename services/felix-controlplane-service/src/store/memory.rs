@@ -739,6 +739,15 @@ impl ControlPlaneStore for InMemoryStore {
         switch::start_reformed_epoch(self, key, &start).await
     }
 
+    async fn start_alone_epoch(
+        &self,
+        key: &ShardKey,
+        node_id: &str,
+        start: crate::model::ReformEpochStart,
+    ) -> StoreResult<ShardAssignment> {
+        switch::start_alone_epoch(self, key, node_id, &start).await
+    }
+
     async fn abandon_raft_epoch(
         &self,
         key: &ShardKey,

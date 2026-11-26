@@ -182,6 +182,10 @@ pub fn build_router(state: AppState) -> Router {
             axum::routing::post(api::raft_reform::reports),
         )
         .route(
+            "/v1/nodes/{node_id}/reform/alone",
+            axum::routing::post(api::raft_reform::start_alone),
+        )
+        .route(
             "/v1/nodes/{node_id}/declare-dead",
             axum::routing::post(api::nodes::dead::declare_dead),
         )

@@ -648,6 +648,14 @@ pub enum MetaCommand {
         key: ShardKey,
         start: crate::model::ReformEpochStart,
     },
+    /// Start the next epoch of a group of one on its broker's word, after
+    /// the apply checks the group is alone on `node_id`
+    /// ([`crate::store::ControlPlaneStore::start_alone_epoch`]). Level 55.
+    StartAloneEpoch {
+        key: ShardKey,
+        node_id: String,
+        start: crate::model::ReformEpochStart,
+    },
     /// Give up a lost Raft group's log and start its next epoch empty
     /// ([`crate::store::ControlPlaneStore::abandon_raft_epoch`]). Level 56.
     AbandonRaftEpoch {
@@ -789,6 +797,13 @@ impl MetaCommand {
             {
                 34
             }
+            // Finalizing the self re-form lets a broker ask for the command
+            // that members before level 55 would refuse.
+            Self::FinalizeFleetFeature { feature, .. }
+                if feature == felix_common::fleet::RAFT_ALONE_REFORM.name() =>
+            {
+                55
+            }
             Self::RegisterNodeInFleet { .. } | Self::FinalizeFleetFeature { .. } => 2,
             // Writes a generation the store did not pick, which a member
             // before level 21 cannot apply.
@@ -820,6 +835,9 @@ impl MetaCommand {
             // A member before level 51 would refuse the entry and keep the
             // old epoch where the others start the next one.
             Self::StartReformedEpoch { .. } => 51,
+            // A member before level 55 would refuse the entry and keep the
+            // old epoch where the others start the next one.
+            Self::StartAloneEpoch { .. } => 55,
             // A member before level 56 would refuse the entry and keep the
             // lost epoch where the others start the next one.
             Self::AbandonRaftEpoch { .. } => 56,
@@ -1209,6 +1227,8 @@ pub fn settle_for_level(command: &[u8], level: u16) -> Result<Option<Vec<u8>>, V
             "an audit record"
         } else if gated == REFORM_EPOCH_OP {
             "a Raft group's re-form"
+        } else if gated == REFORM_ALONE_OP {
+            "a group of one's self re-form"
         } else if gated == ABANDON_EPOCH_OP {
             "a Raft group's abandon"
         } else {
@@ -1376,6 +1396,9 @@ const RECORD_AUDIT_OP: &str = "record_audit";
 /// A re-form's epoch compare and swap, by op.
 const REFORM_EPOCH_OP: &str = "start_reformed_epoch";
 
+/// A group of one's self re-form, by op.
+const REFORM_ALONE_OP: &str = "start_alone_epoch";
+
 /// An abandon's epoch compare and swap, by op.
 const ABANDON_EPOCH_OP: &str = "abandon_raft_epoch";
 
@@ -1387,6 +1410,7 @@ fn is_gated(op: &str) -> bool {
         || op == DECLARE_DEAD_OP
         || op == RECORD_AUDIT_OP
         || op == REFORM_EPOCH_OP
+        || op == REFORM_ALONE_OP
         || op == ABANDON_EPOCH_OP
 }
 

@@ -774,6 +774,33 @@ pub trait ControlPlaneStore: Send + Sync {
         ))
     }
 
+    /// Start the next epoch of `key`'s Raft group for a group of one, on the
+    /// word of `node_id`, the broker that holds its only copy, and answer
+    /// the shard as written. The control plane checks in the same apply as
+    /// the epoch compare and swap that the group is alone on `node_id`: a
+    /// replication factor of 1, only `node_id` placed, ordered and seeded,
+    /// no set change or move in flight, and `node_id` not declared dead.
+    /// The plan the broker made with the alone rules must name `node_id`
+    /// alone (voters and starts, no dead).
+    ///
+    /// A request the shard already holds the result of answers the record
+    /// without a second write. [`StoreError::Conflict`] when the group is
+    /// not alone, when the shard moved past the plan (as for
+    /// [`Self::start_reformed_epoch`]), and on a Raft store below metadata
+    /// level 55. See `docs/per-shard-raft.md`, "A standalone broker
+    /// re-forms itself".
+    async fn start_alone_epoch(
+        &self,
+        key: &ShardKey,
+        node_id: &str,
+        start: crate::model::ReformEpochStart,
+    ) -> StoreResult<ShardAssignment> {
+        let _ = (key, node_id, start);
+        Err(StoreError::Conflict(
+            "this store does not re-form Raft groups".to_string(),
+        ))
+    }
+
     /// Give up the log of `key`'s Raft group and start its next epoch empty
     /// on `start.leader`, by compare and swap on the incarnation, epoch and
     /// generation, and answer the shard as written. Every broker placed in

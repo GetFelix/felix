@@ -921,3 +921,79 @@ async fn a_copy_id_from_another_group_epoch_is_refused() {
     })
     .await;
 }
+
+/// The apply reads the replication factor and the dead declarations from
+/// the store, not from the request: a stream whose factor is no longer 1,
+/// or a broker declared dead, takes no self re-form.
+#[tokio::test]
+async fn a_self_reform_reads_the_replication_factor_and_the_dead_from_the_store() {
+    use crate::model::{DeclaredDead, ReformEpochStart};
+    use crate::store::ControlPlaneStore;
+    use crate::store::contract::{reform_epochs::alone_shard, shards};
+
+    let store = std::sync::Arc::new(store_with_limits(100, 1000).with_shard_engine("raft"));
+    shards::seed(store.as_ref()).await;
+    let shard = alone_shard(store.as_ref()).await;
+    let plan = ReformEpochStart {
+        incarnation: shard.incarnation,
+        expected_epoch: 0,
+        planned_floor: None,
+        base: crate::model::RaftEpochBase {
+            base_last: None,
+            first_index: 10,
+        },
+        voters: [("broker-x".to_string(), 41)].into(),
+        dead: Default::default(),
+        starts: Default::default(),
+    };
+    let refused = |why: &'static str| {
+        let (store, shard, plan) = (store.clone(), shard.clone(), plan.clone());
+        async move {
+            let err = store
+                .start_alone_epoch(&shard.key, "broker-x", plan)
+                .await
+                .expect_err("refused");
+            assert!(
+                matches!(&err, StoreError::Conflict(message) if message.contains(why)),
+                "{err:?}"
+            );
+            assert_eq!(
+                store.get_shard_assignment(&shard.key).await.expect("shard"),
+                shard
+            );
+        }
+    };
+
+    let key = crate::model::StreamKey {
+        tenant_id: shard.key.tenant_id.clone(),
+        namespace: shard.key.namespace.clone(),
+        stream: shard.key.stream.clone(),
+    };
+    store
+        .streams
+        .write()
+        .await
+        .get_mut(&key)
+        .expect("stream")
+        .replication_factor = 3;
+    refused("replication factor").await;
+    store
+        .streams
+        .write()
+        .await
+        .get_mut(&key)
+        .expect("stream")
+        .replication_factor = 1;
+
+    store.nodes.write().await.dead.insert(DeclaredDead {
+        node_id: "broker-x".to_string(),
+        storage_id: "00".repeat(16),
+    });
+    refused("declared dead").await;
+    store.nodes.write().await.dead.clear();
+
+    store
+        .start_alone_epoch(&shard.key, "broker-x", plan)
+        .await
+        .expect("alone and live");
+}

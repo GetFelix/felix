@@ -1436,6 +1436,7 @@ pub use raft_ordered::RaftOrdered;
 mod raft_reform;
 pub use raft_reform::AbandonEpochStart;
 pub(crate) use raft_reform::AbandonError;
+pub(crate) use raft_reform::AloneFacts;
 pub use raft_reform::{
     RaftBases, RaftEpochBase, RaftLogId, RaftSeed, ReformEpochStart, ReformRecordError,
 };
