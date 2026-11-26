@@ -468,7 +468,8 @@ impl ShardOwnership {
                         current.targets_withheld = withheld;
                     }
                     let reformed = take_reformed_epoch(current, &next);
-                    if retargeted || reformed {
+                    let raised = take_raised_floor(current, &next);
+                    if retargeted || reformed || raised {
                         self.changed();
                         return true;
                     }
@@ -717,14 +718,35 @@ fn take_reformed_epoch(current: &mut ShardAssignment, next: &ShardAssignment) ->
     if next.incarnation != current.incarnation || next.group_epoch() <= current.group_epoch() {
         return false;
     }
-    // Kept a clone so the line still holds if `PlacedEpoch` stops being Copy.
-    #[allow(clippy::clone_on_copy)]
     current.placed.clone_from(&next.placed);
     current.raft_bases.clone_from(&next.raft_bases);
     current.raft_seed.clone_from(&next.raft_seed);
     current.raft_formed = next.raft_formed;
     current.raft_voters.clone_from(&next.raft_voters);
     true
+}
+
+/// Take `next`'s Raft floor when it is past the held one at the same
+/// incarnation. A leader's floor report is stored in place, within an
+/// epoch as well as across one, so this is apart from the epoch check: a
+/// floor held stale makes a re-form plan from it refused as `FloorRaised`.
+/// The control plane only raises a floor, by epoch then index, so a lower
+/// one is a late copy.
+fn take_raised_floor(current: &mut ShardAssignment, next: &ShardAssignment) -> bool {
+    let Some(floor) = next
+        .raft_floor
+        .filter(|floor| floor.incarnation == current.incarnation)
+    else {
+        return false;
+    };
+    let raised = current
+        .raft_floor
+        .filter(|held| held.incarnation == current.incarnation)
+        .is_none_or(|held| (floor.epoch, floor.index) > (held.epoch, held.index));
+    if raised {
+        current.raft_floor = Some(floor);
+    }
+    raised
 }
 
 /// The target fields to hold after `next`, a change at `current`'s

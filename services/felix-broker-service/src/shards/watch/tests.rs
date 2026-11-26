@@ -171,7 +171,10 @@ fn a_raft_target_stored_in_place_is_applied() {
 /// records it.
 fn reformed(epoch: u64) -> ShardAssignment {
     ShardAssignment {
-        placed: Some(PlacedEpoch { epoch }),
+        placed: Some(PlacedEpoch {
+            epoch,
+            ..Default::default()
+        }),
         raft_bases: Some(RaftBases {
             incarnation: 0,
             bases: (1..=epoch)
@@ -225,6 +228,64 @@ fn a_reformed_epoch_stored_in_place_is_applied() {
         "an earlier incarnation's epoch"
     );
     assert_eq!(owned.get(&key(0)).expect("present").group_epoch(), 0);
+}
+
+/// `assignment(0, "broker-a", 3)` with a floor at `epoch` and `index`, at
+/// `incarnation`.
+fn floored(incarnation: u64, epoch: u64, index: u64) -> ShardAssignment {
+    ShardAssignment {
+        raft_floor: Some(RaftFloor {
+            incarnation,
+            offset_floor: index,
+            epoch,
+            index,
+        }),
+        ..assignment(0, "broker-a", 3)
+    }
+}
+
+fn floor_of(owned: &ShardOwnership) -> Option<(u64, u64)> {
+    let held = owned.get(&key(0)).expect("present");
+    held.raft_floor.map(|floor| (floor.epoch, floor.index))
+}
+
+/// A leader's floor report is stored in place, within an epoch too. Held
+/// stale, a re-form planned from it is refused as the floor raised; a late
+/// copy or another incarnation's floor must not land.
+#[test]
+fn a_raft_floor_raised_in_place_is_applied() {
+    let mut owned = ShardOwnership::default();
+    assert!(owned.apply(&key(0), Some(assignment(0, "broker-a", 3))));
+    assert!(
+        owned.apply(&key(0), Some(floored(0, 0, 10))),
+        "the first floor"
+    );
+    assert!(
+        owned.apply(&key(0), Some(floored(0, 0, 20))),
+        "raised in the epoch"
+    );
+    assert_eq!(floor_of(&owned), Some((0, 20)));
+    assert!(
+        !owned.apply(&key(0), Some(floored(0, 0, 20))),
+        "a duplicate"
+    );
+    assert!(
+        !owned.apply(&key(0), Some(floored(0, 0, 10))),
+        "a late copy"
+    );
+    assert!(
+        owned.apply(&key(0), Some(floored(0, 1, 5))),
+        "a later epoch's first floor"
+    );
+    assert!(
+        !owned.apply(&key(0), Some(floored(0, 0, 30))),
+        "an earlier epoch"
+    );
+    assert!(
+        !owned.apply(&key(0), Some(floored(1, 2, 50))),
+        "another incarnation's floor"
+    );
+    assert_eq!(floor_of(&owned), Some((1, 5)));
 }
 
 /// Versions order by placement incarnation before counter: a restore
