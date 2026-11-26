@@ -85,6 +85,11 @@ impl Cluster {
         Ok(())
     }
 
+    /// Run every broker's Kafka listener as `listener` from its next start.
+    pub fn set_kafka_listener(&mut self, listener: crate::KafkaListener) {
+        self.config.kafka_listener = listener;
+    }
+
     /// Start a stopped broker again under the same identity and data
     /// directory, and wait until the control plane can place on it.
     ///

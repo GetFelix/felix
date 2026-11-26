@@ -83,6 +83,7 @@ before B was invoked" means the same thing to every client.
 | 12-19 | No dependency cycles | Appends and reads form a loop of "must come before" edges, so no single order explains them (see "Cycles") |
 | 20 | Cache keys are linearizable | No order of a key's operations both respects real time and is what a single register would produce (see below) |
 | 21 | One leader per generation | Two brokers opened one shard for writes at the same generation |
+| 22 | No reused offsets | One offset of a list is held as two records by any two observations: the final read, a read from any broker, an event delivered to any subscriber, or the offset a `Quorum` append was acknowledged at |
 
 Rule 8 leans on the order of the three looks. Every commit event the first
 read saw was committed before the state was read, so the state must be at
@@ -101,6 +102,16 @@ The campaign collects those lines only when the brokers elect leaders
 themselves (see "Elections without the control plane"). It reads them after
 every fault, from each broker's current log and from `broker.log.earlier`,
 where the harness appends every earlier run at each restart.
+
+Rule 22 is the offset-reuse check. On a `Quorum` list with a final read,
+rules 1, 3 and 10 already hold every observation against the final log, so
+rule 22 leaves that list to them and judges the rest: every `Leader` list and
+any list whose final read could not be taken. On Raft a `Leader` list's
+readers are served only committed records, so they must agree with each
+other. Its acknowledgements are not observations: a `Leader` write is
+acknowledged by the leader alone, so it may be lost across a change of leader
+and the next record may take its offset. An offset nobody observed, such as a
+term's blank entry, says nothing.
 
 Rule 5 covers cache gets too: a get that returns a value no put to that key
 wrote, or returns it before its put began, is a phantom.
@@ -253,6 +264,14 @@ violation.
 > case each.
 > `two_brokers_opening_one_generation_is_a_violation` and
 > `one_broker_opening_several_generations_is_not`: rule 21.
+> `two_subscribers_holding_two_values_at_one_offset_is_one_violation`,
+> `an_acknowledged_offset_read_back_as_another_record_is_a_violation`,
+> `a_leader_acknowledgement_lost_to_a_failover_is_not_an_observation`,
+> `one_record_seen_many_times_is_not_a_violation`,
+> `an_offset_nobody_saw_is_not_a_violation`,
+> `a_quorum_list_with_a_final_read_is_left_to_rules_3_and_10` and
+> `each_reused_offset_is_reported_once`: rule 22
+> (`history/checker/offsets/tests.rs`).
 > `an_open_is_read_from_a_coloured_log_line`: the log line is read as the
 > broker writes it, colours and all.
 > `a_candidacy_is_read_from_its_log_line`,
@@ -679,6 +698,18 @@ seen what it needs.
 > lease-free campaign that pauses, kills or partitions whichever broker leads
 > the cache, in turn, leaves a valid history, and the cache changes leader at
 > least once, so its puts are written across a fenced promotion.
+> `no_offset_is_held_as_two_records_across_leader_faults`: a 120-second
+> campaign on Raft with a `Leader` list beside the three `Quorum` ones, two
+> subscribers per list, and every list read from every broker after each
+> recovery and before the final reads. It faults whichever broker leads the
+> `Leader` list, in turn: `Kill`, `Partition`, `MachineCrash` (killed and
+> started in a new boot, so under the default `periodic` fsync its unsynced
+> tail is not trusted and its copies come back under new ids) and `Wipe`
+> (killed, its storage removed). Healing the last two waits up to 90 s for
+> every copy the broker holds to vote again, so the next fault cannot leave a
+> group with no majority. The history must be valid, rule 22 included, with
+> each kind healed, both `Leader` subscribers delivered at least 20 records
+> and the per-broker reads of the `Leader` list non-empty.
 > `replicas_elect_a_leader_while_the_control_plane_is_down`: a 90-second
 > lease-free campaign of `ElectWithoutControlPlane` faults leaves a valid
 > history, rule 21 included, with at least one fault healed, an elected

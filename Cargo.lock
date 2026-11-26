@@ -971,6 +971,7 @@ dependencies = [
  "felix-broker",
  "felix-broker-service",
  "felix-client",
+ "felix-cluster",
  "felix-common",
  "felix-controlplane-service",
  "felix-kafka",

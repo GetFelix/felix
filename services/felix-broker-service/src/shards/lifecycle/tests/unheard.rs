@@ -75,8 +75,9 @@ impl Unleased {
         tokio::spawn(
             ShardReaders::new(Arc::clone(&fixture.broker)).watch_leadership(
                 fence,
-                marks,
+                Some(Arc::new(move || marks.reads_by_round().cloned())),
                 Arc::new(tokio::sync::Mutex::new(lifecycle)),
+                None,
                 shutdown.clone(),
             ),
         );
