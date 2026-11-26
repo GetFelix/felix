@@ -93,6 +93,7 @@ async fn leading(replicas: &[&str], successor: Option<&str>, generation: u64) ->
             raft_voters: None,
             raft_bases: None,
             raft_seed: None,
+            move_reason: None,
             placed: None,
         },
     )]

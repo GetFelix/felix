@@ -154,12 +154,23 @@ pub(crate) async fn short_of_brokers(state: &AppState, stream: &Stream) -> Vec<S
     let Ok(nodes) = state.store.list_nodes().await else {
         return Vec::new();
     };
-    // Draining, down and departed nodes are not placed on.
-    let live = nodes
+    short_warning(stream, durable_hosts(&nodes))
+        .into_iter()
+        .collect()
+}
+
+/// The brokers placement may give a durable shard's copy: live, not
+/// internal, and with durable storage. Draining, down and departed nodes are
+/// not placed on.
+pub(crate) fn durable_hosts(nodes: &[crate::model::Node]) -> usize {
+    nodes
         .iter()
-        .filter(|node| node.status.lifecycle == NodeLifecycle::Live && !node.spec.is_internal())
-        .count();
-    short_warning(stream, live).into_iter().collect()
+        .filter(|node| {
+            node.status.lifecycle == NodeLifecycle::Live
+                && !node.spec.is_internal()
+                && node.spec.has_durable_storage()
+        })
+        .count()
 }
 
 /// Logs a warning an actual create produced. A repeated create answers the

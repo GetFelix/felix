@@ -705,9 +705,11 @@ cannot be read, a delete failed) is not retried until the next open. Deleting
 a stream deletes the kept copies of that stream's incarnation too, even when
 the live directory is gone.
 
-A Raft log saves its committed index behind the commit, at most once a
-second, because a save is a file create, two fsyncs and a rename that the
-log's own fsyncs would queue behind. The last commit before a group goes idle
+A Raft log saves its committed index behind the commit, in every fsync mode,
+at most once a second, because a save is a file create, two fsyncs and a
+rename that the log's own fsyncs would queue behind, and openraft waits for
+`save_committed` to return before it applies. A clean close waits for a save
+in flight, then writes the last index saved. The last commit before a group goes idle
 is saved within that second, so a kept directory waits at most that long on
 the save.
 
@@ -2471,7 +2473,9 @@ The runtime is built, in `crates/server/felix-replication/src/raft.rs`,
 behind the `raft` cargo feature of `felix-replication`, which the broker
 service turns on by default. A broker with a node id runs it unless
 `FELIX_SHARD_ENGINE` is `hybrid` (deprecated), and refuses to start without
-the internal listener or durable storage. A standalone broker, with no node
+the internal listener. Without durable storage it runs no group, and the
+control plane gives it only in-memory stream shards (`docs/control-plane.md`,
+"Nodes without durable storage"). A standalone broker, with no node
 id, runs it too, when it has durable storage: each durable stream shard and
 each durable cache shard is a group of one voter, named `standalone`, with
 no peer (every send is refused as unreachable), no internal listener and no
@@ -5070,7 +5074,9 @@ older control plane added:
 - A balance pass, a drain and an operator move each name another member of
   the set as leader, in one write that changes only `leader`. Nothing is
   staged or copied. The group's leader then hands its leadership there (see
-  "Leaders follow placement").
+  "Leaders follow placement"). An operator's move goes through with one
+  member of three down, and is refused (`member_down`) when fewer than a
+  majority are serving (#3234).
 - A drain moves every shard the draining broker leads to a live member, so
   its shutdown hand-off finishes. A shard with no other live member, such
   as one at replication factor 1, keeps its leader and shows as waiting
@@ -5385,6 +5391,15 @@ those sets. The joint membership on the way to a new set already carries
 the new set's version, so a leader that finds a joint does not mistake an
 older target for a newer one.
 
+openraft asks a membership about one member (`get_node`: its role and
+whether it votes) several times for every append, on the leader and on each
+follower. openraft's own membership type works that out from the voter sets
+on every ask. Felix's membership works it out once for every member when the
+value is built, from openraft's own answer, and keeps it with the sets it
+came from. A membership never changes after it is built: a change makes a
+new one, with its own answers. So no answer can outlive the sets it
+describes, and there is nothing to invalidate.
+
 A leader writes four kinds of step (`raft/group/membership.rs`): add a
 learner, change the voters, leave a joint membership, and write the same
 voters again at a newer version. Each one is sent to openraft with two
@@ -5580,7 +5595,11 @@ A leader hands over only when all of these hold:
    restarted is still opening members and may go away again.
 4. Every other voter is caught up and answering too. A group with a voter
    down keeps its leader: a transfer then could leave a bare majority with
-   no leader.
+   no leader. An operator's move is the exception (#3234): it goes ahead
+   when the target is caught up and the caught-up voters, counting this
+   leader and the target, are a majority. If the target then dies mid-transfer, the group is left with
+   the members it would have had anyway, and the leader stands again at the
+   transfer's expiry if a majority is still up.
 5. This member has led its term for `led_min` (10 s), so a group that just
    elected does not elect again at once. A group's first term is exempt,
    along with `settle`, for its first `led_min`: the broker that formed the
@@ -5647,7 +5666,16 @@ server (discovery, `felixctl`, dashboards) would point at a follower
   no such report, while the group is still electing, it names the member
   leading fewest, as before.
 - While any member of the set is down, a live placement leader that is not
-  the reported one is renamed to it. That covers a rename made before the
+  the reported one is renamed to it, unless an operator named it. An
+  operator's move within the set carries `move_reason` `operator` to the
+  brokers, so the group's leader hands over (rule 4), and placement leaves
+  the name alone until the group reports it leading, then takes the mark
+  off. If it has not landed in two minutes, placement names the reported
+  leader again and takes the mark off (`raft_leader_timed_out`). While the
+  move is pending, a drain of either broker or a swap of a leaving follower
+  on that shard waits for it, up to those two minutes. A broker
+  that predates the mark ignores it and keeps holding, so the move times
+  out the same way. That covers a rename made before the
   report arrived. Both writes go ahead while placement is paused: they move
   nothing and ask for no transfer, they record what the group did.
 - A reported broker the leave rules rename a leader away from (draining,
