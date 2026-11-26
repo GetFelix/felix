@@ -230,7 +230,7 @@ async fn a_crash_after_an_operator_rotation_does_not_re_form() {
     run_state::copy_trust::rotate_storage_id(root.path(), [0x77; 16]).expect("rotate");
     assert!(begin(root.path(), true, 2), "a relaxed crash rotates");
     assert!(
-        !run_state::relaxed_crash_sources(root.path())
+        !run_state::reform_evidence(root.path())
             .expect("sources")
             .is_empty(),
         "the crash left its evidence"

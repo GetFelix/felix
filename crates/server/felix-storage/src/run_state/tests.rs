@@ -11,6 +11,14 @@ fn counter(start: u8) -> impl FnMut() -> [u8; 16] {
     }
 }
 
+/// The ids of [`reform_evidence`].
+fn relaxed_crash_sources(root: &Path) -> Result<Vec<StorageId>> {
+    Ok(reform_evidence(root)?
+        .into_iter()
+        .map(|rotated| rotated.id)
+        .collect())
+}
+
 const PERIODIC: bool = true;
 const ON_COMMIT: bool = false;
 

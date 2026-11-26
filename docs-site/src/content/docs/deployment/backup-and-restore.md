@@ -290,7 +290,10 @@ so its backup is a copy of that directory, taken with the broker stopped.
 
 1. Stop the broker.
 2. Replace its whole `FELIX_DURABLE_STORAGE_DIR` with the copy.
-3. Run the restore tool on it, with the broker still stopped:
+3. Run the restore tool on it, with the broker still stopped. This step is
+   required: a copy put back without it is not detected, and the broker can
+   hand out again offsets it already handed out. `felix-broker restore-point`
+   counts too, but a standalone broker has no backup point to give it.
 
    ```bash
    felix-broker rotate-storage-id --dir /var/lib/felix
@@ -305,7 +308,9 @@ least 2^14 per millisecond of the broker's clock plus 2^40. A consumer that
 kept an offset from after the copy finds no record there, and no new record
 ever takes it. This holds under every fsync mode, as long as a shard
 averaged at most 2^13 offsets per millisecond since its last restore and the
-broker's clock has not gone back between the two restores.
+broker's clock has not gone back between the two restores. If the clock was
+set back, fix it, or wait until it is past the time of the last restore,
+before starting the broker.
 
 :::caution[Always run the tool]
 Step 3 is what tells the broker the directory was put back. Nothing inside

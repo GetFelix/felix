@@ -43,7 +43,7 @@
 //! `<durable root>/relaxed-crash-id` names the id a relaxed crash or a
 //! restore through Felix's tooling gave the directory, so a standalone
 //! broker can tell that a rotated copy was rotated by one of them, and not
-//! by an operator deleting the id. See [`relaxed_crash_sources`].
+//! by an operator deleting the id. See [`reform_evidence`].
 //!
 //! `<durable root>/restore-pending` says a restore tool is rotating the id.
 //! No start runs while it is there. See [`rotate_for_restore`].
@@ -761,14 +761,6 @@ pub fn reform_evidence(root: &Path) -> Result<Vec<Rotated>> {
         Some((head, sources)) if Some(head) == current => sources,
         _ => Vec::new(),
     })
-}
-
-/// The ids of [`reform_evidence`].
-pub fn relaxed_crash_sources(root: &Path) -> Result<Vec<StorageId>> {
-    Ok(reform_evidence(root)?
-        .into_iter()
-        .map(|rotated| rotated.id)
-        .collect())
 }
 
 /// Record, durably, that this directory ran under `id` until a crash rotated

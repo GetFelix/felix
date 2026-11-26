@@ -6133,7 +6133,11 @@ re-forms the same way, in every fsync mode:
    re-form of its own. So when a restore is among the rotations since the
    kept copy was minted, the epoch also starts no lower than the time line
    a backup-point restore uses ("A restore from a backup point is a
-   re-form"), read from the broker's own clock. The tool writes
+   re-form"), read from the broker's own clock. That assumes the clock at a
+   later restore is not behind the clock at an earlier one by more than the
+   offsets written in between could cover. If the clock was set back, fix
+   it, or wait until it has passed the time of the last restore, before
+   starting the broker. The tool writes
    `restore-pending` first and removes it last, and a start that finds it
    refuses, so a crash part way through the tool never starts the restored
    data under its old id. A copy put back without the tool, by hand or by
