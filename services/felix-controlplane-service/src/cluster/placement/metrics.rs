@@ -138,6 +138,8 @@ impl MoveClock {
             | MoveStep::PendingSetCancelled
             | MoveStep::Readmit { .. }
             | MoveStep::RaftLeader { .. }
+            | MoveStep::RaftLeaderLanded { .. }
+            | MoveStep::RaftLeaderTimedOut { .. }
             | MoveStep::RaftReplace { .. } => None,
         }
     }

@@ -780,6 +780,97 @@ async fn a_degraded_group_keeps_its_leader() {
     assert_eq!(fake.log.lock().placed, []);
 }
 
+/// **An operator's leader is handed over with a voter down** (#3234), as
+/// long as the leader and the caught-up target are a majority. Placement's
+/// own preference still holds, and so does an operator's once a second
+/// voter is gone.
+#[tokio::test(start_paused = true)]
+async fn an_operator_move_is_handed_over_with_a_voter_down() {
+    let operator = || {
+        Some(crate::raft::group::placed::Preferred {
+            broker: "b".into(),
+            by_operator: true,
+        })
+    };
+    let (fake, mut driver) = placed_on(2, "b");
+    driver.placing.prefer(operator());
+    fake.log.lock().silent.insert(m("c"));
+    let took = hands_over(&mut driver, None, Duration::from_secs(120)).await;
+    assert!(took.is_some(), "the operator's move was held");
+    assert_eq!(fake.log.lock().placed, [(2, m("b"))]);
+
+    let (fake, mut driver) = placed_on(2, "b");
+    fake.log.lock().silent.insert(m("c"));
+    assert_eq!(
+        hands_over(&mut driver, None, Duration::from_secs(120)).await,
+        None,
+        "placement's own preference was handed over with a voter down"
+    );
+
+    // Five voters, three silent: the leader and the target are not a majority.
+    let fake = Fake::leading(settled(&["a", "b", "c", "d", "e"], &[], 1));
+    fake.log.lock().term = 2;
+    let (mut driver, _) = driving(&fake);
+    driver.placing.prefer(operator());
+    fake.log.lock().silent.extend([m("c"), m("d"), m("e")]);
+    assert_eq!(
+        hands_over(&mut driver, None, Duration::from_secs(120)).await,
+        None
+    );
+    assert_eq!(fake.log.lock().placed, []);
+}
+
+/// A leader of `term` over five voters that is asked to hand over to `b`.
+fn five_voters_preferring(
+    term: u64,
+    by_operator: bool,
+    silent: &[&str],
+) -> (Arc<Fake>, Driver<Arc<Fake>>) {
+    let fake = Fake::leading(settled(&["a", "b", "c", "d", "e"], &[], 1));
+    fake.log.lock().term = term;
+    let (mut driver, _) = driving(&fake);
+    driver
+        .placing
+        .prefer(Some(crate::raft::group::placed::Preferred {
+            broker: "b".into(),
+            by_operator,
+        }));
+    fake.log.lock().silent.extend(silent.iter().map(|s| m(s)));
+    (fake, driver)
+}
+
+/// Five voters, two silent: the leader, the target and one more are a
+/// majority, so an operator's move is handed over.
+#[tokio::test(start_paused = true)]
+async fn an_operator_move_is_handed_over_with_two_of_five_voters_down() {
+    let (fake, mut driver) = five_voters_preferring(2, true, &["d", "e"]);
+    let took = hands_over(&mut driver, None, Duration::from_secs(120)).await;
+    assert!(took.is_some(), "the operator's move was held");
+    assert_eq!(fake.log.lock().placed, [(2, m("b"))]);
+}
+
+/// Five voters, three silent: no majority is caught up, so the move holds.
+#[tokio::test(start_paused = true)]
+async fn an_operator_move_is_held_with_three_of_five_voters_down() {
+    let (fake, mut driver) = five_voters_preferring(2, true, &["c", "d", "e"]);
+    assert_eq!(
+        hands_over(&mut driver, None, Duration::from_secs(120)).await,
+        None
+    );
+    assert_eq!(fake.log.lock().placed, []);
+}
+
+/// Placement's own preference keeps its hold with two of five voters down.
+#[tokio::test(start_paused = true)]
+async fn a_placement_move_is_held_with_two_of_five_voters_down() {
+    let (fake, mut driver) = five_voters_preferring(2, false, &["d", "e"]);
+    assert_eq!(
+        hands_over(&mut driver, None, Duration::from_secs(120)).await,
+        None
+    );
+    assert_eq!(fake.log.lock().placed, []);
+}
+
 /// Placement that names a broker with no voter in the group, or this
 /// leader, asks nothing and parks the driver.
 #[tokio::test(start_paused = true)]
@@ -871,7 +962,7 @@ async fn a_group_waiting_for_a_permit_takes_a_target() {
     let driver = Driver::new(Arc::clone(&fake), 2, Retry::default(), progress, placing);
     let (goal, goals) = watch::channel(None);
     let (_lead, leads) = watch::channel(leading(2));
-    let (_preferred, preference) = watch::channel(Some("b".to_owned()));
+    let (_preferred, preference) = watch::channel(Some("b".into()));
     let stop = CancellationToken::new();
     let running = tokio::spawn(driver::run(driver, goals, leads, preference, stop.clone()));
 

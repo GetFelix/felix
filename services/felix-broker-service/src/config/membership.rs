@@ -37,6 +37,10 @@ pub struct MembershipConfig {
     /// Whether `FELIX_NODE_ROLE=internal`: registered as a label, so the
     /// control plane never places a tenant shard here.
     pub internal: bool,
+    /// Whether this broker keeps a log (`FELIX_DURABLE_STORAGE_DIR`). One
+    /// without registers a label that keeps durable shards off it. Set by
+    /// the node once durable storage is read.
+    pub durable_storage: bool,
     /// `(source, dest)` region pairs traffic may cross, from
     /// `FELIX_REGION_BRIDGES`. This broker forwards to a shard's leader only
     /// in its own region or one it has a bridge to.
@@ -142,6 +146,7 @@ pub(super) fn membership_from_env(
     Ok(Some(MembershipConfig {
         node_id,
         internal,
+        durable_storage: true,
         region_bridges,
         advertise_addr,
         client_advertise_addr,

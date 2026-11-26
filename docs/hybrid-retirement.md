@@ -68,7 +68,8 @@ confirmed when stream shards on Raft (#2233) lands.
 | `shards/confirmed.rs` | 155 | Deleted | Serves confirmed assignment reads |
 | `cluster/lease.rs` | 470 | Kept | The control-plane lease. Durable shards stop using it, but an in-memory shard's owner still needs it to refuse once cut off. See "In-memory shards" |
 | `shards/lifecycle/fence.rs` | 663 | Part | The write fence stays as `opened`, `deposed` and `quiesced`. The withheld, probed and gave-up callbacks go. The lease gate (`ShardFence::enter`, `check_lease`) stays for in-memory shards |
-| `shards/lifecycle.rs` | 2,445 | Part | Ownership follows the engine's `opened` and `deposed`. The fencing states go. `ShardReaders::watch_leadership` and `close_stream_shard` stay for in-memory shards, with the watch no longer taking `QuorumMarks` and covering the shards `shards::memory` serves, not only `lifecycle.active()` (#3065) |
+| `shards/lifecycle.rs` | 2,445 | Part | Ownership follows the engine's `opened` and `deposed`. The fencing states go. `ShardReaders::watch_leadership` and `close_stream_shard` stay for in-memory shards. The watch takes no `QuorumMarks` (only an optional round check, which goes with the hybrid) and ends the readers of the shards `shards::memory` serves as well as `lifecycle.active()` |
+| `shards/memory.rs` | | Kept | Serves in-memory stream shards on a Raft broker. See "In-memory shards" |
 | `shards/routing.rs` | 1,181 | Part | The router stays. `ShardServing` and the generation it serves at go; the leader is a hint from broker reports |
 | `node/cluster.rs`, `node/startup.rs`, `node/peer_dispatch.rs` | | Part | Wire one engine. No `Hybrid::start`, no read-round binding, no election table |
 | `node/handoff.rs` | 218 | Part | Shutdown handoff becomes a Raft leadership transfer |
@@ -243,23 +244,26 @@ plane, no offsets, an ack on enqueue and at-most-once delivery, and it is
 placed again at once when its owner is lost. That stays in 0.8 (#3064).
 Replicated in-memory streams are out of scope.
 
-Today a Raft broker serves one on the hybrid path, end to end:
+A Raft broker serves one on a path of its own, `shards::memory` (#3065):
 
-| Stage | Code it runs today | Hybrid only? |
+| Stage | Code it runs | Hybrid code left |
 | --- | --- | --- |
-| Placement intake | `RaftShards::take` skips it. The hybrid lifecycle opens it through the promote fence (`lifecycle/promotion.rs`), Opening, Fencing, Active. `DurableShardStore` opens no log for a stream registered as in memory. `Hybrid::start`'s driver walks it like any led shard. The feed runs the confirmed-reads prefetch | Yes, all of it. Nothing here needs a fence round, a log or the driver |
-| Owner lease | `cluster/lease.rs`, checked by the lease gate (`ShardFence::enter` and `check_lease`) at enqueue (`publish/worker.rs`). A lapse ends subscribers (`ShardReaders::watch_leadership`, spawned in `node/cluster.rs` with `QuorumMarks`) | No. It is the only thing that stops a cut-off owner. The watch's `QuorumMarks` argument is |
-| Lease-free serving | The driver lets a `Quorum` shard serve past a lapse when its followers vouch (`driver/shard.rs`, `serve_without_lease`). `acknowledges_at_quorum` ignores durability, so an in-memory `Quorum` stream can be granted it | Yes, and wrong for a shard with no log: a lease-free grant must be limited to shards with one (#3069) |
-| Ingress | `IngressRouter::dispatch_in`: local only when the servable generation is the route's, else forward | No. The move hold's `awaiting_promotion` and Fencing checks are |
-| Generation | From the assignment. Owner change closes the shard (`close_stream_shard`), and subscribers end with the handoff or no-owner reason and the generation | No |
-| Publish and fanout | `publish_in_memory` and the broker's fanout. A `Leader` stream is acknowledged on enqueue. A `Quorum` stream takes the other branch of `publish_in_memory`, whose ack passes `Hybrid::await_commit`, which returns at once with no offsets | Only the `Quorum` branch's `await_commit` call |
-| Idempotent sequences | The stream's `ProducerTable`, in memory, empty on a new owner | No |
-| Caches without logs | Not reachable on a Raft broker: durable storage always opens a `LogCache` | n/a |
+| Placement intake | The routing feed hands `shards::memory` every stream shard `RaftShards::take` leaves, which is only `Durable::No` ones. It opens a shard at the assigned generation when this broker is named leader and the stream is registered in memory at the assignment's incarnation. A stream that is not, such as one recreated durable, is routed and not served until the Raft engine takes it. There is no fence round, no disk log and no engine. The hybrid lifecycle, the elections and the confirmed-reads prefetch never see the shard, and replication passes skip it (`ShardFence::withheld`) | None |
+| Owner lease | `cluster/lease.rs`, checked by the lease gate (`ShardFence::enter` and `check_lease`) at enqueue. A lapse ends the shard's readers (`ShardReaders::watch_leadership`), naming no owner and the generation served | The watch's optional round check, for the hybrid's lease-free shards. An in-memory shard never serves without its lease |
+| Ingress | `IngressRouter::dispatch_in`: local only when the servable generation is the route's, else forward | The move hold's `awaiting_promotion` and Fencing checks, which an in-memory shard never meets |
+| Generation | From the assignment. The next generation on the same owner carries on. Any other change of generation, owner or assignment closes the shard (`close_stream_shard`), and readers end with the new owner, or none, and the generation. A new owner starts empty | None |
+| Publish and fanout | `publish_in_memory` and the broker's fanout. Acknowledged on enqueue. `StreamEngine::await_commit` returns at once for a publish with no offsets, so neither branch reaches the hybrid | None |
+| Idempotent sequences | The stream's `ProducerTable`, in memory, empty on a new owner | None |
+| Reports | None. The control plane places an in-memory shard without reading a report | None |
+| Brokers without a disk | A broker with a node id and no durable storage starts on the Raft engine, runs no group and registers `felix.dev/node-storage=none` (#3067). The control plane places only in-memory stream shards on it, at metadata level 54 and above. It serves those through `shards::memory`, routes a cache's shard to its group like any broker outside it, and never registers a durable stream | None |
 | Control plane | Its own step, `cluster/placement/in_memory.rs` (#3066): one owner from `choose` and no followers, kept while it is live, placed again in the same pass when it is down, gone, draining, internal or outside the stream's region. An operator move is one write. No replica report is read. Every owner change is a new assignment at the next generation | No |
+
+A hybrid broker (`FELIX_SHARD_ENGINE=hybrid`) still serves in-memory shards
+through the hybrid lifecycle until it is deleted.
 
 The design, in three issues that block the deletion:
 
-1. **Broker (#3065).** A `shards::memory` module takes every `Durable::No`
+1. **Broker (#3065, done).** A `shards::memory` module takes every `Durable::No`
    shard from the routing feed. It opens at the assigned generation with no
    fence round, no disk log and no engine, serves only while the control-plane
    lease holds and the servable generation is the route's, and closes with
@@ -274,11 +278,14 @@ The design, in three issues that block the deletion:
    reaches it. They keep the assigned leader and the bump that #2262 removes
    for durable shards, and #2262 can delete `promote`, `readmit`, catch-up
    and replica reports without touching them.
-3. **Brokers without a disk (#3067).** A broker with a node id and no
-   `FELIX_DURABLE_STORAGE_DIR` is refused at start today. It may start, run
-   no Raft groups, say so when it registers, and the control plane places
-   only in-memory streams and caches on it. That is where a log-less cache
-   lives in a cluster.
+3. **Brokers without a disk (#3067, done).** A broker with a node id and no
+   `FELIX_DURABLE_STORAGE_DIR` starts on the Raft engine, runs no group and
+   registers the label `felix.dev/node-storage=none`. Placement keeps every
+   durable stream shard and every cache shard off it, and moves one already
+   there. It refuses a control plane that predates the label, and a control
+   plane below metadata level 54 refuses it. In a Raft cluster every cache is
+   a group on brokers with storage, so there is no log-less cache in a cluster:
+   a broker without a disk routes cache requests to the group.
 
 The behaviour is pinned by `crates/testing/felix-cluster/tests/routing/in_memory.rs`:
 served through any broker with no Raft group, owner loss gives a new
@@ -297,7 +304,7 @@ flowchart LR
 
 | Phase | What main has | What CI runs |
 | --- | --- | --- |
-| 1. Raft by default (now) | Both engines. A control plane with no `FELIX_SHARD_ENGINE` forms the cluster for Raft. A broker with no `FELIX_SHARD_ENGINE` and a node id (`FELIX_NODE_ID`) runs Raft, and refuses to start, naming what is missing, without the internal listener, durable storage or the `raft` build feature. A standalone broker, with no node id, runs each durable stream and cache shard as a Raft group of one, with no peer, internal listener or control-plane placement (decided in #2986); it refuses `FELIX_SHARD_ENGINE=raft` without durable storage, and without durable storage it runs in memory as before. Every registering broker is compared with the engine the control plane recorded. `FELIX_SHARD_ENGINE=hybrid` still works and logs a deprecation warning. `compose.yaml` runs its broker this way on images built from main, and `felix-cluster up` starts its brokers and control plane on Raft (#2985) | Raft cluster jobs gate. The hybrid cluster jobs run beside them and only report |
+| 1. Raft by default (now) | Both engines. A control plane with no `FELIX_SHARD_ENGINE` forms the cluster for Raft. A broker with no `FELIX_SHARD_ENGINE` and a node id (`FELIX_NODE_ID`) runs Raft, and refuses to start, naming what is missing, without the internal listener or the `raft` build feature; without durable storage it runs no group and holds only in-memory stream shards (#3067). A standalone broker, with no node id, runs each durable stream and cache shard as a Raft group of one, with no peer, internal listener or control-plane placement (decided in #2986); it refuses `FELIX_SHARD_ENGINE=raft` without durable storage, and without durable storage it runs in memory as before. Every registering broker is compared with the engine the control plane recorded. `FELIX_SHARD_ENGINE=hybrid` still works and logs a deprecation warning. `compose.yaml` runs its broker this way on images built from main, and `felix-cluster up` starts its brokers and control plane on Raft (#2985) | Raft cluster jobs gate. The hybrid cluster jobs run beside them and only report |
 | 2. Hybrid deleted | Raft only, one pull request at a time (see "Pull request split"). A broker with a node id runs Raft as in phase 1. A standalone broker runs its durable shards as single-voter Raft groups, as in phase 1, so nothing about it changes when the hybrid goes | Raft only. Each pull request removes the hybrid tests for the code it removes |
 
 The order, decided with Raft as the default:
@@ -363,7 +370,7 @@ live in the Raft groups simulation, `felix-sim/src/raft.rs`, run by
 | Rule 21, one leader per generation (`history/leaders.rs`) | One leader per term | Landed: a Raft member logs its open with the term as the generation (`felix-replication/src/raft/lead.rs`), and `two_raft_members_logging_an_open_in_one_term_is_a_violation` checks the rule reads it |
 | Modes `lease` and `lease-free` | Retired. They choose between two hybrid read and acknowledgement rules. Raft has one | Retired. Removed with the hybrid wiring (#2259) |
 | Nemesis `election` | Kept, as control plane down. It is criterion 5 of the gate | Landed: `replicas_elect_a_leader_while_the_control_plane_is_down` waits on Raft for a new leader at a later term (`raft_await_election` in `history/liveness.rs`) and fails if rule 21 read no open |
-| Duplicate-offset nemesis | New with the gate (engine page) | Missing on clusters: no nemesis partitions a `Leader` stream's leader while a QUIC subscriber, a Kafka consumer and a cache watcher record offsets. The simulator checks its QUIC subscriber half (`raft/deliveries.rs`) |
+| Duplicate-offset nemesis | New with the gate (engine page) | Landed for QUIC readers: rule 22 (`history/checker/offsets.rs`) and `no_offset_is_held_as_two_records_across_leader_faults`, which kills, partitions, machine-crashes and wipes a `Leader` stream's leader while two subscribers per list and reads from every broker record offsets. The simulator checks the same for its subscribers (`raft/deliveries.rs`). Missing: a Kafka consumer and a cache watcher as readers, and a relaxed power cut of every broker followed by a re-form, which the harness cannot run yet |
 
 ### Cluster tests
 
@@ -396,7 +403,7 @@ twin that must fail where there is one.
 | `SetChangesJoint`, `NoCutOverInPiece`, `StagedCopyNeverDelaysAck` | The joint consensus configs and the learner-counted twin (#2244) | Landed: `FelixRaftMembership*.cfg`; `FelixRaftMembershipLearnerCounts` fails `AckedSurvive` |
 | Wipe, vouch, doubted, readmit and `FollowerTrusted` configs | The member identity twins (#2244) | Landed: `FelixRaftIdentity*.cfg` |
 | Suspicion and pre-vote configs | The sleep liveness configs (#2244). openraft's pre-vote is not modelled by Felix | Landed: `FelixRaftSleep*.cfg` |
-| `EventuallyServes`, `ElectionSettles` | Election liveness | Missing. `FelixRaft` checks only that a quiet group is served (`QuiescentServed`), not that a leader is eventually elected |
+| `EventuallyServes`, `ElectionSettles` | `ElectionSettles` and `EventuallyServes` in `FelixRaftElect.tla`, temporal under weak fairness: three voters, at most two crashes or cuts that stop, at most one colliding round, terms unbounded (`FelixRaftElectLive*.cfg`; the `Slack` configs show the term bound is never reached). `FelixRaftElectLiveSplits` drops the randomised timeout and fails `ElectionSettles`; `FelixRaftElectLiveNoOpen` drops the commit's fairness and fails `EventuallyServes`. Not shown: more faults or voters, other partitions, lost messages, repeated collisions | Landed |
 | Ballot, kept-set, adoption, rename, reissue, report-order and control-plane-down configs (`AdoptedMatchesOpened`, `CpLeaderServes`, `OwnBallotCaughtUp`, `NeverRename*`, `CpDown*` and the rest) | Retired. Each guards a step between the control plane and a broker that no longer exists: the control plane does not name leaders | Retired |
 | `Counters*` | Retired. A cache shard has one log and one commit index | Retired |
 | `NoStaleRead`, `NoStaleGroupCommit`, `NoLostDelivery` | The same properties in `FelixRaftReads.cfg`, `FelixRaftReadsWritten.cfg`, `FelixRaftSessionsSubscriber.cfg` and `FelixRaftSessionsGroup.cfg`, each with a twin that drops the rule and fails (#2266) | Landed |
@@ -483,7 +490,7 @@ is closed or kept.
 | #1998 fsync error must poison the log | Own storage fix, before #2233. A group stops on a storage error, so the error must be sticky |
 | #1931 crash between purge and snapshot install | Track 2 (#2221, pull request #2255) |
 | #1820 balancer moves caches back and forth | Placement. Re-tested after #2235, when leader balance is a transfer |
-| #1774 creating streams before a broker registers skips the feature finalize | Re-tested under Raft, which needs no replication feature finalized |
+| #1774 creating streams before a broker registers skips the feature finalize | Fixed for both engines: Raft needs it too, since a member opens strict (fsync on every commit) until `raft_written_commit` is finalized. A cluster is new until a shard is placed |
 | #1615 a counted copy dropped as staged | Resolved in PR 6. Staged and counted become learner and voter, read from the membership |
 | #1006 lone unbatched publisher slower on a per-log thread | Measured by the single-node cell of #2243 |
 | #2164 publishes time out forever after a whole-cluster wipe | Resolved by #2250: no voter is left, so the shard is re-formed or reported, not retried |

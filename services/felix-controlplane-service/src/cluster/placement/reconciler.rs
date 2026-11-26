@@ -581,6 +581,17 @@ pub(super) async fn apply_pass(
                         "a replaced copy is caught up; its new storage id is named and it stays a learner until it holds the generation's start",
                     );
                 }
+                if let super::MoveStep::RaftLeaderTimedOut { from, to } = step {
+                    metrics::counter!(SHARD_MOVES_TIMED_OUT_TOTAL).increment(1);
+                    tracing::warn!(
+                        kind = %key.kind,
+                        name = %key.stream,
+                        shard = key.shard,
+                        destination = %from,
+                        leader = %to,
+                        "an operator's leader move did not land in time and was given up",
+                    );
+                }
                 if let super::MoveStep::TimedOut { successor } = step {
                     metrics::counter!(SHARD_MOVES_TIMED_OUT_TOTAL).increment(1);
                     tracing::warn!(

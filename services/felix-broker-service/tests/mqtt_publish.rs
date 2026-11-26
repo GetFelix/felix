@@ -7,102 +7,37 @@
 //! on the path its test says so and returns; CI installs it.
 //!
 //! Run with `cargo test -p felix-broker-service --test mqtt_publish`.
-use std::sync::Arc;
+#[path = "support/mqtt_fixture.rs"]
+mod mqtt_fixture;
+#[path = "support/raft_shard.rs"]
+mod raft_shard;
+
 use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
 use bytes::Bytes;
-use felix_broker::{Broker, DurableStorage, StreamMetadata};
-use felix_broker_service::config::MqttListenerConfig;
-use felix_broker_service::serving::auth::demo::{DemoAuth, demo_auth_for_tenant};
-use felix_broker_service::serving::mqtt::{
-    BrokerMounts, BrokerMqttAuth, BrokerWrites, MqttListener,
-};
-use felix_mqtt::Settings;
-use felix_storage::EphemeralCache;
-use felix_storage::log::{FsyncMode, LogConfig};
-use felix_wire::RecordHeaders;
-use tokio_util::sync::CancellationToken;
-use tokio_util::task::TaskTracker;
+use mqtt_fixture::{Felix, Fixture, Options, TENANT, on_both};
 
-const TENANT: &str = "t1";
 const WAIT: Duration = Duration::from_secs(10);
 
-struct Running {
-    broker: Arc<Broker>,
-    demo: DemoAuth,
-    port: u16,
-    shutdown: CancellationToken,
-    _data: tempfile::TempDir,
-}
-
-impl Drop for Running {
-    fn drop(&mut self) {
-        self.shutdown.cancel();
-    }
-}
-
-async fn start(headers: bool) -> Result<Running> {
-    let data = tempfile::tempdir()?;
-    let storage = DurableStorage::open(
-        data.path(),
-        LogConfig {
-            fsync_mode: FsyncMode::None,
-            preallocate_segments: false,
-            ..LogConfig::default()
+async fn start(fixture: Fixture, headers: bool) -> Result<Felix> {
+    Felix::start(
+        fixture,
+        Options {
+            headers,
+            reads: false,
         },
-    )?;
-    let broker = Arc::new(Broker::new(EphemeralCache::new().into()).with_durable_storage(storage));
-    if headers {
-        broker.record_headers_when(|| true);
-    }
-    broker.register_tenant(TENANT).await?;
-    broker.register_namespace(TENANT, "ns").await?;
-    broker
-        .register_stream(
-            TENANT,
-            "ns",
-            "plant",
-            StreamMetadata {
-                durable: true,
-                mount: Some("plant/".to_string()),
-                ..StreamMetadata::default()
-            },
-        )
-        .await?;
-
-    let demo = demo_auth_for_tenant(TENANT)?;
-    let listener = MqttListener::bind(
-        &MqttListenerConfig {
-            listen: "127.0.0.1:0".parse()?,
-            tls: false,
-            worker_threads: 2,
-            max_connections: 64,
-            max_connections_per_ip: 0,
-            connect_rate: 0,
-            settings: Settings::default(),
-            ws: None,
-        },
-        None,
-        Arc::new(BrokerMqttAuth::new(Arc::clone(&demo.auth))),
-        Arc::new(BrokerMounts::new(Arc::clone(&broker), None)),
-        Arc::new(BrokerWrites::new(
-            Arc::clone(&broker),
-            Arc::new(felix_broker_service::shards::routing::StreamEngine::default()),
-            Duration::from_secs(5),
-        )),
-    )?;
-    let port = listener.local_addr()?.port();
-    let shutdown = CancellationToken::new();
-    drop(listener.spawn(shutdown.clone(), TaskTracker::new(), None));
-    Ok(Running {
-        broker,
-        demo,
-        port,
-        shutdown,
-        _data: data,
-    })
+    )
+    .await
 }
+
+on_both!(
+    rumqttc_3_1_1_publishes_at_qos_0_and_1,
+    rumqttc_5_carries_properties_as_headers,
+    a_publish_outside_every_mount_is_not_written,
+    a_broker_without_record_headers_writes_nothing,
+    mosquitto_pub_publishes_at_qos_1,
+);
 
 struct Stored {
     payload: Bytes,
@@ -120,20 +55,17 @@ impl Stored {
 }
 
 /// The stream's records, waiting up to `WAIT` for `count` of them.
-async fn stored(broker: &Broker, count: usize) -> Result<Vec<Stored>> {
+async fn stored(felix: &Felix, count: usize) -> Result<Vec<Stored>> {
     let deadline = tokio::time::Instant::now() + WAIT;
     loop {
-        let records = broker
-            .read_durable(TENANT, "ns", "plant", 0, 0, 1 << 20)
-            .await?;
+        let records = felix.records().await?;
         if records.len() >= count {
             return records
                 .into_iter()
-                .map(|record| {
-                    let block = record.headers.context("a record without headers")?;
-                    let block = RecordHeaders::decode((*block).clone())?;
+                .map(|(payload, headers)| {
+                    let block = headers.context("a record without headers")?;
                     Ok(Stored {
-                        payload: record.payload,
+                        payload,
                         key: block.key.context("a record without a key")?,
                         headers: block.headers,
                     })
@@ -147,13 +79,12 @@ async fn stored(broker: &Broker, count: usize) -> Result<Vec<Stored>> {
     }
 }
 
-#[tokio::test]
-async fn rumqttc_3_1_1_publishes_at_qos_0_and_1() -> Result<()> {
+async fn rumqttc_3_1_1_publishes_at_qos_0_and_1(fixture: Fixture) -> Result<()> {
     use rumqttc::{AsyncClient, Event, MqttOptions, Packet, QoS};
 
-    let felix = start(true).await?;
+    let felix = start(fixture, true).await?;
     let mut options = MqttOptions::new("dev-1", "127.0.0.1", felix.port);
-    options.set_credentials(TENANT, felix.demo.token.clone());
+    options.set_credentials(TENANT, felix.token.clone());
     let (client, mut events) = AsyncClient::new(options, 10);
 
     client
@@ -175,7 +106,7 @@ async fn rumqttc_3_1_1_publishes_at_qos_0_and_1() -> Result<()> {
     .await
     .context("no PUBACK")??;
 
-    let records = stored(&felix.broker, 2).await?;
+    let records = stored(&felix, 2).await?;
     let qos1 = records
         .iter()
         .find(|r| r.payload == "21.5")
@@ -191,15 +122,14 @@ async fn rumqttc_3_1_1_publishes_at_qos_0_and_1() -> Result<()> {
     Ok(())
 }
 
-#[tokio::test]
-async fn rumqttc_5_carries_properties_as_headers() -> Result<()> {
+async fn rumqttc_5_carries_properties_as_headers(fixture: Fixture) -> Result<()> {
     use rumqttc::v5::mqttbytes::QoS;
     use rumqttc::v5::mqttbytes::v5::{Packet, PublishProperties};
     use rumqttc::v5::{AsyncClient, Event, MqttOptions};
 
-    let felix = start(true).await?;
+    let felix = start(fixture, true).await?;
     let mut options = MqttOptions::new("dev-5", "127.0.0.1", felix.port);
-    options.set_credentials(TENANT, felix.demo.token.clone());
+    options.set_credentials(TENANT, felix.token.clone());
     let (client, mut events) = AsyncClient::new(options, 10);
 
     let properties = PublishProperties {
@@ -224,7 +154,7 @@ async fn rumqttc_5_carries_properties_as_headers() -> Result<()> {
     .await
     .context("no PUBACK")??;
 
-    let records = stored(&felix.broker, 1).await?;
+    let records = stored(&felix, 1).await?;
     let record = &records[0];
     assert_eq!(record.payload, "21.5");
     assert_eq!(record.key, Bytes::from_static(b"plant/7/temp"));
@@ -236,13 +166,12 @@ async fn rumqttc_5_carries_properties_as_headers() -> Result<()> {
     Ok(())
 }
 
-#[tokio::test]
-async fn a_publish_outside_every_mount_is_not_written() -> Result<()> {
+async fn a_publish_outside_every_mount_is_not_written(fixture: Fixture) -> Result<()> {
     use rumqttc::{AsyncClient, Event, MqttOptions, QoS};
 
-    let felix = start(true).await?;
+    let felix = start(fixture, true).await?;
     let mut options = MqttOptions::new("dev-2", "127.0.0.1", felix.port);
-    options.set_credentials(TENANT, felix.demo.token.clone());
+    options.set_credentials(TENANT, felix.token.clone());
     let (client, mut events) = AsyncClient::new(options, 10);
     client
         .publish("yard/gate", QoS::AtLeastOnce, false, "open")
@@ -261,23 +190,16 @@ async fn a_publish_outside_every_mount_is_not_written() -> Result<()> {
     })
     .await;
     assert!(ended.is_ok(), "the connection should have closed");
-    assert!(
-        felix
-            .broker
-            .read_durable(TENANT, "ns", "plant", 0, 0, 1 << 20)
-            .await?
-            .is_empty()
-    );
+    assert!(felix.records().await?.is_empty());
     Ok(())
 }
 
-#[tokio::test]
-async fn a_broker_without_record_headers_writes_nothing() -> Result<()> {
+async fn a_broker_without_record_headers_writes_nothing(fixture: Fixture) -> Result<()> {
     use rumqttc::{AsyncClient, MqttOptions, QoS};
 
-    let felix = start(false).await?;
+    let felix = start(fixture, false).await?;
     let mut options = MqttOptions::new("dev-3", "127.0.0.1", felix.port);
-    options.set_credentials(TENANT, felix.demo.token.clone());
+    options.set_credentials(TENANT, felix.token.clone());
     let (client, mut events) = AsyncClient::new(options, 10);
     client
         .publish("plant/7/temp", QoS::AtLeastOnce, false, "21.5")
@@ -291,24 +213,17 @@ async fn a_broker_without_record_headers_writes_nothing() -> Result<()> {
     })
     .await;
     assert!(ended.is_ok(), "3.1.1 is refused by closing the connection");
-    assert!(
-        felix
-            .broker
-            .read_durable(TENANT, "ns", "plant", 0, 0, 1 << 20)
-            .await?
-            .is_empty()
-    );
+    assert!(felix.records().await?.is_empty());
     Ok(())
 }
 
-#[tokio::test]
-async fn mosquitto_pub_publishes_at_qos_1() -> Result<()> {
-    let felix = start(true).await?;
+async fn mosquitto_pub_publishes_at_qos_1(fixture: Fixture) -> Result<()> {
+    let felix = start(fixture, true).await?;
     let run = tokio::process::Command::new("mosquitto_pub")
         .args(["-h", "127.0.0.1", "-p"])
         .arg(felix.port.to_string())
         .args(["-u", TENANT, "-P"])
-        .arg(&felix.demo.token)
+        .arg(&felix.token)
         .args(["-t", "plant/7/line/3/temp", "-q", "1", "-m", "21.5"])
         .output()
         .await;
@@ -325,7 +240,7 @@ async fn mosquitto_pub_publishes_at_qos_1() -> Result<()> {
         "mosquitto_pub failed: {}",
         String::from_utf8_lossy(&output.stderr)
     );
-    let records = stored(&felix.broker, 1).await?;
+    let records = stored(&felix, 1).await?;
     assert_eq!(records[0].payload, "21.5");
     assert_eq!(records[0].key, Bytes::from_static(b"plant/7/line/3/temp"));
     assert_eq!(records[0].header("felix.mqtt.qos"), Some(&b"1"[..]));

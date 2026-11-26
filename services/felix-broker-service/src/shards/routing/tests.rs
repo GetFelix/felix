@@ -46,6 +46,7 @@ fn assignment(shard: u32, leader: &str, generation: u64) -> ShardAssignment {
         raft_voters: None,
         raft_bases: None,
         raft_seed: None,
+        move_reason: None,
         placed: None,
     }
 }
@@ -432,6 +433,7 @@ mod feed {
                 elections: None,
                 nodes: HashMap::default(),
                 engine_shards: None,
+                memory: None,
             },
             router,
         )

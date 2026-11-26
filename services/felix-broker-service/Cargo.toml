@@ -141,6 +141,10 @@ felix-replication = { path = "../../crates/server/felix-replication", version = 
 # here instead of in a cluster.
 felix-controlplane-service = { path = "../felix-controlplane-service", version = "0.8.0-preview.2" }
 
+# The Kafka and MQTT client matrices run each test a second time against a
+# one-node Raft cluster this harness starts. Not published, so no version.
+felix-cluster = { path = "../../crates/testing/felix-cluster" }
+
 # The fire-and-forget ingest test runs the load generator against an
 # in-process broker.
 felix-loadgen = { path = "../../crates/testing/felix-loadgen", version = "0.8.0-preview.2" }

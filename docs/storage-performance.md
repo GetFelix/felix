@@ -257,8 +257,11 @@ flusher, so one flush serves every commit since the last
 (`docs/per-shard-raft.md`, "Proposal: commit on a written majority on relaxed
 brokers"). Votes and terms are still synced before a vote is answered. It is
 on once the fleet finalizes `raft_written_commit`, which a new cluster does.
-On a `none` broker such a log still flushes once a second, since nothing
-else would move its flushed position. `periodic_quorum_commits_share_the_periodic_fsync`
+The log's flushed position, which a `Flushed` acknowledgement and the
+root's log mark wait on, is raised by the sync that covers the entry, on the
+thread that ran it, so an append wakes no flush task (a trim, or an exact
+log mark, still goes through one). On a `none` broker such a log still
+flushes once a second, since nothing else would move its flushed position. `periodic_quorum_commits_share_the_periodic_fsync`
 counts it: 32 commits on three copies take 96 commit-path flushes when the
 log fsyncs on commit, and none on `periodic`, where no flush of any kind
 moves the durable offset before the timer.
@@ -304,7 +307,10 @@ graph LR
   It never waits for more, so a lone ack is not held back.
 - The ack timeout is one deadline queue per control stream, swept on a coarse
   tick while anything is owed. A publish that outlives it is answered with
-  `Unacknowledged`, and its late result is discarded.
+  `Unacknowledged`, and its late result is discarded. A publish to a Raft
+  shard also gets the quorum wait's deadline in a second queue of the same
+  sweep, which wakes for it when it passes, so the client hears
+  `quorum_timeout` on time without a timer per publish.
 - An answer is sent once the batch is durable under the stream's fsync mode
   and in the replay ring, and before the batch is fanned out
   (`complete_publish_answering`). It never precedes durability. A `Quorum`

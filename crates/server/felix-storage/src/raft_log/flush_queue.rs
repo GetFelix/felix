@@ -22,6 +22,9 @@ pub(super) struct FlushQueue {
     waiting: Arc<watch::Sender<usize>>,
     /// To the task, which starts with the first append that has to wait.
     sender: parking_lot::Mutex<Option<mpsc::UnboundedSender<Waiting>>>,
+    /// Appends handed to the task, each one a wake of it.
+    #[cfg(test)]
+    pushed: std::sync::atomic::AtomicU64,
 }
 
 struct Waiting {
@@ -37,6 +40,8 @@ impl Default for FlushQueue {
         Self {
             waiting: Arc::new(watch::channel(0).0),
             sender: parking_lot::Mutex::new(None),
+            #[cfg(test)]
+            pushed: std::sync::atomic::AtomicU64::new(0),
         }
     }
 }
@@ -45,6 +50,12 @@ impl FlushQueue {
     /// No callback is outstanding, so one fired now is in order.
     pub(super) fn is_empty(&self) -> bool {
         *self.waiting.borrow() == 0
+    }
+
+    /// How many appends were handed to the task.
+    #[cfg(test)]
+    pub(super) fn pushed(&self) -> u64 {
+        self.pushed.load(std::sync::atomic::Ordering::Relaxed)
     }
 
     /// Returns once every callback queued so far has fired.
@@ -63,6 +74,9 @@ impl FlushQueue {
         flushed: Flushed,
         mark: Option<(CopyMarks, LogPoint)>,
     ) {
+        #[cfg(test)]
+        self.pushed
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         self.waiting.send_modify(|waiting| *waiting += 1);
         let mut sender = self.sender.lock();
         // A task that stopped (a callback panicked, or its runtime shut

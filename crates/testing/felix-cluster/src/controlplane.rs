@@ -17,6 +17,9 @@
 //! milliseconds, and a test's runtime (often single-threaded) also drives every
 //! client the test opens, so sharing it lets test load lapse a lease.
 pub(crate) mod group;
+mod upgraded;
+
+pub use upgraded::record_a_served_shard;
 
 use std::sync::Arc;
 use std::time::Duration;

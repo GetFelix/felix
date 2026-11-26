@@ -224,7 +224,10 @@ pub struct ShardAssignment {
     pub move_started_at_millis: Option<u64>,
     /// Why the move or replacement in progress started. Cleared when it
     /// ends, so it is set exactly while `successor` or `joining` is, or the
-    /// shard is `Draining`.
+    /// shard is `Draining`, or on a Raft shard while an operator's move of
+    /// its leader within the set runs (`Operator`, with no successor).
+    /// Brokers read that last case: the group's leader then hands over even
+    /// with a voter down.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub move_reason: Option<MoveReason>,
     /// The incarnation of the stream this assignment is for, read from the
