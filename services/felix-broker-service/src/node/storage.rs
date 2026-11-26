@@ -43,6 +43,13 @@ pub(crate) fn open_with(
     // opens, since the model takes what is already on disk as durable.
     #[cfg(debug_assertions)]
     felix_storage::fault::arm_power_loss_from_env().context("arm the simulated power loss")?;
+    // Logs open lazily, so without this a filesystem that cannot lock a
+    // directory lets the broker become ready and then fails every shard.
+    // Only a probe: a second broker on the root is caught per log (#3250).
+    if let Some(durable) = &durable_config {
+        felix_storage::disk_log::probe_dir_lock(&durable.root)
+            .context("check that the data directory can be locked")?;
+    }
     // Before any store opens: a store's recovery is the first write of this
     // run, and the record that a run is under way must already be on disk.
     let (storage_id, unclean, replaced, kept) = match &durable_config {

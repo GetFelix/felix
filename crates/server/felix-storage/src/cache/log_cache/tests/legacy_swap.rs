@@ -45,6 +45,7 @@ async fn a_shard_left_mid_swap_by_an_older_build_opens_whole() {
             .await
             .expect("put");
         store.shutdown().await.expect("shutdown");
+        drop(store);
 
         let store = cache(root.path()).await;
         assert_reads(&store, &expected, &format!("{when}, restarted")).await;
@@ -55,4 +56,26 @@ async fn a_shard_left_mid_swap_by_an_older_build_opens_whole() {
         );
         store.shutdown().await.expect("shutdown");
     }
+}
+
+/// **An old swap is settled only under the shard's lock.** With the shard
+/// open elsewhere, its stale siblings stay where they are and the open is
+/// refused, rather than deleted from under the open log's holder.
+#[tokio::test]
+async fn an_old_swap_is_not_settled_under_another_open() {
+    let root = tempfile::tempdir().expect("tempdir");
+    let dir = root.path().join("shard");
+    let open = DiskLog::open(&dir, "holder", config()).expect("open");
+    let staging = dir.with_extension("compacting");
+    std::fs::create_dir_all(&staging).expect("staging");
+    let err = crate::legacy_swap::recover_legacy_swap(&dir).expect_err("settled under an open");
+    assert!(
+        matches!(&err, StorageError::Io(io) if io.kind() == std::io::ErrorKind::ResourceBusy),
+        "{err}"
+    );
+    assert!(staging.exists(), "a sibling went while the shard was open");
+    open.close().await.expect("close");
+    let lock = crate::legacy_swap::recover_legacy_swap(&dir).expect("settled once closed");
+    assert!(!staging.exists(), "the stale sibling stayed");
+    drop(lock);
 }

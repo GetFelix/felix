@@ -10,9 +10,9 @@ use tokio::sync::{mpsc, watch};
 
 use super::LogPoint;
 use super::writer::io_error;
+use crate::DiskLog;
 use crate::disk_log::PendingAppend;
 use crate::raft_copy::CopyMarks;
-use crate::{DiskLog, StorageError};
 
 /// What an append's callback is given.
 pub(super) type Flushed = Box<dyn FnOnce(io::Result<()>) + Send>;
@@ -156,9 +156,11 @@ impl Task {
                         (Some(Ok(())), Some((_, newest))) => *newest,
                         _ => *last,
                     };
-                    match marks.log(Some(point)).await {
+                    // Refused once the log is closed, and then Raft is not
+                    // told either: it hears of entries only past the mark.
+                    match marks.log_while_open(&self.log, Some(point)).await {
                         Ok(()) => marked = Some(point),
-                        Err(err) => flushed = Err(StorageError::Io(err)),
+                        Err(err) => flushed = Err(err),
                     }
                 }
                 // On drop, so a callback that panics is still counted.

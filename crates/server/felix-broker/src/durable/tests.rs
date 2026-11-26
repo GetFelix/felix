@@ -398,6 +398,8 @@ async fn a_shard_opened_at_a_base_begins_there_and_keeps_it() {
     let appended = log.append(&payloads(&["a"])).await.expect("append");
     assert_eq!(appended.first_offset, 100);
     storage.shutdown().await.expect("shutdown");
+    // A restart: nothing of the first run is left.
+    drop((log, storage));
 
     let storage = DurableStorage::open(dir.path(), config()).expect("reopen");
     let again = storage

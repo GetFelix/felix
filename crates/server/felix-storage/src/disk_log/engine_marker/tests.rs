@@ -57,6 +57,21 @@ async fn a_hybrid_directory_is_refused_by_raft() {
     DiskLog::open(&dir, "t/n/s/0", hybrid()).expect("still the hybrid's");
 }
 
+#[tokio::test]
+async fn a_claim_on_a_directory_a_hybrid_log_holds_is_refused_as_busy() {
+    let root = tempdir().expect("tempdir");
+    let dir = root.path().join("shard");
+    let log = DiskLog::open(&dir, "t/n/s/0", hybrid()).expect("open as hybrid");
+
+    let err = claim_for_raft(&dir, "t/n/s/0").expect_err("refused");
+    assert!(
+        matches!(&err, StorageError::Io(e) if e.kind() == std::io::ErrorKind::ResourceBusy),
+        "not a busy refusal: {err:?}"
+    );
+    assert!(!path_in(&dir).exists(), "a refused claim leaves no marker");
+    log.close().await.expect("close");
+}
+
 #[test]
 fn an_unknown_engine_is_refused_by_both() {
     let root = tempdir().expect("tempdir");

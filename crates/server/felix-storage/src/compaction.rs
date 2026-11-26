@@ -134,6 +134,17 @@ impl Compactor {
         }
     }
 
+    /// End every pass where it stands, as a dying process would, so a test
+    /// can open the logs again with nothing still writing to them.
+    #[cfg(test)]
+    pub(crate) async fn kill(&self) {
+        let tasks = std::mem::take(&mut *self.tasks.lock());
+        for task in tasks {
+            task.abort();
+            let _ = task.await;
+        }
+    }
+
     /// Park every pass at its next budget check until [`Compactor::release`].
     /// Stands in for a compaction that is arbitrarily slow.
     #[cfg(test)]

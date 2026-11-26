@@ -169,6 +169,10 @@ impl Running {
         self.task.abort();
         let _ = self.task.await;
         drop(self.server);
+        // A process going away takes its connections with it; aborting the
+        // accept loop does not, so they would keep this broker's logs open.
+        // Stop its storage the way the binary does.
+        let _ = self.broker.shutdown_storage().await;
     }
 }
 
@@ -647,6 +651,60 @@ async fn a_client_polls_and_acknowledges_a_consumer_group() -> Result<()> {
         after.is_empty(),
         "the group repeated work it had already finished",
     );
+    restarted.stop().await;
+    Ok(())
+}
+
+/// **A broker with live connections is still a writer.** Aborting its accept
+/// loop leaves its connections, and so its logs, running: a second broker on
+/// the same directory is refused until the first stops its storage, and
+/// after that the first can no longer write there.
+#[tokio::test]
+async fn a_second_broker_is_refused_until_the_first_stops_its_storage() -> Result<()> {
+    let dir = tempfile::tempdir()?;
+    let running = start(dir.path()).await?;
+    let client = running.client().await?;
+    let publisher = client.publisher().await?;
+    let publish = async |job: &str| {
+        publisher
+            .publish(
+                "t1",
+                "default",
+                QUEUE,
+                job.as_bytes().to_vec(),
+                felix_wire::AckMode::PerMessage,
+            )
+            .await
+    };
+    publish("one").await?;
+    running.task.abort();
+    let _ = running.task.await;
+    publish("two").await?;
+
+    let refused = start(dir.path()).await.err().map(|err| format!("{err:#}"));
+    assert!(
+        refused
+            .as_deref()
+            .is_some_and(|err| err.contains("is locked by another open")),
+        "a second broker opened a stream log the first still writes: {refused:?}",
+    );
+
+    running.broker.shutdown_storage().await?;
+    assert!(
+        publish("three").await.is_err(),
+        "the first broker wrote after its storage stopped"
+    );
+    let restarted = start(dir.path()).await?;
+    let claimed = restarted
+        .client()
+        .await?
+        .group_poll("t1", "default", QUEUE, 0, "workers", 10)
+        .await?;
+    let payloads: Vec<String> = claimed
+        .iter()
+        .map(|r| String::from_utf8(r.payload.to_vec()).expect("utf8"))
+        .collect();
+    assert_eq!(payloads, vec!["one", "two"]);
     restarted.stop().await;
     Ok(())
 }

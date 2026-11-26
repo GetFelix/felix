@@ -1191,14 +1191,12 @@ impl LogCache {
                 }
                 let dir = layout::incarnation_dir(&self.root, &key, incarnation);
                 let label = layout::shard_label(&key);
-                crate::legacy_swap::recover_legacy_swap(&dir)?;
+                let lock = crate::legacy_swap::recover_legacy_swap(&dir)?;
                 let config = self.config_for(tenant, namespace, cache);
                 self.dirs
                     .created(&layout::incarnation_dir_name(&key, incarnation));
-                let log = match base_offset {
-                    Some(base) => DiskLog::open_at(dir.clone(), label.clone(), config, base)?,
-                    None => DiskLog::open(dir.clone(), label.clone(), config)?,
-                };
+                let log =
+                    DiskLog::open_holding(dir.clone(), label.clone(), config, base_offset, lock)?;
                 Ok(Arc::new(CacheShard {
                     label,
                     dir,

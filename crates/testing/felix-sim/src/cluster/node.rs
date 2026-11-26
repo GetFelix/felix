@@ -342,6 +342,9 @@ impl Node {
             }
         }
         tokio::time::sleep(CRASH_DRAIN).await;
+        // A real process death drops its directory locks with it. A handle a
+        // drained task still holds here would otherwise keep the restart out.
+        felix_storage::sim_fs::process_died(self.dir.path());
         let Some(id) = stopped_under else {
             return false;
         };

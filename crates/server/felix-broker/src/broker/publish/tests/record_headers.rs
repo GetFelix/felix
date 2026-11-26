@@ -244,7 +244,9 @@ async fn a_publish_without_headers_stores_none() {
         vec![None, None, None]
     );
     // A gate that is off refuses nothing here: there is nothing to refuse.
-    let off = broker_with("plain", durable(), Some(storage(dir.path()))).await;
+    // A second broker, so a data directory of its own.
+    let other = tempfile::tempdir().expect("tempdir");
+    let off = broker_with("plain", durable(), Some(storage(other.path()))).await;
     let plain = stream_handle(&off, "plain").await;
     off.publish_batch_with_outcome(&plain, &payloads(&["a"]), None, Some(&[None]))
         .await

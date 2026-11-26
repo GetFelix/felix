@@ -573,6 +573,7 @@ impl DiskLogProvider {
                     base_offset,
                     self.sealed_files.clone(),
                     super::OtherCommit::Drop,
+                    None,
                 )
             },
             || StorageError::Closed(layout::shard_label(shard)),

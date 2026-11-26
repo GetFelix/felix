@@ -175,7 +175,14 @@ async fn a_seek_left_without_its_cleared_dead_letters_falls_back() {
     let before_seek = {
         let fx = open_with_attempts(dir.path(), 1);
         dead_letter_the_only_record(&fx, &key, Instant::now()).await;
-        let (_dead, log) = dead_letter_log(dir.path()).await;
+        // Through the reader's own dead letters, which hold the log open.
+        let log = StreamLog::from_log(
+            fx.reader
+                .dead_letters()
+                .shard_log(T, NS, S, 0)
+                .await
+                .expect("log"),
+        );
         let end = log.tail_offset().await.expect("tail");
         fx.reader.seek(&key, 0, false).await.expect("seek");
         end
