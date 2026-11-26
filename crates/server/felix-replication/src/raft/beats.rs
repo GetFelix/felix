@@ -40,6 +40,9 @@ struct Batch {
     beats: Vec<RaftRequest>,
     waiters: Vec<oneshot::Sender<Answer>>,
     held: Vec<Option<Arc<Held>>>,
+    /// Set by [`take`]: the first heartbeat, its window's opener's, is
+    /// still in it.
+    opener: bool,
 }
 
 impl Batch {
@@ -139,13 +142,16 @@ impl Beats {
                 window.open = false;
                 return answered.unwrap_or_else(|_| Err(dropped()));
             }
-            () = tokio::time::sleep_until(window.until) => window.open = false,
+            () = tokio::time::sleep_until(window.until) => {}
         }
+        // Closed only once taken, so a drop before this leaves the guard
+        // to send the others.
         let batch = take(&mut self.queued.lock(), &window.broker, Some(id));
+        window.open = false;
         match batch {
-            // Only the opener's is left: the others were taken back, and
-            // the opener's cannot be while it runs.
-            Some(batch) if batch.beats.len() == 1 => {
+            // Only the opener's own is left. If it was taken back, the one
+            // left is another's and must get its own answer: flush below.
+            Some(batch) if batch.opener && batch.beats.len() == 1 => {
                 let mut answers = self.inner.send_beats(batch.beats, self.window).await;
                 return answers.pop().unwrap_or_else(|| {
                     Err(Refused::Unreachable(
@@ -224,9 +230,12 @@ fn take(queued: &mut Queued, broker: &Arc<str>, id: Option<u64>) -> Option<Batch
         beats: Vec::with_capacity(batch.beats.len()),
         waiters: Vec::with_capacity(batch.beats.len()),
         held: Vec::new(),
+        opener: false,
     };
-    for ((beat, waiter), held) in batch.beats.into_iter().zip(batch.waiters).zip(batch.held) {
+    let entries = batch.beats.into_iter().zip(batch.waiters).zip(batch.held);
+    for (at, ((beat, waiter), held)) in entries.enumerate() {
         if held.as_ref().is_none_or(|held| held.sending()) {
+            kept.opener |= at == 0;
             kept.beats.push(beat);
             kept.waiters.push(waiter);
         }
@@ -286,6 +295,7 @@ impl RaftTransport for Beats {
                     beats: Vec::new(),
                     waiters: Vec::new(),
                     held: Vec::new(),
+                    opener: false,
                 }
             });
             let first = batch.beats.is_empty();

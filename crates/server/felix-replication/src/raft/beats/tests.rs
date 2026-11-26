@@ -318,3 +318,48 @@ async fn a_window_with_nothing_left_sends_nothing() {
     assert_eq!(named(&answer), Some(1));
     assert!(!held.withdraw(), "a sent commit was taken back");
 }
+
+/// A window whose opener was taken back, but that still runs to the end of
+/// the window, sends the heartbeat left in it with its own answer to its
+/// own caller and nothing of the opener's.
+#[tokio::test(start_paused = true)]
+async fn an_opener_taken_back_does_not_take_the_answer_left_in_its_window() {
+    let inner = Arc::new(Counting::default());
+    let beats = Beats::wrap(inner.clone(), WINDOW);
+    let opener = Held::new();
+    let mut first = Box::pin(holding(Arc::clone(&opener), beats.send(beat(1, "b"))));
+    assert!(futures::poll!(first.as_mut()).is_pending());
+    let mut second = Box::pin(beats.send(beat(2, "b")));
+    assert!(futures::poll!(second.as_mut()).is_pending());
+    tokio::time::sleep(WINDOW * 2).await;
+    assert!(opener.withdraw());
+    // The opener runs once more before its caller drops it.
+    let _ = futures::poll!(first.as_mut());
+    drop(first);
+    let answer = second.await;
+    assert_eq!(
+        named(&answer),
+        Some(2),
+        "the heartbeat left lost its answer"
+    );
+    assert_eq!(*inner.batches.lock(), vec![vec![2]]);
+}
+
+/// An opener dropped once its window has ended, before it ran again to
+/// send, leaves the others to the guard, which sends them at once.
+#[tokio::test(start_paused = true)]
+async fn an_opener_dropped_after_its_window_still_gets_the_others_sent() {
+    let inner = Arc::new(Counting::default());
+    let beats = Beats::wrap(inner.clone(), WINDOW);
+    let mut first = Box::pin(beats.send(beat(1, "b")));
+    assert!(futures::poll!(first.as_mut()).is_pending());
+    let mut second = Box::pin(beats.send(beat(2, "b")));
+    assert!(futures::poll!(second.as_mut()).is_pending());
+    tokio::time::sleep(WINDOW * 2).await;
+    let ended = Instant::now();
+    drop(first);
+    let answer = second.await;
+    assert_eq!(named(&answer), Some(2));
+    assert_eq!(ended.elapsed(), Duration::ZERO, "the others waited");
+    assert_eq!(*inner.batches.lock(), vec![vec![1, 2]]);
+}
