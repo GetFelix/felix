@@ -59,6 +59,18 @@ fn current(log: &DiskLog, first: u64) -> CurrentCopy {
     CurrentCopy::new(log.clone(), None, Arc::new(move || first))
 }
 
+/// The reservations a pass reads for `kept` against `root`'s shard directory.
+fn reservations(root: &Root, kept: &Path) -> Option<HeldReservations> {
+    let read = |dir: &Path| match reserved::load(dir).expect("a reservation") {
+        Some(index) => ReservationRead::At(index),
+        None => ReservationRead::Absent,
+    };
+    Some(HeldReservations {
+        kept: read(kept),
+        current: read(&root.shard_dir()),
+    })
+}
+
 async fn pass(root: &Root, current: &CurrentCopy) -> KeptReport {
     reclaim_kept(&root.shard_dir(), current, config(), &|| false)
         .await
@@ -107,6 +119,7 @@ async fn a_kept_copy_is_held_until_the_current_copy_commits_past_it() {
         copy: Some(old),
         last_index,
         reason: HeldReason::Behind,
+        reserved: reservations(&root, &kept),
     };
     let copy = current(&new.log, 0);
 
@@ -208,7 +221,8 @@ async fn a_kept_copy_that_cannot_be_read_is_held() {
             path: kept.clone(),
             copy: Some(old),
             last_index: None,
-            reason: HeldReason::Unreadable
+            reason: HeldReason::Unreadable,
+            reserved: reservations(&root, &kept),
         }]
     );
     assert!(report.reclaimed.is_empty());
@@ -232,7 +246,8 @@ async fn a_kept_copy_is_held_when_the_current_log_starts_above_it() {
             path: kept.clone(),
             copy: Some(old),
             last_index: Some(2),
-            reason: HeldReason::NotHeld
+            reason: HeldReason::NotHeld,
+            reserved: reservations(&root, &kept),
         }]
     );
     assert_eq!(report.wait_for(), None);
@@ -341,7 +356,8 @@ async fn a_kept_copy_is_never_judged_by_its_own_log() {
             path: kept.clone(),
             copy: Some(old),
             last_index: None,
-            reason: HeldReason::Itself
+            reason: HeldReason::Itself,
+            reserved: None,
         }]
     );
     assert!(kept.is_dir());
@@ -452,15 +468,29 @@ async fn a_kept_copy_reserved_past_the_current_copy_is_held() {
     commit(&new.log, 2, 2).await;
     let copy = current(&new.log, 0);
 
+    let mine = reserved::load(&root.shard_dir())
+        .expect("load")
+        .expect("the current copy reserved");
+    assert!(mine < past);
+
     let report = pass(&root, &copy).await;
-    assert_eq!(
-        report.held,
-        vec![HeldCopy {
-            path: kept.clone(),
-            copy: Some(old),
-            last_index: None,
-            reason: HeldReason::Reserved,
-        }]
+    let held = HeldCopy {
+        path: kept.clone(),
+        copy: Some(old),
+        last_index: None,
+        reason: HeldReason::Reserved,
+        reserved: Some(HeldReservations {
+            kept: ReservationRead::At(past),
+            current: ReservationRead::At(mine),
+        }),
+    };
+    assert_eq!(report.held, vec![held.clone()]);
+    // The line an operator reads carries both values, to check the damaged
+    // kept-file rule in docs/storage-format.md against.
+    let line = report.held[0].to_string();
+    assert!(
+        line.contains(&format!("raft-reserved kept {past}, current {mine}")),
+        "{line}"
     );
 
     reserved::store(&root.shard_dir(), past).expect("reserve");
@@ -480,9 +510,26 @@ async fn a_damaged_reservation_is_an_error_and_holds_its_copy() {
     fill(&new.log, 1, 0, 2).await;
     commit(&new.log, 2, 2).await;
 
+    let mine = reserved::load(&root.shard_dir())
+        .expect("load")
+        .expect("the current copy reserved");
+
     let report = pass(&root, &current(&new.log, 0)).await;
     assert_eq!(report.held.len(), 1, "{report:?}");
     assert_eq!(report.held[0].reason, HeldReason::Unreadable);
+    // Unknown, never a number: the rule needs the kept value read whole.
+    assert_eq!(
+        report.held[0].reserved,
+        Some(HeldReservations {
+            kept: ReservationRead::Unreadable,
+            current: ReservationRead::At(mine),
+        })
+    );
+    let line = report.held[0].to_string();
+    assert!(
+        line.contains(&format!("raft-reserved kept unreadable, current {mine}")),
+        "{line}"
+    );
     assert!(kept.is_dir());
 }
 

@@ -11,6 +11,14 @@ fn counter(start: u8) -> impl FnMut() -> [u8; 16] {
     }
 }
 
+/// The ids of [`reform_evidence`].
+fn relaxed_crash_sources(root: &Path) -> Result<Vec<StorageId>> {
+    Ok(reform_evidence(root)?
+        .into_iter()
+        .map(|rotated| rotated.id)
+        .collect())
+}
+
 const PERIODIC: bool = true;
 const ON_COMMIT: bool = false;
 
@@ -1302,5 +1310,76 @@ fn a_crash_during_the_rotation_keeps_the_evidence() {
         let sources = relaxed_crash_sources(dir.path()).expect("read");
         assert!(sources.contains(&second.id), "point {point}: {sources:?}");
         assert!(sources.contains(&first.id), "point {point}: {sources:?}");
+    }
+}
+
+/// A restore through the tools leaves the evidence a standalone broker
+/// re-forms on, marked as a restore, and a start's rotation after it keeps
+/// the chain.
+#[test]
+fn a_restore_records_the_id_it_rotated_away() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let mut fresh = counter(0);
+    let first = begin_on(dir.path(), ON_COMMIT, &mut fresh);
+    mark_clean(dir.path(), first.id).expect("clean");
+    let restored = rotate_for_restore(dir.path(), fresh()).expect("restore");
+    assert!(!dir.path().join(RESTORE_PENDING_FILE_NAME).exists());
+    assert_eq!(
+        reform_evidence(dir.path()).expect("read"),
+        vec![Rotated {
+            id: first.id,
+            restore: true
+        }]
+    );
+    // The run record names the old id, so the start rotates once more.
+    let next = begin_on(dir.path(), ON_COMMIT, &mut fresh);
+    assert!(next.rotated);
+    assert_eq!(
+        reform_evidence(dir.path()).expect("read"),
+        vec![
+            Rotated {
+                id: restored,
+                restore: false
+            },
+            Rotated {
+                id: first.id,
+                restore: true
+            },
+        ]
+    );
+}
+
+/// **A crash part way through a restore's rotation refuses every start**
+/// until the tool is run again, which keeps the evidence of the first run:
+/// before the evidence, before the rotation, and before the marker goes.
+#[test]
+fn a_crash_during_a_restore_refuses_the_start_until_it_is_run_again() {
+    for point in [3, 4, 5] {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let mut fresh = counter(0);
+        let first = begin_on(dir.path(), PERIODIC, &mut fresh);
+        mark_clean(dir.path(), first.id).expect("clean");
+        CRASH_AT.with(|at| at.set(point));
+        let cut = rotate_for_restore(dir.path(), fresh());
+        CRASH_AT.with(|at| at.set(0));
+        assert!(cut.is_err(), "point {point}");
+
+        let refused = begin(dir.path(), PERIODIC, None, BOOT, no_repair, &mut fresh)
+            .expect_err("a start while the restore is unfinished");
+        assert!(
+            refused.to_string().contains("rotate-storage-id"),
+            "point {point}: {refused}"
+        );
+
+        rotate_for_restore(dir.path(), fresh()).expect("run again");
+        begin_on(dir.path(), PERIODIC, &mut fresh);
+        let evidence = reform_evidence(dir.path()).expect("read");
+        assert!(
+            evidence.contains(&Rotated {
+                id: first.id,
+                restore: true
+            }),
+            "point {point}: {evidence:?}"
+        );
     }
 }

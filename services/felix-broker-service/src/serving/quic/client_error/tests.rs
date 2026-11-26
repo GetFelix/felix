@@ -23,7 +23,7 @@ fn a_quorum_timeout_is_outcome_unknown_not_a_refusal() {
     };
     assert_eq!(
         timed_out.to_string(),
-        "the batch is durable here but did not reach a majority within 5ms"
+        "the batch did not reach a majority within 5ms"
     );
     assert_eq!(
         code_of(timed_out.into()),

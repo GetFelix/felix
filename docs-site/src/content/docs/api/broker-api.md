@@ -1180,7 +1180,11 @@ lists.
 
 On a Raft broker the answer also has `raft_members`: every Raft member open
 on the broker, led or not, with its `term`, whether or not placement still
-names the broker or the member has proven its epoch. A shard's entry under
+names the broker or the member has proven its epoch. Each also has `member`
+(`broker` and `copy`), `voters` (the voter sets of the last membership in
+its log: one, or two during a change) and `membership_at` (`[term, index]`
+of the entry that membership is from). `felixctl` takes a shard's point
+only when a majority of each voter set answered. A shard's entry under
 `shards` then has `"engine": "raft"`, `generation` is the leader's term, and
 `end_term` is the term of the entry below `records`. Only the member that
 leads and serves its term gives a `shards` entry.
