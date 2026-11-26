@@ -6288,6 +6288,25 @@ base, voters and dead set and applies `ShardAssignment::start_reform`. Every
 member decides it from the record and the command alone, and the command
 is refused below level 51.
 
+From level 55 a group of one has a command of its own,
+`StartAloneEpoch { key, node_id, start }`, for the broker that holds its only
+copy, sent as `POST /v1/nodes/{node_id}/reform/alone` once the fleet
+finalizes `raft_alone_reform`. In the same apply as the epoch compare and
+swap it refuses, and changes nothing, unless the stream or cache has
+replication factor 1; the shard's set and `placed` record are `node_id`
+alone; no pending set, successor, joining follower, learner, move reason or
+`Draining` state is on it; the epoch's seed, every target ordered in it and
+the stored target name only `node_id` (an unknown seed or list refuses); the
+plan's voters and starts name only `node_id` and its dead set is empty;
+`node_id` is not declared dead; and the plan is for the incarnation and
+epoch the shard is at, with the floor and base checks of
+`StartReformedEpoch`. Checking before the write would let placement grow
+between the check and the swap. A request the shard already holds the result
+of (`started_by`) answers the recorded shard without a second epoch; any
+other request from the old epoch is refused as moved. The broker plans and
+stops its copy first, asks for the epoch, then starts from the `starts` in
+the seed it reads back.
+
 From level 47 a copy id report also carries the group epoch the copy runs
 (`group_epoch`, absent meaning 0; epoch 0 is sent as absent and records
 at any level), and one for another epoch than the

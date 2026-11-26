@@ -748,6 +748,19 @@ fn a_self_reform_epoch_start_is_refused_below_level_55() {
     assert_eq!(settle_for_level(&record, 55), Ok(None));
 }
 
+/// Finalizing `raft_alone_reform` raises the group's floor to the level the
+/// command it enables needs, so no member that cannot apply it stays.
+#[test]
+fn finalizing_the_self_reform_needs_level_55() {
+    let finalize = MetaCommand::FinalizeFleetFeature {
+        feature: felix_common::fleet::RAFT_ALONE_REFORM.name().to_string(),
+        hold_unformed: false,
+        hold_formed: false,
+        keep_counter: false,
+    };
+    assert_eq!(finalize.version(), 55);
+}
+
 /// A re-form's epoch write is refused below level 51: an older member would
 /// refuse the entry as unknown and keep the old epoch while the others start
 /// the next one, and the brokers would then run two different groups.

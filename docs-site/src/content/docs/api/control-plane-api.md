@@ -346,13 +346,13 @@ supports and the ones an operator has enabled:
   "enabled": [], "serving_nodes": 3 }
 ```
 
-A broker reports twenty-one features: `generation_start`, `majority_ack`,
+A broker reports twenty-two features: `generation_start`, `majority_ack`,
 `lease_free_reads`, `jump_hash_routing`, `atomic_commit`,
 `publisher_principal`, `fenced_caches`, `stream_incarnations`,
 `group_cursor_dependencies`, `cache_incarnations`, `head_trim`,
 `raft_head_trim`, `record_headers`, `raft_record_headers`,
 `record_generations`, `raft_atomic_commit`, `raft_stream_purge`, `raft_consumer_groups`,
-`raft_follower_read`, `raft_written_commit` and `raft_conditional_batches`. Two more, `joint_fence` and `replica_election`, are never reported: an operator finalizes them once the
+`raft_follower_read`, `raft_written_commit`, `raft_conditional_batches` and `raft_alone_reform`. Two more, `joint_fence` and `replica_election`, are never reported: an operator finalizes them once the
 brokers offer the peer capabilities they need (see
 [Failover without the control plane](/deployment/failover-without-control-plane/#turning-it-on)).
 
@@ -759,6 +759,7 @@ The endpoints not covered above:
 | `POST /v1/raft/reform/plans/{plan_id}/apply` | an operator applies a plan they read (`{"accept_loss": [<shard key>, ...]}`): each shard marked `reform` is stopped on every broker, planned again from the stopped copies, and written as its next epoch only if that plan equals the one read ("Applying a plan" in `docs/per-shard-raft.md`). A shard whose plan may lose acknowledged records is skipped unless its key is in `accept_loss`. A plan made before another plan whose epoch write for the shard went through ends `stale`: its first index would be lower. Answers `applying`, the number of shards that started; progress is each shard's `apply` in `GET /v1/raft/reform/plans/{plan_id}` (`stopping`, `writing`, `starting`, then `started`, `skipped`, `stale`, `changed`, `left_alone` or `failed`). 409 for an unknown or still-surveying plan | `node.manage` on `cluster:*` |
 | `GET /v1/nodes/{node_id}/reform/surveys` | a broker reads the surveys its node is asked to answer: plan id, round, shard, incarnation, epoch and the probe indexes | `node.manage` over the node |
 | `POST /v1/nodes/{node_id}/reform/reports` | a broker answers surveys (`{"reports": [{"plan_id": ..., "round": n, "key": ..., "report": ...}]}`), at most 1024. An answer counts only for the current round of its plan and only from a broker that round asked; the rest are counted as `ignored`. Answers `accepted` and `ignored` | `node.manage` over the node |
+| `POST /v1/nodes/{node_id}/reform/alone` | a broker that holds the only copy of a replication factor 1 group asks for its next epoch (`{"key": <shard key>, "start": <plan>}`, the plan naming this broker alone in `voters` and `starts` with no `dead`). The epoch is written only if the group is alone on the broker: replication factor 1, only this broker placed, seeded and ordered, no set change or move in flight, the broker not declared dead, and the shard still at the plan's incarnation and epoch ("A standalone broker re-forms itself" in `docs/per-shard-raft.md`). Answers the shard as written, and the same shard for a request already written; 404 for an unknown shard; 409 otherwise, and below metadata version 55. Needs the fleet feature `raft_alone_reform` finalized before a broker sends it | | `node.manage` over the node |
 | `POST /v1/nodes/{node_id}/seal-report` | a seal leader reports its shard's seal: the base and the copies that hold it. Answers `accepted`, true for the one report recorded for the seal; 409 `not_sealer` from any other broker | `node.manage` over the node |
 | `POST /v1/nodes/{node_id}/seal-give-up` | a seal leader gives up a seal it cannot finish, and the shard opens again at the next generation. Answers `given_up`, false when a report was already recorded or the shard moved on | `node.manage` over the node |
 | `GET /v1/shard-assignments` | list shard assignments, paged | `node.view:cluster:*` |
