@@ -5389,6 +5389,15 @@ those sets. The joint membership on the way to a new set already carries
 the new set's version, so a leader that finds a joint does not mistake an
 older target for a newer one.
 
+openraft asks a membership about one member (`get_node`: its role and
+whether it votes) several times for every append, on the leader and on each
+follower. openraft's own membership type works that out from the voter sets
+on every ask. Felix's membership works it out once for every member when the
+value is built, from openraft's own answer, and keeps it with the sets it
+came from. A membership never changes after it is built: a change makes a
+new one, with its own answers. So no answer can outlive the sets it
+describes, and there is nothing to invalidate.
+
 A leader writes four kinds of step (`raft/group/membership.rs`): add a
 learner, change the voters, leave a joint membership, and write the same
 voters again at a newer version. Each one is sent to openraft with two

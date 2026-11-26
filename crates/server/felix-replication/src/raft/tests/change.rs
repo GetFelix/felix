@@ -640,3 +640,130 @@ async fn a_leader_removed_as_a_voter_holds_no_lease() {
     );
     cluster.stop().await;
 }
+
+/// openraft's answer for every member and for one that is not there, as the
+/// sets give it now.
+fn answers_match_the_sets(membership: &Membership) {
+    let asked = membership
+        .get_joint_config()
+        .iter()
+        .flatten()
+        .cloned()
+        .chain(membership.learner_ids())
+        .chain([m("absent")]);
+    for id in asked {
+        assert_eq!(
+            RaftMembership::get_node(membership, &id),
+            membership.derived_node(&id),
+            "{id} in {membership}"
+        );
+    }
+}
+
+/// **Every role and voter answer is the one the membership's own sets
+/// give, through each kind of change.** The answers are worked out when a
+/// membership is built; a stale one would count a removed voter in a quorum
+/// or treat a learner as a voter.
+#[test]
+fn every_member_answer_matches_its_sets_through_each_change() {
+    let start = settled(&["a", "b", "c"], &[], 1);
+    answers_match_the_sets(&start);
+    let mut seen = vec![start.clone()];
+
+    // A learner joins, then is promoted, then a voter leaves.
+    let learning = MembershipEdit::learner(m("d"))
+        .apply(&start, false)
+        .expect("learner");
+    let promoted_goal = MembershipEdit::voters(set(&["a", "b", "c", "d"]), v(2))
+        .apply(&learning, false)
+        .expect("promote");
+    let promoting = learning.joint_with(&promoted_goal);
+    let promoted = MembershipEdit::flatten(set(&["a", "b", "c", "d"]))
+        .apply(&promoting, false)
+        .expect("flatten");
+    let removed = MembershipEdit::voters(set(&["a", "b", "d"]), v(3))
+        .apply(&promoted, false)
+        .expect("remove");
+    let added = MembershipEdit::voters(set(&["a", "b", "d", "e"]), v(4))
+        .apply(
+            &MembershipEdit::learner(m("e"))
+                .apply(&removed, false)
+                .expect("e"),
+            false,
+        )
+        .expect("add");
+    for membership in [learning, promoting, promoted, removed, added] {
+        answers_match_the_sets(&membership);
+        seen.push(membership);
+    }
+
+    let learner = RaftMembership::get_node(&seen[1], &m("d")).expect("d");
+    assert!(learner.is_learner());
+    let voter = RaftMembership::get_node(&seen[3], &m("d")).expect("d");
+    assert!(voter.is_write_voter && voter.is_read_voter && !voter.is_learner());
+    assert!(RaftMembership::get_node(&seen[4], &m("c")).is_none());
+
+    // A membership read back from its stored form gives the same answers.
+    for membership in &seen {
+        let stored = StoredMembership::of(membership)
+            .membership()
+            .expect("stored");
+        assert_eq!(&stored, membership);
+        answers_match_the_sets(&stored);
+    }
+    answers_match_the_sets(&Membership::default());
+}
+
+/// How many times openraft's per-member derivation has run on `broker`'s
+/// group thread.
+async fn derived_on(cluster: &Cluster, broker: &str) -> u64 {
+    let group = cluster.runtime(broker).group(&shard(0)).expect("group");
+    let on_thread = group.runtime().spawn(async { types::DERIVED.get() });
+    on_thread.await.expect("count")
+}
+
+/// **A lone write works out no member's role or voter flags, on the leader
+/// or on a follower.** openraft asks `get_node` several times for each
+/// append (is_leading, forward_to_leader, initiate_replication); each ask
+/// used to derive the answer from the voter sets again.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_lone_write_derives_no_member_answers() {
+    // One group thread per broker, so each broker's count is its own.
+    let mut cluster = Cluster::with(
+        RuntimeConfig {
+            group_threads: 1,
+            ..timers()
+        },
+        true,
+    );
+    cluster.form(0).await;
+    let index = cluster.write(0, b"settle").await;
+    cluster.committed_everywhere(0, index).await;
+    let leader = cluster.elected(0).await;
+
+    const WRITES: u64 = 10;
+    let mut before = HashMap::new();
+    for broker in BROKERS {
+        before.insert(broker, derived_on(&cluster, broker).await);
+    }
+    for _ in 0..WRITES {
+        let index = cluster.write(0, b"lone").await;
+        cluster.committed_everywhere(0, index).await;
+    }
+    let mut derived = Vec::new();
+    for broker in BROKERS {
+        let delta = derived_on(&cluster, broker).await - before[broker];
+        let role = if broker == &*leader.broker {
+            "leader"
+        } else {
+            "follower"
+        };
+        eprintln!("{broker} ({role}): {delta} derivations over {WRITES} lone writes");
+        derived.push((broker, delta));
+    }
+    cluster.stop().await;
+    assert!(
+        derived.iter().all(|(_, delta)| *delta == 0),
+        "derivations by broker over {WRITES} lone writes: {derived:?}"
+    );
+}

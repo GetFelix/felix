@@ -1,7 +1,7 @@
 //! What names a group and a member, and the openraft type config every
 //! shard group shares.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::convert::Infallible;
 use std::fmt;
 use std::io;
@@ -12,7 +12,9 @@ use felix_storage::log::{BatchPiece, ProducerBatch, RecordMark};
 use felix_storage::raft_log::WrittenToken;
 use openraft::errors::MembershipError;
 use openraft::impls::{ChangeMembers, EmptyNode};
-use openraft::membership::{NodeRef, RaftMembership, RaftMembershipEdit, RaftMembershipEditOps};
+use openraft::membership::{
+    NodeRef, NodeRole, RaftMembership, RaftMembershipEdit, RaftMembershipEditOps,
+};
 use serde::{Deserialize, Serialize};
 
 use super::membership::TargetVersion;
@@ -306,10 +308,58 @@ pub(crate) type Sets = openraft::impls::Membership<MemberId, EmptyNode>;
 ///
 /// Quorums are openraft's, taken from the sets alone. The version changes
 /// no vote.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(from = "StoredSets", into = "StoredSets")]
 pub(crate) struct Membership {
     sets: Sets,
     version: TargetVersion,
+    /// openraft's answer to `get_node` for every member, taken from `sets`
+    /// when the value is built. openraft asks several times per append and
+    /// derives roles and voter flags from the voter sets on each ask. The
+    /// fields are private and never change after the build, so the table
+    /// always describes these exact sets and there is nothing to invalidate.
+    nodes: BTreeMap<MemberId, NodeFacts>,
+}
+
+/// One member's place in a membership, as openraft's `NodeRef` gives it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct NodeFacts {
+    role: NodeRole,
+    is_read_voter: bool,
+    is_write_voter: bool,
+}
+
+/// How a membership is serialized: its sets and version, without the table
+/// derived from them.
+#[derive(Serialize, Deserialize)]
+struct StoredSets {
+    sets: Sets,
+    version: TargetVersion,
+}
+
+/// The node every member carries. Members of a shard group carry no
+/// metadata.
+static EMPTY_NODE: EmptyNode = EmptyNode {};
+
+#[cfg(test)]
+thread_local! {
+    /// How many times openraft's per-member derivation ran on this thread.
+    /// A group's openraft tasks all run on its group thread, so a test
+    /// reads one member's count there.
+    pub(crate) static DERIVED: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// openraft's own `get_node` on the sets: a map lookup and three scans of
+/// the voter sets.
+fn derive(sets: &Sets, node_id: &MemberId) -> Option<NodeFacts> {
+    #[cfg(test)]
+    DERIVED.set(DERIVED.get() + 1);
+    let node = RaftMembership::get_node(sets, node_id)?;
+    Some(NodeFacts {
+        role: node.role,
+        is_read_voter: node.is_read_voter,
+        is_write_voter: node.is_write_voter,
+    })
 }
 
 impl Membership {
@@ -322,9 +372,19 @@ impl Membership {
     ) -> Self {
         let members: BTreeSet<MemberId> =
             voters.iter().flatten().cloned().chain(learners).collect();
+        Self::of(Sets::new_with_defaults(voters, members), version)
+    }
+
+    /// Every membership is built here, so its table is always the one its
+    /// sets give.
+    fn of(sets: Sets, version: TargetVersion) -> Self {
+        let nodes = RaftMembership::node_ids(&sets)
+            .filter_map(|id| derive(&sets, &id).map(|facts| (id, facts)))
+            .collect();
         Self {
-            sets: Sets::new_with_defaults(voters, members),
+            sets,
             version,
+            nodes,
         }
     }
 
@@ -344,6 +404,34 @@ impl Membership {
     /// The members that are not voters.
     pub(crate) fn learner_ids(&self) -> impl Iterator<Item = MemberId> + '_ {
         self.sets.non_write_voter_ids()
+    }
+
+    /// openraft's `get_node` answer worked out from the sets now, for tests
+    /// that check the table against it.
+    #[cfg(test)]
+    pub(crate) fn derived_node(&self, node_id: &MemberId) -> Option<NodeRef<'_, EmptyNode>> {
+        RaftMembership::get_node(&self.sets, node_id)
+    }
+}
+
+impl Default for Membership {
+    fn default() -> Self {
+        Self::of(Sets::default(), TargetVersion::default())
+    }
+}
+
+impl From<StoredSets> for Membership {
+    fn from(stored: StoredSets) -> Self {
+        Self::of(stored.sets, stored.version)
+    }
+}
+
+impl From<Membership> for StoredSets {
+    fn from(membership: Membership) -> Self {
+        Self {
+            sets: membership.sets,
+            version: membership.version,
+        }
     }
 }
 
@@ -382,7 +470,13 @@ impl RaftMembership for Membership {
     }
 
     fn get_node(&self, node_id: &MemberId) -> Option<NodeRef<'_, EmptyNode>> {
-        RaftMembership::get_node(&self.sets, node_id)
+        let facts = self.nodes.get(node_id)?;
+        Some(NodeRef {
+            node: &EMPTY_NODE,
+            role: facts.role,
+            is_read_voter: facts.is_read_voter,
+            is_write_voter: facts.is_write_voter,
+        })
     }
 
     fn node_ids(&self) -> Self::Iter {
@@ -393,10 +487,7 @@ impl RaftMembership for Membership {
     // carries that version: a leader that finds the joint must not take an
     // older target for newer than it.
     fn joint_with(&self, goal: &Self) -> Self {
-        Self {
-            sets: self.sets.joint_with(&goal.sets),
-            version: goal.version,
-        }
+        Self::of(self.sets.joint_with(&goal.sets), goal.version)
     }
 }
 
@@ -454,10 +545,10 @@ impl RaftMembershipEdit<Membership> for MembershipEdit {
         // asks. openraft lets a learner go on leading, and a leader that
         // wrote itself out would hold a lease on a set it is not in.
         let sets = self.change.apply(&membership.sets, false)?;
-        Ok(Membership {
+        Ok(Membership::of(
             sets,
-            version: self.version.unwrap_or(membership.version),
-        })
+            self.version.unwrap_or(membership.version),
+        ))
     }
 }
 
