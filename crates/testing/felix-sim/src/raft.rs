@@ -16,6 +16,7 @@
 //! time ends with a finding. One that holds the thread past
 //! [`RaftSimConfig::real_time_limit`] ends the process, naming the seed.
 
+mod deliveries;
 mod net;
 mod opens;
 mod terms;
@@ -1475,30 +1476,15 @@ impl Sim {
         terms.len()
     }
 
-    /// Every delivered record is in the final log at its offset. Offsets
-    /// past the final read are left alone: a batch whose publisher timed out
-    /// can commit, and be delivered, after the read was taken.
+    /// Every delivered record is in the final log at its offset, and no
+    /// offset was delivered as two values ([`deliveries::judge`]).
     fn check_deliveries(&self) {
-        let history = self.history.lock();
-        for delivery in self.deliveries.lock().iter() {
-            let Some(log) = history.final_reads.get(&delivery.list) else {
-                continue;
-            };
-            if log.last().is_none_or(|last| delivery.offset > last.offset) {
-                continue;
-            }
-            let held = log.binary_search_by_key(&delivery.offset, |element| element.offset);
-            let held = held.ok().map(|at| log[at].value);
-            if held != Some(delivery.value) {
-                let held = held.map_or("no record".to_string(), |value| format!("value {value}"));
-                self.finding(format!(
-                    "{}: {} delivered value {} at offset {}, where the log holds {held}",
-                    delivery.list,
-                    name(delivery.member),
-                    delivery.value,
-                    delivery.offset
-                ));
-            }
+        let findings = {
+            let history = self.history.lock();
+            deliveries::judge(&self.deliveries.lock(), &history.final_reads)
+        };
+        for finding in findings {
+            self.finding(finding);
         }
     }
 
