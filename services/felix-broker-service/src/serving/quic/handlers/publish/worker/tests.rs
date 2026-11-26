@@ -1690,9 +1690,7 @@ mod on_raft {
 
             fn job_of(&self, records: usize) -> (PublishJob, Answer) {
                 let (mut job, answer) = job(&self.handle, &self.orders, self.term, b"", None);
-                job.payloads = (0..records)
-                    .map(|n| Bytes::from(format!("r{n}")))
-                    .collect();
+                job.payloads = (0..records).map(|n| Bytes::from(format!("r{n}"))).collect();
                 (job, answer)
             }
 
@@ -1850,7 +1848,9 @@ mod on_raft {
                 answers.push(answer);
             }
             for answer in answers {
-                let err = answer.await?.expect_err("a refused publish was acknowledged");
+                let err = answer
+                    .await?
+                    .expect_err("a refused publish was acknowledged");
                 let err = ClientError::from_anyhow(&err);
                 assert_eq!(err.code(), alone.code(), "{err:?}");
                 assert_eq!(err.retry(), alone.retry(), "{err:?}");
