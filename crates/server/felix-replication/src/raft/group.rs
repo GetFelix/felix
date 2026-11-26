@@ -184,6 +184,9 @@ pub(crate) struct Group {
     /// the runtime's shutdown. A publish that looked the group up earlier
     /// then refuses as if it had found no group.
     released: AtomicBool,
+    /// A stream learner's pull of its re-formed base, at most one at a
+    /// time. See [`super::base_pull`].
+    base_pull: Arc<super::base_pull::PullState>,
     /// The shard's publish queue, in commit order. Its task starts with the
     /// first publish, so a group that takes none has none.
     proposals: OnceLock<mpsc::UnboundedSender<Proposal>>,
@@ -972,6 +975,7 @@ impl Group {
             leads_since: parking_lot::Mutex::new(None),
             stopped: AtomicBool::new(false),
             released: AtomicBool::new(false),
+            base_pull: Arc::default(),
             proposals: OnceLock::new(),
             client_writes: Arc::default(),
             stop,
@@ -1734,6 +1738,7 @@ impl Group {
                     Piece::Whole(snapshot) if self.id.shard.kind == ShardKind::Stream => {
                         let bytes = Bytes::from(snapshot);
                         if let Err(why) = stream_installable(&meta, &bytes) {
+                            self.pull_base(&meta, &bytes);
                             tracing::error!(group = %self.id, member = %self.member, upto = ?meta.last_log_id, "refused a snapshot: {why}");
                             return Err(Refused::NoSnapshots(Box::new(Addressee {
                                 group: self.id.clone(),
@@ -1820,6 +1825,56 @@ impl Group {
                 max_count,
             } => self.serve_base(&from, start, max_bytes, max_count).await,
         }
+    }
+
+    /// Start pulling this copy's re-form base, refused with the snapshot
+    /// `bytes`, from the snapshot's voters. Off the apply path, and never two
+    /// at once: the snapshot comes again while one runs. Once the base is
+    /// staged, [`Self::base_staged`] tells the runtime to reopen the member,
+    /// so the open adopts it.
+    fn pull_base(
+        &self,
+        meta: &openraft::type_config::alias::SnapshotMetaOf<ShardTypes>,
+        bytes: &[u8],
+    ) {
+        let Some(floor) = super::stream_snapshot::StreamSnapshot::decode(bytes)
+            .ok()
+            .and_then(|snapshot| snapshot.purge)
+            .map(|purge| purge.floor)
+        else {
+            return;
+        };
+        let voters: Vec<MemberId> = meta
+            .last_membership
+            .membership()
+            .voter_ids()
+            .filter(|voter| *voter != self.member)
+            .collect();
+        let source = super::base_pull::TransportSource {
+            transport: Arc::clone(&self.transport),
+            group: self.id.clone(),
+            from: self.member.clone(),
+            deadline: Duration::from_millis(self.pace.timers.election_max),
+        };
+        let dir = self.log.disk_log().dir().to_path_buf();
+        let config = self.log.disk_log().config().clone();
+        super::base_pull::spawn(
+            &self.runtime,
+            Arc::clone(&self.base_pull),
+            source,
+            voters,
+            dir,
+            config,
+            floor,
+            self.stop.clone(),
+            format!("{} of {}", self.member, self.id),
+        );
+    }
+
+    /// True once this copy's re-form base is staged whole: the member must
+    /// close and open again so the open adopts it.
+    pub(crate) fn base_staged(&self) -> bool {
+        self.base_pull.staged()
     }
 
     /// A chunk of this copy's re-form base for the learner `from`. Read

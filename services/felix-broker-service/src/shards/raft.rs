@@ -1496,6 +1496,20 @@ impl EngineShards for RaftShards {
                     .insert(key.clone(), StoppedCopy { term, error: why });
                 self.close_with_stream(&key, member).await;
             }
+            // A learner that staged its re-formed base adopts it only as it
+            // opens, so it is closed here and opened below.
+            let staged: Vec<ShardKey> = open
+                .keys()
+                .filter(|key| self.runtime.base_staged(key))
+                .cloned()
+                .collect();
+            for key in staged {
+                let Some(member) = open.remove(&key) else {
+                    continue;
+                };
+                tracing::info!(shard = ?key, "a Raft learner staged its re-formed base; it opens again to adopt it");
+                self.close_with_stream(&key, member).await;
+            }
             self.restarts.lock().retain(|key| fed.contains_key(key));
             self.runtime.retain_admitted(|key| fed.contains_key(key));
             *self.unplaced.lock() = fed

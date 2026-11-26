@@ -1298,6 +1298,17 @@ impl GroupRuntime {
         self.inner.registry.get(shard)?.storage_failure()
     }
 
+    /// True when this broker's member of `shard`, a learner of a re-formed
+    /// stream, has staged the base below the gap. The caller must close it
+    /// and open it again through [`Self::open_copy`], which adopts the base
+    /// before the log opens; until then the member refuses the gap snapshot.
+    pub fn base_staged(&self, shard: &ShardKey) -> bool {
+        self.inner
+            .registry
+            .get(shard)
+            .is_some_and(|group| group.base_staged())
+    }
+
     /// The voter sets of the last membership in this broker's member of
     /// `shard`, committed or not (one, or two while a change is joint;
     /// learners are in none), with the entry that membership is from. Empty

@@ -1,14 +1,13 @@
-//! A voter's side of a learner's pull of a re-formed stream's base: the
-//! committed entries below the gap, which the gap snapshot does not carry.
-//! The learner asks in chunks and checks each entry with
-//! [`felix_storage::raft_copy::BaseCheck`]; this only reads and bounds.
-//! Issue #3005.
-
-// The pull is wired to the group in the next change.
-#![allow(dead_code)]
+//! A learner's pull of a re-formed stream's base: the committed entries
+//! below the gap, which the gap snapshot does not carry. The learner asks
+//! a voter in chunks ([`serve`] is the voter's side, which only reads and
+//! bounds), checks each entry with [`felix_storage::raft_copy::BaseCheck`]
+//! and stages it ([`pull`]). Issue #3005.
 
 use std::io;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use async_trait::async_trait;
@@ -19,8 +18,10 @@ use openraft::storage::RaftLogReader;
 use openraft::type_config::alias::EntryOf;
 
 use super::codec::ShardCodec;
-use super::types::{MemberId, ShardTypes};
+use super::network::{Ask, Beat, RaftReply, RaftRequest, RaftTransport, Reply, Request};
+use super::types::{GroupId, MemberId, ShardTypes};
 use super::wire::entry_bytes;
+use tokio_util::sync::CancellationToken;
 
 /// The most entries one chunk carries, whatever the learner asks.
 pub(crate) const MAX_BASE_ENTRIES: u32 = 4096;
@@ -269,6 +270,114 @@ async fn pull_from(
         }
         staging = Some(filling);
     }
+}
+
+/// [`ChunkSource`] over the Raft transport, which refuses a voter that has
+/// not offered base pulls.
+pub(crate) struct TransportSource {
+    pub(crate) transport: Arc<dyn RaftTransport>,
+    pub(crate) group: GroupId,
+    pub(crate) from: MemberId,
+    pub(crate) deadline: Duration,
+}
+
+#[async_trait]
+impl ChunkSource for TransportSource {
+    async fn chunk(
+        &self,
+        voter: &MemberId,
+        start: u64,
+        max_bytes: u32,
+        max_count: u32,
+    ) -> Result<BaseChunk, String> {
+        let request = RaftRequest {
+            group: self.group.clone(),
+            to: voter.clone(),
+            beat: Beat::default(),
+            report: Ask::Nothing,
+            deadline: self.deadline,
+            body: Request::BasePull {
+                from: self.from.clone(),
+                start,
+                max_bytes,
+                max_count,
+            },
+        };
+        match tokio::time::timeout(self.deadline, self.transport.send(request)).await {
+            Ok(Ok(RaftReply(Reply::Base { floor, entries }))) => Ok(BaseChunk { floor, entries }),
+            Ok(Ok(_)) => Err("it answered something other than a base chunk".into()),
+            Ok(Err(refused)) => Err(format!("{refused:?}")),
+            Err(_) => Err("it did not answer in time".into()),
+        }
+    }
+}
+
+/// A group's pull, at most one at a time, and whether one staged the base.
+#[derive(Debug, Default)]
+pub(crate) struct PullState {
+    running: AtomicBool,
+    staged: AtomicBool,
+}
+
+impl PullState {
+    pub(crate) fn staged(&self) -> bool {
+        self.staged.load(Ordering::Acquire)
+    }
+}
+
+/// Run [`pull`] on its own task unless one is running or has staged the
+/// base. A pull that gives up or fails clears the way for the next refused
+/// snapshot to start another.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn spawn(
+    runtime: &tokio::runtime::Handle,
+    state: Arc<PullState>,
+    source: impl ChunkSource + 'static,
+    voters: Vec<MemberId>,
+    copy: PathBuf,
+    config: LogConfig,
+    floor: u64,
+    stop: CancellationToken,
+    label: String,
+) {
+    if state.staged() || state.running.swap(true, Ordering::AcqRel) {
+        return;
+    }
+    runtime.spawn(async move {
+        let pulled = tokio::select! {
+            biased;
+            () = stop.cancelled() => None,
+            pulled = async {
+                let base = {
+                    let copy = copy.clone();
+                    felix_common::blocking::spawn(move || felix_storage::raft_copy::latest_base(&copy))
+                        .await
+                        .map_err(io::Error::other)??
+                };
+                let Some(base) = base else {
+                    return Ok(Pulled::GaveUp);
+                };
+                pull(&source, &voters, &base, floor, &copy, &config, PullPace::default()).await
+            } => Some(pulled),
+        };
+        match pulled {
+            Some(Ok(Pulled::Staged(last))) => {
+                tracing::info!(member = %label, base = last.index, "staged a re-formed stream's base; the member reopens to adopt it");
+                state.staged.store(true, Ordering::Release);
+            }
+            Some(Ok(Pulled::BelowFloor { floor })) => {
+                tracing::warn!(member = %label, floor, "the voters' floor is past the re-form base; nothing to pull");
+            }
+            Some(Ok(Pulled::GaveUp)) => {
+                tracing::warn!(member = %label, voters = voters.len(), "no voter served the re-form base; the next refused snapshot tries again");
+            }
+            Some(Err(err)) => {
+                tracing::warn!(member = %label, error = %err, "a base pull failed; the next refused snapshot tries again");
+            }
+            None => {}
+        }
+        state.running.store(false, Ordering::Release);
+    });
 }
 
 fn wall_clock_micros() -> u64 {
