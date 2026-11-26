@@ -636,7 +636,7 @@ What a seed checks:
   in the log for good (`felix-sim/src/raft/opens.rs`). This is a safety
   check, not a wait: a committed entry missing from the log a leader serves
   is lost. The finding names the member the log was read from, the term it
-  led, and the members whose logs still hold an entry of the missing term.
+  led, and the members whose logs still hold an entry of the missing term. It also gives each member's last term and index and whether it led at read time, so a hand-over between the opens and the read shows. A log that cannot be read to its end is a finding of its own, and that shard's terms are not judged, so a failed read never looks like a missing entry.
   A term some member still holds was cut off or read from a leader that was
   behind; a term no member holds is gone from every disk.
 - At most one member passes the leader lease check for a shard at one

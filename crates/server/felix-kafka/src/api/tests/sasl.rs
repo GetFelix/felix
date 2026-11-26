@@ -1,6 +1,9 @@
+use std::time::Duration;
+
 use bytes::Bytes;
 use kafka_protocol::messages::{MetadataRequest, SaslAuthenticateRequest, SaslHandshakeRequest};
 use kafka_protocol::protocol::StrBytes;
+use tokio_util::sync::CancellationToken;
 
 use super::{Fixture, TENANT, TOKEN, topic_errors};
 use crate::api::sasl::parse_plain;
@@ -215,4 +218,46 @@ async fn a_connection_closes_when_its_credential_ends() {
             .expect("closed promptly");
         assert!(next.is_none(), "long_poll={long_poll}: still answering");
     }
+}
+
+/// On the anonymous dev switch, a connection whose client presented a
+/// certificate ends with it. A request that arrives once the certificate has
+/// ended is refused even if the close has not fired yet. A connection with
+/// no certificate stays open.
+#[tokio::test]
+async fn an_anonymous_connection_ends_with_its_client_certificate() {
+    let fixture = Fixture::anonymous().await;
+    let cert = || vec![b"client-leaf".to_vec()];
+    let mut bare = fixture.connect();
+    let mut idle = fixture.connect_as(cert(), CancellationToken::new());
+    let mut asking = fixture.connect_as(cert(), CancellationToken::new());
+    for client in [&mut bare, &mut idle, &mut asking] {
+        let metadata = client.call(&MetadataRequest::default(), 9).await;
+        assert!(metadata.topics.is_empty());
+    }
+
+    fixture
+        .cluster
+        .certificate_expired
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    asking.send(&MetadataRequest::default(), 9).await;
+    let next = tokio::time::timeout(Duration::from_secs(10), asking.read_frame())
+        .await
+        .expect("closed promptly");
+    assert!(
+        next.is_none(),
+        "answered a request after the certificate ended"
+    );
+
+    fixture.cluster.credential_ended.send_replace(true);
+    let next = tokio::time::timeout(Duration::from_secs(10), idle.read_frame())
+        .await
+        .expect("closed promptly");
+    assert!(
+        next.is_none(),
+        "an idle connection outlived its certificate"
+    );
+
+    let metadata = bare.call(&MetadataRequest::default(), 9).await;
+    assert!(metadata.topics.is_empty(), "no certificate: still served");
 }

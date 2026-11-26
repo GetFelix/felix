@@ -453,6 +453,7 @@ async fn a_first_assignment_is_listed_and_a_later_write_is_not(store: &dyn Contr
         raft_voters: None,
         raft_seed: None,
         raft_bases: None,
+        raft_leader: None,
         raft_ordered: None,
     };
     let first = store

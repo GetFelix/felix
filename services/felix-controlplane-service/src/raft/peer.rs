@@ -215,7 +215,7 @@ pub(super) fn fingerprint(der: &[u8]) -> String {
 /// Both follow rotation.
 fn client_tls(live: Arc<live::LivePeerTls>, cluster_id: &str) -> Result<rustls::ClientConfig> {
     let provider = Arc::new(rustls::crypto::aws_lc_rs::default_provider());
-    let identity = Arc::clone(&live.identity);
+    let identity = Arc::clone(&live) as Arc<dyn rustls::client::ResolvesClientCert>;
     let verifier = MemberServerVerifier {
         live,
         cluster_id: cluster_id.to_string(),
@@ -258,7 +258,7 @@ impl rustls::client::danger::ServerCertVerifier for MemberServerVerifier {
         ocsp_response: &[u8],
         now: rustls::pki_types::UnixTime,
     ) -> std::result::Result<rustls::client::danger::ServerCertVerified, rustls::Error> {
-        let verified = self.live.server_verifier().verify_server_cert(
+        let verified = self.live.trust().server_verifier().verify_server_cert(
             end_entity,
             intermediates,
             server_name,
@@ -284,6 +284,7 @@ impl rustls::client::danger::ServerCertVerifier for MemberServerVerifier {
         dss: &rustls::DigitallySignedStruct,
     ) -> std::result::Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
         self.live
+            .trust()
             .server_verifier()
             .verify_tls12_signature(message, cert, dss)
     }
@@ -295,12 +296,16 @@ impl rustls::client::danger::ServerCertVerifier for MemberServerVerifier {
         dss: &rustls::DigitallySignedStruct,
     ) -> std::result::Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
         self.live
+            .trust()
             .server_verifier()
             .verify_tls13_signature(message, cert, dss)
     }
 
     fn supported_verify_schemes(&self) -> Vec<rustls::SignatureScheme> {
-        self.live.server_verifier().supported_verify_schemes()
+        self.live
+            .trust()
+            .server_verifier()
+            .supported_verify_schemes()
     }
 }
 
@@ -393,8 +398,8 @@ impl PeerSecurity {
         };
         let live = tls.live(&self.cluster_id)?;
         let config = crate::server::tls::mtls_server_config(
-            Arc::clone(&live.identity),
-            Arc::clone(&live.ca) as Arc<dyn rustls::server::danger::ClientCertVerifier>,
+            Arc::clone(&live) as Arc<dyn rustls::server::ResolvesServerCert>,
+            Arc::clone(&live) as Arc<dyn rustls::server::danger::ClientCertVerifier>,
         )
         .context("raft peer TLS")?;
         let close_at: crate::server::tls::CloseAt = Arc::new(move |chain| live.close_at(chain));

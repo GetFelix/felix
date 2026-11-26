@@ -17,6 +17,7 @@ pub(crate) async fn run_raft_floor_contract(store: Arc<dyn ControlPlaneStore>) {
         a_bad_entry_skips_only_itself(store).await;
         other_writes_keep_the_floor(store).await;
         an_empty_batch_raises_nothing(store).await;
+        a_report_names_the_elected_broker(store).await;
     })
     .await;
 }
@@ -160,4 +161,43 @@ async fn other_writes_keep_the_floor(store: &dyn ControlPlaneStore) {
 
 async fn an_empty_batch_raises_nothing(store: &dyn ControlPlaneStore) {
     assert_eq!(raise(store, Vec::new()).await, 0);
+}
+
+/// Each floor report names its reporter as the broker the group elected,
+/// at the highest term, and only from a broker in the set (#3041).
+async fn a_report_names_the_elected_broker(store: &dyn ControlPlaneStore) {
+    let shard = switched(store).await;
+    let set: Vec<String> = shard.raft_set().into_iter().collect();
+    let [first, second, ..] = set.as_slice() else {
+        panic!("a switched shard has two brokers: {set:?}");
+    };
+    let report = |node: &str, index: u64, term: u64| {
+        let floors = vec![entry(&shard, index, term)];
+        let node = node.to_string();
+        async move {
+            store
+                .record_raft_floors(&node, floors)
+                .await
+                .expect("floors")
+        }
+    };
+    let leader = || async {
+        read(store, &shard.key)
+            .await
+            .raft_leader
+            .map(|l| (l.node, l.term))
+    };
+
+    report(first, 10, 2).await;
+    assert_eq!(leader().await, Some((first.clone(), 2)));
+    // The same term from another member, and an older one, keep it.
+    report(second, 11, 2).await;
+    report(second, 9, 1).await;
+    assert_eq!(leader().await, Some((first.clone(), 2)));
+    report(second, 12, 3).await;
+    assert_eq!(leader().await, Some((second.clone(), 3)));
+    // A broker outside the set never names itself.
+    report("broker-outside", 20, 9).await;
+    assert_eq!(leader().await, Some((second.clone(), 3)));
+    clear(store).await;
 }

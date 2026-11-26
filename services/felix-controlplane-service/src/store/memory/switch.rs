@@ -120,6 +120,15 @@ pub(super) async fn accept_seal_report(
     Ok(AssignmentWrite::Written(stored))
 }
 
+/// Which rules a floor entry applies, by the metadata level it was
+/// proposed at ([`record_raft_floors`]).
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct FloorRules {
+    pub(crate) mark_formed: bool,
+    pub(crate) vouched_voters: bool,
+    pub(crate) note_leader: bool,
+}
+
 /// What a copy id report carries from level 41: the stream or cache
 /// incarnation of the copy's group, and whether the cluster runs durable
 /// shards on Raft.
@@ -300,13 +309,21 @@ pub(super) async fn record_raft_copy_id(
 /// `vouched_voters`: voters count only from a reporter
 /// [`crate::model::ShardAssignment::may_report_voters`] admits, whatever
 /// the floor did with the report (#2909); false below level 48.
+///
+/// `note_leader`: each report also records its reporter as the broker the
+/// group elected ([`crate::model::ShardAssignment::note_raft_leader`]), in
+/// place like the floor; false below level 52.
 pub(super) async fn record_raft_floors(
     store: &InMemoryStore,
     node_id: &str,
     floors: &[crate::model::RaftFloorReport],
-    mark_formed: bool,
-    vouched_voters: bool,
+    rules: FloorRules,
 ) -> u32 {
+    let FloorRules {
+        mark_formed,
+        vouched_voters,
+        note_leader,
+    } = rules;
     let mut state = store.shards.write().await;
     let mut raised = 0;
     for report in floors {
@@ -345,6 +362,9 @@ pub(super) async fn record_raft_floors(
             }
             None => false,
         };
+        if note_leader {
+            record.note_raft_leader(node_id, report);
+        }
         let floor = record.raise_raft_floor(report);
         // Only a proposer at level 46 leaves voters in. Below 48 they count
         // only in a report the floor took; from 48 the reporter gate alone
@@ -483,10 +503,9 @@ impl InMemoryStore {
         &self,
         node_id: &str,
         floors: &[crate::model::RaftFloorReport],
-        mark_formed: bool,
-        vouched_voters: bool,
+        rules: FloorRules,
     ) -> u32 {
-        record_raft_floors(self, node_id, floors, mark_formed, vouched_voters).await
+        record_raft_floors(self, node_id, floors, rules).await
     }
 
     pub(crate) async fn apply_accept_seal_report(
