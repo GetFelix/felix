@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795727749416,
+  "lastUpdate": 1795730442218,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -72124,6 +72124,58 @@ window.BENCHMARK_DATA = {
             "range": "10933.39",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1180906.35\nmean: 1180555.03\nstdev: 10933.39\ncv: 0.93%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "12a06c7572398ea0973b1e1a15a2c8da54d5ab1f",
+          "message": "test(raft): the idle test admits its brokers over the real transport (#3294) (#3295)\n\nSince blank copies hear only from brokers the control plane placed in\ntheir group, the raft-idle transport run never formed a group: nothing\nstood in for the broker's admission feed, so every vote was refused and\nthe test waited forever for a first leader. The test now admits the\nthree brokers for every group, and a group that elects no first leader\nwithin 30 s fails the run instead of holding it to the job limit.\n\nSpec-Unaffected: test harness only; no product or modelled behaviour changes.",
+          "timestamp": "2026-11-26T21:51:22Z",
+          "tree_id": "30592ddf96e65ea17659a14579201aa4d709f5c8",
+          "url": "https://github.com/GetFelix/felix/commit/12a06c7572398ea0973b1e1a15a2c8da54d5ab1f"
+        },
+        "date": 1795730441432,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 640699.93,
+            "range": "45390.89",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 640699.93\nmean: 657589.02\nstdev: 45390.89\ncv: 6.90%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 640699.93,
+            "range": "45390.89",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 640699.93\nmean: 657589.02\nstdev: 45390.89\ncv: 6.90%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 157912.67,
+            "range": "9711.34",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 157912.67\nmean: 153969.17\nstdev: 9711.34\ncv: 6.31%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1579126.72,
+            "range": "97113.46",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1579126.72\nmean: 1539691.67\nstdev: 97113.46\ncv: 6.31%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
