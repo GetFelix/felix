@@ -696,7 +696,8 @@ fn is_busy(err: &io::Error) -> bool {
 }
 
 /// The copy's directory is held from the judge through a rotation into the
-/// open log: no step of the rotation leaves it for another open to take, and
+/// open log: no step of the rotation leaves a directory at the path that
+/// another open can take, and
 /// a second open of the copy is refused before it judges anything.
 #[tokio::test]
 async fn a_rotation_holds_the_copy_directory_at_every_step() {
@@ -737,9 +738,19 @@ async fn a_rotation_holds_the_copy_directory_at_every_step() {
     );
     let seen = seen.lock().clone();
     assert!(!seen.is_empty(), "no step of the rotation ran");
+    // Only the crash point right after the rename finds no directory at the
+    // path. An open that makes one there fails the rotation; see the next
+    // test.
+    let absent = seen
+        .iter()
+        .filter(|taken| **taken == Err(io::ErrorKind::NotFound))
+        .count();
+    assert_eq!(absent, 1, "{seen:?}");
     assert!(
-        seen.iter()
-            .all(|taken| *taken == Err(io::ErrorKind::ResourceBusy)),
+        seen.iter().all(|taken| matches!(
+            taken,
+            Err(io::ErrorKind::ResourceBusy | io::ErrorKind::NotFound)
+        )),
         "a step of the rotation left the directory unlocked: {seen:?}"
     );
 
@@ -839,7 +850,15 @@ async fn a_copy_reopens_at_once_after_a_close_under_load() {
         let writers: Vec<_> = (0..4)
             .map(|_| {
                 let log = opened.log.clone();
-                tokio::spawn(async move { while log.save_vote(1, "1", false).await.is_ok() {} })
+                // A new generation each time, so every save writes: the same
+                // vote again is answered from memory and never fails.
+                tokio::spawn(async move {
+                    for generation in 1.. {
+                        if log.save_vote(generation, "1", false).await.is_err() {
+                            break;
+                        }
+                    }
+                })
             })
             .collect();
         tokio::task::yield_now().await;

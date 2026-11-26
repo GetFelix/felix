@@ -780,9 +780,13 @@ in eight ways:
   clean up. The lock is on the directory itself: no file is added, and no
   segment file is opened or resized for it. On the simulator's in-memory
   filesystem the claim is kept in the process, and a simulated crash gives
-  it up. On Linux NFS, `flock` is emulated with byte-range locks, which a
-  directory cannot take, so the open fails there: keep the data directory
-  on a local disk.
+  it up. The directory is opened close-on-exec, so a child process never
+  inherits the lock. On Linux NFS, `flock` is emulated with byte-range
+  locks, which a directory cannot take, so the open fails there. Other
+  network filesystems may grant the lock per host, so nothing keeps two
+  hosts on one share apart: keep the data directory on a local disk. On a
+  platform without `flock` the claim is kept in the process, as on the
+  simulator, and a second process is not refused.
 
 A Raft log's directory also holds `raft-purged` and, when its state machine
 keeps a snapshot there, `raft-snapshot`. Both are described below. The log
