@@ -92,6 +92,7 @@ impl OldBroker {
                     capabilities: None,
                     identity: None,
                     incarnation: None,
+                    raft_layouts: None,
                 })
             }
             _ => InternalMessage::ForwardPublishOk(ForwardPublishOk {
@@ -272,6 +273,7 @@ async fn a_caller_without_the_bit_gets_neither_the_bit_nor_the_identity() {
         capabilities: Some(offered),
         identity: None,
         incarnation: None,
+        raft_layouts: None,
     });
     assert_eq!(frame, today.encode().expect("encode"));
 
@@ -347,6 +349,7 @@ async fn the_incarnation_travels_only_to_a_caller_that_offered_it() {
         capabilities: Some(offered),
         identity: Some(storage_id().to_bytes()),
         incarnation: None,
+        raft_layouts: None,
     });
     assert_eq!(frame, today.encode().expect("encode"));
 

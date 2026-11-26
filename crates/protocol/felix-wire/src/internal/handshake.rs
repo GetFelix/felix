@@ -40,4 +40,56 @@ pub struct HelloOk {
     /// followed by the incarnation as 8 bytes, or 0 alone for a responder
     /// that has not registered yet. Must be `None` without the bit.
     pub incarnation: Option<u64>,
+    /// The Raft body layouts the responder reads and writes, when the
+    /// capability bits include [`PeerCapabilities::RAFT_LAYOUTS`]: two bytes
+    /// after the incarnation, lowest then highest. Must be `None` without
+    /// the bit.
+    pub raft_layouts: Option<RaftLayouts>,
+}
+
+/// An inclusive range of Raft body layouts, as a peer states it in its
+/// handshake. Never empty and never includes 0.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct RaftLayouts {
+    lowest: u8,
+    highest: u8,
+}
+
+impl RaftLayouts {
+    /// `None` for an empty range or one that starts at 0, which no build
+    /// writes.
+    pub const fn new(lowest: u8, highest: u8) -> Option<Self> {
+        if lowest == 0 || lowest > highest {
+            return None;
+        }
+        Some(Self { lowest, highest })
+    }
+
+    pub const fn lowest(self) -> u8 {
+        self.lowest
+    }
+
+    pub const fn highest(self) -> u8 {
+        self.highest
+    }
+
+    pub const fn contains(self, layout: u8) -> bool {
+        self.lowest <= layout && layout <= self.highest
+    }
+
+    /// The highest layout both ranges hold, or `None` when they share none.
+    pub fn common(self, other: Self) -> Option<u8> {
+        let highest = self.highest.min(other.highest);
+        (self.lowest.max(other.lowest) <= highest).then_some(highest)
+    }
+}
+
+impl std::fmt::Display for RaftLayouts {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if self.lowest == self.highest {
+            write!(f, "{}", self.lowest)
+        } else {
+            write!(f, "{}..={}", self.lowest, self.highest)
+        }
+    }
 }

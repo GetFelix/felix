@@ -140,6 +140,7 @@ fn more() -> Vec<InternalMessage> {
             capabilities: Some(all_capabilities),
             identity: Some([7; 16]),
             incarnation: Some(9),
+            raft_layouts: None,
         }), // Kinds 34 and 35, the conditional cache write and its answer.
         InternalMessage::ForwardCacheOp(ForwardCacheOp {
             correlation_id: 42,
