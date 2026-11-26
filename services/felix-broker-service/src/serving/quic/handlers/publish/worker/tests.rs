@@ -1913,6 +1913,105 @@ mod on_raft {
             Ok(())
         }
 
+        /// **A merged batch on the leader's log that cannot commit leaves
+        /// every member unknown**: never acknowledged, never told nothing
+        /// was written. The followers are sent no entries but still hear
+        /// heartbeats, so the leader keeps its lease and writes the batch,
+        /// and no majority can hold it.
+        /// Once healed, the batch is in the committed log whole, at
+        /// consecutive offsets, or not at all. The merged form of
+        /// `shards::raft::tests::a_quorum_stream_is_not_answered_without_a_majority`.
+        #[tokio::test]
+        async fn a_merged_batch_that_cannot_commit_leaves_every_member_unknown() -> Result<()> {
+            let (net, members, leader) = fixture::trio().await;
+            let leading = &members[leader];
+            let orders = fixture::key("orders", 0);
+            let term = leading.shards.leading(&orders).expect("term");
+            let config = BrokerConfig {
+                pub_workers_per_conn: 1,
+                pub_queue_depth: 64,
+                publish_quorum_timeout_ms: 500,
+                ..BrokerConfig::default()
+            };
+            let cluster = ClusterContext {
+                engine: Arc::clone(&leading.engine),
+                ..ClusterContext::default()
+            };
+            let publish_ctx = build_publish_context(Arc::clone(&leading.broker), &config, cluster);
+            let handle = leading
+                .broker
+                .resolve_stream_handle("t1", "ns", "orders", 0)
+                .await?;
+            let send = |payload: &'static [u8], publisher: &'static [u8]| {
+                let (mut job, answer) = job(&handle, &orders, term, payload, None);
+                job.publisher = Some(Bytes::from_static(publisher));
+                (job, answer)
+            };
+            let (before, answer) = send(b"before", b"p0");
+            publish_ctx.scheduler.send(before).await;
+            let before = offset(answer.await);
+
+            let raft = leading.shards.engine_for(&orders).expect("a member");
+            let proposed = raft.proposals(&orders);
+            for (at, member) in members.iter().enumerate() {
+                if at != leader {
+                    net.starved.lock().insert(member.name.to_string());
+                }
+            }
+            let payloads: [&'static [u8]; 4] = [b"m0", b"m1", b"m2", b"m3"];
+            let publishers: [&'static [u8]; 4] = [b"p1", b"p2", b"p3", b"p4"];
+            let mut answers = Vec::new();
+            for (payload, publisher) in payloads.into_iter().zip(publishers) {
+                let (job, answer) = send(payload, publisher);
+                publish_ctx.scheduler.send(job).await;
+                answers.push(answer);
+            }
+            for answer in answers {
+                let err = answer.await?.expect_err("acknowledged without a majority");
+                let err = ClientError::from_anyhow(&err);
+                assert_eq!(
+                    err.retry(),
+                    felix_wire::RetryClass::OutcomeUnknown,
+                    "a batch on the leader's log was told {err:?}"
+                );
+            }
+            assert_eq!(raft.proposals(&orders) - proposed, 1, "not one proposal");
+
+            net.starved.lock().clear();
+            // Its commit commits everything below it. Refused as stalled
+            // until the batch settles.
+            let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
+            let after = loop {
+                let (after, answer) = send(b"after", b"p5");
+                publish_ctx.scheduler.send(after).await;
+                match answer.await? {
+                    Ok(offset) => break offset.expect("an offset"),
+                    Err(err) => {
+                        assert!(
+                            tokio::time::Instant::now() < deadline,
+                            "never published again: {err}"
+                        );
+                        tokio::time::sleep(Duration::from_millis(50)).await;
+                    }
+                }
+            };
+            let read = leading
+                .broker
+                .read_durable("t1", "ns", "orders", 0, before + 1, 1 << 20)
+                .await?;
+            let read: Vec<_> = read.into_iter().map(|record| record.payload).collect();
+            match read.len() {
+                5 => {
+                    assert_eq!(read, ["m0", "m1", "m2", "m3", "after"]);
+                    assert_eq!(after, before + 5);
+                }
+                1 => assert_eq!(read, ["after"]),
+                _ => panic!("the merged batch was cut: {read:?}"),
+            }
+            fixture::stop(&members).await;
+            Ok(())
+        }
+
         /// **A merged batch whose outcome is unknown leaves every member
         /// unknown, and one refused before it was appended leaves every
         /// member failed**, each classified as it would be alone.

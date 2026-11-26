@@ -2045,9 +2045,12 @@ count, and is answered when the batch is: at the point the stream's ack
 level names for the batch's last record. The level belongs to the stream,
 so all members share it. If the batch fails, every member gets the same
 error: failed when openraft refused the whole write before appending any of
-it, and outcome unknown otherwise. A leader change that cuts the batch
-partway therefore leaves every member unknown, including one whose
-records were kept. Refusals of one publish (authorisation, quotas, rates,
+it, and outcome unknown otherwise. When a leader change cuts a merged
+batch, every publish in it is answered outcome unknown, including one whose
+records were kept, where that publish sent alone and fully inside the kept
+part would have been acknowledged. It never goes the other way: no publish
+in a merged batch is acknowledged, or told nothing was written, when alone
+it would not have been. Refusals of one publish (authorisation, quotas, rates,
 size) happen at admission, before the publish is queued, so one bad
 publish cannot fail its neighbours.
 
@@ -2057,7 +2060,8 @@ publish cannot fail its neighbours.
 > `a_refused_publish_does_not_refuse_its_neighbours`,
 > `a_refused_merged_proposal_fails_every_publish_in_it`,
 > `a_cancelled_publisher_keeps_its_place_in_the_merge`,
-> `an_idempotent_batch_is_never_merged` and
+> `an_idempotent_batch_is_never_merged`,
+> `a_merged_batch_that_cannot_commit_leaves_every_member_unknown` and
 > `a_shared_raft_error_keeps_its_class_for_every_member`.
 
 **A token never leaves the broker.** The codec does not encode it, and the
