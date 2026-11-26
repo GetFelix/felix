@@ -1947,6 +1947,42 @@ shard".
 > `crates/testing/felix-cluster/tests/routing/shutdown_handoff.rs`,
 > `a_broker_drained_out_of_every_set_leads_again_after_a_restart`.
 
+#### In-memory shards
+
+A stream created with `durable: false` keeps no log, so its shards never
+form a Raft group and none of the move steps above apply to them. Placement
+gives each one a single owner and no followers, whatever
+`replication_factor` the stream was created with
+(`cluster/placement/in_memory.rs`). No replica report is read for it.
+
+| Event | What placement writes |
+| --- | --- |
+| New shard | An owner chosen as any new shard's leader is (see [How shards get placed](#how-shards-get-placed)), in the stream's region |
+| Owner live | Nothing. Balancing does not move it: a move would end its subscribers and drop what it holds |
+| Owner down, gone, deregistered, draining, internal or outside the stream's region | A new owner, chosen the same way, in the same pass. A pause does not hold it, as it holds no failover. It counts against the per-pass failover budget (`FAILOVERS_PER_PASS`, 64) |
+| Operator move | One write naming the destination, step `owner_replaced`. It takes no move slot, since nothing is left in flight |
+| A hybrid move or set change left on the shard | One write naming the live owner alone, so a fenced owner does not refuse writes waiting for a report that never comes |
+
+Every one of these writes is a new assignment, and the store writes it at
+the next generation. The new owner starts empty. The old owner closes the
+shard when its watch delivers the new generation, and its subscribers end
+with the generation they read at.
+
+An old owner cut off from the control plane never sees that write. It stops
+on its lease instead: it refuses writes and ends its readers once its lease
+lapses, a quarter of the lease before the control plane can count it down.
+So when an owner crashes or is cut off, nobody serves the shard from the
+moment it stops until the new owner opens the new generation: about the
+heartbeat timeout (15 s by default) plus one placement pass. When the old
+owner is still connected (it is draining, or an operator moved the shard),
+it serves at the old generation until its watch catches up, while the new
+owner serves at the new one. Other brokers forward to the owner the
+assignment names. A publish the old owner acknowledges in that gap is
+lost, as at-most-once delivery allows.
+
+> Pinned by `cluster/placement/tests/in_memory.rs` and
+> `crates/testing/felix-cluster/tests/routing/in_memory.rs`.
+
 #### Adopting an elected leader
 
 Under `replica_election` a shard's replicas elect a leader themselves when
@@ -2246,8 +2282,8 @@ must already be a member of the set: a copy staged on top of it never counted
 toward an acknowledgement. Otherwise failover passes the successor over, and
 if no other replica holds the log the shard stays unplaced (`placement plan`
 says no caught-up replica). A broker reports `fences_every_change` with the
-fence on; one started with `FELIX_INTERNAL_FENCE=false` does not. An ephemeral stream has no log to hand
-off and is reassigned as it always was.
+fence on; one started with `FELIX_INTERNAL_FENCE=false` does not. An in-memory stream has no log to hand
+off; see [In-memory shards](#in-memory-shards).
 
 A fenced leader that is live but never reports drained would hold its shard
 without writes forever, so the move has a second timeout. Once the instance
@@ -2426,7 +2462,7 @@ after the fence.
 
 | Metric | Meaning |
 | --- | --- |
-| `felix_shard_move_steps_total{step}` | move steps written: `stage`, `fence`, `cut_over`, `abandon`, `halted` (the destination halted), `timed_out`, `stalled` (a restore's copy stopped moving), `reseat`, `restore`, `seat`, `take_pending_set` (a pending replica set taken on the leader's report), `pending_set_timed_out`, `pending_set_dropped`, `pending_set_cancelled`, `pending_set_member_replaced` (one dropped), `readmit` (a replaced copy named by its new storage id and held as a learner), `election_refused` (a leader named again above a generation promised to an elected broker), `set_unknown` (a leader named again above a generation whose set before it could not learn, or that a newer ballot holds), `raft_leader` (a Raft shard's leader named another member), `raft_move_dropped` (a hybrid move left on a Raft shard dropped), and an operator's `cancel`, `retake` and `discard` |
+| `felix_shard_move_steps_total{step}` | move steps written: `stage`, `fence`, `cut_over`, `abandon`, `halted` (the destination halted), `timed_out`, `stalled` (a restore's copy stopped moving), `reseat`, `restore`, `seat`, `take_pending_set` (a pending replica set taken on the leader's report), `pending_set_timed_out`, `pending_set_dropped`, `pending_set_cancelled`, `pending_set_member_replaced` (one dropped), `readmit` (a replaced copy named by its new storage id and held as a learner), `election_refused` (a leader named again above a generation promised to an elected broker), `set_unknown` (a leader named again above a generation whose set before it could not learn, or that a newer ballot holds), `raft_leader` (a Raft shard's leader named another member), `raft_move_dropped` (a hybrid move left on a Raft shard dropped), and an operator's `cancel`, `retake`, `discard` and `owner_replaced` (an in-memory shard given a new owner) |
 | `felix_shards_under_replicated` | shards with fewer copies on serving brokers than their replication factor; non-zero for longer than the restore delay plus a copy means no broker can take the copy, or placement is paused |
 | `felix_shard_replicas_missing` | the copies those shards are missing between them |
 | `felix_shard_replicas_halted` | copies whose leader reports it has stopped shipping to them; counted as missing, kept out of placement, and replaced after the restore delay |
