@@ -14,6 +14,9 @@ use crate::raft_log::{LogPoint, reserved, state_file};
 type Raft = RaftLog<Types, Codec>;
 
 const BOUND: Duration = Duration::from_secs(10);
+/// For a whole run of appends racing syncs, so a slow disk is not read as a
+/// hang.
+const RACE_BOUND: Duration = Duration::from_secs(45);
 
 fn relaxed_config(fsync_mode: FsyncMode) -> LogConfig {
     LogConfig {
@@ -498,23 +501,42 @@ async fn a_poisoned_written_commit_log_leaves_flushed_where_it_was() {
 }
 
 /// Run `work` on its own thread and fail, rather than hang the suite, if it
-/// does not return: a lock taken twice inside the sync hook blocks for ever.
-fn within_bound<T: Send + 'static>(what: &str, work: impl FnOnce() -> T + Send + 'static) -> T {
+/// does not return within `bound`: a lock taken twice inside the sync hook
+/// blocks for ever. A panic inside `work` is passed on as it was.
+fn within<T: Send + 'static>(
+    what: &str,
+    bound: Duration,
+    work: impl FnOnce() -> T + Send + 'static,
+) -> T {
     let (tx, rx) = std::sync::mpsc::channel();
-    std::thread::spawn(move || {
+    let worker = std::thread::spawn(move || {
         let _ = tx.send(work());
     });
-    rx.recv_timeout(BOUND)
-        .unwrap_or_else(|_| panic!("{what} hung with the sync hook registered"))
+    match rx.recv_timeout(bound) {
+        Ok(done) => done,
+        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => match worker.join() {
+            Err(panic) => std::panic::resume_unwind(panic),
+            Ok(()) => panic!("{what} returned nothing"),
+        },
+        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => panic!(
+            "{what} did not finish in {} s with the sync hook registered",
+            bound.as_secs()
+        ),
+    }
+}
+
+fn within_bound<T: Send + 'static>(what: &str, work: impl FnOnce() -> T + Send + 'static) -> T {
+    within(what, BOUND, work)
 }
 
 /// Run `test` on a runtime of its own on another thread, so a deadlock in
 /// the log fails the test instead of hanging the runtime's shutdown.
 fn on_own_runtime<F: Future<Output = ()> + 'static>(
     what: &str,
+    bound: Duration,
     test: impl FnOnce() -> F + Send + 'static,
 ) {
-    within_bound(what, move || {
+    within(what, bound, move || {
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(4)
             .enable_all()
@@ -578,7 +600,7 @@ async fn a_failed_sync_with_appends_waiting_returns() {
 /// it.
 #[test]
 fn a_gap_raised_under_the_segments_lock_raises_flushed() {
-    on_own_runtime("a gap", || async {
+    on_own_runtime("a gap", BOUND, || async {
         let root = tempdir().expect("dir");
         let raft = waiting_on_sync(root.path(), 3).await;
         let log = raft.disk_log().clone();
@@ -633,11 +655,32 @@ async fn no_sync_raises_flushed_past_a_truncation() {
 /// other waits for.
 #[test]
 fn appends_racing_syncs_raise_flushed_in_order() {
-    on_own_runtime("appends racing syncs", || async {
+    // Set on every way out, a failure included, so a failed run does not
+    // leave the syncers fsyncing for the rest of the test process.
+    struct StopOnDrop(Arc<std::sync::atomic::AtomicBool>);
+    impl Drop for StopOnDrop {
+        fn drop(&mut self) {
+            self.0.store(true, std::sync::atomic::Ordering::Relaxed);
+        }
+    }
+    let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let _stop = StopOnDrop(Arc::clone(&stop));
+    // Generous: the run takes well under a second, so only a stuck one
+    // reaches it.
+    on_own_runtime("appends racing syncs", RACE_BOUND, move || async move {
         let root = tempdir().expect("dir");
         begin(root.path(), true);
-        let mut raft = open_under(root.path(), FsyncMode::None).expect("open");
-        let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let dir = root.path().join("shard");
+        std::fs::create_dir_all(&dir).expect("shard dir");
+        // Dozens of entries per segment, so a few rolls: the race is appends
+        // against syncs, and a roll fsyncs several times, so a segment per
+        // append would make the run as slow as the disk.
+        let config = LogConfig {
+            segment_size_bytes: crate::segment::SEGMENT_HEADER_LEN + 2 * 1024,
+            ..relaxed_config(FsyncMode::None)
+        };
+        let log = DiskLog::open(&dir, "t/ns/raft/0", config).expect("open");
+        let mut raft = Raft::new(log, Codec).expect("open");
         let syncers: Vec<_> = (0..2)
             .map(|_| {
                 let (log, stop) = (raft.disk_log().clone(), Arc::clone(&stop));
@@ -658,15 +701,11 @@ fn appends_racing_syncs_raise_flushed_in_order() {
                 last = now;
             }
         });
-        tokio::time::timeout(BOUND, async {
-            for index in 0..200 {
-                append(&mut raft, vec![normal(1, index, "a")])
-                    .await
-                    .expect("append");
-            }
-        })
-        .await
-        .expect("the appends finish");
+        for index in 0..200 {
+            append(&mut raft, vec![normal(1, index, "a")])
+                .await
+                .expect("append");
+        }
         stop.store(true, std::sync::atomic::Ordering::Relaxed);
         for syncer in syncers {
             tokio::time::timeout(BOUND, syncer)
@@ -684,6 +723,9 @@ fn appends_racing_syncs_raise_flushed_in_order() {
         );
         assert_eq!(raft.shared.flushes.pushed(), 0);
         drop(raft);
-        let _ = tokio::time::timeout(BOUND, watcher).await;
+        tokio::time::timeout(BOUND, watcher)
+            .await
+            .expect("the watcher ends with the log")
+            .expect("flushed never fell");
     });
 }
