@@ -86,7 +86,10 @@ fn cache_key(cluster: &Cluster, shard: u32) -> String {
 #[serial]
 #[tokio::test]
 async fn a_moved_shard_ends_its_readers_on_the_old_leader() {
-    if felix_cluster::skip_on_raft_until_moves_land() {
+    if felix_cluster::skip_on_raft_until(
+        3004,
+        "a planned move or leader change in this test does not complete on Raft yet",
+    ) {
         return;
     }
     let mut cluster = Cluster::start(ClusterConfig {

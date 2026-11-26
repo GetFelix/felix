@@ -107,9 +107,6 @@ impl Load {
 #[serial]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_lease_cache_renews_on_time_while_shards_are_created_in_bulk() {
-    if felix_cluster::skip_on_raft_until(3032, "lease canary lapses under bulk shard creation") {
-        return;
-    }
     run(Load::from_env(Load {
         streams: 600,
         appended: 96,

@@ -216,18 +216,6 @@ pub fn suite_runs_on_raft() -> bool {
     default_engine() == "raft"
 }
 
-/// True when the suite runs on Raft, for a test that moves a shard between
-/// brokers. A Raft shard's leader moves only within its voting set, and
-/// placement does not yet manage that set (#2235), so such a test runs on
-/// hybrid only until it does.
-pub fn skip_on_raft_until_moves_land() -> bool {
-    let skip = default_engine() == "raft";
-    if skip {
-        report_skip("skipped on Raft: shard moves need membership from placement (#2235)");
-    }
-    skip
-}
-
 /// True when the suite runs on Raft, for a test that fails there on Raft
 /// work not built yet, tracked by `issue`. The test still runs on hybrid.
 pub fn skip_on_raft_until(issue: u32, reason: &str) -> bool {
