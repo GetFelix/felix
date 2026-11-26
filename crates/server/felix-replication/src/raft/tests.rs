@@ -27,6 +27,7 @@ mod beats;
 mod cache;
 mod change;
 mod commit;
+mod core_stall;
 mod deliver;
 mod driver;
 mod groups;

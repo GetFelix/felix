@@ -165,6 +165,52 @@ async fn a_trim_hides_the_shard_below_its_floor_on_every_member() {
     stop(&members).await;
 }
 
+/// **A trim answered before the leader's own log synced it still bounds the
+/// next one.** A majority of followers can commit the entry while the
+/// leader's sync is held, and its floor applies on the leader only once that
+/// sync lands. A lower trim checked in between must not be written past it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_trim_answered_before_the_leader_synced_it_bounds_the_next_one() {
+    let (_net, members, leader) = trio().await;
+    let orders = key("orders", 0);
+    let term = members[leader].shards.leading(&orders).expect("term");
+    let lead = &members[leader];
+    lead.broker.allow_raft_head_trims_when(|| true);
+    lead.publish(term, b"r0").await;
+    // Above the floor before the trim, so only the trim's floor makes the
+    // second one a no-op.
+    let low = lead.publish(term, b"r1").await;
+    let floor = lead.publish(term, b"r2").await;
+    let tail = lead.publish(term, b"r3").await + 1;
+    let log = lead.shards.log_of(&orders).await.expect("log");
+
+    let held = log.hold_flushes().await;
+    let trimmed = trim(&lead.broker, &lead.engine, term, floor, tail)
+        .await
+        .expect("trimmed on the followers' syncs");
+    assert_eq!(trimmed.offset, Some(tail));
+    assert!(
+        log.durable_offset() <= tail,
+        "the leader synced the trim while held"
+    );
+    let next = tail + 1;
+    let release = async move {
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        drop(held);
+    };
+    let (noop, ()) = tokio::join!(trim(&lead.broker, &lead.engine, term, low, next), release);
+    let noop = noop.expect("a no-op");
+    assert_eq!(
+        noop,
+        TrimOutcome {
+            offset: None,
+            oldest: floor,
+        },
+        "a trim below the answered floor was written"
+    );
+    stop(&members).await;
+}
+
 /// **The floor holds after a restart.** The log rebuilds it from the trim
 /// record, which no snapshot carries.
 #[tokio::test]
