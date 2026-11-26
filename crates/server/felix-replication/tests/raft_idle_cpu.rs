@@ -422,8 +422,6 @@ async fn idle_groups_cost_little_cpu() {
     } else {
         "stub"
     };
-    // Open every member first so the files and memory of a member that has
-    // not written anything can be read off before the first group starts.
     for n in 0..groups {
         for (broker, runtime) in brokers.iter().zip(&runtimes) {
             let dir = root.path().join(broker).join(n.to_string());
@@ -432,9 +430,12 @@ async fn idle_groups_cost_little_cpu() {
             let group = GroupId::new(shard(n), 0);
             runtime.open(group, 1, log).await.expect("open");
         }
-    }
-    sizing_line("opened", groups, peers_name, brokers.len(), root.path());
-    for n in 0..groups {
+        if n == 0 {
+            // One group opened and nothing written: the base the idle line
+            // is read against. Opening every member before starting any
+            // group stalls the transport run.
+            sizing_line("opened_first", 1, peers_name, brokers.len(), root.path());
+        }
         // The member told first stands at once and wins, so leaders spread
         // evenly over the brokers.
         let first = n as usize % runtimes.len();
