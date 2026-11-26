@@ -1880,6 +1880,41 @@ mod on_raft {
             Ok(())
         }
 
+        /// **A merged proposal looks its group up once**, as a lone publish
+        /// does, not once per member: the members taken from the lane use
+        /// the group the first one found.
+        #[tokio::test]
+        async fn a_merged_proposal_looks_its_group_up_once() -> Result<()> {
+            let at = Leading::new().await?;
+            let mut receiver = at.subscribe().await;
+            let raft = at.shards.engine_for(&at.orders).expect("a member");
+            let before = raft.lookups();
+            let _ = at.handle.read_bound();
+            let per_read = raft.lookups() - before;
+
+            // `counts` looks the shard up itself, so it is read outside.
+            let proposals = at.counts().0;
+            let before = raft.lookups();
+            let mut answers = Vec::new();
+            for _ in 0..8 {
+                let (job, answer) = at.job_of(1);
+                at.publish_ctx.scheduler.send(job).await;
+                answers.push(answer);
+            }
+            for answer in answers {
+                offset(answer.await);
+            }
+            let envelope = tokio::time::timeout(Duration::from_secs(10), receiver.recv())
+                .await
+                .expect("delivered in time")
+                .expect("subscription open");
+            assert_eq!(envelope.len(), 8);
+            assert_eq!(raft.lookups() - before, 1 + per_read);
+            assert_eq!(at.counts().0 - proposals, 1, "one proposal");
+            at.stop().await;
+            Ok(())
+        }
+
         /// **A merge stops at its cap**: 70 queued publishes are two
         /// proposals, 64 and 6, with offsets in lane order.
         #[tokio::test]

@@ -643,7 +643,6 @@ impl LaneWork {
             headers: job.headers.take(),
         };
         felix_storage::hops::mark(felix_storage::hops::Stage::Handed);
-        let payloads = std::mem::take(&mut job.payloads);
         let timeout = self.quorum_timeout;
         let proposed = match raft {
             Some(raft) => self.engine.publish_to_raft(
@@ -838,7 +837,7 @@ impl LaneWork {
                 let Some(next) = line.next() else {
                     return;
                 };
-                if let Some(waits) = self.propose_on_raft(next, None) {
+                if let Some(waits) = self.propose_on_raft(next, None, None) {
                     (job, turn) = waits;
                     break;
                 }

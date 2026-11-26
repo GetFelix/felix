@@ -3738,7 +3738,8 @@ been had it waited for the write.
   only its own publish, and the batch's later commit answers none of them
   again.
 - A publish looks its shard's group up in the runtime's registry once, when
-  the publish lane picks the Raft path (`RaftEngine::shard`). The proposal,
+  the publish lane picks the Raft path (`RaftEngine::shard`), and a merged
+  batch once for all its publishes. The proposal,
   the skip count, the lease or majority answer and the commit wait all use
   the group it found. A close or a shutdown marks the group released under
   the registry's lock, before the shard can be opened again, and every one
