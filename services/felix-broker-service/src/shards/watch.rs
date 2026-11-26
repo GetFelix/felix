@@ -698,7 +698,9 @@ fn take_reformed_epoch(current: &mut ShardAssignment, next: &ShardAssignment) ->
     if next.incarnation != current.incarnation || next.group_epoch() <= current.group_epoch() {
         return false;
     }
-    current.placed = next.placed;
+    // Kept a clone so the line still holds if `PlacedEpoch` stops being Copy.
+    #[allow(clippy::clone_on_copy)]
+    current.placed.clone_from(&next.placed);
     current.raft_bases.clone_from(&next.raft_bases);
     current.raft_seed.clone_from(&next.raft_seed);
     current.raft_formed = next.raft_formed;

@@ -209,6 +209,20 @@ fn a_reformed_epoch_stored_in_place_is_applied() {
         "a late copy from before the re-form"
     );
     assert_eq!(owned.get(&key(0)).expect("present").group_epoch(), 2);
+
+    // Epochs of another incarnation are another group's: a later one is
+    // not newer.
+    let mut owned = ShardOwnership::default();
+    let recreated = ShardAssignment {
+        incarnation: 1,
+        ..assignment(0, "broker-a", 3)
+    };
+    assert!(owned.apply(&key(0), Some(recreated)));
+    assert!(
+        !owned.apply(&key(0), Some(reformed(3))),
+        "an earlier incarnation's epoch"
+    );
+    assert_eq!(owned.get(&key(0)).expect("present").group_epoch(), 0);
 }
 
 /// Versions order by placement incarnation before counter: a restore
