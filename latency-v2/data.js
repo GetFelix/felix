@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795657680655,
+  "lastUpdate": 1795659385044,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -89166,6 +89166,72 @@ window.BENCHMARK_DATA = {
             "range": "752.98",
             "unit": "us",
             "extra": "trials: 5\nmedian: 1364.00\nmean: 1583.60\nstdev: 752.98\ncv: 47.55%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "64d6da11714d272a196a8f0eb5079581ba40c558",
+          "message": "fix(auth): token exchange refuses an IdP token issued before its principal was explicitly revoked (#2839) (#3200)\n\n* fix(auth): refuse an IdP token issued before its principal's revocation (#2839)\n\nToken exchange slept past a revocation cutoff and then minted a fresh\ntoken and refresh chain, without comparing the upstream token's iat to\nthe cutoff. An IdP token taken before a revocation kept exchanging for\nthe rest of its lifetime.\n\nExchange now answers 401 when the IdP token's iat is at or before the\nprincipal's cutoff plus the IdP clock skew. The skew is added to the\ncutoff so an IdP clock running ahead cannot carry a pre-revocation\ntoken past it. The check runs again once the refresh token is stored,\nending that chain if a revocation landed in between, and\nrefresh-tokens/revoke now records the cutoff before ending chains so\nthat second check always sees it.\n\nSpec-Unaffected: control-plane token exchange; no TLA model covers auth.\n\n* fix(auth): only an explicit revocation refuses older IdP tokens (#2839)\n\nApplying the IdP-token check to every cutoff turned an ordinary RBAC\nedit into a tenant-wide logout: every client re-exchanging a cached IdP\ntoken got 401 until it fetched a new one. RBAC edits and issuer changes\ntake back rights, not the identity, so their cutoffs keep the old\nbehaviour (wait out the second, mint with current rules).\n\nrefresh-tokens/revoke now also records an assertion cutoff on the\nprincipal's revocation row (RevokePrincipals.assertions,\nassertions_revoked_at), metadata level 53. Below the level the revoke\nwrites what older builds write. Exchange reads both cutoffs in one\nleader read and refuses only against the assertion cutoff. The revoke's\ntwo writes move into cut_off, with a test that an exchange landing\nbetween them keeps no chain.\n\nSpec-Unaffected: control-plane auth; no TLA model covers revocation or exchange.",
+          "timestamp": "2026-11-26T01:55:38Z",
+          "tree_id": "0c1f4ea14e48fe26a997cf1c00ab77bbffe8c608",
+          "url": "https://github.com/GetFelix/felix/commit/64d6da11714d272a196a8f0eb5079581ba40c558"
+        },
+        "date": 1795659366256,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 63,
+            "range": "0.55",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 63.00\nmean: 63.40\nstdev: 0.55\ncv: 0.86%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 84,
+            "range": "1.10",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 84.00\nmean: 83.80\nstdev: 1.10\ncv: 1.31%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 107,
+            "range": "6.11",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 107.00\nmean: 108.60\nstdev: 6.11\ncv: 5.62%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 80,
+            "range": "0.71",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 80.00\nmean: 80.00\nstdev: 0.71\ncv: 0.88%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 178,
+            "range": "44.40",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 178.00\nmean: 195.20\nstdev: 44.40\ncv: 22.75%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 362,
+            "range": "1051.87",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 362.00\nmean: 828.60\nstdev: 1051.87\ncv: 126.95%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
