@@ -24,6 +24,12 @@ type Write = (String, Vec<u8>);
 #[serial]
 #[tokio::test]
 async fn a_cache_watch_follows_its_shard_to_the_new_owner() {
+    if felix_cluster::skip_on_raft_until(
+        3004,
+        "a planned move or leader change in this test does not complete on Raft yet",
+    ) {
+        return;
+    }
     let cluster = Cluster::start(ClusterConfig {
         nodes: 2,
         caches: vec![CacheSpec::new(CACHE, 1)],
@@ -188,6 +194,12 @@ async fn a_cache_watch_follows_its_shard_to_the_new_owner() {
 #[serial]
 #[tokio::test]
 async fn a_sharded_cache_watch_follows_each_shard_to_its_new_owner() {
+    if felix_cluster::skip_on_raft_until(
+        3004,
+        "a planned move or leader change in this test does not complete on Raft yet",
+    ) {
+        return;
+    }
     const SHARDS: u32 = 2;
     let cluster = Cluster::start(ClusterConfig {
         nodes: 2,

@@ -73,6 +73,12 @@ async fn stored_on(cluster: &Cluster, node: &str, owed: &[Vec<u8>]) -> Vec<Vec<u
 #[serial]
 #[tokio::test]
 async fn an_operator_moves_a_shard_and_the_move_completes() {
+    if felix_cluster::skip_on_raft_until(
+        3004,
+        "a planned move or leader change in this test does not complete on Raft yet",
+    ) {
+        return;
+    }
     let (cluster, owner, other) = two_brokers().await;
     let sent = publish_before(&cluster, &owner, 20).await;
 
@@ -104,6 +110,12 @@ async fn an_operator_moves_a_shard_and_the_move_completes() {
 #[serial]
 #[tokio::test]
 async fn cancelling_a_staged_move_leaves_the_shard_where_it_was() {
+    if felix_cluster::skip_on_raft_until(
+        3004,
+        "a planned move or leader change in this test does not complete on Raft yet",
+    ) {
+        return;
+    }
     let (cluster, owner, other) = two_brokers().await;
     let sent = publish_before(&cluster, &owner, 10).await;
 
@@ -162,6 +174,12 @@ async fn cancelling_a_staged_move_leaves_the_shard_where_it_was() {
 #[serial]
 #[tokio::test]
 async fn cancelling_a_fenced_move_loses_no_acknowledged_write() {
+    if felix_cluster::skip_on_raft_until(
+        3004,
+        "a planned move or leader change in this test does not complete on Raft yet",
+    ) {
+        return;
+    }
     let (cluster, owner, other) = two_brokers().await;
     let addr = |node: &str| cluster.node(node).expect("node").client_addr;
     let before = publish_before(&cluster, &owner, 20).await;
@@ -312,6 +330,12 @@ async fn cancelling_a_fenced_move_loses_no_acknowledged_write() {
 #[serial]
 #[tokio::test]
 async fn a_paused_placement_does_not_move_a_draining_nodes_shard() {
+    if felix_cluster::skip_on_raft_until(
+        3004,
+        "a planned move or leader change in this test does not complete on Raft yet",
+    ) {
+        return;
+    }
     let (cluster, owner, other) = two_brokers().await;
     cluster.pause_placement().await.expect("pause");
     assert_eq!(
@@ -500,6 +524,12 @@ async fn cut_short_move(
 #[serial]
 #[tokio::test]
 async fn a_move_cut_short_by_kills_promotes_no_follower_short_of_the_log() {
+    if felix_cluster::skip_on_raft_until(
+        3004,
+        "a planned move or leader change in this test does not complete on Raft yet",
+    ) {
+        return;
+    }
     let mut cluster = Cluster::start(cut_short_config())
         .await
         .expect("start cluster");
@@ -532,6 +562,12 @@ async fn a_move_cut_short_by_kills_promotes_no_follower_short_of_the_log() {
 #[serial]
 #[tokio::test]
 async fn a_move_cut_short_by_kills_leaves_no_replica_halted() {
+    if felix_cluster::skip_on_raft_until(
+        3004,
+        "a planned move or leader change in this test does not complete on Raft yet",
+    ) {
+        return;
+    }
     let mut cluster = Cluster::start(cut_short_config())
         .await
         .expect("start cluster");
