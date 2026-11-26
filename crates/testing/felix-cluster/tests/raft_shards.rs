@@ -145,6 +145,11 @@ async fn one_leader(cluster: &Cluster, among: &[String]) -> String {
 /// Publish through `node` until the broker acknowledges, and return the
 /// offset. A shard between leaders answers "not ready", which a client
 /// retries.
+///
+/// Only for a publish no fault can meet: before the test kills, cuts off,
+/// moves or restarts anything. `Cluster::start` waits out every first-term
+/// hand-over and placement steps only when a test asks, so an unknown
+/// outcome there is a defect and panics. Use [`publish_tried`] otherwise.
 async fn publish_acked(cluster: &Cluster, node: &str, payload: &[u8]) -> u64 {
     let what = format!("{:?}", String::from_utf8_lossy(payload));
     publish_once_acked(node, &what, || async {
@@ -162,6 +167,64 @@ async fn publish_acked(cluster: &Cluster, node: &str, payload: &[u8]) -> u64 {
         Some(sent)
     })
     .await
+}
+
+/// [`publish_acked`] for a publish made while a fault can be in progress (a
+/// kill, a partition, a move), where an unknown outcome is expected. Each
+/// try sends `{base}/{try}`, so a try that may have been written is never
+/// sent again: it goes into `sent`, to be checked as held at most once, as
+/// a refused try is checked as never held. Returns the acknowledged try's
+/// offset and payload, which `sent` also records.
+async fn publish_tried(
+    cluster: &Cluster,
+    node: &str,
+    base: &str,
+    sent: &mut Sent,
+) -> (u64, Vec<u8>) {
+    let tries = std::cell::Cell::new(0u32);
+    let failures = std::cell::RefCell::new(Vec::new());
+    let acked =
+        felix_cluster::wait::until_some(ELECTED_WITHIN, "a publish to be acknowledged", || {
+            let payload = format!("{base}/{}", tries.get()).into_bytes();
+            let (tries, failures) = (&tries, &failures);
+            async move {
+                // No connection or publisher: nothing was sent, and the try's
+                // payload goes unused.
+                let client = cluster.client_on(node).await.ok()?;
+                let publisher = client.publisher().await.ok()?;
+                tries.set(tries.get() + 1);
+                let published = publisher
+                    .publish(
+                        &cluster.tenant_id,
+                        &cluster.namespace,
+                        STREAM,
+                        payload.clone(),
+                        AckMode::PerMessage,
+                    )
+                    .await;
+                match published {
+                    Ok(offset) => Some((
+                        offset.expect("a durable stream acknowledges with an offset"),
+                        payload,
+                    )),
+                    Err(err) => {
+                        failures.borrow_mut().push((payload, err));
+                        None
+                    }
+                }
+            }
+        })
+        .await;
+    let failures = failures.into_inner();
+    let acked = acked.unwrap_or_else(|err| {
+        let last = failures.last().map(|(_, err)| format!("{err:#}"));
+        panic!("publish {base} through {node}: {err:#}; last error: {last:?}")
+    });
+    for (payload, err) in failures {
+        sent.failed(payload, &err);
+    }
+    sent.acked.push(acked.clone());
+    acked
 }
 
 /// Finalizes `raft_follower_read`, without which a follower sends a read
@@ -470,15 +533,17 @@ async fn a_plain_publish_into_a_first_term_hand_over_lands_once() {
         )
         .await
         .unwrap_or_else(|err| panic!("replay shard {shard}: {err:#}"));
-        if let Err(wrong) = sent.check(shard, &held) {
-            panic!("{wrong}");
+        let payloads: Vec<Vec<u8>> = held.iter().map(|(_, payload)| payload.clone()).collect();
+        if let Err(wrong) = sent.check(&format!("shard {shard}"), &payloads) {
+            let offsets: Vec<u64> = held.iter().map(|(at, _)| *at).collect();
+            panic!("{wrong}, held: {offsets:?}");
         }
     }
 }
 
-/// What one shard of the hand-over test was sent, by what became of it.
+/// What was published to one shard, by what became of it.
 #[derive(Debug, Clone, Default)]
-struct ShardSent {
+struct Sent {
     /// Acknowledged, with the offset: held exactly once.
     acked: Vec<(u64, Vec<u8>)>,
     /// Answered with no offset and no promise that nothing was written:
@@ -490,7 +555,7 @@ struct ShardSent {
     refused: Vec<(Vec<u8>, String)>,
 }
 
-impl ShardSent {
+impl Sent {
     /// The publish ended in `err`, which `failed` sorts.
     fn failed(&mut self, payload: Vec<u8>, err: &anyhow::Error) {
         match failed(err) {
@@ -499,17 +564,17 @@ impl ShardSent {
         }
     }
 
-    /// Whether `held`, the shard's records, holds what was sent as it must.
-    fn check(&self, shard: usize, held: &[(u64, Vec<u8>)]) -> Result<(), String> {
-        let copies = |payload: &[u8]| held.iter().filter(|(_, have)| have == payload).count();
+    /// Whether `held`, the payloads `place` holds, has what was sent as it
+    /// must.
+    fn check(&self, place: &str, held: &[Vec<u8>]) -> Result<(), String> {
+        let copies = |payload: &[u8]| held.iter().filter(|have| *have == payload).count();
         let text = |payload: &[u8]| String::from_utf8_lossy(payload).into_owned();
         for (offset, payload) in &self.acked {
             let copies = copies(payload);
             if copies != 1 {
                 return Err(format!(
-                    "shard {shard} holds {:?} {copies} times; acknowledged at {offset}, held: {:?}",
+                    "{place} holds {:?} {copies} times; acknowledged at {offset}",
                     text(payload),
-                    held.iter().map(|(at, _)| *at).collect::<Vec<_>>(),
                 ));
             }
         }
@@ -517,7 +582,7 @@ impl ShardSent {
             let copies = copies(payload);
             if copies > 1 {
                 return Err(format!(
-                    "shard {shard} holds {:?}, answered outcome unknown and never re-sent, \
+                    "{place} holds {:?}, answered outcome unknown and never re-sent, \
                      {copies} times",
                     text(payload),
                 ));
@@ -527,7 +592,7 @@ impl ShardSent {
             let copies = copies(payload);
             if copies > 0 {
                 return Err(format!(
-                    "shard {shard} holds {:?} {copies} times, though it was refused as not \
+                    "{place} holds {:?} {copies} times, though it was refused as not \
                      proposed: {err}",
                     text(payload),
                 ));
@@ -565,35 +630,35 @@ fn a_refused_publish_that_is_held_fails_the_hand_over_check() {
         assert_eq!(failed(&in_doubt), Failed::InDoubt, "{in_doubt:#}");
     }
 
-    let mut sent = ShardSent {
+    let mut sent = Sent {
         acked: vec![(5, b"11/0/2".to_vec())],
-        ..ShardSent::default()
+        ..Sent::default()
     };
     sent.failed(
         b"11/0/0".to_vec(),
         &refusal(ErrorCode::LeadershipLost, RetryClass::OutcomeUnknown),
     );
     sent.failed(b"11/0/1".to_vec(), &not_ready);
-    let at = |offset, payload: &[u8]| (offset, payload.to_vec());
+    let at = |_offset: u64, payload: &[u8]| payload.to_vec();
 
     // The record as the failed run held it: the try in doubt committed under
     // the next leader, and the acknowledged one is a payload of its own.
     let held = [at(3, b"11/0/0"), at(5, b"11/0/2")];
-    assert_eq!(sent.check(11, &held), Ok(()));
+    assert_eq!(sent.check("shard 11", &held), Ok(()));
 
     let refused_held = [at(3, b"11/0/1"), at(5, b"11/0/2")];
     let wrong = sent
-        .check(11, &refused_held)
+        .check("shard 11", &refused_held)
         .expect_err("a refusal that wrote");
     assert!(wrong.contains("refused as not proposed"), "{wrong}");
     assert!(wrong.contains("gave up"), "names the error: {wrong}");
 
     let doubt_twice = [at(3, b"11/0/0"), at(5, b"11/0/2"), at(6, b"11/0/0")];
-    assert!(sent.check(11, &doubt_twice).is_err());
+    assert!(sent.check("shard 11", &doubt_twice).is_err());
     let acked_twice = [at(3, b"11/0/2"), at(5, b"11/0/2")];
-    assert!(sent.check(11, &acked_twice).is_err());
+    assert!(sent.check("shard 11", &acked_twice).is_err());
     assert!(
-        sent.check(11, &[at(3, b"11/0/0")]).is_err(),
+        sent.check("shard 11", &[at(3, b"11/0/0")]).is_err(),
         "acked missing"
     );
 }
@@ -610,11 +675,11 @@ async fn publish_across_hand_overs(
     cluster: &Cluster,
     client: &std::sync::Arc<felix_client::Client>,
     spec: &StreamSpec,
-) -> Option<Vec<ShardSent>> {
+) -> Option<Vec<Sent>> {
     use std::sync::atomic::{AtomicBool, Ordering};
 
     let shards = spec.shards as usize;
-    let mut sent = vec![ShardSent::default(); shards];
+    let mut sent = vec![Sent::default(); shards];
     // Every shard serves before the count starts, so a refusal counted below
     // is a hand-over's and not a shard still opening. Placement is stepped
     // here too, and a shard's first hand-over can begin while a later one
@@ -918,9 +983,10 @@ async fn a_followers_subscriber_keeps_every_acknowledged_record_when_the_leader_
     cluster.kill_node(&leader).expect("kill the leader");
     let survivors: Vec<String> = nodes.into_iter().filter(|node| *node != leader).collect();
     leader_among(&cluster, &survivors).await;
+    let mut sent = Sent::default();
     for i in 0..10 {
-        let payload = format!("after-{i}").into_bytes();
-        acked.push((publish_acked(&cluster, &follower, &payload).await, payload));
+        let base = format!("after-{i}");
+        acked.push(publish_tried(&cluster, &follower, &base, &mut sent).await);
     }
 
     while !arrived(&acked, &seen) {
@@ -966,6 +1032,10 @@ async fn a_followers_subscriber_keeps_every_acknowledged_record_when_the_leader_
             String::from_utf8_lossy(payload)
         );
     }
+    let seen: Vec<Vec<u8>> = seen.into_iter().map(|(_, payload)| payload).collect();
+    if let Err(wrong) = sent.check("the follower's subscriber", &seen) {
+        panic!("{wrong}");
+    }
 }
 
 /// **The leader dies while the control plane is down, and nothing
@@ -1002,9 +1072,10 @@ async fn a_leader_lost_with_the_control_plane_down_loses_nothing_acknowledged() 
         .iter()
         .find(|node| **node != elected)
         .expect("the other survivor");
+    let mut sent = Sent::default();
     for i in 0..20 {
-        let payload = format!("after-{i}").into_bytes();
-        let offset = publish_acked(&cluster, other, &payload).await;
+        let (offset, payload) =
+            publish_tried(&cluster, other, &format!("after-{i}"), &mut sent).await;
         assert!(
             Some(offset) > last,
             "{elected} acknowledged offset {offset} at or below {last:?}"
@@ -1021,6 +1092,9 @@ async fn a_leader_lost_with_the_control_plane_down_loses_nothing_acknowledged() 
             "{elected} holds {:?} other than once",
             String::from_utf8_lossy(payload)
         );
+    }
+    if let Err(wrong) = sent.check(&elected, &held) {
+        panic!("{wrong}");
     }
 }
 
@@ -1079,15 +1153,19 @@ async fn a_leader_stream_lost_with_its_leader_keeps_a_prefix_of_what_was_acknowl
     let survivors: Vec<String> = nodes.into_iter().filter(|node| *node != leader).collect();
     let elected = leader_among(&cluster, &survivors).await;
     let mut after = Vec::new();
+    let mut sent = Sent::default();
     for i in 0..20 {
-        let payload = format!("after-{i}").into_bytes();
-        publish_acked(&cluster, &elected, &payload).await;
+        let (_, payload) =
+            publish_tried(&cluster, &elected, &format!("after-{i}"), &mut sent).await;
         after.push(payload);
     }
 
     let held = replay_holding(&cluster, &elected, &after).await;
     for payload in &after {
         assert_eq!(copies(&held, payload), 1, "{elected} acknowledged it");
+    }
+    if let Err(wrong) = sent.check(&elected, &held) {
+        panic!("{wrong}");
     }
     let kept: Vec<&Vec<u8>> = held.iter().filter(|have| acked.contains(have)).collect();
     assert!(
@@ -1143,27 +1221,34 @@ async fn a_cut_off_leader_acknowledges_nothing_the_group_loses_after_its_lease()
     }
     let survivors: Vec<String> = nodes.into_iter().filter(|node| *node != leader).collect();
     let elected = leader_among(&cluster, &survivors).await;
+    let mut sent = Sent::default();
     for i in 0..5 {
-        let payload = format!("theirs-{i}").into_bytes();
-        publish_acked(&cluster, &elected, &payload).await;
+        let (_, payload) =
+            publish_tried(&cluster, &elected, &format!("theirs-{i}"), &mut sent).await;
         owed.push(payload);
     }
 
     cluster.heal_partitions().expect("heal");
-    let healed = b"healed".to_vec();
-    publish_acked(&cluster, &leader, &healed).await;
+    let (_, healed) = publish_tried(&cluster, &leader, "healed", &mut sent).await;
     owed.push(healed);
     let held = replay_holding(&cluster, &elected, &owed).await;
     for payload in &owed {
         let text = String::from_utf8_lossy(payload);
         assert_eq!(copies(&held, payload), 1, "{elected} holds {text:?}");
     }
+    if let Err(wrong) = sent.check(&elected, &held) {
+        panic!("{wrong}");
+    }
     // A cut-off publish the leader never answered may or may not survive,
-    // but nothing else is in the log.
+    // and so may a try answered outcome unknown, but nothing else is in the
+    // log.
     for payload in &held {
         let text = String::from_utf8_lossy(payload);
         assert!(
-            owed.contains(payload) || unanswered.contains(payload) || payload == b"harness-probe",
+            owed.contains(payload)
+                || unanswered.contains(payload)
+                || sent.in_doubt.contains(payload)
+                || payload == b"harness-probe",
             "{elected} holds {text:?}, which nobody acknowledged"
         );
     }
@@ -1593,12 +1678,9 @@ async fn a_broker_on_another_engine_is_refused_at_start() {
     );
 
     let pair: Vec<String> = nodes.into_iter().filter(|node| *node != hybrid).collect();
-    publish_acked(
-        &cluster,
-        &leader_among(&cluster, &pair).await,
-        b"still served",
-    )
-    .await;
+    // Nothing reads the log back, so what was in doubt is only recorded.
+    let leader = leader_among(&cluster, &pair).await;
+    publish_tried(&cluster, &leader, "still served", &mut Sent::default()).await;
 }
 
 /// Publish latency on three brokers, one publisher, one record at a time:
@@ -2294,12 +2376,16 @@ async fn a_conditional_batch_on_a_raft_shard_is_read_whole_or_not_at_all() {
     cluster.kill_node(&leader).expect("kill the leader");
     let acknowledged = flights.await.expect("joined");
     let elected = leader_among(&cluster, &survivors).await;
-    publish_acked(&cluster, &elected, b"after").await;
+    let mut sent = Sent::default();
+    let (_, after) = publish_tried(&cluster, &elected, "after", &mut sent).await;
 
     let mut owed = batch("kept", 3);
-    owed.push(b"after".to_vec());
+    owed.push(after);
     for node in &survivors {
         let held = replay_holding(&cluster, node, &owed).await;
+        if let Err(wrong) = sent.check(node, &held) {
+            panic!("{wrong}");
+        }
         let at = held.iter().position(|p| p == b"kept0").expect("kept0");
         assert_eq!(&held[at..at + 3], &batch("kept", 3)[..], "{node}");
         assert!(
@@ -2425,9 +2511,10 @@ async fn an_operator_move_outside_the_set_hands_the_leaders_seat_over() {
         .await
         .expect("a move outside the set is taken");
     assert_eq!(step, "raft_replace");
+    let mut sent = Sent::default();
     for n in 0..5 {
-        let payload = format!("during-{n}").into_bytes();
-        publish_acked(&cluster, &followers[0], &payload).await;
+        let base = format!("during-{n}");
+        let (_, payload) = publish_tried(&cluster, &followers[0], &base, &mut sent).await;
         acked.push(payload);
     }
 
@@ -2464,6 +2551,9 @@ async fn an_operator_move_outside_the_set_hands_the_leaders_seat_over() {
     let held = replay_holding(&cluster, &outsider, &acked).await;
     for payload in &acked {
         assert_eq!(copies(&held, payload), 1, "{payload:?} once on {outsider}");
+    }
+    if let Err(wrong) = sent.check(&outsider, &held) {
+        panic!("{wrong}");
     }
     cluster.shutdown().await;
 }
@@ -2520,12 +2610,15 @@ async fn a_drained_brokers_follower_copy_is_replaced_so_the_broker_can_go() {
         .kill_node(&drained)
         .expect("kill the drained broker");
     let (now_leader, _, _) = stored_set(&cluster).await;
-    let payload = b"after-the-drain".to_vec();
-    publish_acked(&cluster, &now_leader, &payload).await;
+    let mut sent = Sent::default();
+    let (_, payload) = publish_tried(&cluster, &now_leader, "after-the-drain", &mut sent).await;
     acked.push(payload);
     let held = replay_holding(&cluster, &outsider, &acked).await;
     for payload in &acked {
         assert_eq!(copies(&held, payload), 1, "{payload:?} once on {outsider}");
+    }
+    if let Err(wrong) = sent.check(&outsider, &held) {
+        panic!("{wrong}");
     }
     cluster.shutdown().await;
 }
@@ -2591,9 +2684,9 @@ async fn a_single_copy_raft_shard_moves_with_every_acknowledged_record() {
     // Writes keep landing while the destination catches up and while
     // placement shrinks the set.
     let deadline = tokio::time::Instant::now() + felix_cluster::wait::budget(converged_within);
+    let mut sent = Sent::default();
     for n in 0.. {
-        let payload = format!("during-{n}").into_bytes();
-        publish_acked(&cluster, &old, &payload).await;
+        let (_, payload) = publish_tried(&cluster, &old, &format!("during-{n}"), &mut sent).await;
         acked.push(payload);
         cluster.place_shards().await;
         let (leader, replicas, _) = stored_set(&cluster).await;
@@ -2623,8 +2716,7 @@ async fn a_single_copy_raft_shard_moves_with_every_acknowledged_record() {
     })
     .await
     .expect("the destination leads");
-    let payload = b"after-the-move".to_vec();
-    publish_acked(&cluster, &destination, &payload).await;
+    let (_, payload) = publish_tried(&cluster, &destination, "after-the-move", &mut sent).await;
     acked.push(payload);
 
     let held = replay_holding(&cluster, &destination, &acked).await;
@@ -2634,6 +2726,9 @@ async fn a_single_copy_raft_shard_moves_with_every_acknowledged_record() {
             1,
             "{payload:?} once on {destination}"
         );
+    }
+    if let Err(wrong) = sent.check(&destination, &held) {
+        panic!("{wrong}");
     }
     cluster.shutdown().await;
 }
@@ -2679,14 +2774,17 @@ async fn a_single_copy_raft_move_to_a_dead_broker_returns_to_the_old_one() {
 
     set_becomes_only(&cluster, &old, converged_within).await;
     voters_become(&cluster, std::slice::from_ref(&old), converged_within).await;
+    let mut sent = Sent::default();
     for n in 0..5 {
-        let payload = format!("after-{n}").into_bytes();
-        publish_acked(&cluster, &old, &payload).await;
+        let (_, payload) = publish_tried(&cluster, &old, &format!("after-{n}"), &mut sent).await;
         acked.push(payload);
     }
     let held = replay_holding(&cluster, &old, &acked).await;
     for payload in &acked {
         assert_eq!(copies(&held, payload), 1, "{payload:?} once on {old}");
+    }
+    if let Err(wrong) = sent.check(&old, &held) {
+        panic!("{wrong}");
     }
     cluster.shutdown().await;
 }
