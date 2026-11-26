@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795710675695,
+  "lastUpdate": 1795711016459,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -91080,6 +91080,72 @@ window.BENCHMARK_DATA = {
             "range": "873.98",
             "unit": "us",
             "extra": "trials: 5\nmedian: 1404.00\nmean: 1615.80\nstdev: 873.98\ncv: 54.09%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "2e75460abce0e8ebc5a5583a9d7dd08fa9f0427d",
+          "message": "ci: the instructions-per-message gate runs at a fixed pace and takes the median of five (#3131) (#3274)\n\n* test(ipm): a fresh broker per rep and a fixed b1 pace (#3131)\n\nEvery rep starts its own broker on a fresh data directory, so no rep\ninherits the previous one's instrumentation state. b1 is paced at a\nfixed rate for 300 s (20 msg/s aarch64, 100 msg/s x86_64), so the\nbroker's per-second work is the same constant in every rep. A rep that\ncannot hold the pace fails as a measurement failure. Cells report the\nmedian rep with per-rep RSS, CPU and duration. A baseline is the median\nof at least five runs of one commit, and records the pace.\n\nSpec-Unaffected: measurement harness, gate script and docs only\n\n* test(ipm): satisfy clippy\n\nSpec-Unaffected: test harness only\n\n* test(ipm): say what the per-rep warm-up does and does not fill\n\nSpec-Unaffected: doc comment in the measurement harness\n\n* perf(ipm): baseline from the median of five runs at the fixed b1 pace (#3131)\n\naarch64: b1 507264 (run-to-run 0.59%), b64 8752 (0.85%).\nx86_64: b1 283366 (0.36%), b64 9343 (2.09%).\nRuns 45737182947 45737190651 45737197585 45737204726 45737211684,\nall at 659683cc7 (origin/main 5ebd39d0f plus the harness change).\n\nSpec-Unaffected: gate baseline and contributor docs only\n\n* test(ipm): no duration check on unpaced reps; upload the result when a measurement fails\n\nOn fresh brokers an unpaced rep's duration follows the runner, and five\nb64 reps climbed 13% by chance on x86_64 with a flat count (run\n45746926554). The workflow also lost that run's result file because the\ncopy came after the failing test.\n\nSpec-Unaffected: measurement harness and workflow only\n\n* test(ipm): pace b64 as well; record the runner CPU (#3131)\n\nSpec-Unaffected: CI gate and test harness only\n\n* perf(ipm): one command refreshes the baseline (#3131)\n\nSpec-Unaffected: CI gate and test harness only\n\n* docs(ipm): what to do when the gate is red; refreshing after a harness change (#3131)\n\nSpec-Unaffected: CI gate and test harness only\n\n* ipm: a stale-pace baseline is its own outcome (exit 3); what each cell can see; refresh condition (#3131)\n\nSpec-Unaffected: CI gate and test harness only\n\n* perf(ci): refresh the instructions-per-message baseline with Raft members in written-commit mode (#3131)\n\nFive gate runs on c4a7a3fa30b739d55e6f42d03459151736e3fe4b, ids 45826230871\n45826259315 45826287188 45826314102 45826342981, median per architecture.\nThe note that the baseline waits on #1774 is gone.\n\nSpec-Unaffected: CI gate and baseline only\n\n* ci: the instructions-per-message gate fails on a gain, a dropped cell, too few reps, and a wrong run (#3131)\n\nA cell more than the tolerance under its baseline exits 4, so the PR that\nearned the gain lowers it. Every baseline cell and b64_mqtt_idle must be in\nthe result, with at least the baseline's reps. A missed pace prints the counts\nand says a repeating failure may be a real slowdown. The refresh script\nidentifies each dispatched run by branch, head sha and creation time, refuses\nresults from another commit, and records run ids, reps and CPU models in the\nbaseline. update keeps max_drop_pct. Docs and the workflow's runtime claim\nnow match the committed baseline.\n\nSpec-Unaffected: CI gate and baseline only",
+          "timestamp": "2026-11-26T08:23:30-08:00",
+          "tree_id": "ee237ae34c36338d400e40f0254feb96a085941c",
+          "url": "https://github.com/GetFelix/felix/commit/2e75460abce0e8ebc5a5583a9d7dd08fa9f0427d"
+        },
+        "date": 1795711004890,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 70,
+            "range": "0.89",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 70.00\nmean: 70.40\nstdev: 0.89\ncv: 1.27%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1018-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 122,
+            "range": "1.79",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 122.00\nmean: 122.20\nstdev: 1.79\ncv: 1.46%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1018-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 150,
+            "range": "270.05",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 150.00\nmean: 271.00\nstdev: 270.05\ncv: 99.65%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1018-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 89,
+            "range": "4.10",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 89.00\nmean: 89.40\nstdev: 4.10\ncv: 4.58%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1018-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 207,
+            "range": "248.71",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 207.00\nmean: 335.40\nstdev: 248.71\ncv: 74.15%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1018-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 934,
+            "range": "1000.81",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 934.00\nmean: 1206.20\nstdev: 1000.81\ncv: 82.97%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1018-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
