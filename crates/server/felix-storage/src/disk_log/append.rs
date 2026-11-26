@@ -597,26 +597,42 @@ impl LogInner {
     /// the append that earned it does not wait on the call. Best effort: a
     /// failure only means later writes allocate their own blocks, which the
     /// write path already handles down to a full disk.
+    ///
+    /// Not awaited by anyone, so it holds the log only weakly, and a close
+    /// waits for it through `extending`: it must neither keep the directory
+    /// locked after the last handle goes nor reserve after a close returns.
     fn extend_reservation(self: Arc<Self>, extension: Extension) {
+        let weak = Arc::downgrade(&self);
+        drop(self);
         felix_common::blocking::spawn(move || {
+            let Some(inner) = weak.upgrade() else {
+                return;
+            };
             #[cfg(test)]
             {
-                let hold = self.hold_next_extension.lock().take();
+                let hold = inner.hold_next_extension.lock().take();
                 if let Some(release) = hold {
                     let _ = release.recv();
                 }
             }
+            let extending = inner.extending.read();
+            if inner.segments.read().check_open().is_err() {
+                #[cfg(test)]
+                inner.extensions_done.fetch_add(1, Ordering::AcqRel);
+                return;
+            }
             #[cfg(test)]
-            let applied = if self.fail_extensions.load(Ordering::Acquire) {
+            let applied = if inner.fail_extensions.load(Ordering::Acquire) {
                 Err(std::io::ErrorKind::StorageFull.into())
             } else {
                 extension.apply()
             };
             #[cfg(not(test))]
             let applied = extension.apply();
+            drop(extending);
             if let Err(err) = applied {
                 tracing::warn!(
-                    shard = %self.label,
+                    shard = %inner.label,
                     error = %err,
                     reserve_to = extension.to(),
                     "could not extend the active segment's block reservation; appends will allocate as they write",
@@ -624,7 +640,7 @@ impl LogInner {
                 metrics::counter!(metrics_names::SEGMENT_RESERVE_FAILED_TOTAL).increment(1);
             }
             #[cfg(test)]
-            self.extensions_done.fetch_add(1, Ordering::AcqRel);
+            inner.extensions_done.fetch_add(1, Ordering::AcqRel);
         });
     }
 

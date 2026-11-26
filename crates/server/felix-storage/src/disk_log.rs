@@ -1322,6 +1322,7 @@ impl DiskLog {
         felix_common::blocking::spawn(move || {
             let _appends = inner.append_lock.lock();
             inner.segments.write().close();
+            drop(inner.extending.write());
         })
         .await
         .map_err(|err| StorageError::Io(std::io::Error::other(err)))?;
@@ -1370,17 +1371,15 @@ impl DiskLog {
         self.inner.closed.load(std::sync::atomic::Ordering::Acquire)
     }
 
-    /// Stop background work and flush everything one last time.
+    /// Stop background work, flush everything one last time, and let go of
+    /// the directory: [`Self::close`] under the name a process stop uses.
     ///
     /// Call before dropping the process's last handle: without it, `Periodic`
     /// mode can lose up to one interval of writes that a clean stop could have
-    /// kept.
+    /// kept. Once it returns, the directory can be opened again, and every
+    /// clone of this log is closed.
     pub async fn shutdown(&self) -> Result<()> {
-        self.stop_background().await?;
-        self.persist_replica_state().await?;
-        self.sync().await?;
-        self.inner.mark.sync()?;
-        Ok(())
+        self.close().await
     }
 
     /// Stop the timers and wait out a rollover in flight.
@@ -1637,6 +1636,7 @@ impl DiskLog {
             hold_next_seal: Mutex::new(None),
             #[cfg(test)]
             hold_next_extension: Mutex::new(None),
+            extending: parking_lot::RwLock::new(()),
             #[cfg(test)]
             fail_extensions: std::sync::atomic::AtomicBool::new(false),
             #[cfg(test)]
@@ -2557,6 +2557,10 @@ struct LogInner {
     /// until the sender is used or dropped.
     #[cfg(test)]
     hold_next_extension: Mutex<Option<std::sync::mpsc::Receiver<()>>>,
+    /// Held by a reservation extension while it runs. A close takes it after
+    /// closing the segment set, so no extension touches a file once the close
+    /// has let go of the directory.
+    extending: parking_lot::RwLock<()>,
     /// Makes every reservation extension fail as if the disk were full.
     #[cfg(test)]
     fail_extensions: std::sync::atomic::AtomicBool,
