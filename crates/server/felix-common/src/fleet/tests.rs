@@ -281,7 +281,13 @@ fn every_feature_is_safe_to_read_as_off_before_registration() {
         | "raft_written_commit"
         // Off, a broker does not stand or re-send kept sets.
         | "replica_election" => Off::FailsClosed,
-        "jump_hash_routing" | "peer_election" | "start_holders" | "non_voting" => Off::NotRead,
+        // Read by the control plane, which refuses an abandon until it is
+        // finalized.
+        "raft_abandon"
+        | "jump_hash_routing"
+        | "peer_election"
+        | "start_holders"
+        | "non_voting" => Off::NotRead,
         "fenced_caches" => Off::CheckedPerShard,
         other => panic!("classify `{other}` before a broker can read it as off unregistered"),
     };

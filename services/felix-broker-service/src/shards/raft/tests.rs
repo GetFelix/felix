@@ -517,6 +517,61 @@ async fn a_blank_copy_past_epoch_zero_does_not_form_the_group() {
     shards.shutdown().await;
 }
 
+/// **A blank copy of an abandoned epoch starts at the epoch's first index
+/// once its report seeds the epoch.** It leads a group of one there, with
+/// nothing below the first index, under the copy id the seed names.
+#[tokio::test]
+async fn a_blank_copy_of_an_abandoned_epoch_starts_at_its_first_index() {
+    use crate::shards::watch::{RaftBases, RaftEpochBase, RaftVoters};
+    const FIRST: u64 = 1 << 30;
+    let root = tempfile::tempdir().expect("tempdir");
+    let broker = broker(root.path()).await;
+    let shards = shards(&broker);
+    let orders = key("orders", 0);
+    let mut placed = assigned(orders.clone(), INCARNATION);
+    placed.placed = Some(crate::shards::watch::PlacedEpoch { epoch: 1 });
+    placed.raft_bases = Some(RaftBases {
+        incarnation: INCARNATION,
+        bases: vec![RaftEpochBase {
+            base_last: None,
+            first_index: FIRST,
+        }],
+    });
+    shards.take(&mut assignments([placed.clone()])).await;
+    let copy = shards.runtime.status(&orders).expect("open").member.copy;
+    let mut seeded = stored(placed, &[&shards]);
+    seeded.raft_seed = Some(RaftVoters {
+        incarnation: INCARNATION,
+        epoch: 1,
+        members: std::collections::BTreeMap::from([("broker-a".to_string(), copy)]),
+        starts: Default::default(),
+    });
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
+    while shards.leading(&orders).is_none() {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "timed out: the abandoned epoch to start"
+        );
+        shards.take(&mut assignments([seeded.clone()])).await;
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    let status = shards.runtime.status(&orders).expect("open");
+    assert_eq!(status.member.copy, copy, "the copy id the seed names");
+    assert!(
+        status.last_index >= Some(FIRST),
+        "the group's first entry is below the epoch's first index: {:?}",
+        status.last_index
+    );
+    let log = shards.log_of(&orders).await.expect("open member");
+    assert!(
+        felix_storage::log::AppendOnlyLog::tail_offset(&log)
+            .await
+            .expect("tail")
+            > FIRST
+    );
+    shards.shutdown().await;
+}
+
 /// **A shard restored from an export has no placed record, but its bases
 /// still say it re-formed.** Read as epoch 0, a copy without `raft-epoch`
 /// would send its copy id and could vote (#2882).

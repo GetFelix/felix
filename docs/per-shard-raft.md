@@ -1593,8 +1593,8 @@ Every record the group held is lost, acknowledged ones included.
 The call is refused until every broker placed in the group's epoch is
 declared dead (`not_declared_dead`). A broker that is only down may come
 back with acknowledged records, and then a re-form is the way. It is also
-refused until the fleet finalizes `raft_abandon`, which no build reports
-yet (`abandon_unsupported`).
+refused until the fleet finalizes `raft_abandon` (`abandon_unsupported`),
+so no broker that would form the new epoch from index 0 can be its leader.
 
 The control plane writes the abandon as one compare and swap,
 `AbandonRaftEpoch` at metadata level 56. It checks the incarnation, epoch
@@ -1608,7 +1608,30 @@ group gave out stay given out.
 
 A broker never forms a group past epoch 0 from index 0, since forming
 writes the group's first entries there. A blank copy of an abandoned epoch
-must start at the epoch's first index instead.
+starts at the epoch's first index instead:
+
+1. The new leader opens a blank copy, takes the epoch's bases from the
+   record (`raft-epoch`) and reports its copy id. That report is the
+   epoch's first target, and the control plane writes it as the seed.
+2. Once the seed names its copy, the broker closes the blank member and
+   starts it as the seed's one voter: reserved through the first index
+   less one, with a snapshot naming the seed's voters, a purged id and a
+   saved commit there. Its first entry lands at the first index.
+3. The member opens again and leads a group of one.
+
+Only a copy that holds nothing but its copy id and the record's exact
+`raft-epoch` starts this way, so a copy that voted, took an entry or was
+stopped by a re-form is left alone. The start runs under the
+`reform-building` marker, like a re-form's, so a crash at any step leaves a
+copy that does not open, and the next pass redoes the start from the
+record.
+
+> `crates/server/felix-storage/src/raft_copy/tests/fresh_epoch.rs`,
+> `an_abandoned_copy_starts_at_the_first_index`,
+> `an_abandon_start_refuses_a_copy_that_is_not_blank` and
+> `an_abandon_start_cut_at_any_step_finishes_when_run_again`.
+> `services/felix-broker-service/src/shards/raft/tests.rs`,
+> `a_blank_copy_of_an_abandoned_epoch_starts_at_its_first_index`.
 
 ### Writing through openraft
 
