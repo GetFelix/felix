@@ -2858,6 +2858,11 @@ group on the same tick, the heartbeats of all the groups due on a tick land in
 the same window. Everything else goes at once on its own: an append that
 carries entries never waits.
 
+A window opened for one heartbeat costs one timer and no task: the
+heartbeat that opens it waits it out on its caller's task and, if no other
+joined, sends itself. A batch that others joined goes on a task of its own,
+so a caller that stops waiting does not take the others' heartbeats with it.
+
 - **Bounded.** One message holds at most 512 heartbeats. A batch that fills
   goes at once, and the next one starts its own window.
 - **Negotiated.** Only a peer that offered `RAFT_BEATS` is sent the batch
@@ -2929,6 +2934,20 @@ sequenceDiagram
     F-->>L: ok through 7, which answers both
 ```
 
+With heartbeats together (`beat_window` above zero), the hold is not a wait
+of its own: stacked on the heartbeat window it would make a lone commit wait
+twice. The commit-only append goes at once into the window, where it waits
+with the other groups' heartbeats to the same broker and goes in the same
+message. If the next append comes while it still waits there, the client
+takes it back and sends the next one instead; the window leaves out what was
+taken back. Once the window has sent it, it can no longer be taken back, and
+the next append waits for its answer, so one follower never has two appends
+from the leader in flight. A `commit_hold` longer than the window is
+held here for the difference first, so the append waits as long in all as
+the hold alone; with the defaults, both 1 ms, that leaves one 1 ms wait. A
+zero `commit_hold` sends it into the window like any heartbeat. With
+`beat_window` zero the client holds it for `commit_hold` as above.
+
 The next append replaces the held one only when the follower's answer to
 it is also its answer to the held one: the same vote, the same previous
 entry to check, and a commit index no lower. openraft needs no answer per
@@ -2938,9 +2957,12 @@ time, which openraft takes before the request leaves. A held append that goes
 out alone is credited from when openraft built it, which is earlier than it
 left, so the lease errs short.
 
-What waits on it. A follower learns a commit up to the hold later when no
-write follows it; tokio's timer fires on whole milliseconds, so the default
-hold lasts 1 to 2 ms. Applying on a follower, delivering to a follower's subscribers
+What waits on it. A follower learns a commit up to one wait later when no
+write follows it: the heartbeat window, or the hold when heartbeats go on
+their own. tokio's timer fires on whole milliseconds, so the 1 ms default
+lasts 1 to 2 ms. The commit-only append's lease credit is from when
+openraft built it, before either wait, so the wait only makes the lease
+older, by at most that one wait. Applying on a follower, delivering to a follower's subscribers
 and serving a read on a follower wait for that. Under load the next append
 follows at once, and it no longer waits behind a commit-only append's round
 trip. A write that comes just after the hold ends does wait: the held append

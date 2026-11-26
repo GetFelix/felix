@@ -105,6 +105,7 @@ fn timers(most: usize) -> Timers {
         lease: ELECTION_MAX / MS,
         max_elections_at_once: most,
         commit_hold: Duration::from_millis(1),
+        beat_window: Duration::from_millis(1),
     }
 }
 

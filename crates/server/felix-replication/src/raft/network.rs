@@ -626,6 +626,8 @@ pub(crate) struct Network {
     pub(crate) group: GroupId,
     /// [`super::RuntimeConfig::commit_hold`].
     pub(crate) commit_hold: Duration,
+    /// [`super::RuntimeConfig::beat_window`].
+    pub(crate) beat_window: Duration,
 }
 
 impl RaftNetworkFactory<ShardTypes> for Network {
@@ -636,6 +638,8 @@ impl RaftNetworkFactory<ShardTypes> for Network {
         Client {
             adapter: GroupNetworkAdapter::new(router, target, self.group.clone()),
             hold: self.commit_hold,
+            beats: !self.beat_window.is_zero(),
+            window: self.beat_window,
         }
     }
 }

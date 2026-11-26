@@ -129,8 +129,11 @@ pub struct RuntimeConfig {
     /// How long a leader holds an append that carries only a new commit
     /// index, for the next append to carry it instead. With no write after
     /// a commit, followers learn it this much later. Shorter than
-    /// `heartbeat`. See docs/per-shard-raft.md, "A commit goes on the next
-    /// append".
+    /// `heartbeat`. With `beat_window` above zero the window is part of
+    /// the hold: the append is held for what the hold has beyond the window,
+    /// then waits in the window, where the next append can still take it
+    /// back. See
+    /// docs/per-shard-raft.md, "A commit goes on the next append".
     pub commit_hold: Duration,
     /// How long a heartbeat waits for others to the same broker, so the
     /// heartbeats of every group handed off within it go as one message.
@@ -691,6 +694,7 @@ impl GroupRuntime {
                     lease: config.lease.as_millis() as u64,
                     max_elections_at_once: config.max_elections_at_once,
                     commit_hold: config.commit_hold,
+                    beat_window: config.beat_window,
                 },
                 raft: Arc::new(config.raft(ShardKind::Stream)?),
                 raft_cache: Arc::new(config.raft(ShardKind::Cache)?),

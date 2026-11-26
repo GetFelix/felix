@@ -118,3 +118,110 @@ fn a_window_as_long_as_the_heartbeat_is_refused() {
     };
     assert!(config.raft(crate::ShardKind::Stream).is_err());
 }
+
+/// Records when each follower's broker is sent an entry-less append.
+#[derive(Default)]
+struct Wire(parking_lot::Mutex<Vec<(String, tokio::time::Instant)>>);
+
+#[async_trait]
+impl RaftTransport for Wire {
+    async fn send(&self, request: RaftRequest) -> Result<RaftReply, Refused> {
+        let Request::Append(rpc) = &request.body else {
+            unreachable!("only appends here");
+        };
+        let matched = rpc
+            .entries
+            .last()
+            .map(|entry| entry.log_id)
+            .or(rpc.prev_log_id);
+        self.0
+            .lock()
+            .push((request.to().broker.to_string(), tokio::time::Instant::now()));
+        Ok(RaftReply(super::network::Reply::Append(Ok(matched))))
+    }
+}
+
+/// **A lone commit waits once.** On an RF 3 leader, the append that carries
+/// only a new commit goes to each follower through openraft's client and
+/// the heartbeat window. It waits in the window only, with no hold before
+/// it: one timer per follower and no task, and each follower has the
+/// commit one window after it.
+#[tokio::test(start_paused = true)]
+async fn a_lone_commit_reaches_each_follower_after_one_wait() {
+    use futures::StreamExt;
+    use openraft::RaftNetworkFactory;
+    use openraft::network::{RPCOption, RaftNetworkV2};
+    use openraft::type_config::alias::LogIdOf;
+
+    let config = timers();
+    let wire = Arc::new(Wire::default());
+    let inner: Arc<dyn RaftTransport> = wire.clone();
+    let transport = super::super::beats::Beats::wrap(inner, config.beat_window);
+    let router = super::super::network::Router::new(
+        transport,
+        Arc::new(pace().0),
+        Arc::new(super::super::lease::Lease::new(config.lease)),
+        Arc::new(super::super::written::Reports::new()),
+        Arc::new(super::super::reach::Reach::new(
+            tokio::time::Instant::now(),
+            config.heartbeat,
+        )),
+        Arc::new(super::super::reach::Refusals::new(group(0))),
+        Arc::new(config.raft(ShardKind::Stream).expect("timers")),
+    );
+    let mut network = super::super::network::Network {
+        router,
+        group: group(0),
+        commit_hold: config.commit_hold,
+        beat_window: config.beat_window,
+    };
+    let leader = LeaderIdOf::<ShardTypes>::new(2, MemberId::new("a", 1));
+    let at = LogIdOf::<ShardTypes>::new(2.into(), 5);
+    let commit = || openraft::raft::AppendEntriesRequest::<ShardTypes> {
+        vote: <VoteOf<ShardTypes> as RaftVote>::from_leader_id(leader.clone(), true),
+        prev_log_id: Some(at),
+        leader_commit: Some(at),
+        entries: Vec::new(),
+    };
+    let mut clients = Vec::new();
+    for follower in ["b", "c"] {
+        let client = network
+            .new_client(MemberId::new(follower, 1), &openraft::impls::EmptyNode {})
+            .await;
+        clients.push(client);
+    }
+    let before = super::super::beats::counts::read();
+    let start = tokio::time::Instant::now();
+    let mut inputs = Vec::new();
+    let streams = clients.iter_mut().map(|client| {
+        let (tx, rx) = futures::channel::mpsc::unbounded();
+        tx.unbounded_send(commit()).expect("send");
+        inputs.push(tx);
+        async move {
+            let mut answers = client
+                .stream_append(rx, RPCOption::new(Duration::from_secs(1)))
+                .await
+                .expect("stream");
+            answers.next().await.expect("an answer").expect("taken")
+        }
+    });
+    let answers = futures::future::join_all(streams).await;
+    let after = super::super::beats::counts::read();
+    assert!(answers.iter().all(|answer| *answer == Ok(Some(at))));
+    let (timers, tasks) = (after.0 - before.0, after.1 - before.1);
+    assert_eq!(
+        (timers, tasks),
+        (2, 0),
+        "waits and tasks for one commit to two followers"
+    );
+    let mut sent = wire.0.lock().clone();
+    sent.sort();
+    assert_eq!(sent.len(), 2);
+    for (follower, at) in sent {
+        let delay = at - start;
+        assert!(
+            delay >= config.beat_window && delay < config.beat_window * 2,
+            "{follower} had the commit after {delay:?}"
+        );
+    }
+}

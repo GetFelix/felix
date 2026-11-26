@@ -244,3 +244,77 @@ async fn a_slow_broker_is_waited_for_until_its_first_answer() {
     .await;
     assert!(answers.iter().all(Result::is_ok));
 }
+
+/// A window opened for one heartbeat costs one timer and no task: its
+/// opener waits it out and sends it.
+#[tokio::test(start_paused = true)]
+async fn a_lone_heartbeat_costs_one_timer_and_no_task() {
+    let inner = Arc::new(Counting::default());
+    let beats = Beats::wrap(inner.clone(), WINDOW);
+    let before = counts::read();
+    let start = Instant::now();
+    let answer = beats.send(beat(4, "b")).await;
+    let after = counts::read();
+    assert_eq!(named(&answer), Some(4));
+    assert_eq!((after.0 - before.0, after.1 - before.1), (1, 0));
+    assert!(start.elapsed() >= WINDOW && start.elapsed() < WINDOW * 2);
+    assert_eq!(*inner.batches.lock(), vec![vec![4]]);
+}
+
+/// Many groups' commits to one broker, each one its client may take back,
+/// still go as one message.
+#[tokio::test(start_paused = true)]
+async fn held_commits_to_one_broker_go_as_one_message() {
+    let inner = Arc::new(Counting::default());
+    let beats = Beats::wrap(inner.clone(), WINDOW);
+    let sent = (0..8).map(|n| holding(Held::new(), beats.send(beat(n, "b"))));
+    let answers = futures::future::join_all(sent).await;
+    for (n, answer) in answers.iter().enumerate() {
+        assert_eq!(named(answer), Some(n as u64));
+    }
+    assert_eq!(*inner.batches.lock(), vec![(0..8).collect::<Vec<_>>()]);
+}
+
+/// A heartbeat taken back is left out of its batch, and the others go at
+/// the window's end even when the one taken back opened the window.
+#[tokio::test(start_paused = true)]
+async fn a_commit_taken_back_is_left_out_and_the_rest_still_go() {
+    let inner = Arc::new(Counting::default());
+    let beats = Beats::wrap(inner.clone(), WINDOW);
+    let opener = Held::new();
+    let mut first = Box::pin(holding(Arc::clone(&opener), beats.send(beat(0, "b"))));
+    assert!(futures::poll!(first.as_mut()).is_pending());
+    let rest = futures::future::join_all((1..4).map(|n| beats.send(beat(n, "b"))));
+    let taking_back = async {
+        tokio::task::yield_now().await;
+        assert!(opener.withdraw(), "a commit in its window is taken back");
+        drop(first);
+    };
+    let start = Instant::now();
+    let (answers, ()) = tokio::join!(rest, taking_back);
+    assert!(start.elapsed() >= WINDOW && start.elapsed() < WINDOW * 2);
+    for (n, answer) in answers.iter().enumerate() {
+        assert_eq!(named(answer), Some(n as u64 + 1));
+    }
+    assert_eq!(*inner.batches.lock(), vec![vec![1, 2, 3]]);
+}
+
+/// A window whose only heartbeat is taken back sends nothing, and once a
+/// batch is taken to be sent nothing in it can be taken back.
+#[tokio::test(start_paused = true)]
+async fn a_window_with_nothing_left_sends_nothing() {
+    let inner = Arc::new(Counting::default());
+    let beats = Beats::wrap(inner.clone(), WINDOW);
+    let held = Held::new();
+    let mut send = Box::pin(holding(Arc::clone(&held), beats.send(beat(0, "b"))));
+    assert!(futures::poll!(send.as_mut()).is_pending());
+    assert!(held.withdraw());
+    drop(send);
+    tokio::time::sleep(WINDOW * 3).await;
+    assert_eq!(inner.messages.load(Ordering::SeqCst), 0);
+
+    let held = Held::new();
+    let answer = holding(Arc::clone(&held), beats.send(beat(1, "b"))).await;
+    assert_eq!(named(&answer), Some(1));
+    assert!(!held.withdraw(), "a sent commit was taken back");
+}

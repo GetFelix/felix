@@ -1146,6 +1146,7 @@ fn pace() -> (super::group::Pace, super::group::Timers) {
         lease: millis(config.lease),
         max_elections_at_once: config.max_elections_at_once,
         commit_hold: config.commit_hold,
+        beat_window: config.beat_window,
     };
     let pace = super::group::Pace::new(timers, &group(0), &MemberId::new("a", 1));
     (pace, timers)
