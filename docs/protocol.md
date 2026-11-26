@@ -1398,7 +1398,8 @@ each of them.
                     "state": "<state>", "halted": "<reason>" } ],
     "raft": { "role": "leader|candidate|follower|learner|stopped",
               "term": <u64>, "leader": "<node>", "last_index": <u64>,
-              "committed": <u64>, "voters": ["<node>"] } } }
+              "committed": <u64>, "voters": ["<node>"],
+              "stopped": { "term": <u64>, "error": "<string>" } } } }
 ```
 
 Every field after `serving` is left out when it does not apply. The words are
@@ -1429,7 +1430,7 @@ older reader failing to decode the answer.
   reason, as `/replication/halted` names it) or `fencing`. A follower answers
   with none.
 - `raft` is this broker's member of the shard's Raft group, present only when
-  it holds one. `leader` is the broker the member follows while it hears
+  it holds one or its copy was stopped. `leader` is the broker the member follows while it hears
   one, itself included; `last_index` is the last entry in its log and
   `committed` the commit index it knows of. `voters` are the brokers that vote
   in the group by the latest membership the member's log holds. A member
@@ -1437,6 +1438,12 @@ older reader failing to decode the answer.
   follower with the old voters; the leader's list is the one to trust. The
   cluster test harness reads it to wait for a leader whose log a majority of
   those voters holds.
+  `stopped` is set when a storage error, such as a failed fsync, stopped
+  this broker's copy and it has not heard a leader since: the term it
+  stopped at and the error. This is the only answer that carries the error:
+  a client refused for the shard is told only that the copy stopped. While
+  the copy is closed `raft` is still
+  present, with `role` `stopped` and only `term` and `stopped` set.
 
 The answer is bounded by the shard's replica set. A broker not in a cluster
 answers `role` `leader` and `phase` `active` for a stream or cache it holds,
@@ -2368,7 +2375,7 @@ client MUST act on the class it received, not on this table.
 | `forbidden` | `fatal` | 2 | The credential does not grant this operation. | A missing permission, or a tenant other than the token's. Also a forward the owner refused on the client's credential. |
 | `not_found` | `retry_after` | 3 | The tenant, namespace, stream or cache does not exist on this broker. | An unknown stream or cache. Retryable because a broker learns streams from the control plane, and one promoted a moment ago says "not found" for a stream it is about to serve. A publish refused for any other reason keeps that reason's own code and text: an unservable shard is `shard_unavailable`, never "stream not found". |
 | `invalid_request` | `fatal` | 4 | The request can never succeed as sent. | A malformed frame or batch, unknown frame flags, a missing `request_id`, a second `auth`, a bad watch filter or shard. A `trim_before` past its own record (`detail.reason` = `trim_past_tail`) or on an in-memory stream (`not_durable`). |
-| `shard_unavailable` | `retry` | 5 | Nobody can serve the shard right now. `detail.reason` says why: `not_assigned`, `owner_unavailable`, `not_ready`, `stale`, `fenced`, `moving` or `region_not_routable`. | The shard is unassigned, its owner unreachable, still opening, or the routing view is behind; `fenced` when this broker's lease lapsed, the owner's epoch was superseded, or the shard stopped serving here between admitting a write and claiming its place in the log (nothing was written). `moving` when the shard is being moved to another broker and the move had not cut over within `FELIX_SHARD_MOVE_HOLD_MS`, or too many publishes were already waiting on moving shards; `detail.retry_after_ms` then suggests when to try again. `region_not_routable` when the leader is in a region this broker has no `FELIX_REGION_BRIDGES` bridge to, so it will not forward there; a client routing to the leader directly is not refused. An older client sees the reason as text and treats the error like any other `shard_unavailable`. |
+| `shard_unavailable` | `retry` | 5 | Nobody can serve the shard right now. `detail.reason` says why: `not_assigned`, `owner_unavailable`, `not_ready`, `stale`, `fenced`, `moving` or `region_not_routable`. | The shard is unassigned, its owner unreachable, still opening, or the routing view is behind; `not_ready` also when a storage error stopped this broker's Raft copy of the shard, and the message says so without the error itself; `fenced` when this broker's lease lapsed, the owner's epoch was superseded, or the shard stopped serving here between admitting a write and claiming its place in the log (nothing was written). `moving` when the shard is being moved to another broker and the move had not cut over within `FELIX_SHARD_MOVE_HOLD_MS`, or too many publishes were already waiting on moving shards; `detail.retry_after_ms` then suggests when to try again. `region_not_routable` when the leader is in a region this broker has no `FELIX_REGION_BRIDGES` bridge to, so it will not forward there; a client routing to the leader directly is not refused. An older client sees the reason as text and treats the error like any other `shard_unavailable`. |
 | `not_leader` | `redirect` | 6 | Another broker owns the shard. | Only where the `not_leader` message cannot be sent: to a client without `FEATURE_REDIRECT`, or a publish this broker cannot forward. |
 | `quorum_timeout` | `outcome_unknown` | 7 | The leader wrote the batch; a majority did not confirm it in time. It may survive. | A write to a `Quorum` stream or cache, or a consumer-group write on a Raft shard, the engine took and did not see commit. |
 | `leadership_lost` | `outcome_unknown` | 8 | Leadership moved after the leader wrote the batch and before a majority held it. | A write to a `Quorum` stream or cache during a move, or a Raft consumer-group write whose leader stopped or was deposed after it queued the write. |
