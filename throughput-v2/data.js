@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795731506300,
+  "lastUpdate": 1795731903992,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -72228,6 +72228,58 @@ window.BENCHMARK_DATA = {
             "range": "48456.95",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 941442.58\nmean: 925221.68\nstdev: 48456.95\ncv: 5.24%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "4560627693b8745fa1c0da1dc155aeb01f99d17b",
+          "message": "fix(raft): a member set shorter than its replication factor is topped up (#3292) (#3299)\n\n* fix(raft): placement tops up a Raft set short of its replication factor (#3292)\n\nNothing added a member to a Raft shard's set: every set change was a\none-for-one swap. A set left short, by an abandon that places the leader\nalone or by a placement on too few live brokers, stayed short, and a\nQuorum write was acknowledged on fewer copies than the factor for good.\n\nraft_step now grows such a set by one live broker outside it per write\n(step raft_top_up), with every member serving, the target stored and\nformed for the current set, from the replacement budget, and held by a\npause. One member a write keeps the reported voters at half or more of\nthe next set, so the store takes it and the group adds the broker as a\nlearner first.\n\nSpec-Unaffected: placement only adds a member through the existing membership target path; FelixRaftReform models no placement\n\n* WIP: count Raft voters, top-up tests\n\nSpec-Unaffected: placement and its replication count only\n\n* fix(raft): count voting copies, document the top-up's two-voter window (#3292)\n\nThe replication count now counts a Raft shard's copies its group reports\nvoting, so a learner that never catches up (a re-formed stream, #3005)\nshows the shard as under-replicated. Tests for the 2 to 3 hold, a down\nleader, a leaving member and the per-pass budget. The docs state the\ntwo-voter window while topping up and its way out, and that reaching the\nfactor after a re-form depends on #3005.\n\nSpec-Unaffected: placement and its replication count only; no modelled behaviour changes",
+          "timestamp": "2026-11-26T22:10:15Z",
+          "tree_id": "4d08c0bba6b15dcd57473b6f3c5562c70a489393",
+          "url": "https://github.com/GetFelix/felix/commit/4560627693b8745fa1c0da1dc155aeb01f99d17b"
+        },
+        "date": 1795731903321,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 359386.47,
+            "range": "15057.17",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 359386.47\nmean: 361468.48\nstdev: 15057.17\ncv: 4.17%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 359386.47,
+            "range": "15057.17",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 359386.47\nmean: 361468.48\nstdev: 15057.17\ncv: 4.17%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 81046.53,
+            "range": "612.43",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 81046.53\nmean: 81155.06\nstdev: 612.43\ncv: 0.75%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 810465.3,
+            "range": "6124.30",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 810465.30\nmean: 811550.59\nstdev: 6124.30\ncv: 0.75%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
