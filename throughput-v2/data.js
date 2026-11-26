@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795690911715,
+  "lastUpdate": 1795693912578,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -71292,6 +71292,58 @@ window.BENCHMARK_DATA = {
             "range": "23015.52",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1415722.21\nmean: 1415758.57\nstdev: 23015.52\ncv: 1.63%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "df2ebc58cf6d785ac3f2767171cbd23e9da0d536",
+          "message": "perf(broker): a Raft publish looks its group up once and holds it (#3233) (#3253)\n\n* fix(raft): a publish refused before it is appended is answered at once (#3199)\n\nA batch the Raft leader refuses before writing any of it (lease lapsed,\nor no longer leading the term) was answered only at its delivery turn,\nbehind every earlier batch. If an earlier batch was acknowledged on the\nlease and never settled, the publisher waited out the answer timeout and\nwas told quorum_timeout (\"durable here\"), outcome unknown, for a batch\nthat was never written.\n\nThe engine now marks such a failure ProposalFailed::refused, and\nProposedPublish answers it through a channel as soon as the engine\nrefuses. The batch still takes its turn on a task, pushes its gap and\nsettles in hand-over order, so delivery order and the stall bound are\nunchanged. A failure with no record known written but not known refused\nstill waits for its turn.\n\nQuorumError::TimedOut no longer claims the batch is durable here.\n\nSpec-Unaffected: only when the publisher hears a not-appended refusal moves; log order, offsets and delivery order are unchanged\n\n* perf(raft): arm no per-publish timer for a QUIC publish (#3225)\n\nWIP: tests and docs to follow.\n\nSpec-Unaffected: only which timer bounds the publisher's wait moves; log order, offsets, commit and delivery are unchanged\n\n* test(raft): count per-publish timers and bound every path's answer (#3225)\n\nA QUIC publish acked to a client on Raft armed two timers (the answer\ndeadline and the settle loop's commit wait); it now arms none. The\nquorum wait's deadline is answered by the control stream's ack sweep with\nthe same quorum_timeout error. Docs and changelog follow.\n\nSpec-Unaffected: only which timer bounds the publisher's wait moves; log order, offsets, commit and delivery are unchanged\n\n* perf(raft): look a publish's shard group up once (#3233)\n\nA publish on a Raft shard looked its group up in the registry at every\nstep: the lane's engine check, the service's, the skip claim, the\nproposal, the lease answer and the commit wait. Each is a read lock and a\nhash of the three-string shard key. The publish now finds the group once\nand carries it, and the proposer closure no longer clones the shard key.\n\nA group held past a close or a re-form refuses as a lookup finding no\ngroup would: the registry marks it released under its own lock before\nanyone can open the shard again, and every step checks that mark.\n\nSpec-Unaffected: who holds the group handle changes; no ordering, ack or\ntiming the model checks moves.\n\n* perf(raft): copy no shard key or publisher only to pass them on (#3233)\n\nThe QUIC lane cloned the shard key, three strings, to log the answer of\na job it moves into the answer task anyway; the task now reads the key\nfrom the job. A batch's publisher was cloned into every record and then\ndropped; the last record now takes it, so a batch of one copies nothing.\n\nThe payload and attribution copies stay: one is what the broker keeps\nfor delivery, the other goes to the group thread for the log.\n\nSpec-Unaffected: no ordering, ack or timing changes.\n\n* perf(raft): answer a batch of one record without a shared tally (#3233)\n\nEach batch's records were counted in an Arc<Mutex<Tally>> holding a Vec\nof answers, so a lone publish paid two allocations and a lock to learn\nthe one answer it had. A batch of one is now answered by its record's\nresponder directly, with the same answer a count of one gives. Batches\nof several still share a tally.\n\nSpec-Unaffected: the answer and when it is sent are unchanged.\n\n* docs(raft): a publish looks its shard group up once (#3233)\n\nSpec-Unaffected: docs and changelog only.\n\n* refactor(raft): drop await_commit_unbounded, the held-group wait replaced its last caller (#3233)",
+          "timestamp": "2026-11-26T03:44:33-08:00",
+          "tree_id": "c04996a868690ff105f5e73958b4252ece337955",
+          "url": "https://github.com/GetFelix/felix/commit/df2ebc58cf6d785ac3f2767171cbd23e9da0d536"
+        },
+        "date": 1795693912061,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 544901.8,
+            "range": "30133.22",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 544901.80\nmean: 537253.99\nstdev: 30133.22\ncv: 5.61%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1018-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 544901.8,
+            "range": "30133.22",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 544901.80\nmean: 537253.99\nstdev: 30133.22\ncv: 5.61%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1018-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 124623.82,
+            "range": "5303.75",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 124623.82\nmean: 122491.44\nstdev: 5303.75\ncv: 4.33%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1018-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1246238.2,
+            "range": "53037.54",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1246238.20\nmean: 1224914.37\nstdev: 53037.54\ncv: 4.33%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1018-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
