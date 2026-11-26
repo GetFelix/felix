@@ -192,3 +192,34 @@ fn a_root_that_cannot_be_locked_does_not_start() {
         "the start wrote to the root before the probe"
     );
 }
+
+/// **A Raft broker with a disk but a cache store with no logs is refused**,
+/// since a cluster has no in-memory cache. A broker with no disk, or with
+/// cache logs, starts.
+#[test]
+fn a_logless_cache_beside_durable_storage_is_refused() {
+    let root = tempfile::tempdir().expect("tempdir");
+    let storage =
+        felix_broker::DurableStorage::open(root.path(), Default::default()).expect("storage");
+    let logless = felix_broker::Broker::new(felix_storage::EphemeralCache::new().into())
+        .with_durable_storage(storage);
+    use crate::config::ShardEngine::{Hybrid, Raft};
+    let err = refuse_logless_cache(Raft, &logless).expect_err("refused");
+    assert!(
+        err.to_string().contains("FELIX_DURABLE_STORAGE_DIR"),
+        "{err}"
+    );
+
+    refuse_logless_cache(Hybrid, &logless).expect("the hybrid engine is not refused");
+
+    let diskless = felix_broker::Broker::new(felix_storage::EphemeralCache::new().into());
+    refuse_logless_cache(Raft, &diskless).expect("a broker with no disk starts");
+
+    let caches = tempfile::tempdir().expect("tempdir");
+    let log_cache =
+        felix_storage::LogCache::open(caches.path(), Default::default()).expect("cache");
+    let storage =
+        felix_broker::DurableStorage::open(root.path(), Default::default()).expect("storage");
+    let normal = felix_broker::Broker::new(Box::new(log_cache)).with_durable_storage(storage);
+    refuse_logless_cache(Raft, &normal).expect("cache logs start");
+}

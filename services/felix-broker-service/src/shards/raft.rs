@@ -743,16 +743,9 @@ impl RaftShards {
     async fn durable_rf(&self, key: &ShardKey) -> Option<Durable> {
         let (tenant, namespace, name) = (&key.tenant_id, &key.namespace, &key.stream);
         if key.kind == ShardKind::Cache {
-            // A broker with durable storage but a cache store with no logs
-            // leaves every cache to the hybrid, registered or not. One with no
-            // durable storage at all is a cluster member placement gives no
-            // cache shard: it only routes to the cache's group, and the hybrid
-            // never sees it.
-            if self.broker.cache().as_log_cache().is_none()
-                && self.broker.durable_storage().is_some()
-            {
-                return Some(Durable::No);
-            }
+            // A broker with no durable storage is a cluster member placement
+            // gives no cache shard; it only routes to the cache's group. One
+            // with storage always has cache logs (`refuse_logless_cache`).
             let metadata = self.broker.cache_metadata(tenant, namespace, name).await?;
             return Some(Durable::Yes(metadata.replication_factor));
         }
