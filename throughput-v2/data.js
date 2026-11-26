@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795732909208,
+  "lastUpdate": 1795733278383,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -72332,6 +72332,58 @@ window.BENCHMARK_DATA = {
             "range": "9385.70",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 808430.82\nmean: 803713.82\nstdev: 9385.70\ncv: 1.17%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "193b205a6f1d85903264ecdcfc13b2bc015db7c4",
+          "message": "test(cluster): 42 Raft skips that named closed issues are gone (#3004) (#3280)\n\n* test(cluster): drop Raft skips whose issues are closed\n\nRemoves skip_on_raft_until_moves_land (#2235, closed) and its 40 call\nsites, plus the skips for #3008 and #3032 and the two that named\n#2991 and #2992, so the CI cluster jobs run these on Raft.\n\nSpec-Unaffected: test-only change\n\n* test(cluster): keep the Raft move tests that fail or hang on Raft skipped, naming #3004\n\nSpec-Unaffected: test-only change",
+          "timestamp": "2026-11-26T22:38:14Z",
+          "tree_id": "b5144e09faa287e022b134287d06974ea2e98d42",
+          "url": "https://github.com/GetFelix/felix/commit/193b205a6f1d85903264ecdcfc13b2bc015db7c4"
+        },
+        "date": 1795733277815,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 681880.44,
+            "range": "111069.29",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 681880.44\nmean: 708459.51\nstdev: 111069.29\ncv: 15.68%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 681880.44,
+            "range": "111069.29",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 681880.44\nmean: 708459.51\nstdev: 111069.29\ncv: 15.68%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 168166.84,
+            "range": "9557.05",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 168166.84\nmean: 165176.80\nstdev: 9557.05\ncv: 5.79%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1681668.38,
+            "range": "95570.56",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1681668.38\nmean: 1651768.02\nstdev: 95570.56\ncv: 5.79%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
