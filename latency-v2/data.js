@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795676165149,
+  "lastUpdate": 1795680845128,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -90090,6 +90090,72 @@ window.BENCHMARK_DATA = {
             "range": "506.62",
             "unit": "us",
             "extra": "trials: 5\nmedian: 979.00\nmean: 1018.00\nstdev: 506.62\ncv: 49.77%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "4c097c3bb3b4f67f9d15c0792b789eb75b6f7090",
+          "message": "perf(broker): a QUIC publish on Raft arms no timer of its own (#3225) (#3231)\n\n* fix(raft): a publish refused before it is appended is answered at once (#3199)\n\nA batch the Raft leader refuses before writing any of it (lease lapsed,\nor no longer leading the term) was answered only at its delivery turn,\nbehind every earlier batch. If an earlier batch was acknowledged on the\nlease and never settled, the publisher waited out the answer timeout and\nwas told quorum_timeout (\"durable here\"), outcome unknown, for a batch\nthat was never written.\n\nThe engine now marks such a failure ProposalFailed::refused, and\nProposedPublish answers it through a channel as soon as the engine\nrefuses. The batch still takes its turn on a task, pushes its gap and\nsettles in hand-over order, so delivery order and the stall bound are\nunchanged. A failure with no record known written but not known refused\nstill waits for its turn.\n\nQuorumError::TimedOut no longer claims the batch is durable here.\n\nSpec-Unaffected: only when the publisher hears a not-appended refusal moves; log order, offsets and delivery order are unchanged\n\n* perf(raft): arm no per-publish timer for a QUIC publish (#3225)\n\nWIP: tests and docs to follow.\n\nSpec-Unaffected: only which timer bounds the publisher's wait moves; log order, offsets, commit and delivery are unchanged\n\n* test(raft): count per-publish timers and bound every path's answer (#3225)\n\nA QUIC publish acked to a client on Raft armed two timers (the answer\ndeadline and the settle loop's commit wait); it now arms none. The\nquorum wait's deadline is answered by the control stream's ack sweep with\nthe same quorum_timeout error. Docs and changelog follow.\n\nSpec-Unaffected: only which timer bounds the publisher's wait moves; log order, offsets, commit and delivery are unchanged",
+          "timestamp": "2026-11-26T07:56:52Z",
+          "tree_id": "9f90a06b25ecc4d448f566ad05a5724119ce6019",
+          "url": "https://github.com/GetFelix/felix/commit/4c097c3bb3b4f67f9d15c0792b789eb75b6f7090"
+        },
+        "date": 1795680829552,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 152,
+            "range": "6.30",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 152.00\nmean: 154.80\nstdev: 6.30\ncv: 4.07%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 204,
+            "range": "411.55",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 204.00\nmean: 387.80\nstdev: 411.55\ncv: 106.12%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 269,
+            "range": "482.25",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 269.00\nmean: 542.80\nstdev: 482.25\ncv: 88.85%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 198,
+            "range": "1.14",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 198.00\nmean: 198.40\nstdev: 1.14\ncv: 0.57%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 393,
+            "range": "6.89",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 393.00\nmean: 392.00\nstdev: 6.89\ncv: 1.76%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 575,
+            "range": "503.43",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 575.00\nmean: 777.20\nstdev: 503.43\ncv: 64.77%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
