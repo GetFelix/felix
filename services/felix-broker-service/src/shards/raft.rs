@@ -639,7 +639,7 @@ impl RaftShards {
                 .await
                 .context("re-form the group of one through the control plane")?
             {
-                alone_cluster::AloneReform::Recorded(answer) => sent = Some(answer),
+                alone_cluster::AloneReform::Recorded(answer) => sent = Some(*answer),
                 alone_cluster::AloneReform::Done => {}
                 alone_cluster::AloneReform::Later(why) => later = Some(why),
             }

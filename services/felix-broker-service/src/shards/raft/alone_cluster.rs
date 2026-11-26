@@ -121,7 +121,9 @@ impl RaftShards {
         tracing::warn!(shard = ?key, epoch, "a relaxed crash rotated this shard's only copy; the control plane recorded its next epoch");
         Ok(answer
             .json::<ShardAssignment>()
-            .map_or(AloneReform::Done, AloneReform::Recorded))
+            .map_or(AloneReform::Done, |answer| {
+                AloneReform::Recorded(Box::new(answer))
+            }))
     }
 
     /// Why a re-form of `assignment`'s group of one cannot be decided here
@@ -191,7 +193,7 @@ impl RaftShards {
 #[derive(Debug)]
 pub(super) enum AloneReform {
     /// The control plane recorded the epoch: start from this assignment.
-    Recorded(ShardAssignment),
+    Recorded(Box<ShardAssignment>),
     /// Nothing more to do at this open: no re-form is owed, the record
     /// already holds it, the record refused it, or the request went
     /// unanswered after the copy was stopped.
