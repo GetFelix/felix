@@ -362,6 +362,11 @@ fn plan_once(
         .iter()
         .map(|node| (node.node_id.as_str(), &node.spec.region))
         .collect();
+    let diskless: Vec<&str> = nodes
+        .iter()
+        .filter(|node| !node.spec.has_durable_storage())
+        .map(|node| node.node_id.as_str())
+        .collect();
     let unpaced_max = policy.fence_max_lag_records;
     let (replica_election, fenced_caches) = (policy.replica_election, policy.fenced_caches);
     let joint_fence = policy.joint_fence;
@@ -429,12 +434,22 @@ fn plan_once(
         // it the way a drain moves it. Only a stream with a home region is
         // constrained; for any other every node is allowed.
         let home = placeable.and_then(|p| p.region);
-        let allowed = |id: &str| match home {
+        // A node without durable storage may hold only an in-memory stream's
+        // shard. Kept out the way a region is, so anything durable already on
+        // one is moved off it as a drain moves it.
+        let in_region = |id: &str| match home {
             None => true,
             Some(home) => region_of
                 .get(id)
                 .is_some_and(|region| regions.can_route(home, region)),
         };
+        let allowed = |id: &str| in_region(id) && (!durable || !diskless.contains(&id));
+        // Whether the only live nodes the region allows have no storage, so
+        // that is what an unplaced shard reports.
+        let only_diskless = durable
+            && eligible
+                .iter()
+                .any(|node| in_region(&node.node_id) && diskless.contains(&node.node_id.as_str()));
         let eligible: Vec<&Node> = eligible
             .iter()
             .copied()
@@ -463,7 +478,7 @@ fn plan_once(
                 &mut leaders,
                 cap,
                 shares,
-                &|| unplaced(&eligible, home, is_empty_cluster),
+                &|| unplaced(&eligible, home, is_empty_cluster, only_diskless),
             );
             shards.push(ShardPlan { key, decision });
             note_spread(&mut unspread, shards.last(), &current, &eligible);
@@ -499,6 +514,7 @@ fn plan_once(
                 &leaving,
                 &eligible,
                 &mut load,
+                now,
             );
             shards.push(ShardPlan { key, decision });
             note_spread(&mut unspread, shards.last(), &current, &eligible);
@@ -749,7 +765,9 @@ fn plan_once(
                 );
                 Decision::Place(leader.to_string(), replicas)
             }
-            None => Decision::Unplaceable(unplaced(&eligible, home, is_empty_cluster)),
+            None => {
+                Decision::Unplaceable(unplaced(&eligible, home, is_empty_cluster, only_diskless))
+            }
         };
         shards.push(ShardPlan { key, decision });
         note_spread(&mut unspread, shards.last(), &current, &eligible);
@@ -798,9 +816,15 @@ fn plan_once(
 }
 
 /// Why no node in `eligible` can take a shard `choose` found nowhere for.
-fn unplaced(eligible: &[&Node], home: Option<&String>, is_empty_cluster: bool) -> Unplaceable {
+fn unplaced(
+    eligible: &[&Node],
+    home: Option<&String>,
+    is_empty_cluster: bool,
+    only_diskless: bool,
+) -> Unplaceable {
     match home {
         _ if !eligible.is_empty() => Unplaceable::AllNodesAtCapacity,
+        _ if only_diskless => Unplaceable::NoDurableStorage,
         Some(region) if !is_empty_cluster => Unplaceable::NoNodeInRegion {
             region: region.clone(),
         },

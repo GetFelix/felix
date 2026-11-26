@@ -404,6 +404,7 @@ async fn an_unexpected_answer_is_refused() {
         capabilities: None,
         identity: None,
         incarnation: None,
+        raft_layouts: None,
     }))]);
 
     let err = forward(&owner).await.expect_err("should be refused");

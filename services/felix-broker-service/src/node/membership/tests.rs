@@ -49,6 +49,7 @@ fn member(base_url: &str, start_without_controlplane: bool) -> BrokerConfig {
             region: "local".to_string(),
             zone: None,
             internal: false,
+            durable_storage: true,
             region_bridges: Vec::new(),
             features,
         }),

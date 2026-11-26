@@ -112,6 +112,9 @@ where
     );
     let mut config = config;
     offer_client_certs(&mut config);
+    if let Some(membership) = config.membership.as_mut() {
+        membership.durable_storage = durable_config.is_some();
+    }
     // A broker in memory loses every ballot and record at a restart, so it
     // has nothing to attest: it fences and answers as one that predates
     // counting by attestation.
@@ -865,6 +868,12 @@ fn log_shard_engine(
 ) {
     use crate::config::ShardEngine;
     match (engine, setting) {
+        // A cluster member without a disk: the control plane gives it only
+        // in-memory stream shards.
+        (ShardEngine::Raft, _) if !durable => tracing::info!(
+            "no durable storage (FELIX_DURABLE_STORAGE_DIR): this broker serves only in-memory \
+             stream shards and runs no Raft group"
+        ),
         (ShardEngine::Raft, _) => tracing::info!("durable stream shards run on Raft"),
         // Every stream and cache is in memory, and no engine runs any.
         (ShardEngine::Hybrid, None) if !durable => {

@@ -164,12 +164,13 @@ never have dialled the one that shipped to it.
 | `1 << 20` | `KEPT_BALLOTS` | offered by a caller: it reads `FenceKeptOk`, so a replica whose fence answer attests a kept ballot answers it with that kind (see "Fencing a promotion") |
 | `1 << 21` | `UNIFIED_FENCE` | offered by a caller: it reads `FenceAttestedOk`, so a replica whose fence answer carries an attestation of its copy answers it with that kind (see "Fencing a promotion"). Offered with `FENCE` unless `FELIX_UNIFIED_FENCE=0`, and never by a memory-only broker |
 | `1 << 22` | `WRITER_GENERATIONS` | reads `ReplicateStampedRecords`, which names the generation that wrote each record, and stores those as the records' generations; answers `ReplicateStampedFetch`. A peer that offers it also offers `GENERATION_LABELS`, `RECORD_TIMES` and `RECORD_HEADERS`. A batch that names its writers goes only to a peer that offered it |
-| `1 << 23` | `RAFT` | answers `Raft` for the per-shard Raft groups it holds (see "Raft messages"). Offered only by a listener that runs the group runtime, which no release does; a peer without it is never sent a Raft message |
+| `1 << 23` | `RAFT` | answers `Raft` for the per-shard Raft groups it holds (see "Raft messages"). Offered only by a listener that runs the group runtime; a peer without it is never sent a Raft message |
 | `1 << 24` | `SWITCH_SEAL` | takes part in the seal that moves a shard to Raft: answers `SealFence` and `SealAck`, and reads a request wrapped in `FromCopy` (see "Sealing a shard for the switch to Raft"). Offered with `FENCE` by a build with the Raft engine compiled in, which no release is; a peer without it is sent none of these |
 | `1 << 25` | `PLAIN_SEQUENCED_FORWARDS` | reads `PlainSequencedForwardPublish`, a sequenced forward whose records carry no key-and-headers block (see "A forward that names its producer"). Offered with `SEQUENCED_FORWARDS`; the frame goes only to a peer that offered both |
 | `1 << 26` | `RECORD_SEQUENCED_FORWARDS` | reads `RecordSequencedForwardPublish`, a sequenced forward whose records each take their own sequence from the one named (see "A forward that names its producer"). A Raft leader proposes them together in one proposal and answers once all commit. An MQTT listener on a member of the shard's group sends a batch that way only to a leader that offered it, and record by record otherwise |
 | `1 << 28` | `RAFT_BEATS` | reads a Raft body that holds many groups' heartbeats (message 9, "Heartbeats together" under "Raft messages") and answers it with one result per heartbeat, in order. Offered with `RAFT` by every listener that runs the group runtime; to a peer without it each heartbeat goes on its own, byte for byte as before |
 | `1 << 27` | `CLIENT_CERTS` | reads a forward wrapped in `ClientCertified` and checks the client's certificate chain against its own client CA (see "Client certificates across a forward"). Offered only by a broker with `FELIX_TLS_CLIENT_CERT_BIND_SUBJECT=true`; a forward goes in the envelope only to a peer that offered it |
+| `1 << 29` | `RAFT_LAYOUTS` | answers a `HelloCapable` that offers this bit with the Raft body layouts it reads, when it offers `RAFT` (see "Raft layouts" below). Every current broker offers the bit when it dials |
 
 #### Storage identity
 
@@ -221,6 +222,36 @@ registers again, as it does at startup and after the control plane marked it
 down, it closes every connection it answered with another value (application
 close code 4), and the caller learns the new one by dialling again. Every
 current broker offers the bit when it dials.
+
+#### Raft layouts
+
+A listener that runs the Raft group runtime states which Raft body layouts
+it reads and answers in (see "Raft messages"), so a caller can tell before
+sending whether the two share one. It travels on `HelloCapableOk` after the
+incarnation, and only when the bits include `RAFT_LAYOUTS`: the lowest and
+highest layout, inclusive.
+
+```text
+u64 correlation_id | str node_id | u64 bits | [16 bytes identity, if bits has 1 << 10]
+  | [u8 registered | u64 incarnation if registered = 1, if bits has 1 << 11]
+  | [u8 lowest | u8 highest, if bits has 1 << 29]
+```
+
+A responder sets the bit only when the caller offered it and it runs the
+runtime, so a caller that predates the bit reads the bytes it always did. A
+decoder refuses a body where the bit and the bytes disagree, a range that
+starts at 0 or ends below its start, and any byte after the range: the
+handshake fails rather than guessing at a layout.
+
+Every build today reads and writes one layout, so the range it states is
+that one layout. A sender whose layout is outside the peer's range sends no
+Raft message and tells Raft the member is unreachable, with a reason naming
+both; the broker logs it and counts the refused send in
+`felix_broker_raft_peer_refusals_total{reason="layout"}`. The range is what
+lets a later build that reads two layouts pick one its peer reads. A peer
+that offered `RAFT` without `RAFT_LAYOUTS` predates this field and is read
+as reading layout 6 only. That reading is frozen. If it is wrong, the peer
+still refuses the body at its first byte, so nothing is misread.
 
 `FELIX_INTERNAL_FENCE=false` turns `FENCE`, `TAIL_FETCH`, `CACHE_FENCE`,
 `GROUP_FENCE` and `BALLOTS` off: the broker refuses `Fence` and `ReplicateFetch` as unknown kinds,
@@ -1291,7 +1322,7 @@ length and UTF-8 bytes, at most 512. An optional value is a `u8` (0 absent,
 
 | Field | Layout |
 | --- | --- |
-| layout | `u8`, 6 (layout 1 had no report byte, layout 2 no snapshot data, layout 3 no target version in a membership, layout 4 no piece entry, layout 5 no send number). A reader refuses any other with an error that names the layout, so two builds on different layouts refuse each other's messages instead of misreading them |
+| layout | `u8`, 6 (layout 1 had no report byte, layout 2 no snapshot data, layout 3 no target version in a membership, layout 4 no piece entry, layout 5 no send number). A reader refuses any other with an error that names the layout, so two builds on different layouts refuse each other's messages instead of misreading them. A sender checks the layouts the peer stated in its handshake first and sends nothing when they share none (see "Raft layouts" under "Capabilities") |
 | message | `u8`: 1 append with no entries (a heartbeat), 2 append with entries, 3 vote, 4 pre-vote, 5 snapshot, 6 leader transfer, 7 written position, 8 read index, 9 heartbeats together (see below; its header differs after the deadline) |
 | deadline | `u32`: how long the sender waits for the answer, in milliseconds |
 | group | tenant, namespace, stream (names), shard `u32`, kind `u8` (0 stream, 1 cache), epoch `u64` |

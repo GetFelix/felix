@@ -179,14 +179,27 @@ empty data directories, with `FELIX_SHARD_ENGINE` unset everywhere.
 ### This broker cannot run Raft
 
 ```
-ERROR this broker has a cluster identity (FELIX_NODE_ID), so its durable stream shards run on Raft, but it needs durable storage (FELIX_DURABLE_STORAGE_DIR)
+ERROR this broker has a cluster identity (FELIX_NODE_ID), so its durable stream shards run on Raft, but it needs the broker-internal listener (FELIX_INTERNAL_BIND)
 ```
 
 A broker with a node id registers with the control plane, which places
 shards on it beside brokers that run Raft, so it runs Raft or does not start.
-Give it the setting the message names: durable storage, the internal listener
+Give it the setting the message names: the internal listener
 (`FELIX_INTERNAL_BIND`), or a build with the `raft` cargo feature, which
-release builds have.
+release builds have. Durable storage is not required: a broker without
+`FELIX_DURABLE_STORAGE_DIR` joins and is given only in-memory stream shards.
+
+### A broker without durable storage stops at registration
+
+```
+ERROR the control plane refused this identity; the broker is not a cluster member error=node broker-4 has no durable storage (FELIX_DURABLE_STORAGE_DIR) and the control plane at ... predates brokers without it
+```
+
+The control plane is from a release that would place durable shards on a
+broker with no disk. Upgrade every control-plane member, or give the broker
+durable storage. A control plane that knows such brokers but has a member
+below metadata level 54 refuses the registration with 409 until that member
+is upgraded.
 
 ### A peer is refused
 

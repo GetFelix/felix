@@ -56,11 +56,15 @@ pub const COMMAND_VERSION: u16 = 1;
 /// it the next level and raises this, so nothing proposes it until every
 /// member runs that release. New fields get their level in `fields.txt`.
 /// Never lower it: members report it, and the group's level is the minimum.
-pub const METADATA_VERSION: u16 = 53;
+pub const METADATA_VERSION: u16 = 54;
 
 /// The metadata level whose members' placement acts on the internal node
-/// role ([`MetaCommand::internal_role_level`]).
+/// role ([`MetaCommand::label_level`]).
 pub(crate) const INTERNAL_ROLE_LEVEL: u16 = 44;
+
+/// The metadata level whose members' placement keeps durable shards off a
+/// node registered without durable storage ([`MetaCommand::label_level`]).
+pub(crate) const NO_STORAGE_LEVEL: u16 = 54;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "snake_case")]
@@ -689,26 +693,40 @@ impl MetaCommand {
         let value = serde_json::to_value(self).expect("commands serialize by construction");
         self.variant_level()
             .max(fields::level_of(&value))
-            .max(self.internal_role_level())
+            .max(self.label_level())
     }
 
-    /// The internal role rides in a node's labels, which every member
-    /// already applies, so no field marks it. A leader below this level
-    /// would place tenant shards on such a node, so any command that writes
-    /// one is held to it: a registration, or an import (restore) of nodes.
-    /// An import does not keep the registration's rule against dropping the
-    /// role: a restore replaces the records on purpose.
-    fn internal_role_level(&self) -> u16 {
-        let internal = match self {
-            Self::RegisterNode { node } | Self::RegisterNodeInFleet { node } => {
-                node.spec.is_internal()
-            }
-            Self::ImportState { state, .. } => {
-                state.nodes.iter().any(|(_, node)| node.spec.is_internal())
-            }
-            _ => false,
+    /// The internal role and the no-storage label ride in a node's labels,
+    /// which every member already applies, so no field marks them. A leader
+    /// below their level would place tenant shards on an internal node, or
+    /// durable ones on a node without storage, so any command that writes
+    /// such a node is held to it: a registration, or an import (restore) of
+    /// nodes. An import does not keep the registration's rule against
+    /// dropping the role: a restore replaces the records on purpose.
+    fn label_level(&self) -> u16 {
+        let level = |node: &Node| {
+            let internal = if node.spec.is_internal() {
+                INTERNAL_ROLE_LEVEL
+            } else {
+                0
+            };
+            let diskless = if node.spec.has_durable_storage() {
+                0
+            } else {
+                NO_STORAGE_LEVEL
+            };
+            internal.max(diskless)
         };
-        if internal { INTERNAL_ROLE_LEVEL } else { 0 }
+        match self {
+            Self::RegisterNode { node } | Self::RegisterNodeInFleet { node } => level(node),
+            Self::ImportState { state, .. } => state
+                .nodes
+                .iter()
+                .map(|(_, node)| level(node))
+                .max()
+                .unwrap_or(0),
+            _ => 0,
+        }
     }
 
     fn variant_level(&self) -> u16 {

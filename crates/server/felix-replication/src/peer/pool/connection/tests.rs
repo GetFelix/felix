@@ -149,6 +149,7 @@ mod correlation {
                 capabilities: None,
                 identity: None,
                 incarnation: None,
+                raft_layouts: None,
             }),
             InternalMessage::ReplicateRecords(ReplicateRecords {
                 writers: None,

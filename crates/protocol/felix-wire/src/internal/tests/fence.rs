@@ -45,6 +45,7 @@ fn capabilities_travel_on_their_own_kind() {
         capabilities: Some(PeerCapabilities::NONE),
         identity: None,
         incarnation: None,
+        raft_layouts: None,
     });
     assert_eq!(answer.kind(), Kind::HelloCapableOk);
     let decoded = InternalMessage::decode(answer.encode().expect("encode")).expect("decode");
@@ -61,6 +62,7 @@ fn capable_ok(capabilities: PeerCapabilities, identity: Option<[u8; 16]>) -> Int
         capabilities: Some(capabilities),
         identity,
         incarnation: None,
+        raft_layouts: None,
     })
 }
 
@@ -136,6 +138,7 @@ fn incarnated_ok(identity: Option<[u8; 16]>, incarnation: Option<u64>) -> Intern
         capabilities: Some(capabilities),
         identity,
         incarnation,
+        raft_layouts: None,
     })
 }
 
@@ -215,11 +218,77 @@ fn a_malformed_incarnation_is_refused() {
             capabilities: Some(PeerCapabilities::FENCE),
             identity: None,
             incarnation: Some(1),
+            raft_layouts: None,
         })
         .encode()
         .is_err(),
         "an incarnation without the bit would not read back",
     );
+}
+
+fn layouts_ok(raft_layouts: Option<RaftLayouts>) -> InternalMessage {
+    InternalMessage::HelloOk(HelloOk {
+        correlation_id: 42,
+        node_id: "broker-b".to_string(),
+        capabilities: Some(PeerCapabilities::RAFT.union(PeerCapabilities::RAFT_LAYOUTS)),
+        identity: None,
+        incarnation: None,
+        raft_layouts,
+    })
+}
+
+#[test]
+fn raft_layouts_travel_as_two_bytes_after_the_incarnation() {
+    let answer = layouts_ok(RaftLayouts::new(6, 8));
+    let encoded = answer.encode().expect("encode");
+    assert_eq!(
+        encoded,
+        capable_ok_frame((1 << 23) | (1 << 29), &[6, 8]),
+        "lowest then highest, after everything the earlier bits carry",
+    );
+    assert_eq!(InternalMessage::decode(encoded).expect("decode"), answer);
+}
+
+/// **A layout statement that does not read exactly is refused, not
+/// narrowed.** A wrong reading of a peer's layouts would mean misreading its
+/// Raft messages, so the whole handshake fails instead.
+#[test]
+fn a_malformed_raft_layouts_statement_is_refused() {
+    let bits = PeerCapabilities::RAFT
+        .union(PeerCapabilities::RAFT_LAYOUTS)
+        .bits();
+    for trailing in [&[][..], &[6][..], &[0, 6][..], &[7, 6][..], &[6, 6, 0][..]] {
+        assert!(
+            matches!(
+                InternalMessage::decode(capable_ok_frame(bits, trailing)),
+                Err(Error::Incomplete)
+            ),
+            "{trailing:?} was read as a layout range",
+        );
+    }
+    assert!(
+        matches!(
+            InternalMessage::decode(capable_ok_frame(PeerCapabilities::RAFT.bits(), &[6, 6])),
+            Err(Error::Incomplete)
+        ),
+        "layout bytes without the bit are trailing garbage",
+    );
+    assert!(
+        layouts_ok(None).encode().is_err(),
+        "the bit without a range would not read back"
+    );
+    assert_eq!(RaftLayouts::new(0, 6), None);
+    assert_eq!(RaftLayouts::new(7, 6), None);
+}
+
+#[test]
+fn raft_layouts_pick_the_highest_they_share() {
+    let range = |lowest, highest| RaftLayouts::new(lowest, highest).expect("range");
+    assert_eq!(range(6, 6).common(range(6, 6)), Some(6));
+    assert_eq!(range(4, 7).common(range(6, 9)), Some(7));
+    assert_eq!(range(6, 9).common(range(4, 7)), Some(7));
+    assert_eq!(range(3, 5).common(range(6, 9)), None);
+    assert_eq!(range(7, 7).common(range(6, 6)), None);
 }
 
 /// **A capability bit this build does not know is not a refusal.** Each bit

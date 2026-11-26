@@ -147,6 +147,14 @@ pub enum MoveStep {
     /// Only `leader` changes: the group keeps its members, and once brokers
     /// follow placement its leader hands over to the one placement names.
     RaftLeader { from: String, to: String },
+    /// The group reported `to`, the leader an operator moved a Raft shard
+    /// to within its set, leading: the move ends.
+    RaftLeaderLanded { to: String },
+    /// An operator's move of a Raft shard's leader within its set did not
+    /// land within `RAFT_OPERATOR_LEADER_MILLIS`: `to` is named, the member
+    /// the group runs while a member is down, else `from` again, and the
+    /// move ends.
+    RaftLeaderTimedOut { from: String, to: String },
     /// A member of a Raft shard's group is swapped for `to`, a broker outside
     /// the set, in one write: a follower on an internal, draining or lost
     /// broker, or the leader's seat on an operator move outside the set, when
@@ -208,6 +216,8 @@ impl MoveStep {
             Self::PendingSetCancelled => "pending_set_cancelled",
             Self::Readmit { .. } => "readmit",
             Self::RaftLeader { .. } => "raft_leader",
+            Self::RaftLeaderLanded { .. } => "raft_leader_landed",
+            Self::RaftLeaderTimedOut { .. } => "raft_leader_timed_out",
             Self::RaftReplace { .. } => "raft_replace",
             Self::RaftMoveDropped => "raft_move_dropped",
             Self::RaftMoveUndone { .. } => "raft_move_undone",
@@ -397,6 +407,9 @@ pub enum Unplaceable {
     /// region it has a bridge to. Not placed elsewhere: that is exactly the
     /// copy the region policy exists to refuse.
     NoNodeInRegion { region: String },
+    /// The shard is a durable stream's or a cache's, and every live node it
+    /// may use has no durable storage.
+    NoDurableStorage,
 }
 
 impl std::fmt::Display for Unplaceable {
@@ -418,6 +431,11 @@ impl std::fmt::Display for Unplaceable {
             Self::NoNodeInRegion { region } => write!(
                 f,
                 "no live node is in region {region} or in a region bridged from it"
+            ),
+            Self::NoDurableStorage => write!(
+                f,
+                "every live node this shard may use has no durable storage and holds only \
+                 in-memory stream shards"
             ),
         }
     }
