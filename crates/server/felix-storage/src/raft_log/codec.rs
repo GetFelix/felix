@@ -98,7 +98,7 @@ where
 
 /// The record that holds `entry`, and the generation to stamp it with. The
 /// record goes at offset `entry.log_id.index`.
-pub(super) fn record_from_entry<C, K>(
+pub(crate) fn record_from_entry<C, K>(
     codec: &K,
     entry: &Entry<CommittedLeaderIdOf<C>, EntryPayload<C::D, C::Membership>>,
     timestamp_micros: u64,

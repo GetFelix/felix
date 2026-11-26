@@ -743,6 +743,58 @@ fn copy_kept(kept: &Path, dir: &Path, step: &dyn Fn() -> io::Result<()>) -> io::
     Ok(())
 }
 
+/// Present in a copy while a finished staging log moves into it. A start of
+/// the adoption over it rolls forward.
+pub const ADOPTING: &str = "base-adopting";
+
+/// Make the staging log a learner pulled `base` into ([`super::staging`])
+/// `dir`'s log. False, with the staging log discarded and the copy left
+/// as it was, when it is not finished or holds another base. The copy's
+/// log is emptied and its saved commit lowered to zero first, as for
+/// [`copy_kept`]; then [`ADOPTING`] is written, and from there each
+/// segment and the durable mark are renamed in, so a crash before the
+/// marker leaves the copy blank and one after it is rolled forward by
+/// calling this again. Indexes are left behind: they are rebuilt. The log
+/// in `dir` must be closed, and the caller runs this before it opens it.
+pub fn adopt_staged(
+    dir: &Path,
+    base: (u64, u64),
+    step: &dyn Fn() -> io::Result<()>,
+) -> io::Result<bool> {
+    let staging = super::staging::staging_dir(dir);
+    let marker = dir.join(ADOPTING);
+    if !crate::fs::try_exists(&marker)? {
+        if super::staging::staged(dir)? != Some(base) {
+            super::staging::discard(dir)?;
+            return Ok(false);
+        }
+        crate::disk_log::store_saved_commit(dir, 0, 0).map_err(io::Error::other)?;
+        empty_log(dir)?;
+        step()?;
+        let file = crate::fs::File::create(&marker)?;
+        crate::io::sync_all(&file)?;
+        crate::io::sync_dir(dir)?;
+        step()?;
+    }
+    if crate::fs::try_exists(&staging)? {
+        for entry in crate::fs::read_dir(&staging)? {
+            let name = entry?.file_name();
+            let Some(name) = name.to_str() else {
+                continue;
+            };
+            if parse_segment_file_name(name).is_some() || name == durable_mark::mark_file_name() {
+                crate::fs::rename(staging.join(name), dir.join(name))?;
+                step()?;
+            }
+        }
+        crate::io::sync_dir(dir)?;
+        crate::fs::remove_dir_all(&staging)?;
+    }
+    crate::fs::remove_file(&marker)?;
+    crate::io::sync_dir(dir)?;
+    Ok(true)
+}
+
 /// `dir`'s log, opened under `lock`, which the start holds throughout.
 fn open_under(dir: &Path, label: &str, config: &LogConfig, lock: DirLock) -> io::Result<DiskLog> {
     DiskLog::open_holding(dir, label, config.clone(), None, lock).map_err(io::Error::other)

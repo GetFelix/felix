@@ -35,6 +35,7 @@ mod reform;
 mod report;
 mod restore;
 mod rotated_by;
+mod staging;
 #[cfg_attr(
     not(test),
     allow(dead_code, reason = "the re-form command, not built yet, calls it")
@@ -84,12 +85,13 @@ pub use restore::restore_copy;
     reason = "the re-form command, not built yet, uses them"
 )]
 pub(crate) use rotated_by::RotatedBy;
+pub use staging::{Staging, discard as discard_staged};
+pub use start::{ADOPTING, GapFold, adopt_staged, start_due, started_in};
 #[allow(
     unused_imports,
     reason = "the re-form command, not built yet, uses them"
 )]
 pub(crate) use start::{AcceptLoss, CopyStart, LossNotAccepted, Role, Start, building, start_copy};
-pub use start::{GapFold, start_due, started_in};
 pub use stop_file::{StoppedCopy, stop, stopped};
 #[cfg(test)]
 pub(crate) use vouch::plan_reform;
