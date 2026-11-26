@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795718394485,
+  "lastUpdate": 1795719656722,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -71916,6 +71916,58 @@ window.BENCHMARK_DATA = {
             "range": "55331.74",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1657046.54\nmean: 1653252.15\nstdev: 55331.74\ncv: 3.35%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "e8d1d1f4fe3f947e5c76ce7fcba23c30ca4c63cf",
+          "message": "test(raft): four timing-sensitive tests no longer depend on runner speed (#3279)\n\n* test(raft): a leader's election place is read after the ticker has reported (#3270)\n\nThe ticker's election load is cached and refreshed only on a report, so a\nsingle read could still show the place of the election that made the\nmember leader. The test now waits for that place to be given back before\nthe transfer, and the strict check after it reads a refreshed load.\n\nSpec-Unaffected: tests only\n\n* test(raft): the flaky-peer call counts are taken in the same window (#3240)\n\nThe two halves counted calls over 4 s of real time one after the other,\nso a busy runner that slowed the first half made the second look like\nextra calls. They now run side by side and share the load.\n\nSpec-Unaffected: tests only\n\n* test(raft): a late wave commits sooner than the backoff, measured against it (#3269)\n\nThe test bounded the first commit at 900 ms of wall time, under the 1 s\nopenraft backoff the wake exists to cut short. A loaded runner stretched\nthe commit past it (927 ms, 1.03 s) with the wake working. The same run\nwithout the wake now supplies the backoff on the same machine, and the\nwake must beat it by a quarter of that ceiling.\n\nSpec-Unaffected: tests only\n\n* test(broker-service): a stop is asked of a member once it leads (#3242)\n\nform_on returns once the group has a term, which can be before the member\nwins it, so the test sometimes stopped a member that was not yet leading.\nIt now waits, bounded, for the member to lead.\n\nSpec-Unaffected: tests only",
+          "timestamp": "2026-11-26T18:18:57Z",
+          "tree_id": "7c9df4c2e8a0427c356a5c82305cc0c140db8390",
+          "url": "https://github.com/GetFelix/felix/commit/e8d1d1f4fe3f947e5c76ce7fcba23c30ca4c63cf"
+        },
+        "date": 1795719656070,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 724961.67,
+            "range": "122691.32",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 724961.67\nmean: 682932.10\nstdev: 122691.32\ncv: 17.97%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 724961.67,
+            "range": "122691.32",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 724961.67\nmean: 682932.10\nstdev: 122691.32\ncv: 17.97%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 157068.64,
+            "range": "15469.98",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 157068.64\nmean: 153140.66\nstdev: 15469.98\ncv: 10.10%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1570686.44,
+            "range": "154699.76",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1570686.44\nmean: 1531406.63\nstdev: 154699.76\ncv: 10.10%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
