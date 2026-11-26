@@ -1049,6 +1049,11 @@ shard's log and its counters, and drops the broker's in-memory `StreamState`.
 
 - A handle given out earlier fails every read, append and flush with
   `StorageError::Closed`.
+- An append, commit or sync already in flight is answered by whether its
+  batch is on disk, not by the close. One the close's final flush covered
+  is answered Ok, so the client does not retry a record a reopen will
+  serve; one that reached the log after the close shut its segments is
+  answered `Closed` and is not in the log.
 - An open of the shard while the close is running also fails with `Closed`
   rather than opening a second writer over files still being flushed. It is
   retryable: once the close finishes, the next open recovers the shard afresh
@@ -1941,8 +1946,10 @@ itself. Whatever writes inside a log directory holds it while it writes:
   looks at the tail. A close or a shutdown lets go of it before it
   returns, whatever clones of the log are still alive: those clones can no
   longer write. A log that is only dropped lets go when its last clone goes
-  and any file work it started (a roll, a flush, a read) has finished; a
-  reservation extension still running does not hold it. A broker stopping,
+  and any file work it started (a roll, a flush, a read) has finished. A
+  reservation extension waiting to start does not hold it; one already
+  reserving holds the log until its fallocate returns, and a close waits
+  for it before letting go. A broker stopping,
   a shard closing and a store shutting down all close their logs, so an
   open in the same process right after never finds the directory busy.
 - a Raft copy's open, from the first look at its copy file through any
