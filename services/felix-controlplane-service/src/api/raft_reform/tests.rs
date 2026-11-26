@@ -52,9 +52,10 @@ async fn applying_a_plan_takes_the_cluster_operator() {
 }
 
 /// A restore plan with a gap below the minimum is refused before any plan
-/// is made, unless the operator accepts the short gap.
+/// is made, unless the operator accepts the short gap. One above the maximum
+/// is always refused.
 #[tokio::test]
-async fn a_short_offset_gap_is_refused_unless_accepted() {
+async fn an_offset_gap_outside_the_bounds_is_refused() {
     use std::sync::Arc;
 
     use axum::body::Body;
@@ -86,6 +87,16 @@ async fn a_short_offset_gap_is_refused_unless_accepted() {
     assert_eq!(call(restore(1 << 20, false)).await, StatusCode::BAD_REQUEST);
     assert_eq!(call(restore(1 << 20, true)).await, StatusCode::OK);
     assert_eq!(call(restore(1 << 40, false)).await, StatusCode::OK);
+    // A later restore or abandon assumes no epoch started further above the
+    // time line than 2^40, so a larger gap is refused even when accepted.
+    assert_eq!(
+        call(restore((1 << 40) + 1, false)).await,
+        StatusCode::BAD_REQUEST
+    );
+    assert_eq!(
+        call(restore((1 << 40) + 1, true)).await,
+        StatusCode::BAD_REQUEST
+    );
 }
 
 /// A broker asks for its own group's epoch only: a token for another node

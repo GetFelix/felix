@@ -157,15 +157,17 @@ directory gets a new storage id. A Raft cluster takes the steps under
 The re-form a Raft restore runs, `felixctl raft reform plan --restore-point
 FILE`, starts each shard's next epoch at the larger of the point's end and 2^14
 offsets for every millisecond of the control plane's clock at plan time plus
-an offset gap (2^40 by default, `--offset-gap N` to choose another, below
-2^32 only with `--accept-short-gap`). The point's own clock is not used.
-Records acknowledged after the point are lost with the restore, but their
-offsets are not given out again, also when you restore from the same or an
-older point a second time, as long as a shard has acknowledged at most 2^13
-offsets per millisecond on average since the last restore, and restores of
-one shard are more than four times the control-plane clock skew apart. A
-plan whose clock puts that line below the point's end is refused unless you
-pass `--accept-short-gap`. A reader that kept an
+an offset gap (2^40 by default and at most, `--offset-gap N` to choose
+another, below 2^32 only with `--accept-short-gap`). The point's own clock is
+not used. Records acknowledged after the point are lost with the restore, but
+their offsets are not given out again, also when you restore from the same or
+an older point a second time, as long as a shard has acknowledged at most
+2^13 offsets per millisecond on average since the last restore and the
+control-plane clocks agree within about four minutes. A shard restored again
+within about four and a half minutes of its last restore is blocked until
+the line has moved far enough past it; with a smaller gap than that restore
+used, the wait is longer. A plan whose clock puts that line below the point's
+end is refused unless you pass `--accept-short-gap`. A reader that kept an
 offset past the point can tell from it that the record is gone, and new
 records never take it. The gap is a header in the next segment, not disk
 space.
@@ -247,8 +249,10 @@ offset gap above). Run these in order.
    plane's clock at plan time, plus a gap (`--offset-gap N`, 2^40 by
    default). That keeps a later restore, from this backup or an older one,
    past every offset an earlier restore gave out, as long as a shard stays
-   under 8 offsets per microsecond and restores are more than four times
-   the control-plane clock skew apart. The point's own time comes from the
+   under 8 offsets per microsecond and the control-plane clocks agree within
+   about four minutes. A shard whose last epoch began less than about four
+   and a half minutes before the plan is `blocked` until the line clears it;
+   plan again then. The point's own time comes from the
    machine that took it and is only shown. A plan made before another plan
    that already restored the shard is refused as `stale`; use the plan that
    won, or plan again once the control plane's clock is past its time.
