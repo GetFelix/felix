@@ -62,7 +62,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: raft-idle-${{ github.ref }}-${{ inputs.transport_groups || inputs.groups || 'nightly' }}-${{ inputs.report || 'idle' }}-${{ inputs.peers }}-${{ inputs.dead }}-${{ inputs.burst_secs }}
+  group: raft-idle-${{ github.ref }}-${{ inputs.groups || 'nightly' }}-${{ inputs.transport_groups }}-${{ inputs.report || 'idle' }}-${{ inputs.peers }}-${{ inputs.dead }}-${{ inputs.burst_secs }}
   cancel-in-progress: true
 
 env:
