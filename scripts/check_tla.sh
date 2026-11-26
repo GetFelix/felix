@@ -887,6 +887,8 @@ fi
 # `--plan-heavy`: give a new heavy one its weight.
 weights=(
   "FelixRaftReformKeptOldKept 12"
+  "FelixRaftReformSnapshotMembership 120"
+  "FelixRaftReformSnapshotMembershipLogOnly 120"
   "FelixRaftReformKeptOldKeptCap 6"
   "FelixShardMoveGiveUpKeep 22"
   "FelixShardMoveGiveUpKeepLive 22"
