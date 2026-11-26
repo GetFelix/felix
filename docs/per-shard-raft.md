@@ -236,6 +236,11 @@ control plane is down or has none. Brokers that stayed up are not
 affected, so failover with the control plane down still works. What waits
 is the restarted broker's own vote.
 
+> `crates/testing/felix-cluster/tests/raft_shards/reform.rs`,
+> `a_restored_data_directory_never_votes`: a follower's data directory put
+> back from a copy, beside a follower that lacks the same records, elects
+> nothing until the leader returns.
+
 **The broker runs the gate after its start.** A broker started with
 `FELIX_SHARD_ENGINE=raft` opens every Raft member through the gate. The
 gate runs in the background once the start's own restore check has
@@ -978,6 +983,18 @@ broker's part of the plan, so none of these needs the plan that started it:
   `start` survey is asked again, and answered once the copy's `raft-epoch`
   names the new epoch. After a metadata leader change nothing asks; the
   plan's view then reads 404 and the epoch shows in the shard record.
+
+Across real brokers: two of three `periodic` brokers lose power while the
+leader's process is killed, and an RF 2 shard loses its only other copy to
+a wipe. Each group stays closed and acknowledges nothing until `plan` and
+`apply` re-form it, and the new epoch's voters then serve every
+acknowledged record at its offset and give out no offset twice. Only the
+voters are checked, since a stream learner cannot catch up across the
+re-form yet (#3005).
+
+> `crates/testing/felix-cluster/tests/raft_shards/reform.rs`,
+> `a_group_whose_relaxed_followers_lose_power_re_forms_with_every_ack`,
+> `a_group_whose_only_other_copy_was_lost_re_forms_from_the_copy_left`.
 
 **A restore from a backup point is a re-form.** A whole-cluster restore
 rotates every broker's storage id, so every Raft copy comes back with a new
@@ -1782,8 +1799,8 @@ What the acknowledgement promises, and what it does not
   such an ask vouches for the record before its fsync, and rotates on a
   site-wide power loss too. A shard whose every voter rotated
   has no voter left and needs a re-form, as a 0.7 shard whose copies all
-  rotated stays closed. Today such a shard is formed again from empty
-  logs instead (#2620).
+  rotated stays closed. It is never formed again from the empty logs
+  (#2620; "Re-forming a group").
 - The cost is a voter seat. The rotated copy rejoins only through a
   membership change, which per-shard Raft does not make yet, so until then
   a group that lost a seat this way has one fewer broker to lose, as a 0.7

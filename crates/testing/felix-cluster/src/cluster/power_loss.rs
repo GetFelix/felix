@@ -1,4 +1,4 @@
-//! Cutting the power to every broker at once, and starting them all again.
+//! Cutting the power to brokers, and starting them all again.
 
 use std::time::{Duration, Instant};
 
@@ -28,15 +28,38 @@ impl Cluster {
     /// [`ClusterConfig::power_loss`](crate::ClusterConfig::power_loss), brokers
     /// built with debug assertions, and Linux.
     pub async fn power_off(&mut self, seed: u64) -> Result<()> {
+        let running: Vec<usize> = (0..self.nodes.len())
+            .filter(|index| self.nodes[*index].is_running())
+            .collect();
+        self.power_off_at(seed, running).await
+    }
+
+    /// [`Self::power_off`] for `node_ids` only. The others keep running with
+    /// their page cache, as brokers on another power feed would. Each named
+    /// broker must be running.
+    pub async fn power_off_nodes(&mut self, seed: u64, node_ids: &[&str]) -> Result<()> {
+        let mut chosen = Vec::new();
+        for node_id in node_ids {
+            let index = self
+                .nodes
+                .iter()
+                .position(|node| node.node_id == *node_id)
+                .ok_or_else(|| anyhow!("unknown node {node_id}"))?;
+            if !self.nodes[index].is_running() {
+                bail!("{node_id} is not running");
+            }
+            chosen.push(index);
+        }
+        self.power_off_at(seed, chosen).await
+    }
+
+    async fn power_off_at(&mut self, seed: u64, running: Vec<usize>) -> Result<()> {
         if !cfg!(target_os = "linux") {
             bail!("a simulated power loss needs Linux: the model reads flushes through /proc");
         }
         if !self.config.power_loss {
             bail!("the cluster was not started with ClusterConfig::power_loss");
         }
-        let running: Vec<usize> = (0..self.nodes.len())
-            .filter(|index| self.nodes[*index].is_running())
-            .collect();
         for (offset, index) in running.iter().enumerate() {
             let node = &self.nodes[*index];
             let image = power_loss_image(&node.data_dir);
