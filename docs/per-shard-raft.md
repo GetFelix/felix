@@ -1640,6 +1640,8 @@ on disk, and it sends no copy id, so it never joins the new epoch either.
 > `services/felix-broker-service/src/shards/raft/tests.rs`,
 > `a_blank_copy_of_an_abandoned_epoch_starts_at_its_first_index` and
 > `a_copy_of_an_abandoned_epoch_does_not_lead_when_it_returns`.
+> Model: `docs/formal/FelixRaftReform.tla` with `Abandon`
+> (`FelixRaftReformAbandon*.cfg`).
 
 ### Writing through openraft
 
