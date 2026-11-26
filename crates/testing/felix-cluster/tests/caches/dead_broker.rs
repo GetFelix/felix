@@ -69,9 +69,6 @@ async fn start_with_value(before: &[u8]) -> (Cluster, String, Arc<Client>) {
 #[serial]
 #[tokio::test]
 async fn a_cache_watch_survives_losing_its_broker() {
-    if felix_cluster::skip_on_raft_until(3030, "cache failover reads hybrid replica reports") {
-        return;
-    }
     let (mut cluster, leader, client) = start_with_value(b"before").await;
     let (tenant, namespace) = (cluster.tenant_id.clone(), cluster.namespace.clone());
     let mut watch = client
@@ -141,9 +138,6 @@ async fn a_cache_watch_survives_losing_its_broker() {
 #[serial]
 #[tokio::test]
 async fn cache_requests_stop_going_to_a_killed_owner() {
-    if felix_cluster::skip_on_raft_until(3030, "cache failover reads hybrid replica reports") {
-        return;
-    }
     let (mut cluster, leader, client) = start_with_value(b"before").await;
     let (tenant, namespace) = (cluster.tenant_id.clone(), cluster.namespace.clone());
     client
@@ -229,9 +223,6 @@ async fn cache_requests_stop_going_to_a_killed_owner() {
 #[serial]
 #[tokio::test]
 async fn a_sharded_retained_watch_restarts_a_state_phase_cut_by_a_kill() {
-    if felix_cluster::skip_on_raft_until(3030, "cache failover reads hybrid replica reports") {
-        return;
-    }
     const KEYS: usize = 3000;
     // About 24 MiB a shard, past the 16 MiB stream window the watcher's
     // client is held to, so the killed owner cannot have sent its whole state

@@ -74,6 +74,7 @@ confirmed when stream shards on Raft (#2233) lands.
 | `node/cluster.rs`, `node/startup.rs`, `node/peer_dispatch.rs` | | Part | Wire one engine. No `Hybrid::start`, no read-round binding, no election table |
 | `node/handoff.rs` | 218 | Part | Shutdown handoff becomes a Raft leadership transfer |
 | `shards/routing/hold.rs`, `shards/watch.rs` | | Kept | The move hold and the assignment watch |
+| `serving/quic/handlers/cache_watch.rs` | | Part | A watch joins the Raft member's applied edge. The branch that reads the hybrid shard log, its commit gate and `snapshot_entries` go. A Raft broker with no member of the shard open refuses the watch as retryable and never reaches that branch |
 
 ### Storage
 

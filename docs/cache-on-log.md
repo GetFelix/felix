@@ -349,6 +349,10 @@ oldest change a member kept is a resnapshot rather than a replay, and a
 resume from past the edge waits for the member to catch up. And a snapshot install replaces the
 state whole, so it ends the shard's watches as `cache_watch_lagged` at the
 first entry they were not told of, as does a member that loses its leader.
+A broker that runs its caches on Raft but has no member of the shard open
+yet, at startup or before placement reaches it after a failover, refuses
+the watch as retryable `shard_unavailable`. Its own cache store is never
+written on Raft, so a watch served from it would join an empty log.
 See [per-shard-raft.md](per-shard-raft.md#cache-and-counters).
 
 ## Counters, beside the cache

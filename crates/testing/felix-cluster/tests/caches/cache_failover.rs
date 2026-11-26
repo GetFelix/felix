@@ -32,7 +32,17 @@ fn replicated_cache() -> ClusterConfig {
 /// Killing a leader that has shipped nothing tests startup, not failover. The
 /// baseline has to be sampled before the write, because the counter only moves
 /// on a real exchange and an idle pass leaves it alone.
+///
+/// A Raft cache ships and reports nothing of the kind, so there the wait is
+/// for every member to hold the log through the leader's last entry.
 pub(crate) async fn replication_settled(cluster: &Cluster, leader: &str, before: f64) {
+    if cluster.raft() {
+        cluster
+            .wait_for_every_cache_member_level(CACHE, Duration::from_secs(30))
+            .await
+            .expect("every member of a healthy Raft cache shard should hold the write");
+        return;
+    }
     felix_cluster::wait::until(
         Duration::from_secs(30),
         "the cache write to reach every follower",
@@ -111,9 +121,6 @@ async fn read_until(
 #[serial]
 #[tokio::test]
 async fn a_cache_value_survives_the_loss_of_its_owner() {
-    if felix_cluster::skip_on_raft_until(3030, "cache failover reads hybrid replica reports") {
-        return;
-    }
     let mut cluster = Cluster::start(replicated_cache())
         .await
         .expect("start cluster");
@@ -210,9 +217,6 @@ async fn retained_watch_until(
 #[serial]
 #[tokio::test]
 async fn a_retained_watch_survives_the_loss_of_the_owner() {
-    if felix_cluster::skip_on_raft_until(3030, "cache failover reads hybrid replica reports") {
-        return;
-    }
     let mut cluster = Cluster::start(replicated_cache())
         .await
         .expect("start cluster");
@@ -462,7 +466,10 @@ async fn a_quorum_acknowledged_cache_write_survives_its_leader() {
 #[serial]
 #[tokio::test]
 async fn a_quorum_cache_placed_short_takes_writes_after_a_broker_dies() {
-    if felix_cluster::skip_on_raft_until(3030, "a short-placed quorum cache never takes a write") {
+    if felix_cluster::skip_on_raft_until(
+        3030,
+        "a shard placed short is held unformed on Raft, so the start never takes a publish",
+    ) {
         return;
     }
     const OPS: &str = "ops";
@@ -548,7 +555,10 @@ async fn a_quorum_cache_placed_short_takes_writes_after_a_broker_dies() {
 #[serial]
 #[tokio::test]
 async fn shards_placed_on_one_broker_reach_their_factor_once_more_join() {
-    if felix_cluster::skip_on_raft_until(3030, "a short-placed quorum cache never takes a write") {
+    if felix_cluster::skip_on_raft_until(
+        3030,
+        "a shard placed short is held unformed on Raft, so the start never takes a publish",
+    ) {
         return;
     }
     const OPS: &str = "ops";
@@ -612,7 +622,10 @@ async fn shards_placed_on_one_broker_reach_their_factor_once_more_join() {
 #[serial]
 #[tokio::test]
 async fn a_deposed_cache_leader_rejoins_after_a_failover() {
-    if felix_cluster::skip_on_raft_until(3030, "cache rejoin reads hybrid replica reports") {
+    if felix_cluster::skip_on_raft_until(
+        3030,
+        "the rejoin wait reads a hybrid replica report and the hybrid halted metric",
+    ) {
         return;
     }
     let mut cluster = Cluster::start(quorum_cache()).await.expect("start cluster");
