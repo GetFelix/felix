@@ -1295,3 +1295,28 @@ fn a_refusal_of_the_whole_body_refuses_every_heartbeat() {
     let one = encode_reply(&Ok(RaftReply(Reply::Written)));
     assert!(decode_beats_reply(one, 3).is_err());
 }
+
+/// **The sender takes the highest layout it shares with the peer**, reads a
+/// peer that states none as layout 6, and refuses when they share none.
+#[test]
+fn a_sender_chooses_a_layout_the_peer_reads() {
+    let range =
+        |lowest, highest| felix_wire::internal::RaftLayouts::new(lowest, highest).expect("range");
+    assert_eq!(super::choose_layout(LAYOUTS, Some(LAYOUTS)), Some(LAYOUT));
+    assert_eq!(
+        super::choose_layout(range(6, 8), Some(range(4, 7))),
+        Some(7)
+    );
+    assert_eq!(
+        super::choose_layout(range(4, 7), Some(range(6, 8))),
+        Some(7)
+    );
+    assert_eq!(super::choose_layout(range(6, 8), Some(range(9, 9))), None);
+    assert_eq!(super::choose_layout(range(4, 8), None), Some(6));
+    assert_eq!(super::choose_layout(range(7, 8), None), None);
+    assert_eq!(
+        super::UNSTATED_LAYOUTS,
+        range(6, 6),
+        "the unstated layout is frozen"
+    );
+}

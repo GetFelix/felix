@@ -12,7 +12,7 @@ use std::time::Duration;
 
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 use felix_storage::raft_log::LogPoint;
-use felix_wire::internal::MAX_IDENT_BYTES;
+use felix_wire::internal::{MAX_IDENT_BYTES, RaftLayouts};
 use openraft::entry::RaftEntry;
 use openraft::impls::leader_id_std::LeaderId;
 use openraft::raft::{
@@ -34,6 +34,30 @@ use crate::{ShardKey, ShardKind};
 /// version to a membership, 5 the piece entry, 6 the send number after the
 /// gap.
 const LAYOUT: u8 = 6;
+
+/// The layouts this build reads and writes, which it states in the peer
+/// handshake. A sender writes only [`LAYOUT`], so it sends to a peer whose
+/// range holds it and to no other.
+pub(crate) const LAYOUTS: RaftLayouts = match RaftLayouts::new(LAYOUT, LAYOUT) {
+    Some(layouts) => layouts,
+    None => panic!("LAYOUT is not a layout"),
+};
+
+/// What a peer that offers `RAFT` and states no layouts is taken to read:
+/// the layout every build had when the handshake started carrying them.
+/// Frozen, whatever [`LAYOUT`] becomes. A peer read wrongly this way still
+/// refuses the body at its first byte, so nothing is misread.
+pub(crate) const UNSTATED_LAYOUTS: RaftLayouts = match RaftLayouts::new(6, 6) {
+    Some(layouts) => layouts,
+    None => panic!("6 is a layout"),
+};
+
+/// The layout to send a peer in: the highest both read. `None` when they
+/// share none, and nothing may be sent. `theirs` is `None` for a peer that
+/// stated none.
+pub(crate) fn choose_layout(ours: RaftLayouts, theirs: Option<RaftLayouts>) -> Option<u8> {
+    ours.common(theirs.unwrap_or(UNSTATED_LAYOUTS))
+}
 
 /// The second byte of a request: which message it is.
 const APPEND: u8 = 1;

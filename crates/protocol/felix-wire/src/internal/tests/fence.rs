@@ -254,7 +254,9 @@ fn raft_layouts_travel_as_two_bytes_after_the_incarnation() {
 /// Raft messages, so the whole handshake fails instead.
 #[test]
 fn a_malformed_raft_layouts_statement_is_refused() {
-    let bits = PeerCapabilities::RAFT.union(PeerCapabilities::RAFT_LAYOUTS).bits();
+    let bits = PeerCapabilities::RAFT
+        .union(PeerCapabilities::RAFT_LAYOUTS)
+        .bits();
     for trailing in [&[][..], &[6][..], &[0, 6][..], &[7, 6][..], &[6, 6, 0][..]] {
         assert!(
             matches!(

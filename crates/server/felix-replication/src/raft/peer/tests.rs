@@ -8,7 +8,7 @@ use std::time::Duration;
 
 use felix_storage::DiskLog;
 use felix_storage::log::{FsyncMode, LogConfig};
-use felix_wire::internal::{InternalMessage, PeerCapabilities};
+use felix_wire::internal::{InternalMessage, PeerCapabilities, RaftLayouts};
 use openraft::raft::VoteRequest;
 use openraft::type_config::alias::VoteOf;
 use openraft::vote::{RaftLeaderId, RaftVote};
@@ -1086,6 +1086,126 @@ async fn heartbeats_together_cross_a_real_listener() {
     let beats = (0..4).map(|n| heartbeat_for(n, "b")).collect();
     let answers = transport.send_beats(beats, Duration::from_millis(1)).await;
     assert_eq!(refused_shards(&answers), vec![0, 1, 2, 3]);
+    a.stop().await;
+    b.stop().await;
+}
+
+/// A requester whose peer offers `RAFT` and states `layouts`, counting what
+/// it is asked to send.
+struct Stating {
+    layouts: Option<RaftLayouts>,
+    sent: AtomicUsize,
+}
+
+impl Stating {
+    fn new(layouts: Option<RaftLayouts>) -> Arc<Self> {
+        Arc::new(Self {
+            layouts,
+            sent: AtomicUsize::new(0),
+        })
+    }
+}
+
+impl crate::peer::PeerRequester for Stating {
+    async fn request(
+        &self,
+        node_id: &str,
+        _addr: SocketAddr,
+        _message: InternalMessage,
+    ) -> Result<InternalMessage, PeerError> {
+        self.sent.fetch_add(1, Ordering::SeqCst);
+        Err(PeerError::Disconnected {
+            node_id: node_id.into(),
+        })
+    }
+
+    async fn raft_offer(
+        &self,
+        _node_id: &str,
+        _addr: SocketAddr,
+    ) -> Result<crate::peer::RaftOffer, PeerError> {
+        Ok(crate::peer::RaftOffer {
+            capabilities: PeerCapabilities::RAFT.union(PeerCapabilities::RAFT_BEATS),
+            layouts: self.layouts,
+        })
+    }
+}
+
+fn layouts(lowest: u8, highest: u8) -> RaftLayouts {
+    RaftLayouts::new(lowest, highest).expect("layouts")
+}
+
+/// **A peer whose stated layouts include this build's is sent to**, and so
+/// is one that states none: that silence is read as layout 6.
+#[tokio::test]
+async fn a_peer_that_reads_this_layout_is_sent_one() {
+    let book = Book::default();
+    book.lock()
+        .insert("b".into(), "127.0.0.1:1".parse().expect("addr"));
+    for stated in [Some(wire::LAYOUTS), Some(layouts(4, 9)), None] {
+        let requester = Stating::new(stated);
+        let transport = PeerTransport::new(Arc::clone(&requester), self::book(&book));
+        let _ = transport
+            .send(vote_for(GroupId::new(shard(), 0), MemberId::new("b", 1)))
+            .await;
+        assert_eq!(
+            requester.sent.load(Ordering::SeqCst),
+            1,
+            "a peer stating {stated:?} was not sent the vote"
+        );
+    }
+}
+
+/// **A peer that reads no layout this build writes is never sent a Raft
+/// message**, and the refusal says why rather than reading as a peer that
+/// is down.
+#[tokio::test]
+async fn a_peer_on_other_layouts_is_refused_with_the_reason() {
+    let book = Book::default();
+    book.lock()
+        .insert("b".into(), "127.0.0.1:1".parse().expect("addr"));
+    for stated in [layouts(7, 9), layouts(1, 5)] {
+        let requester = Stating::new(Some(stated));
+        let transport = PeerTransport::new(Arc::clone(&requester), self::book(&book));
+        let refused = transport
+            .send(vote_for(GroupId::new(shard(), 0), MemberId::new("b", 1)))
+            .await
+            .err()
+            .expect("refused");
+        let expected = format!("states Raft layouts {stated} and this build writes 6");
+        assert!(
+            matches!(&refused, Refused::Unreachable(why) if why.contains(&expected)),
+            "{refused}"
+        );
+        let beats = (0..3).map(|n| heartbeat_for(n, "b")).collect::<Vec<_>>();
+        let answers = transport.send_beats(beats, Duration::from_millis(1)).await;
+        assert_eq!(answers.len(), 3);
+        for answer in &answers {
+            assert!(
+                matches!(answer, Err(Refused::Unreachable(why)) if why.contains(&expected)),
+                "{:?}",
+                answer.as_ref().err()
+            );
+        }
+        assert_eq!(requester.sent.load(Ordering::SeqCst), 0, "{stated}");
+    }
+}
+
+/// **The layouts a real listener states reach the dialling pool**, so two
+/// brokers on this build agree before either sends a Raft message.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_listener_states_its_layouts_to_the_pool() {
+    let book = Book::default();
+    let a = Broker::start("a", &book, true).await;
+    let b = Broker::start("b", &book, true).await;
+    let offer = a
+        .pool
+        .raft_offer("b", book.lock()["b"])
+        .await
+        .expect("offer");
+    assert!(offer.capabilities.contains(PeerCapabilities::RAFT));
+    assert!(offer.capabilities.contains(PeerCapabilities::RAFT_LAYOUTS));
+    assert_eq!(offer.layouts, Some(wire::LAYOUTS));
     a.stop().await;
     b.stop().await;
 }
