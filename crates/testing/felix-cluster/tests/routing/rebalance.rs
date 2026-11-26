@@ -150,7 +150,10 @@ fn missing(sent: &[Vec<u8>], got: &[Vec<u8>]) -> Vec<String> {
 #[serial]
 #[tokio::test]
 async fn a_drained_broker_hands_its_shard_over_with_every_record() {
-    if felix_cluster::skip_on_raft_until_moves_land() {
+    if felix_cluster::skip_on_raft_until(
+        3004,
+        "a planned move or leader change in this test does not complete on Raft yet",
+    ) {
         return;
     }
     let cluster = Cluster::start(ClusterConfig {
@@ -192,7 +195,10 @@ async fn a_drained_broker_hands_its_shard_over_with_every_record() {
 #[serial]
 #[tokio::test]
 async fn records_acknowledged_during_a_move_survive_it() {
-    if felix_cluster::skip_on_raft_until_moves_land() {
+    if felix_cluster::skip_on_raft_until(
+        3004,
+        "a planned move or leader change in this test does not complete on Raft yet",
+    ) {
         return;
     }
     let cluster = Cluster::start(ClusterConfig {
@@ -300,9 +306,6 @@ async fn records_acknowledged_during_a_move_survive_it() {
 #[serial]
 #[tokio::test]
 async fn a_broker_that_joins_takes_shards_from_an_overloaded_one() {
-    if felix_cluster::skip_on_raft_until_moves_land() {
-        return;
-    }
     let mut cluster = Cluster::start(ClusterConfig {
         nodes: 1,
         streams: vec![StreamSpec::new(STREAM, 4)],
@@ -380,7 +383,10 @@ async fn a_broker_that_joins_takes_shards_from_an_overloaded_one() {
 #[serial]
 #[tokio::test]
 async fn a_destination_that_dies_mid_transfer_does_not_take_the_shard() {
-    if felix_cluster::skip_on_raft_until_moves_land() {
+    if felix_cluster::skip_on_raft_until(
+        3004,
+        "a planned move or leader change in this test does not complete on Raft yet",
+    ) {
         return;
     }
     let mut cluster = Cluster::start(ClusterConfig {
@@ -445,7 +451,10 @@ async fn a_destination_that_dies_mid_transfer_does_not_take_the_shard() {
 #[serial]
 #[tokio::test]
 async fn a_drain_and_a_join_at_the_same_time_converge() {
-    if felix_cluster::skip_on_raft_until_moves_land() {
+    if felix_cluster::skip_on_raft_until(
+        3004,
+        "a planned move or leader change in this test does not complete on Raft yet",
+    ) {
         return;
     }
     let mut cluster = Cluster::start(ClusterConfig {
@@ -515,7 +524,10 @@ async fn a_drain_and_a_join_at_the_same_time_converge() {
 #[serial]
 #[tokio::test]
 async fn a_move_switches_over_in_well_under_a_second() {
-    if felix_cluster::skip_on_raft_until_moves_land() {
+    if felix_cluster::skip_on_raft_until(
+        3004,
+        "a planned move or leader change in this test does not complete on Raft yet",
+    ) {
         return;
     }
     use felix_controlplane_service::model::ShardState;
@@ -707,7 +719,10 @@ async fn publish_through(
 #[serial]
 #[tokio::test]
 async fn continuous_publishing_through_a_move_is_never_refused() {
-    if felix_cluster::skip_on_raft_until_moves_land() {
+    if felix_cluster::skip_on_raft_until(
+        3004,
+        "a planned move or leader change in this test does not complete on Raft yet",
+    ) {
         return;
     }
     let cluster = Cluster::start(ClusterConfig {
@@ -820,7 +835,10 @@ async fn continuous_publishing_through_a_move_is_never_refused() {
 #[serial]
 #[tokio::test]
 async fn a_quorum_publish_during_a_copy_is_not_held_by_it() {
-    if felix_cluster::skip_on_raft_until_moves_land() {
+    if felix_cluster::skip_on_raft_until(
+        3004,
+        "a planned move or leader change in this test does not complete on Raft yet",
+    ) {
         return;
     }
     let cluster = Cluster::start(ClusterConfig {
@@ -893,7 +911,10 @@ async fn a_quorum_publish_during_a_copy_is_not_held_by_it() {
 #[serial]
 #[tokio::test]
 async fn a_move_completes_while_a_publisher_keeps_writing() {
-    if felix_cluster::skip_on_raft_until_moves_land() {
+    if felix_cluster::skip_on_raft_until(
+        3004,
+        "a planned move or leader change in this test does not complete on Raft yet",
+    ) {
         return;
     }
     use std::sync::atomic::{AtomicBool, Ordering};
@@ -1019,7 +1040,10 @@ async fn a_move_completes_while_a_publisher_keeps_writing() {
 #[serial]
 #[tokio::test]
 async fn a_move_that_cannot_copy_is_abandoned_after_its_timeout() {
-    if felix_cluster::skip_on_raft_until_moves_land() {
+    if felix_cluster::skip_on_raft_until(
+        3004,
+        "a planned move or leader change in this test does not complete on Raft yet",
+    ) {
         return;
     }
     use felix_controlplane_service::cluster::placement::MovePolicy;
@@ -1116,7 +1140,10 @@ async fn a_move_that_cannot_copy_is_abandoned_after_its_timeout() {
 #[serial]
 #[tokio::test]
 async fn a_move_onto_a_restarted_broker_does_not_wait_for_the_catalog_tick() {
-    if felix_cluster::skip_on_raft_until_moves_land() {
+    if felix_cluster::skip_on_raft_until(
+        3004,
+        "a planned move or leader change in this test does not complete on Raft yet",
+    ) {
         return;
     }
     const SYNC_INTERVAL: Duration = Duration::from_secs(10);

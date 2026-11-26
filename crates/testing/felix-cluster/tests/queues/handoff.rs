@@ -29,7 +29,10 @@ const COUNTER: &str = "hits";
 #[tokio::test]
 #[serial]
 async fn a_moved_shard_keeps_its_group_state_and_counters() {
-    if felix_cluster::skip_on_raft_until_moves_land() {
+    if felix_cluster::skip_on_raft_until(
+        3004,
+        "a planned move or leader change in this test does not complete on Raft yet",
+    ) {
         return;
     }
     let mut cluster = Cluster::start(ClusterConfig {
@@ -377,7 +380,10 @@ async fn consume_until(
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[serial]
 async fn writes_of_every_kind_through_a_move_are_never_refused() {
-    if felix_cluster::skip_on_raft_until_moves_land() {
+    if felix_cluster::skip_on_raft_until(
+        3004,
+        "a planned move or leader change in this test does not complete on Raft yet",
+    ) {
         return;
     }
     let mut cluster = Cluster::start(ClusterConfig {
@@ -641,7 +647,10 @@ async fn publish_jobs(cluster: &Cluster, via: &str, from: usize, count: usize) {
 #[tokio::test]
 #[serial]
 async fn a_shard_moved_away_and_back_hands_out_nothing_already_acked() {
-    if felix_cluster::skip_on_raft_until_moves_land() {
+    if felix_cluster::skip_on_raft_until(
+        3004,
+        "a planned move or leader change in this test does not complete on Raft yet",
+    ) {
         return;
     }
     let cluster = Cluster::start(ClusterConfig {
