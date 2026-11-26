@@ -2,9 +2,13 @@
 //! resumes from a recent offset is replayed what it missed, as the hybrid
 //! replays its shard log, rather than handed every key again.
 //!
-//! Kept only while a member's shard is watched and for [`WINDOW_MICROS`]
-//! after, so an unwatched shard records nothing and holds nothing. A resume
-//! on a member that kept no changes for it is resnapshotted.
+//! Kept only while the shard is watched and for a while after, so an
+//! unwatched shard records nothing and holds nothing. A member records when
+//! a watch here takes a change, and when it applies a
+//! [`super::CacheCommand::Watched`] entry, which a member serving a watch
+//! has its leader append so that every member records and a resume after a
+//! failover is replayed. A resume from below a member's floor, or on a
+//! member that kept no changes, is resnapshotted.
 
 use std::collections::VecDeque;
 
@@ -21,6 +25,13 @@ const MAX_BYTES: usize = 1 << 20;
 /// in the log's microseconds. Covers a client that reconnects after a
 /// dropped connection, a restart or a broker failover.
 pub(crate) const WINDOW_MICROS: u64 = 5 * 60 * 1_000_000;
+/// How long past its stamp a [`super::CacheCommand::Watched`] entry keeps
+/// every member recording. Twice the window, so a mark renewed once a
+/// window still has a window to spare when the next one lands.
+pub(crate) const MARK_MICROS: u64 = 2 * WINDOW_MICROS;
+/// How long a member waits before it asks for a mark again while the last
+/// ask has not been applied.
+pub(crate) const MARK_RETRY_MICROS: u64 = 10 * 1_000_000;
 /// What a kept change costs beyond its key and value: its slot, plus the
 /// allocator's share of the key's own allocation.
 const OVERHEAD: usize = std::mem::size_of::<Change>() + 16;
