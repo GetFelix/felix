@@ -83,6 +83,8 @@ pub struct ShardFence {
     reclaimable: RwLock<HashMap<ShardKey, u64>>,
     /// Shards whose failed open was reported refused since they last opened.
     failed_reported: parking_lot::Mutex<felix_common::random::HashSet<ShardKey>>,
+    /// Shards [`crate::shards::memory`] serves. Replication never walks them.
+    in_memory: RwLock<felix_common::random::HashSet<ShardKey>>,
 }
 
 impl ShardFence {
@@ -147,6 +149,24 @@ impl ShardFence {
     /// follower ahead of this broker's copy. See `felix_replication::reclaim`.
     pub(crate) fn reclaimable_at(&self, key: &ShardKey) -> Option<u64> {
         self.reclaimable.read().get(key).copied()
+    }
+
+    /// Hand `key` to [`crate::shards::memory`]: no replication pass reports
+    /// it or fences it.
+    pub(crate) fn serve_in_memory(&self, key: &ShardKey) {
+        if !self.in_memory.read().contains(key) {
+            self.in_memory.write().insert(key.clone());
+        }
+    }
+
+    /// Keep only the in-memory shards `keep` names.
+    pub(crate) fn retain_in_memory(&self, keep: impl Fn(&ShardKey) -> bool) {
+        self.in_memory.write().retain(|key| keep(key));
+    }
+
+    /// Whether [`crate::shards::memory`] serves `key`.
+    pub(crate) fn is_in_memory(&self, key: &ShardKey) -> bool {
+        self.in_memory.read().contains(key)
     }
 
     /// The lease bound with [`Self::bind_lease`], if any.
@@ -512,7 +532,8 @@ impl felix_replication::driver::WriteFence for ShardFence {
     }
 
     fn withheld(&self, key: &ShardKey, generation: u64) -> bool {
-        self.gave_up.read().get(key) == Some(&generation)
+        self.is_in_memory(key)
+            || self.gave_up.read().get(key) == Some(&generation)
             || self
                 .unclean
                 .get()

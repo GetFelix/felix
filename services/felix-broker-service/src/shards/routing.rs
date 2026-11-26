@@ -161,6 +161,9 @@ pub struct IngressRouter {
     /// Routes for the shards the hybrid does not run. They never reach the
     /// view, so they are asked for first.
     engine_shards: std::sync::OnceLock<Arc<dyn EngineShards>>,
+    /// The in-memory shards serving here, which every view's servable set
+    /// includes.
+    memory: std::sync::OnceLock<Arc<super::memory::MemoryShards>>,
     /// Runs inside [`IngressRouter::publish`] just before the view is stored,
     /// so a test can land a change between the read and the store. Held while
     /// the hook runs, so a hook must not call `publish` itself.
@@ -195,6 +198,7 @@ impl IngressRouter {
             fence,
             hold: MoveHold::disabled(),
             engine_shards: std::sync::OnceLock::new(),
+            memory: std::sync::OnceLock::new(),
             #[cfg(test)]
             before_publish: std::sync::Mutex::new(None),
         }
@@ -204,6 +208,12 @@ impl IngressRouter {
     /// call counts.
     pub fn set_engine_shards(&self, engine_shards: Arc<dyn EngineShards>) {
         let _ = self.engine_shards.set(engine_shards);
+    }
+
+    /// Serve the shards `memory` holds as well as the lifecycle's. Only the
+    /// first call counts.
+    pub(crate) fn set_memory(&self, memory: Arc<super::memory::MemoryShards>) {
+        let _ = self.memory.set(memory);
     }
 
     /// Where another engine sends `key`, when one runs it here. A local
@@ -622,7 +632,12 @@ impl IngressRouter {
         }
     }
 
-    fn store(&self, view: View) {
+    fn store(&self, mut view: View) {
+        // Every publish goes through here, the lifecycle's own included, so
+        // none leaves the in-memory shards out.
+        if let Some(memory) = self.memory.get() {
+            view.servable.extend(memory.servable());
+        }
         self.view.store(Arc::new(view));
         self.fence.changed().notify_waiters();
     }
@@ -1031,6 +1046,9 @@ pub struct FeedState {
     pub nodes: HashMap<String, felix_router::NodeRef>,
     /// Whoever runs the shards the hybrid does not. `None` when it runs all.
     pub engine_shards: Option<Arc<dyn EngineShards>>,
+    /// Takes every stream shard `engine_shards` left, on a broker whose
+    /// durable shards run on Raft: those are the in-memory ones.
+    pub(crate) memory: Option<Arc<super::memory::MemoryShards>>,
 }
 
 /// What the feed needs to read the node catalog.
@@ -1077,6 +1095,7 @@ pub fn spawn_feed<L: ControlPlaneLink>(
         elections,
         nodes,
         engine_shards,
+        memory,
     } = state;
     // Seeded with the kept addresses, so a first read that fails still leaves
     // the feed something to route by.
@@ -1152,6 +1171,13 @@ pub fn spawn_feed<L: ControlPlaneLink>(
                 }
                 None => Taken::new(),
             };
+            // After the Raft engine took the durable ones, so only in-memory
+            // shards are left to take. None of them reaches the elections,
+            // the prefetch or the lifecycle below.
+            let in_memory = match &memory {
+                Some(memory) => memory.take(&mut assignments),
+                None => HashMap::default(),
+            };
             let assignments = match &elections {
                 Some(elections) => with_elected(assignments, elections),
                 None => assignments,
@@ -1185,6 +1211,13 @@ pub fn spawn_feed<L: ControlPlaneLink>(
                 &mut early,
             )
             .await;
+            let mut assignments = assignments;
+            if let Some(memory) = &memory {
+                memory.apply(&in_memory).await;
+                // Routed like any other shard, so every broker forwards to
+                // the owner.
+                assignments.extend(in_memory);
+            }
             let newest = Arc::clone(&fetched.borrow_and_update());
             if !Arc::ptr_eq(&newest, &catalog) {
                 catalog = newest;

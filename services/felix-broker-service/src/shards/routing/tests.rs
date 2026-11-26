@@ -432,6 +432,7 @@ mod feed {
                 elections: None,
                 nodes: HashMap::default(),
                 engine_shards: None,
+                memory: None,
             },
             router,
         )

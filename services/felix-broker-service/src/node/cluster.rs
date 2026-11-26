@@ -805,12 +805,26 @@ where
         (Some((router, ingress, lifecycle, ownership)), Some(link), storage) => {
             let readers = shard_lifecycle::ShardReaders::new(Arc::clone(broker))
                 .with_endpoints(Arc::clone(client_endpoints));
+            // A Raft broker serves its in-memory stream shards on their own
+            // path, with no hybrid lifecycle or replication pass.
+            let memory = raft.then(|| {
+                let memory = Arc::new(crate::shards::memory::MemoryShards::new(
+                    ingress.local_node_id(),
+                    Arc::clone(broker),
+                    Arc::clone(ingress.fence()),
+                    readers.clone(),
+                ));
+                ingress.set_memory(Arc::clone(&memory));
+                memory
+            });
             // Ends readers on a lapsed lease, or, where they need none, once
             // this broker learns it was deposed.
+            let marks = Arc::clone(quorum_marks);
             tokio::spawn(readers.clone().watch_leadership(
                 Arc::clone(ingress.fence()),
-                Arc::clone(quorum_marks),
+                Some(Arc::new(move || marks.reads_by_round().cloned())),
                 Arc::clone(lifecycle),
+                memory.clone(),
                 sync_shutdown.clone(),
             ));
             // A promoted shard waits for replication to fence its replicas,
@@ -915,6 +929,7 @@ where
                     elections,
                     nodes,
                     engine_shards,
+                    memory,
                 },
                 Some(shard_routing::CatalogSource {
                     link: link.clone(),
