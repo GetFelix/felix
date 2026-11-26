@@ -86,6 +86,9 @@ pub enum Refused {
     AtCapacity(String),
     /// The destination is marked internal, which holds no tenant's shard.
     InternalNode(String),
+    /// The destination has no durable storage, and the shard is a durable
+    /// stream's or a cache's.
+    NoDurableStorage(String),
     /// The destination's region may not hold this stream's data: it is not
     /// the stream's region and has no bridge from it.
     RegionNotAllowed {
@@ -134,6 +137,7 @@ impl Refused {
             Self::AlreadyLeads(_) => "already_leader",
             Self::AtCapacity(_) => "at_capacity",
             Self::InternalNode(_) => "internal_node",
+            Self::NoDurableStorage(_) => "no_durable_storage",
             Self::RegionNotAllowed { .. } => "region_not_allowed",
             Self::Moving => "already_moving",
             Self::LeaderUnavailable(_) => "leader_unavailable",
@@ -168,6 +172,10 @@ impl std::fmt::Display for Refused {
             Self::InternalNode(node) => write!(
                 f,
                 "node {node} is marked internal (FELIX_NODE_ROLE) and holds no tenant shards"
+            ),
+            Self::NoDurableStorage(node) => write!(
+                f,
+                "node {node} has no durable storage and holds only in-memory stream shards"
             ),
             Self::RegionNotAllowed { node, region, home } => write!(
                 f,
@@ -242,6 +250,9 @@ pub fn start_move(
     }
     if node.spec.is_internal() {
         return Err(Refused::InternalNode(destination.to_string()));
+    }
+    if durable && !node.spec.has_durable_storage() {
+        return Err(Refused::NoDurableStorage(destination.to_string()));
     }
     if let Some(home) = home
         && !catalog.policy.regions.can_route(home, &node.spec.region)
@@ -488,6 +499,8 @@ fn zone_impact(
     replication_factor: u32,
     home: Option<&String>,
 ) -> Option<ZoneImpact> {
+    // A node without storage never holds a durable shard's copy.
+    let durable = placeable_of(catalog, &existing.key).is_none_or(|(_, durable, _)| durable);
     let eligible: Vec<&Node> = catalog
         .nodes
         .iter()
@@ -496,6 +509,7 @@ fn zone_impact(
         .filter(|node| {
             home.is_none_or(|home| catalog.policy.regions.can_route(home, &node.spec.region))
         })
+        .filter(|node| !durable || node.spec.has_durable_storage())
         .collect();
     if !eligible.iter().any(|node| node.spec.zone.is_some()) {
         return None;

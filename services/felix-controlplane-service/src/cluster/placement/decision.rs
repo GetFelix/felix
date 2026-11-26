@@ -397,6 +397,9 @@ pub enum Unplaceable {
     /// region it has a bridge to. Not placed elsewhere: that is exactly the
     /// copy the region policy exists to refuse.
     NoNodeInRegion { region: String },
+    /// The shard is a durable stream's or a cache's, and every live node it
+    /// may use has no durable storage.
+    NoDurableStorage,
 }
 
 impl std::fmt::Display for Unplaceable {
@@ -418,6 +421,11 @@ impl std::fmt::Display for Unplaceable {
             Self::NoNodeInRegion { region } => write!(
                 f,
                 "no live node is in region {region} or in a region bridged from it"
+            ),
+            Self::NoDurableStorage => write!(
+                f,
+                "every live node this shard may use has no durable storage and holds only \
+                 in-memory stream shards"
             ),
         }
     }

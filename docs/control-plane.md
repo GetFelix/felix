@@ -1578,6 +1578,47 @@ A broker registers as internal only once every control-plane member supports
 the role (metadata level 44); until then the registration is refused with 409,
 so a leader that would ignore the label never sees an internal node. A restore (`import_state`) carrying an internal node is held to the same level and is refused with 409 below it. The restore keeps no rule against dropping the role: it replaces the records on purpose.
 
+##### Nodes without durable storage
+
+A broker with a node id and no `FELIX_DURABLE_STORAGE_DIR` registers the label
+`felix.dev/node-storage=none` in the request that creates its incarnation. It
+runs on the Raft engine but holds no Raft group. Placement treats the label
+as a hard constraint for every durable stream shard and every cache shard,
+the way it treats a region the shard may not use:
+
+- None is placed on it, at creation, by balancing, on failover or when a lost
+  copy is restored. A cluster whose only live brokers have no storage places
+  no durable or cache shard.
+- An operator move of one onto it is refused with `no_durable_storage` (409).
+- One it already holds is moved off as a drain moves it; a Raft member there
+  is replaced through the group's membership change.
+- An in-memory stream's shard may be placed on it as on any other broker, and
+  is served there (`docs/hybrid-retirement.md`, "In-memory shards").
+- A shard with nowhere else to go reports "every live node this shard may use
+  has no durable storage" instead of being placed.
+- A stream create counts only brokers with storage when it warns that the
+  replication factor is more than the live brokers.
+
+These rules hold under the deprecated hybrid engine too, where a broker
+without storage used to hold caches in memory: it now holds no cache shard,
+and a cluster whose only live brokers have no storage places no cache.
+
+Every cache is a Raft group on brokers with storage, so a broker without
+storage only routes a cache request to the group's leader. A durable stream
+is not registered on it at all: the catalog sync skips it, so a client reaches
+that stream through a broker with storage.
+
+The label follows each registration: a broker restarted with storage
+registers without it, and one restarted without storage registers with it.
+`PATCH /v1/nodes/{id}` keeps it whatever `labels` says, and rejects a `labels`
+map that tries to set or change it.
+
+A broker without storage registers only once every control-plane member can
+apply the label (metadata level 54); until then the registration is refused
+with 409, and so is a restore carrying such a node. The broker also refuses a
+control plane whose registration answer has no `storage_placement`: that
+control plane predates these brokers and would place durable shards on it.
+
 The cluster-wide floor matters when many shards arrive at once, for example
 from an application that creates a stream per job. With only the ceiling as
 the bound, the best-scoring brokers could fill to it before the last one

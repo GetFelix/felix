@@ -1,6 +1,8 @@
 //! Unit tests for the node model: validation, patching, and serialization.
 use super::*;
-use felix_common::membership::{NODE_ROLE_INTERNAL, NODE_ROLE_LABEL};
+use felix_common::membership::{
+    NODE_ROLE_INTERNAL, NODE_ROLE_LABEL, NODE_STORAGE_LABEL, NODE_STORAGE_NONE,
+};
 
 fn node() -> Node {
     Node {
@@ -242,6 +244,40 @@ fn the_role_cannot_be_changed_through_labels() {
     assert_eq!(
         other.apply(&internal_node()).expect_err("other"),
         NodeValidationError::RoleViaLabels
+    );
+}
+
+fn diskless_node() -> Node {
+    let mut node = node();
+    node.spec.labels.insert(
+        NODE_STORAGE_LABEL.to_string(),
+        NODE_STORAGE_NONE.to_string(),
+    );
+    node
+}
+
+/// Only the broker's registration says whether it has a log: a label edit
+/// neither clears the storage label nor sets it.
+#[test]
+fn the_storage_label_is_kept_through_a_label_edit() {
+    assert!(node().spec.has_durable_storage());
+    assert!(!diskless_node().spec.has_durable_storage());
+    let replace = NodePatchRequest {
+        labels: Some(BTreeMap::from([("rack".to_string(), "b2".to_string())])),
+        ..NodePatchRequest::default()
+    };
+    let after = replace.apply(&diskless_node()).expect("patch");
+    assert!(!after.spec.has_durable_storage(), "{:?}", after.spec.labels);
+    let set = NodePatchRequest {
+        labels: Some(BTreeMap::from([(
+            NODE_STORAGE_LABEL.to_string(),
+            NODE_STORAGE_NONE.to_string(),
+        )])),
+        ..NodePatchRequest::default()
+    };
+    assert_eq!(
+        set.apply(&node()).expect_err("set"),
+        NodeValidationError::StorageViaLabels
     );
 }
 

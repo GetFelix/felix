@@ -108,6 +108,30 @@ fn a_replication_factor_over_the_registered_brokers_warns() {
     assert!(crate::api::streams::short_warning(&wide, 1).is_none());
 }
 
+/// **A broker without durable storage does not count as a host for a durable
+/// stream's copies**: placement never names it, so two brokers with disks
+/// and one without are short of an RF 3 stream.
+#[test]
+fn a_diskless_broker_does_not_count_toward_the_replication_factor() {
+    let node = |id: &str, diskless: bool| {
+        let mut node = crate::store::contract::nodes::node(id, 7000 + id.len() as u16);
+        node.spec.labels.clear();
+        if diskless {
+            node.spec.labels.insert(
+                felix_common::membership::NODE_STORAGE_LABEL.to_string(),
+                felix_common::membership::NODE_STORAGE_NONE.to_string(),
+            );
+        }
+        node
+    };
+    let nodes = vec![node("a", false), node("bb", false), node("ccc", true)];
+    assert_eq!(crate::api::streams::durable_hosts(&nodes), 2);
+    let mut wide = stream(StreamRouting::Modulo);
+    wide.replication_factor = 3;
+    let hosts = crate::api::streams::durable_hosts(&nodes);
+    assert!(crate::api::streams::short_warning(&wide, hosts).is_some());
+}
+
 /// An old client sees the stream's own fields: the warnings field is absent
 /// when empty, and a response with it still reads as a stream.
 #[test]

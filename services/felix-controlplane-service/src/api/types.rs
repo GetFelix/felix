@@ -472,6 +472,11 @@ pub struct NodeRegistrationResponse {
     /// The fleet features enabled as of this registration.
     #[serde(default)]
     pub fleet_features: std::collections::BTreeSet<String>,
+    /// Always true: this control plane gives a node registered without
+    /// durable storage no durable stream's or cache's shard. Absent from one
+    /// that predates such nodes, which a broker without storage refuses.
+    #[serde(default)]
+    pub storage_placement: bool,
 }
 
 /// Which fleet features the serving brokers support, and which are enabled.
