@@ -316,6 +316,13 @@ pub(crate) async fn never_placed(
     if store.placement_incarnation().await? != 0 {
         return Ok(false);
     }
+    if !(store.stream_changes(0).await?.items.is_empty()
+        && store.cache_changes(0).await?.items.is_empty()
+        && store.stream_snapshot().await?.items.is_empty()
+        && store.cache_snapshot().await?.items.is_empty())
+    {
+        return Ok(false);
+    }
     // A group formed over a store that already had a catalog took brokers'
     // existing data as its own.
     if let crate::store::identity::GroupIdentity::Recorded(identity) =
