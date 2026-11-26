@@ -5665,3 +5665,36 @@ async fn an_explicit_revocation_keeps_its_assertion_cutoff_for_its_level() {
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
 }
+
+/// A member below metadata level 55 would refuse the entry and keep the old
+/// epoch where the others start the next one, so the store does not propose
+/// a group of one's self re-form until every member can apply it.
+#[tokio::test]
+async fn a_self_reform_is_refused_below_level_55() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let (store, _version) = store_with_member_at(dir.path(), 54).await;
+    let key = crate::model::ShardKey {
+        tenant_id: "t1".to_string(),
+        namespace: "ns".to_string(),
+        stream: "orders".to_string(),
+        shard: 0,
+        kind: crate::model::ShardKind::Stream,
+    };
+    let start = crate::model::ReformEpochStart {
+        incarnation: 1,
+        expected_epoch: 0,
+        planned_floor: None,
+        base: crate::model::RaftEpochBase {
+            base_last: None,
+            first_index: 1,
+        },
+        voters: [("broker-a".to_string(), 7)].into(),
+        dead: Default::default(),
+        starts: Default::default(),
+    };
+    let refused = store.start_alone_epoch(&key, "broker-a", start).await;
+    assert!(
+        matches!(&refused, Err(StoreError::Conflict(why)) if why.contains("below metadata version 55")),
+        "{refused:?}"
+    );
+}

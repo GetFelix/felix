@@ -560,6 +560,12 @@ where
             sync_shutdown.clone(),
             run.writers(),
         );
+        cluster::write_alone_reforms(
+            &raft_shards,
+            link.clone(),
+            membership.node_id.clone(),
+            credential.clone(),
+        );
     }
     startup::bind_read_check(
         &config,

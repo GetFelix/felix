@@ -26,6 +26,10 @@ pub use node::{
     DeclaredDead, Node, NodeCapacity, NodeChange, NodeChangeOp, NodeLifecycle, NodePatchRequest,
     NodeSpec, NodeStatus, NodeSuspicion, NodeValidationError, PlacementAck, RootSequence,
 };
+pub(crate) use shard::{
+    AloneFacts, Learning, ShardOwner, check_elected_generation, first_generation,
+    generation_at_least, previous_generation,
+};
 pub use shard::{
     ElectedLeader, HaltedCopy, MoveReason, PendingSet, PlacedInEpoch, RaftBases, RaftEpochBase,
     RaftFloor, RaftFloorError, RaftFloorReport, RaftFormed, RaftLeader, RaftLogId, RaftOrdered,
@@ -33,10 +37,6 @@ pub use shard::{
     ReformRecordError, ReplicaReport, SealOrderError, SealReport, SealReportError, SealedSideLog,
     ShardAssignment, ShardAssignmentChange, ShardAssignmentChangeOp, ShardKey, ShardKind,
     ShardState, ShardSwitch, ShardValidationError,
-};
-pub(crate) use shard::{
-    Learning, ShardOwner, check_elected_generation, first_generation, generation_at_least,
-    previous_generation,
 };
 pub(crate) use stream::default_replication_factor;
 pub(crate) use stream::deleted_stream_payload;

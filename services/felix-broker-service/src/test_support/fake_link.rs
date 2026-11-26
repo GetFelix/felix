@@ -19,6 +19,7 @@ pub(crate) struct FakeLink {
     floors: Arc<Mutex<Vec<Vec<felix_replication::controlplane_link::RaftFloor>>>>,
     copy_ids: Arc<Mutex<Vec<felix_replication::controlplane_link::RaftCopyId>>>,
     reform_reports: Arc<Mutex<Vec<serde_json::Value>>>,
+    reform_alone: Arc<Mutex<Vec<serde_json::Value>>>,
     failing: Arc<Mutex<std::collections::HashSet<&'static str>>>,
 }
 
@@ -180,6 +181,16 @@ impl ControlPlaneLink for FakeLink {
     ) -> Result<LinkResponse> {
         self.reform_reports.lock().unwrap().push(body.clone());
         self.answer("reform_reports")
+    }
+
+    async fn reform_alone(
+        &self,
+        _: Option<&str>,
+        _: &str,
+        body: &serde_json::Value,
+    ) -> Result<LinkResponse> {
+        self.reform_alone.lock().unwrap().push(body.clone());
+        self.answer("reform_alone")
     }
 
     async fn confirmed_assignment(
