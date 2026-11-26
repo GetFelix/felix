@@ -7,7 +7,8 @@
 //! write that changes `leader` to another member of the set. The set changes
 //! when a member must leave (an internal, draining or lost broker) or an
 //! operator or a balance pass moves a shard outside it: one member is swapped
-//! for a live node and the group's leader runs the membership change.
+//! for a live node and the group's leader runs the membership change. A set
+//! short of its replication factor grows by one live node a write.
 //! `docs/control-plane.md`, "Raft shards".
 use std::collections::BTreeSet;
 
@@ -71,6 +72,9 @@ pub(super) fn on_raft(existing: &ShardAssignment, raft_streams: bool, durable: b
 ///   broker) is replaced by a live node outside the set, one at a time,
 ///   through the group's membership target. With no such node it stays and
 ///   the shard waits, shown to the operator.
+/// - A set short of the replication factor, as an abandon or a placement
+///   on too few brokers leaves it, grows by a live node outside the set
+///   ([`top_up`]), one member a write.
 /// - A live leader leading two or more shards over a live member moves to
 ///   it, the stream's spread first and then the cluster's, while nothing is
 ///   recovering. With no such member, a live broker outside the set takes a
@@ -136,6 +140,19 @@ pub(super) fn raft_step<'a>(
         && leaving(leader).is_none()
         && let Some(decision) =
             replace_leaving(existing, is_serving, leaving, eligible, load, moves)
+    {
+        return decision;
+    }
+    if is_live(leader)
+        && leaving(leader).is_none()
+        && let Some(decision) = top_up(
+            existing,
+            replication_factor,
+            is_serving,
+            eligible,
+            load,
+            moves,
+        )
     {
         return decision;
     }
@@ -658,7 +675,6 @@ fn replacement<'a>(
     eligible: &[&'a Node],
     load: &HashMap<&'a str, u32>,
 ) -> Result<&'a str, Blocked> {
-    let key = &existing.key;
     if let Some(down) = existing
         .nodes()
         .find(|node| node.as_str() != from && !is_serving(node))
@@ -668,13 +684,30 @@ fn replacement<'a>(
             why: Leaving::Draining,
         });
     }
-    // A replacement in a zone the rest of the set already holds comes last.
+    let to =
+        newcomer(existing, Some(from), eligible, load).ok_or_else(|| Blocked::NoReplacement {
+            node: from.to_string(),
+            why: Leaving::Draining,
+        })?;
+    seat_open(existing)?;
+    Ok(to)
+}
+
+/// The live node outside the set that joins it, `from` leaving: the one
+/// holding the fewest shards, in a zone the staying members lack first.
+fn newcomer<'a>(
+    existing: &ShardAssignment,
+    from: Option<&str>,
+    eligible: &[&'a Node],
+    load: &HashMap<&'a str, u32>,
+) -> Option<&'a str> {
+    let key = &existing.key;
     let staying: Vec<&str> = existing
         .nodes()
         .map(String::as_str)
-        .filter(|node| *node != from)
+        .filter(|node| Some(*node) != from)
         .collect();
-    let to = eligible
+    eligible
         .iter()
         .map(|node| node.node_id.as_str())
         .filter(|id| !existing.nodes().any(|member| member == id))
@@ -688,12 +721,57 @@ fn replacement<'a>(
                 *id,
             )
         })
-        .ok_or_else(|| Blocked::NoReplacement {
-            node: from.to_string(),
-            why: Leaving::Draining,
-        })?;
-    seat_open(existing)?;
-    Ok(to)
+}
+
+/// Grows a set short of its replication factor by one live node outside
+/// it. Nothing else adds a copy to a Raft set: a swap keeps the size, and
+/// an abandoned or thinly placed shard would otherwise acknowledge
+/// `Quorum` writes on fewer copies than its factor for good.
+///
+/// One member a write, so the voters the leader reported always hold at
+/// least half of the next set and the store takes it (#2905); the group
+/// adds the member as a learner before it votes. Decided only with every
+/// member serving and the target stored and formed for the current set,
+/// from the same budget as a replacement, and held by a pause. `None` when
+/// the set is full or no node outside it is live: the shard then shows as
+/// under-replicated.
+fn top_up<'a>(
+    existing: &'a ShardAssignment,
+    replication_factor: u32,
+    is_serving: &dyn Fn(&str) -> bool,
+    eligible: &[&'a Node],
+    load: &mut HashMap<&'a str, u32>,
+    moves: &mut Moves,
+) -> Option<Decision> {
+    if existing.nodes().count() >= replication_factor.max(1) as usize {
+        return None;
+    }
+    // A joint change needs a majority of both sets; a down member only
+    // makes the change wait inside the group.
+    if existing.nodes().any(|node| !is_serving(node)) {
+        return None;
+    }
+    let to = newcomer(existing, None, eligible, load)?;
+    if let Err(blocked) = seat_open(existing) {
+        return Some(Decision::Waiting(blocked));
+    }
+    let next = ShardAssignment {
+        replicas: existing
+            .replicas
+            .iter()
+            .cloned()
+            .chain(std::iter::once(to.to_string()))
+            .collect(),
+        ..existing.renamed()
+    };
+    if existing.holds_formed_set(&next.nodes().cloned().collect()) {
+        return Some(Decision::Waiting(Blocked::Unapplied));
+    }
+    let decision = spend_replacement(moves, MoveStep::RaftTopUp { to: to.to_string() }, next);
+    if matches!(decision, Decision::Move(..)) {
+        *load.entry(to).or_default() += 1;
+    }
+    Some(decision)
 }
 
 /// Whether `existing`'s set may change now: its target is stored for the
