@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use bytes::Bytes;
 use felix_storage::DiskLog;
 use felix_storage::log::{FsyncMode, LogConfig};
@@ -171,4 +173,262 @@ async fn a_floor_that_moves_under_the_read_restarts_the_pull() {
         .expect("served");
     assert_eq!(chunk.floor, 2);
     assert_eq!(indexes(&chunk), (2..=7).collect::<Vec<_>>());
+}
+
+/// A voter as the fake source serves it: its entries, a floor that is
+/// `raised` from the `after`th chunk on, and a cap of two entries a chunk.
+struct FakeVoter {
+    entries: Vec<EntryOf<ShardTypes>>,
+    floor: u64,
+    raised: Option<(usize, u64)>,
+    refuses: bool,
+}
+
+struct FakeSource {
+    voters: std::collections::HashMap<Arc<str>, FakeVoter>,
+    asked: parking_lot::Mutex<Vec<(Arc<str>, u64)>>,
+}
+
+#[async_trait]
+impl ChunkSource for FakeSource {
+    async fn chunk(
+        &self,
+        voter: &MemberId,
+        start: u64,
+        _max_bytes: u32,
+        _max_count: u32,
+    ) -> Result<BaseChunk, String> {
+        let asked = {
+            let mut asked = self.asked.lock();
+            asked.push((Arc::clone(&voter.broker), start));
+            asked.iter().filter(|(b, _)| *b == voter.broker).count()
+        };
+        let fake = self.voters.get(&voter.broker).ok_or("unknown voter")?;
+        if fake.refuses {
+            return Err("it has not offered base pulls".into());
+        }
+        let floor = match fake.raised {
+            Some((after, floor)) if asked > after => floor,
+            _ => fake.floor,
+        };
+        if floor > start {
+            return Ok(BaseChunk {
+                floor,
+                entries: Vec::new(),
+            });
+        }
+        let entries = fake
+            .entries
+            .iter()
+            .filter(|entry| entry.log_id.index >= start && entry.log_id.index <= 7)
+            .take(2)
+            .cloned()
+            .collect();
+        Ok(BaseChunk { floor, entries })
+    }
+}
+
+fn history(term_at: impl Fn(u64) -> u64) -> Vec<EntryOf<ShardTypes>> {
+    (0..10)
+        .map(|index| {
+            let mut entry = record(index, b"a record of some bytes");
+            entry.log_id = log_id(term_at(index), index);
+            entry
+        })
+        .collect()
+}
+
+fn voter(name: &str) -> MemberId {
+    MemberId::new(name, 1)
+}
+
+fn source(voters: Vec<(&str, FakeVoter)>) -> FakeSource {
+    FakeSource {
+        voters: voters
+            .into_iter()
+            .map(|(name, fake)| (Arc::from(name), fake))
+            .collect(),
+        asked: parking_lot::Mutex::new(Vec::new()),
+    }
+}
+
+fn good() -> FakeVoter {
+    FakeVoter {
+        entries: history(|_| 2),
+        floor: 0,
+        raised: None,
+        refuses: false,
+    }
+}
+
+fn quick() -> PullPace {
+    PullPace {
+        rounds: 2,
+        backoff: Duration::from_millis(1),
+        max_backoff: Duration::from_millis(1),
+    }
+}
+
+fn staging_config() -> LogConfig {
+    LogConfig {
+        fsync_mode: FsyncMode::OnCommit,
+        preallocate_segments: false,
+        ..LogConfig::default()
+    }
+}
+
+/// The indexes and terms the finished staging log holds.
+async fn staged(copy: &std::path::Path) -> Vec<(u64, u64)> {
+    let dir = copy.join("base-staging");
+    assert!(
+        dir.join("base-staged").exists(),
+        "the staging log is marked"
+    );
+    let disk = DiskLog::open(
+        &dir,
+        "staged".to_string(),
+        LogConfig {
+            raft_log: true,
+            ..staging_config()
+        },
+    )
+    .expect("open staged");
+    let raft = RaftLog::new(disk, ShardCodec).expect("raft log");
+    let mut reader = raft.reader();
+    reader
+        .limited_get_log_entries(0, 20)
+        .await
+        .expect("read")
+        .iter()
+        .map(|entry| (entry.log_id.index, entry.log_id.leader_id.term))
+        .collect()
+}
+
+fn base_last() -> EpochLogId {
+    base().and_then(|base| base.base_last).expect("base")
+}
+
+#[tokio::test]
+async fn a_pull_stages_the_whole_base_from_its_floor() {
+    let dir = tempfile::tempdir().expect("dir");
+    let source = source(vec![("a", good())]);
+    let base = base().expect("base");
+    let pulled = pull(
+        &source,
+        &[voter("a")],
+        &base,
+        1,
+        dir.path(),
+        &staging_config(),
+        quick(),
+    )
+    .await
+    .expect("pull");
+    assert_eq!(pulled, Pulled::Staged(base_last()));
+    assert_eq!(
+        staged(dir.path()).await,
+        (1..=7).map(|i| (i, 2)).collect::<Vec<_>>()
+    );
+}
+
+/// A voter whose entries are of another history fails the check partway;
+/// what it served is dropped and the next voter serves the whole base.
+#[tokio::test]
+async fn a_voter_of_another_history_is_abandoned_for_the_next() {
+    let dir = tempfile::tempdir().expect("dir");
+    let other = FakeVoter {
+        entries: history(|index| if index < 4 { 2 } else { 3 }),
+        ..good()
+    };
+    let source = source(vec![("other", other), ("a", good())]);
+    let base = base().expect("base");
+    let voters = [voter("other"), voter("a")];
+    let pulled = pull(
+        &source,
+        &voters,
+        &base,
+        0,
+        dir.path(),
+        &staging_config(),
+        quick(),
+    )
+    .await
+    .expect("pull");
+    assert_eq!(pulled, Pulled::Staged(base_last()));
+    assert_eq!(
+        staged(dir.path()).await,
+        (0..=7).map(|i| (i, 2)).collect::<Vec<_>>()
+    );
+    let asked = source.asked.lock();
+    assert!(asked.iter().any(|(b, at)| &**b == "other" && *at == 4));
+    assert_eq!(asked.iter().filter(|(b, _)| &**b == "a").count(), 4);
+}
+
+/// A floor that rises under the pull restarts it there, so the staged log
+/// starts at the new floor with no hole.
+#[tokio::test]
+async fn a_raised_floor_restarts_the_pull_there() {
+    let dir = tempfile::tempdir().expect("dir");
+    let raising = FakeVoter {
+        raised: Some((1, 5)),
+        ..good()
+    };
+    let source = source(vec![("a", raising)]);
+    let base = base().expect("base");
+    let pulled = pull(
+        &source,
+        &[voter("a")],
+        &base,
+        0,
+        dir.path(),
+        &staging_config(),
+        quick(),
+    )
+    .await
+    .expect("pull");
+    assert_eq!(pulled, Pulled::Staged(base_last()));
+    assert_eq!(
+        staged(dir.path()).await,
+        (5..=7).map(|i| (i, 2)).collect::<Vec<_>>()
+    );
+}
+
+/// No voter that serves base pulls: nothing is staged, and the pull gives
+/// up after its rounds.
+#[tokio::test]
+async fn no_capable_voter_means_no_pull() {
+    let dir = tempfile::tempdir().expect("dir");
+    let refusing = FakeVoter {
+        refuses: true,
+        ..good()
+    };
+    let source = source(vec![("a", refusing)]);
+    let base = base().expect("base");
+    let pulled = pull(
+        &source,
+        &[voter("a")],
+        &base,
+        0,
+        dir.path(),
+        &staging_config(),
+        quick(),
+    )
+    .await
+    .expect("pull");
+    assert_eq!(pulled, Pulled::GaveUp);
+    assert!(!dir.path().join("base-staging").exists());
+    assert_eq!(source.asked.lock().len(), 2, "one ask a round");
+    let none = pull(
+        &source,
+        &[],
+        &base,
+        0,
+        dir.path(),
+        &staging_config(),
+        quick(),
+    )
+    .await
+    .expect("pull");
+    assert_eq!(none, Pulled::GaveUp);
+    assert!(!dir.path().join("base-staging").exists());
 }
