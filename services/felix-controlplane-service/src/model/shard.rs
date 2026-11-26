@@ -1434,6 +1434,7 @@ pub use raft_leader::RaftLeader;
 mod raft_ordered;
 pub use raft_ordered::RaftOrdered;
 mod raft_reform;
+pub(crate) use raft_reform::AloneFacts;
 pub use raft_reform::{
     RaftBases, RaftEpochBase, RaftLogId, RaftSeed, ReformEpochStart, ReformRecordError,
 };

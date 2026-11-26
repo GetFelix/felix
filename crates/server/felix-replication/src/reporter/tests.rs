@@ -684,6 +684,14 @@ async fn a_fake_link_carries_a_report() {
         ) -> anyhow::Result<crate::controlplane_link::LinkResponse> {
             unreachable!()
         }
+        async fn reform_alone(
+            &self,
+            _: Option<&str>,
+            _: &str,
+            _: &serde_json::Value,
+        ) -> anyhow::Result<crate::controlplane_link::LinkResponse> {
+            unreachable!()
+        }
         async fn confirmed_assignment(
             &self,
             _: Option<&str>,

@@ -1404,7 +1404,13 @@ that stands for its term (the term plus one).
 ```
 
 Written through a temporary, an fsync, a rename and a directory sync, before
-the purge deletes any segment. The log's first index is one past `index`,
+the purge deletes any segment. A purge that ends inside the log returns once
+the file is on disk and unlinks the sealed segments wholly at or below
+`index` behind it, oldest first, each unlink made durable before the next.
+A crash part way leaves those segments. Their records are not entries,
+the open ignores them, and the next purge removes them. An unlink that
+fails stops the log: the segment is off the log's list by then, and a later
+reset would leave it beside the new base. The log's first index is one past `index`,
 or the oldest segment's base when that is higher. Records at or below
 `index` that remain in a segment are not entries. When `index` is at or
 past the log's last record the log is empty, and the purge resets the

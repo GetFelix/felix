@@ -23,8 +23,9 @@ stays small. Each is marked "Decided" where it applies:
 - Writes go through openraft's `client_write` and the adapter appends
   ("Writing through openraft"). Adopting the leader's own appends is left
   for later.
-- Re-forming a group is an operator command and never automatic
-  ("Re-forming a group").
+- Re-forming a group is an operator command, except for an RF 1 shard whose
+  copy a relaxed crash rotated, which re-forms itself ("A cluster's RF 1 shard
+  re-forms itself").
 - `Leader` streams keep the local acknowledgement. A restarted member
   waits out the promise behind it and stores nothing ("Acknowledging a
   write").
@@ -742,6 +743,12 @@ leave a group without a majority of voters: lose the disks of two of three
 brokers, or restore both from backups, and every group they share has one
 voter left. An RF 1 shard has that problem after any rotation. Raft cannot
 elect in such a group, and some acknowledged records may be gone.
+
+An RF 1 shard whose copy a relaxed crash rotated is the one exception: its
+broker re-forms it through the control plane once the fleet finalizes
+`raft_alone_reform` ("A cluster's RF 1 shard re-forms itself"). Any other
+rotation, and any shard on a fleet that has not finalized it, waits for the
+operator.
 
 **A group is never formed again on rotated copies.** When every copy of a
 shard rotated, as after `rotate-storage-id` on each of its brokers, a
@@ -2728,6 +2735,17 @@ installs the leader's purge snapshot when it is back and keeps the floor it
 carries; the install starts its log at the purge point, so it holds no more
 than the others.
 
+A leader's openraft runs the purge on its Raft core, and holds it back while
+a replication stream still reads the range, even one to a member that is
+going away; it runs it when that stream answers or fails. A purge that
+waited on the disk there would stop the leader's heartbeats and writes
+right after a follower went away, long enough on a slow disk to lose the
+lease. So the purge only writes its purged id and returns, and the segments
+are unlinked behind it (`docs/durable-storage.md`, "Deleting below the
+floor"). Every call openraft makes into the log that outlasts a heartbeat is
+counted in `felix_storage_raft_log_slow_calls_total`, labelled by `call`,
+and logged as a warning at most every ten seconds.
+
 > `services/felix-broker-service/src/shards/raft/tests/retention.rs`,
 > `the_leader_trims_what_the_streams_retention_drops`,
 > `retention_trims_a_shard_when_a_publish_lands_mid_pass`,
@@ -4623,6 +4641,11 @@ record's floor once the record is below its commit offset, and rebuilds it
 at open from the trim records and the `head` file, as the hybrid does
 (`docs/durable-storage.md`, "Conditional head trim"). So once a member's
 commit passes the trim it hides the same records as every other member.
+A floor also waits for the member's own sync of the record, and a leader can
+answer a trim that its followers synced before it did. So the floor check of
+`propose_trim_at` and of retention's trim first waits for every trim the
+leader's log holds to apply, as a read does; a lower trim checked in that
+gap would otherwise be written below a floor the client was already given.
 
 On the hybrid only the leader serves readers, so once a trim is answered
 no reader on any broker is served below its floor. A Raft follower serves
@@ -6288,6 +6311,25 @@ base, voters and dead set and applies `ShardAssignment::start_reform`. Every
 member decides it from the record and the command alone, and the command
 is refused below level 51.
 
+From level 55 a group of one has a command of its own,
+`StartAloneEpoch { key, node_id, start }`, for the broker that holds its only
+copy, sent as `POST /v1/nodes/{node_id}/reform/alone` once the fleet
+finalizes `raft_alone_reform`. In the same apply as the epoch compare and
+swap it refuses, and changes nothing, unless the stream or cache has
+replication factor 1; the shard's set and `placed` record are `node_id`
+alone; no pending set, successor, joining follower, learner, move reason or
+`Draining` state is on it; the epoch's seed, every target ordered in it and
+the stored target name only `node_id` (an unknown seed or list refuses); the
+plan's voters and starts name only `node_id` and its dead set is empty;
+`node_id` is not declared dead; and the plan is for the incarnation and
+epoch the shard is at, with the floor and base checks of
+`StartReformedEpoch`. Checking before the write would let placement grow
+between the check and the swap. A request the shard already holds the result
+of (`started_by`) answers the recorded shard without a second epoch; any
+other request from the old epoch is refused as moved. The broker plans and
+stops its copy first, asks for the epoch, then starts from the `starts` in
+the seed it reads back.
+
 From level 47 a copy id report also carries the group epoch the copy runs
 (`group_epoch`, absent meaning 0; epoch 0 is sent as absent and records
 at any level), and one for another epoch than the
@@ -6304,6 +6346,64 @@ change. This removes the last use of the control-plane lease. If its one
 copy rotates its id, the group has no voter. A copy that kept its records
 restarts as the single voter, and one that lost them waits for the
 operator command ("Re-forming a group"). See Questions, 1.
+
+In a cluster, a copy that a relaxed crash rotated re-forms itself through
+the control plane ("A cluster's RF 1 shard re-forms itself"), and needs no
+operator while the fleet has finalized `raft_alone_reform`. Until it has, the
+shard stays not ready, as before, for an operator's re-form.
+
+### A cluster's RF 1 shard re-forms itself
+
+The standalone rules ("A standalone broker re-forms itself") apply with one
+change: the control plane's record decides the epoch, not a file beside the
+copy. Before the member opens, the broker:
+
+1. Plans the next epoch from its kept copy with the standalone rule and
+   decides what the plan owes the control plane's record. A record one
+   epoch behind the plan gets a request. A record that already holds the
+   plan's epoch, with the same bases and this copy as its only voter, is
+   started from. Anything else, such as a directory restored from before an
+   earlier re-form, leaves the copy as it is and the shard not ready. Only
+   then is the copy stopped (`CopyRoot::stop_alone`). Nothing is started
+   and no epoch is written. The plan is recorded on disk, so after a crash
+   the same request is built again.
+2. Sends `POST /v1/nodes/{node_id}/reform/alone`. The control plane applies
+   `StartAloneEpoch` (metadata level 55) in one command: the group must be
+   alone on this broker, with no set change or move in flight, and the epoch
+   compare-and-swaps from the one the broker planned from. A request for an
+   epoch the record already holds is answered with the recorded shard and
+   writes nothing.
+3. Starts the copy from the seed the record holds, as an operator's re-form
+   would.
+
+A crash before step 2 sends the same request again. A crash between steps 2
+and 3 finds the epoch recorded, sends nothing, and starts from the recorded
+seed. After step 3 nothing is owed. A lost answer or a timeout is retried
+on the next pass, since the open of a stopped copy fails and the next pass
+claims it again. A refusal leaves the shard not ready and the copy stopped
+where an operator's own stop leaves it, so an operator's re-form still
+works: its stop round answers, and the next pass starts the copy from the
+epoch the operator's re-form wrote.
+
+Why it is safe:
+
+- An RF 1 shard acks on its one copy, so the ack level does not matter.
+  Under `Periodic` or `None` only the unsynced tail is lost, as it already
+  could be, and every synced record is kept: the plan vouches for the whole
+  log, not the saved commit.
+- `OnCommit` never takes this path. It rotates nothing, so there is no
+  evidence.
+- Offsets start past every reserved index plus the gap, so none given out
+  before is given out again.
+- An RF 3 group that lost members is refused by the control plane's atomic
+  check, and the broker only asks when membership and placement both name
+  only itself.
+- A directory restored from before an earlier re-form plans an epoch the
+  record already holds, for another copy, so the broker neither asks nor
+  stops it. A start from that record's seed would be refused anyway: the
+  restored copy was rotated to a new copy id, and a start refuses a plan
+  whose voter is another copy. A second writer is refused by the epoch
+  compare-and-swap.
 
 ### A standalone broker re-forms itself
 

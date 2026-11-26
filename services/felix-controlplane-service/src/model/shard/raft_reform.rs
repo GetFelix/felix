@@ -391,5 +391,8 @@ impl ShardAssignment {
     }
 }
 
+mod alone;
+pub(crate) use alone::AloneFacts;
+
 #[cfg(test)]
 mod tests;
