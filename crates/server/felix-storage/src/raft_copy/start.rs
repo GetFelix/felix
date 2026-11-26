@@ -795,6 +795,37 @@ pub fn adopt_staged(
     Ok(true)
 }
 
+/// Run before `dir`'s log opens, so no open sees a half-adopted copy: an
+/// adoption under way rolls forward, a finished staging log of the copy's
+/// latest base is adopted, and any other staging log is discarded. True
+/// when the copy now holds a base it adopted.
+///
+/// An adopted copy's saved commit is 0, so it applies nothing, head trims
+/// included, until the gap snapshot installs; that install raises its
+/// floor to the one the snapshot carries in one step.
+pub(crate) fn adopt_pending(dir: &Path) -> io::Result<bool> {
+    let adopting = crate::fs::try_exists(dir.join(ADOPTING))?;
+    if !adopting && !crate::fs::try_exists(super::staging::staging_dir(dir))? {
+        return Ok(false);
+    }
+    let base = epoch_file::load(dir)?
+        .and_then(|file| file.bases.last().and_then(|base| base.base_last))
+        .map(|last| (last.index, last.term));
+    match base {
+        Some(base) => adopt_staged(dir, base, &|| Ok(())),
+        // The marker is written only once the staged base matched the
+        // epoch file, so a copy without one was changed under it.
+        None if adopting => Err(invalid(format!(
+            "{}: a base is being adopted into a copy that names none",
+            dir.display()
+        ))),
+        None => {
+            super::staging::discard(dir)?;
+            Ok(false)
+        }
+    }
+}
+
 /// `dir`'s log, opened under `lock`, which the start holds throughout.
 fn open_under(dir: &Path, label: &str, config: &LogConfig, lock: DirLock) -> io::Result<DiskLog> {
     DiskLog::open_holding(dir, label, config.clone(), None, lock).map_err(io::Error::other)

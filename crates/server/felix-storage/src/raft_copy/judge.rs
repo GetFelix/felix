@@ -184,6 +184,7 @@ impl CopyRoot {
                 dir.display()
             )));
         }
+        super::start::adopt_pending(dir)?;
         let shard: Arc<str> = Arc::from(shard);
         let (found, reason) = self.judge_files(&shard, dir)?;
         let reason = match (found, reason) {

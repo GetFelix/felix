@@ -1070,6 +1070,48 @@ async fn heartbeats_go_together_only_to_a_peer_that_offered_it() {
     );
 }
 
+/// A learner's base pull goes only to a voter that offered
+/// `RAFT_BASE_PULL`. One that has not is never asked.
+#[tokio::test]
+async fn a_base_pull_goes_only_to_a_peer_that_offered_it() {
+    let book = Book::default();
+    book.lock()
+        .insert("b".into(), "127.0.0.1:1".parse().expect("addr"));
+    let pull = || {
+        let mut request = heartbeat_for(0, "b");
+        request.body = Request::BasePull {
+            from: MemberId::new("c", 1),
+            start: 0,
+            max_bytes: 1024,
+            max_count: 8,
+        };
+        request
+    };
+
+    let older = Arc::new(Recording {
+        offered: PeerCapabilities::RAFT.union(PeerCapabilities::RAFT_BEATS),
+        bodies: Default::default(),
+    });
+    let transport = PeerTransport::new(Arc::clone(&older), self::book(&book));
+    match transport.send(pull()).await {
+        Err(Refused::Unreachable(why)) => assert!(why.contains("base pulls"), "{why}"),
+        Err(other) => panic!("refused otherwise: {other:?}"),
+        Ok(_) => panic!("sent"),
+    }
+    assert!(older.bodies.lock().is_empty());
+
+    let newer = Arc::new(Recording {
+        offered: PeerCapabilities::RAFT.union(PeerCapabilities::RAFT_BASE_PULL),
+        bodies: Default::default(),
+    });
+    let transport = PeerTransport::new(Arc::clone(&newer), self::book(&book));
+    assert!(matches!(
+        transport.send(pull()).await,
+        Err(Refused::NoSuchMember(_))
+    ));
+    assert_eq!(newer.bodies.lock().len(), 1);
+}
+
 /// Heartbeats together cross a real listener, which offers `RAFT_BEATS`
 /// with `RAFT` and answers each for its own group.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

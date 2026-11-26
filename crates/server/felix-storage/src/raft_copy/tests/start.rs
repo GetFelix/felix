@@ -970,3 +970,80 @@ async fn a_second_re_form_after_a_crash_in_the_first_append_keeps_the_base() {
     assert_eq!(offsets, [0, 1, 2, 3, 4, 16]);
     raft.disk_log().close().await.expect("close");
 }
+
+/// A learner's pulled base goes in when its copy opens: a finished staging
+/// log is adopted, an adoption a crash cut is rolled forward, and an
+/// unfinished staging log is dropped. No open sees a half-adopted copy.
+#[tokio::test]
+async fn an_open_adopts_a_staged_base_or_rolls_its_adoption_forward() {
+    use crate::raft_copy::epoch_file::EpochLogId;
+    use crate::raft_copy::staging::{STAGING_DIR, Staging};
+
+    let last = EpochLogId {
+        index: 4,
+        epoch: 0,
+        term: 1,
+    };
+    let entries: Vec<_> = (0..=4).map(|index| normal(1, index, "base")).collect();
+    for (case, held) in [("finished", 5), ("cut", 5), ("unfinished", 0)] {
+        let root = Root::new();
+        let dir = root.shard_dir();
+        std::fs::create_dir_all(&dir).expect("dir");
+        let opened = root
+            .open()
+            .open_copy("orders/0", &dir, "t/ns/orders/0", config())
+            .await
+            .expect("first open");
+        opened.log.close().await.expect("close");
+        epoch_file::store(
+            &dir,
+            &EpochFile {
+                incarnation: 1,
+                bases: vec![EpochBase {
+                    base_last: Some(last),
+                    first_index: 8,
+                }],
+            },
+        )
+        .expect("epoch");
+
+        let mut staging = Staging::begin(&dir, 0, &config()).await.expect("begin");
+        staging
+            .append::<Types, Codec>(&Codec, &entries, 5)
+            .await
+            .expect("append");
+        match case {
+            "finished" => staging.finish(last).await.expect("finish"),
+            "cut" => {
+                staging.finish(last).await.expect("finish");
+                let steps = std::cell::Cell::new(0);
+                let crash = || {
+                    steps.set(steps.get() + 1);
+                    if steps.get() == 3 {
+                        return Err(io::Error::other("crash"));
+                    }
+                    Ok(())
+                };
+                adopt_staged(&dir, (4, 1), &crash).expect_err("cut");
+                assert!(dir.join(ADOPTING).exists());
+            }
+            _ => drop(staging),
+        }
+
+        let opened = root
+            .open()
+            .open_copy("orders/0", &dir, "t/ns/orders/0", config())
+            .await
+            .expect("open");
+        assert_eq!(
+            crate::log::AppendOnlyLog::tail_offset(&opened.log)
+                .await
+                .expect("tail"),
+            held,
+            "{case}"
+        );
+        opened.log.close().await.expect("close");
+        assert!(!dir.join(ADOPTING).exists(), "{case}");
+        assert!(!dir.join(STAGING_DIR).exists(), "{case}");
+    }
+}
