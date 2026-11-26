@@ -1386,7 +1386,15 @@ impl GroupRuntime {
     /// preference only: the group still elects whoever it can. False if
     /// the preference is not new, or the shard has no group here.
     pub fn prefer(&self, shard: &ShardKey, broker: &str) -> bool {
-        self.group(shard).is_some_and(|group| group.prefer(broker))
+        self.prefer_as(shard, broker, false)
+    }
+
+    /// [`Self::prefer`], saying whether an operator move named `broker`.
+    /// An operator's preference is handed over even while a voter is not
+    /// answering, as long as the caught-up voters are a majority.
+    pub fn prefer_as(&self, shard: &ShardKey, broker: &str, by_operator: bool) -> bool {
+        self.group(shard)
+            .is_some_and(|group| group.prefer(broker, by_operator))
     }
 
     /// Each placement transfer this broker's member of `shard` asked: the

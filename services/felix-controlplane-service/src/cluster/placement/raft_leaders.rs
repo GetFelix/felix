@@ -29,6 +29,12 @@ pub(super) const RAFT_LEADERS_PER_PASS: usize = 64;
 /// the leader runs, with a learner catching up, so one pass starts a few.
 pub(super) const RAFT_REPLACEMENTS_PER_PASS: usize = 16;
 
+/// How long an operator's move of a Raft shard's leader within its set may
+/// take to land. Past it, the move is given up: with a member down the
+/// name goes back to the member the group elected, and either way the
+/// group's leader stops treating the name as an operator's (#3234).
+pub(super) const RAFT_OPERATOR_LEADER_MILLIS: u64 = 120_000;
+
 /// Whether placement treats `existing` as a shard a Raft group runs: a
 /// durable stream's shard or a cache's shard on a cluster that runs shards on
 /// Raft. A cache counts as durable: a Raft broker always has a disk, so its
@@ -56,6 +62,9 @@ pub(super) fn on_raft(existing: &ShardAssignment, raft_streams: bool, durable: b
 ///   member the group reported electing. The group's leader does not hand
 ///   over while a voter is down, so naming any other member would leave
 ///   placement and the group disagreeing until the broker is back (#3041).
+///   A leader an operator moved within the set is the exception for
+///   [`RAFT_OPERATOR_LEADER_MILLIS`]: its group's leader does hand over to
+///   it while a majority is caught up ([`operator_leader`]).
 /// - A down leader with no live member stays named, with no alert: the
 ///   group cannot elect either until a member is back.
 /// - A follower that must leave (`leaving`: an internal, draining or lost
@@ -79,6 +88,7 @@ pub(super) fn raft_step<'a>(
     leaving: &dyn Fn(&str) -> Option<Leaving>,
     eligible: &[&'a Node],
     load: &mut HashMap<&'a str, u32>,
+    now: Option<u64>,
 ) -> Decision {
     if let Some(dropped) = drop_hybrid_move(existing, replication_factor) {
         return Decision::Move(MoveStep::RaftMoveDropped, dropped);
@@ -100,6 +110,18 @@ pub(super) fn raft_step<'a>(
         .collect();
     let elected = elected(existing, &members, is_serving, leaving);
     let degraded = existing.nodes().any(|node| !is_serving(node));
+    if !down
+        && let Some(decision) = operator_leader(
+            existing,
+            now,
+            elected.filter(|_| degraded),
+            counted,
+            leaders,
+            moves,
+        )
+    {
+        return decision;
+    }
     // Before a swap: the swap waits on the down member anyway, and the
     // leader the group runs is the one that will make it.
     if degraded
@@ -167,6 +189,78 @@ pub(super) fn raft_step<'a>(
     rename(existing, to, down, counted, leaders, moves)
 }
 
+/// Whether an operator named `existing`'s leader within its set, and the
+/// move has not ended: [`MoveReason::Operator`](crate::model::MoveReason)
+/// with no hybrid move or set change on the record.
+fn by_operator(existing: &ShardAssignment) -> bool {
+    existing.move_reason == Some(crate::model::MoveReason::Operator)
+        && existing.successor.is_none()
+        && existing.joining.is_none()
+        && existing.state != ShardState::Draining
+}
+
+/// `existing` with the operator's mark taken off.
+fn unmarked(existing: ShardAssignment) -> ShardAssignment {
+    ShardAssignment {
+        move_reason: None,
+        move_started_at_millis: None,
+        ..existing
+    }
+}
+
+/// An operator's move of a serving leader within the set, while it runs.
+/// It ends when the group reports the named broker leading. Until
+/// [`RAFT_OPERATOR_LEADER_MILLIS`] it stands even with a member down, since
+/// the group's leader hands over to an operator's name while a majority is
+/// caught up. Past that it is given up: the name goes back to `elected`
+/// (the member the group runs, passed only while a member is down) and
+/// the mark comes off, so a name the group cannot reach does not stand.
+/// `None` when the record carries no operator move.
+fn operator_leader<'a>(
+    existing: &'a ShardAssignment,
+    now: Option<u64>,
+    elected: Option<&'a str>,
+    counted: &dyn Fn(&str) -> bool,
+    leaders: &mut Leadership<'a>,
+    moves: &mut Moves,
+) -> Option<Decision> {
+    if !by_operator(existing) {
+        return None;
+    }
+    let leader = existing.leader.as_str();
+    if existing.reported_leader() == Some(leader) {
+        return Some(Decision::Move(
+            MoveStep::RaftLeaderLanded {
+                to: leader.to_string(),
+            },
+            unmarked(existing.renamed()),
+        ));
+    }
+    let within = match (now, existing.move_started_at_millis) {
+        (Some(now), Some(started)) => now.saturating_sub(started) <= RAFT_OPERATOR_LEADER_MILLIS,
+        _ => false,
+    };
+    if within {
+        return Some(Decision::Kept);
+    }
+    let to = elected.unwrap_or(leader);
+    let next = if to == leader {
+        unmarked(existing.renamed())
+    } else {
+        match rename(existing, to, true, counted, leaders, moves) {
+            Decision::Move(_, next) => next,
+            waiting => return Some(waiting),
+        }
+    };
+    Some(Decision::Move(
+        MoveStep::RaftLeaderTimedOut {
+            from: leader.to_string(),
+            to: to.to_string(),
+        },
+        next,
+    ))
+}
+
 /// The member a Raft shard's group reported electing
 /// ([`ShardAssignment::reported_leader`]), when placement may name it: a
 /// live voter in the set, serving, not leaving, and not already named. A
@@ -224,12 +318,17 @@ fn rename<'a>(
         leaders.remove(Owner::of(key), leader);
     }
     leaders.add(Owner::of(key), to);
+    // A rename ends an operator's move: the name is placement's again.
+    let mut next = led_by(existing, to);
+    if by_operator(existing) {
+        next = unmarked(next);
+    }
     Decision::Move(
         MoveStep::RaftLeader {
             from: leader.to_string(),
             to: to.to_string(),
         },
-        led_by(existing, to),
+        next,
     )
 }
 

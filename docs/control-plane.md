@@ -2508,11 +2508,11 @@ after the fence.
 
 | Metric | Meaning |
 | --- | --- |
-| `felix_shard_move_steps_total{step}` | move steps written: `stage`, `fence`, `cut_over`, `abandon`, `halted` (the destination halted), `timed_out`, `stalled` (a restore's copy stopped moving), `reseat`, `restore`, `seat`, `take_pending_set` (a pending replica set taken on the leader's report), `pending_set_timed_out`, `pending_set_dropped`, `pending_set_cancelled`, `pending_set_member_replaced` (one dropped), `readmit` (a replaced copy named by its new storage id and held as a learner), `election_refused` (a leader named again above a generation promised to an elected broker), `set_unknown` (a leader named again above a generation whose set before it could not learn, or that a newer ballot holds), `raft_leader` (a Raft shard's leader named another member), `raft_move_dropped` (a hybrid move left on a Raft shard dropped), and an operator's `cancel`, `retake`, `discard` and `owner_replaced` (an in-memory shard given a new owner) |
+| `felix_shard_move_steps_total{step}` | move steps written: `stage`, `fence`, `cut_over`, `abandon`, `halted` (the destination halted), `timed_out`, `stalled` (a restore's copy stopped moving), `reseat`, `restore`, `seat`, `take_pending_set` (a pending replica set taken on the leader's report), `pending_set_timed_out`, `pending_set_dropped`, `pending_set_cancelled`, `pending_set_member_replaced` (one dropped), `readmit` (a replaced copy named by its new storage id and held as a learner), `election_refused` (a leader named again above a generation promised to an elected broker), `set_unknown` (a leader named again above a generation whose set before it could not learn, or that a newer ballot holds), `raft_leader` (a Raft shard's leader named another member), `raft_leader_landed` and `raft_leader_timed_out` (an operator's move of a Raft shard's leader within its set landed, or was given up after two minutes), `raft_move_dropped` (a hybrid move left on a Raft shard dropped), and an operator's `cancel`, `retake`, `discard` and `owner_replaced` (an in-memory shard given a new owner) |
 | `felix_shards_under_replicated` | shards with fewer copies on serving brokers than their replication factor; non-zero for longer than the restore delay plus a copy means no broker can take the copy, or placement is paused |
 | `felix_shard_replicas_missing` | the copies those shards are missing between them |
 | `felix_shard_replicas_halted` | copies whose leader reports it has stopped shipping to them; counted as missing, kept out of placement, and replaced after the restore delay |
-| `felix_shard_moves_timed_out_total` | moves and follower replacements abandoned at the move timeout, and restores dropped as `stalled`; a steady count means a copy that cannot finish |
+| `felix_shard_moves_timed_out_total` | moves and follower replacements abandoned at the move timeout, operator leader moves on Raft shards given up (`raft_leader_timed_out`), and restores dropped as `stalled`; a steady count means a copy that cannot finish |
 | `felix_shard_moves_waiting` | moves that could not advance in the last pass: a destination not catching up, a leader not reporting drained, a move limit holding a drain back, or a move for balance held while the cluster recovers |
 | `felix_shards_on_internal_nodes` | shards with a copy on an internal node and no live node outside the set to take its place |
 | `felix_shard_assignment_write_conflicts_total` | placements and move steps not written because another instance changed the shard after this pass read it; the next pass re-plans |
@@ -2570,7 +2570,9 @@ a move takes `node.manage:cluster:*`, the permission that drains a node.
 | `POST /v1/nodes/{node_id}/seal-report` | the seal leader reports its shard's seal: the base and the copies that hold it. Answers `accepted`, true for the one report recorded for the seal; 409 `not_sealer` from any other broker. Takes `node.manage` over the node |
 | `POST /v1/nodes/{node_id}/seal-give-up` | the seal leader gives up a seal it cannot finish, and the shard opens again at the next generation. Answers `given_up`, false when a report was already recorded or the shard moved on. Takes `node.manage` over the node |
 
-A listed move has a `step` (`staged`, `fenced`, `replacing` or `restoring`),
+A listed move has a `step` (`staged`, `fenced`, `replacing`, `restoring`, or
+`leading` for an operator's move of a Raft shard's leader within its set,
+where `leader` is the member the group last reported leading),
 the `reason` it started (`drain`, `balance`, `operator`, `replace` or
 `restore`, stored on the
 assignment as `move_reason`), `started_at_millis`, and from the leader's
@@ -2606,8 +2608,17 @@ cancel and an abandon on a shard that switched to Raft are all refused (409
 (see [Raft shards](#raft-shards)) the start is the whole move and takes no
 move slot: to a member it names that member leader (`raft_leader`), and
 outside the set it gives the destination the leader's seat
-(`raft_replace`). The second is refused while a member is not serving (409
-`member_down`), while the group's target is not stored for its current set
+(`raft_replace`). The first is refused when fewer than a majority of the
+set's members are serving (409 `member_down`), since the group's leader could
+never hand over. With one member of three down it goes ahead: it is marked as
+an operator's (`move_reason` `operator`), and the group's leader hands over
+while it and the destination are caught up, which it does not do for
+placement's own names. The move ends when the group reports the destination
+leading (`raft_leader_landed`). One that has not landed after two minutes is
+given up (`raft_leader_timed_out`, counted in
+`felix_shard_moves_timed_out_total` and logged as a warning): with a member
+down the name goes back to the member the group runs. The second is refused
+while a member is not serving (409 `member_down`), while the group's target is not stored for its current set
 (409 `set_unsettled`), while the destination is still a learner (409
 `not_a_member`). A one-member group grows to the destination first and
 shrinks once its copy votes. Any other move is held to

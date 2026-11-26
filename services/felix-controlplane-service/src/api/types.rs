@@ -802,6 +802,10 @@ pub enum ShardMoveStep {
     /// A copy is being added to bring the shard back to its replication
     /// factor; leadership stays.
     Restoring,
+    /// A Raft shard's leadership is being handed to another member of its
+    /// set, as an operator asked. `leader` is the member the group last
+    /// reported leading.
+    Leading,
 }
 
 /// One move or follower replacement in progress.

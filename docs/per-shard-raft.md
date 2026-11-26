@@ -5070,7 +5070,9 @@ older control plane added:
 - A balance pass, a drain and an operator move each name another member of
   the set as leader, in one write that changes only `leader`. Nothing is
   staged or copied. The group's leader then hands its leadership there (see
-  "Leaders follow placement").
+  "Leaders follow placement"). An operator's move goes through with one
+  member of three down, and is refused (`member_down`) when fewer than a
+  majority are serving (#3234).
 - A drain moves every shard the draining broker leads to a live member, so
   its shutdown hand-off finishes. A shard with no other live member, such
   as one at replication factor 1, keeps its leader and shows as waiting
@@ -5580,7 +5582,11 @@ A leader hands over only when all of these hold:
    restarted is still opening members and may go away again.
 4. Every other voter is caught up and answering too. A group with a voter
    down keeps its leader: a transfer then could leave a bare majority with
-   no leader.
+   no leader. An operator's move is the exception (#3234): it goes ahead
+   while the caught-up voters, this leader and the target among them, are a
+   majority. If the target then dies mid-transfer, the group is left with
+   the members it would have had anyway, and the leader stands again at the
+   transfer's expiry if a majority is still up.
 5. This member has led its term for `led_min` (10 s), so a group that just
    elected does not elect again at once. A group's first term is exempt,
    along with `settle`, for its first `led_min`: the broker that formed the
@@ -5647,7 +5653,14 @@ server (discovery, `felixctl`, dashboards) would point at a follower
   no such report, while the group is still electing, it names the member
   leading fewest, as before.
 - While any member of the set is down, a live placement leader that is not
-  the reported one is renamed to it. That covers a rename made before the
+  the reported one is renamed to it, unless an operator named it. An
+  operator's move within the set carries `move_reason` `operator` to the
+  brokers, so the group's leader hands over (rule 4), and placement leaves
+  the name alone until the group reports it leading, then takes the mark
+  off. If it has not landed in two minutes, placement names the reported
+  leader again and takes the mark off (`raft_leader_timed_out`). A broker
+  that predates the mark ignores it and keeps holding, so the move times
+  out the same way. That covers a rename made before the
   report arrived. Both writes go ahead while placement is paused: they move
   nothing and ask for no transfer, they record what the group did.
 - A reported broker the leave rules rename a leader away from (draining,

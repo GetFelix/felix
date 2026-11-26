@@ -157,7 +157,7 @@ pub(crate) struct Group {
     lag_threshold: u64,
     /// The broker placement names as this group's leader. The member that
     /// leads hands it the leadership.
-    preferred: tokio::sync::watch::Sender<Option<String>>,
+    preferred: tokio::sync::watch::Sender<Option<placed::Preferred>>,
     placement: Placement,
     placed_budget: Arc<placed::Budget>,
     acked: Arc<AtomicU64>,
@@ -996,13 +996,17 @@ impl Group {
         ));
     }
 
-    /// Placement names `broker` as this group's leader. Returns whether
-    /// that is new.
-    pub(crate) fn prefer(&self, broker: &str) -> bool {
+    /// Placement names `broker` as this group's leader, `by_operator` when
+    /// an operator move did. Returns whether that is new.
+    pub(crate) fn prefer(&self, broker: &str, by_operator: bool) -> bool {
+        let preferred = placed::Preferred {
+            broker: broker.to_owned(),
+            by_operator,
+        };
         self.preferred.send_if_modified(|held| {
-            let new = held.as_deref() != Some(broker);
+            let new = held.as_ref() != Some(&preferred);
             if new {
-                *held = Some(broker.to_owned());
+                *held = Some(preferred);
             }
             new
         })

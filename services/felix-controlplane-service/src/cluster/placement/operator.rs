@@ -390,6 +390,15 @@ fn raft_leader_move(
     if !existing.replicas.iter().any(|node| node == destination) {
         return raft_seat_move(catalog, existing, destination, replication_factor, home);
     }
+    // With a member down the group's leader hands over to an operator's
+    // name only while the members still up are a majority, so a move that
+    // could never land is refused here rather than given up later.
+    let serving = |node: &str| lifecycle_of(catalog, node).is_some_and(|l| l.is_serving());
+    let members: Vec<&String> = existing.nodes().collect();
+    if members.iter().filter(|node| serving(node)).count() <= members.len() / 2 {
+        let down = members.iter().find(|node| !serving(node)).copied();
+        return Err(Refused::MemberDown(down.cloned().unwrap_or_default()));
+    }
     // The set stays, so the spread does too.
     let zones =
         zone_impact(catalog, existing, destination, replication_factor, home).map(|zones| {
@@ -398,12 +407,20 @@ fn raft_leader_move(
                 ..zones
             }
         });
+    // Marked as an operator's, so the group's leader hands over even with a
+    // member down, and placement leaves the name alone until it lands or
+    // `RAFT_OPERATOR_LEADER_MILLIS` runs out (#3234).
+    let assignment = ShardAssignment {
+        move_reason: Some(MoveReason::Operator),
+        move_started_at_millis: catalog.caught_up.as_of_millis(),
+        ..super::raft_leaders::led_by(existing, destination)
+    };
     Ok(OperatorStep {
         step: MoveStep::RaftLeader {
             from: existing.leader.clone(),
             to: destination.to_string(),
         },
-        assignment: super::raft_leaders::led_by(existing, destination),
+        assignment,
         expected_generation: existing.generation,
         zones,
     })

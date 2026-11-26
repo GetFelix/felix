@@ -1603,7 +1603,8 @@ impl EngineShards for RaftShards {
                 admit(&self.runtime, key, assignment);
                 // The group's leader hands it the leadership. Even the first
                 // one: the broker that forms a group wins its first term.
-                self.runtime.prefer(key, &assignment.leader);
+                self.runtime
+                    .prefer_as(key, &assignment.leader, assignment.leader_by_operator());
                 // A set short of the stream's replica count forms nothing: a
                 // group of the brokers placed so far would be formed again,
                 // on empty logs, by the ones placed later.
