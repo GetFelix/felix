@@ -87,6 +87,19 @@ pub struct InspectedRaft {
     /// removal, so only a current member's list is the group's.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub voters: Vec<String>,
+    /// Set when this broker's copy was stopped by a storage error, such as
+    /// a failed fsync, and has not rejoined a working group since.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stopped: Option<InspectedStop>,
+}
+
+/// Why a broker's copy of a Raft shard stopped.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct InspectedStop {
+    /// The term the copy was at when it stopped.
+    pub term: u64,
+    /// The storage error that stopped it.
+    pub error: String,
 }
 
 /// A shard's assignment: who leads it, who holds copies, and where a move is

@@ -651,7 +651,7 @@ Four properties:
    the old one or the new one, and memory keeps the old value. Stopping the
    log keeps anything from being decided on that difference.
 
-   A broker with a poisoned log answers `/ready` with 503, so a load
+   A broker with a poisoned hybrid log answers `/ready` with 503, so a load
    balancer or an orchestrator takes it out of rotation. The body has one
    line per poisoned log, naming its tenant and what stopped it, for example
    `a log of tenant acme is poisoned: a flush of the replica state failed
@@ -660,22 +660,29 @@ Four properties:
    on it carries tenant labels only, so the namespace and stream stay in the
    broker's log. The process does not exit and `/live` stays ok. The broker also attests no trusted copy to a fence from then on.
    See "A failed flush" in [replication-engine.md](replication-engine.md) for
-   what a replicated shard does.
+   what a replicated shard does. A failed sync of a node record, such as the
+   copy-trust record, also answers 503.
 
-   One poisoned log failing the whole broker's `/ready` is an interim rule.
-   The decided behaviour is per shard
-   ([#2300](https://github.com/GetFelix/felix/issues/2300)): only the
-   poisoned log's shard stops taking writes, its leader steps down so another
-   copy takes over, `/ready` stays 200 for the broker's healthy shards, and
-   the poisoned log is reported in metrics and in the broker's status. Until
-   that lands a broker cannot hand off one shard by itself, so taking the
-   whole broker out of rotation is the only way to move its traffic.
+   A poisoned per-shard Raft log stops that shard's copy only, and `/ready`
+   stays 200. The copy's group stops, so it takes no write, answers no read
+   and casts no vote; if it led, the other copies elect a new leader. The
+   broker closes the copy and reopens it under a new copy id, and the rest of
+   its shards keep serving. Until the copy hears a leader again it is
+   counted in `felix_broker_raft_shards_stopped_on_storage_error`,
+   `shard_inspect` shows its term and error under `raft.stopped`, and a
+   publish or subscribe for the shard on this broker is refused as
+   `not_ready`. The refusal says the copy was stopped by a storage error but
+   not what the error was, since it can name the broker's data paths; the
+   broker log and `shard_inspect` have it. See `docs/per-shard-raft.md`,
+   "A member that stops on a storage error".
 
    > `disk_log/tests/flush_failures.rs` fails each flush of an append, a
    > rollover, a seal, a truncation, a retention removal and each state-file
    > write in turn on the simulator's filesystem, then cuts the power and
    > reopens. `a_poisoned_log_is_listed_with_its_cause` covers what `/ready`
-   > reports. The `a_restart_after_a_*` tests in
+   > reports, and `a_poisoned_raft_log_leaves_the_broker_ready` in
+   > `felix-broker-service`'s `observability/tests.rs` that a Raft log does
+   > not fail it. The `a_restart_after_a_*` tests in
    > `disk_log/tests/durability.rs` cover the same-boot restart on the
    > real filesystem, where the failed flush's bytes stay readable: the cut,
    > the rewrite under a relaxed mode, a mode change across the restart, a

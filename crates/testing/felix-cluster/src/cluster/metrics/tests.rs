@@ -102,6 +102,7 @@ fn member(
             last_index: last,
             committed: last,
             voters: Vec::new(),
+            stopped: None,
         },
     )
 }
