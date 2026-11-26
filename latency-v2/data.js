@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795722371503,
+  "lastUpdate": 1795723518589,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -91476,6 +91476,72 @@ window.BENCHMARK_DATA = {
             "range": "902.48",
             "unit": "us",
             "extra": "trials: 5\nmedian: 539.00\nmean: 949.40\nstdev: 902.48\ncv: 95.06%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "55849c0957fb7acc20dbf09899dc28c6d4a32e90",
+          "message": "chore: two SonarCloud findings fixed (async wipe in the nemesis, grouped regex in affected.py) (#3283)\n\n* chore(ci): group the test-only path regex alternatives explicitly\n\nSpec-Unaffected: no modelled behaviour changes\n\n* chore(cluster): the wipe fault removes the directory without blocking the runtime\n\nSpec-Unaffected: no modelled behaviour changes",
+          "timestamp": "2026-11-26T19:56:52Z",
+          "tree_id": "a1bf8de752304c487627b7e22b7565abda0843bb",
+          "url": "https://github.com/GetFelix/felix/commit/55849c0957fb7acc20dbf09899dc28c6d4a32e90"
+        },
+        "date": 1795723502765,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 150,
+            "range": "0.55",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 150.00\nmean: 150.40\nstdev: 0.55\ncv: 0.36%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 202,
+            "range": "3.36",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 202.00\nmean: 202.60\nstdev: 3.36\ncv: 1.66%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 256,
+            "range": "245.06",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 256.00\nmean: 407.60\nstdev: 245.06\ncv: 60.12%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 201,
+            "range": "20.72",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 201.00\nmean: 209.00\nstdev: 20.72\ncv: 9.92%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 392,
+            "range": "663.45",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 392.00\nmean: 686.20\nstdev: 663.45\ncv: 96.69%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 545,
+            "range": "1053.28",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 545.00\nmean: 1017.00\nstdev: 1053.28\ncv: 103.57%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
