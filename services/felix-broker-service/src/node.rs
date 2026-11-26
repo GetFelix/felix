@@ -101,6 +101,14 @@ where
     // An in-memory broker has nothing to recover and keeps the old behaviour.
     // Parsed once: what readiness gates on is what storage opens.
     let durable_config = DurableStorageConfig::from_env()?;
+    // First, before anything reads or writes the data directory, and held
+    // until this function returns: after the drain, on a startup error, or
+    // when a caller drops the future. Spawned tasks never hold it, so an
+    // in-process restart is not kept out by one that outlives the run.
+    let root_lock = durable_config
+        .as_ref()
+        .map(|durable| storage::lock_root(&durable.root))
+        .transpose()?;
     // Before storage opens: every held shard keeps files open.
     open_files::raise_limit(
         durable_config
@@ -323,7 +331,11 @@ where
         &membership_client,
         &group_refused,
     );
-    let mut stored = startup::open_storage(&config, durable_config, registered.as_ref())?;
+    let mut stored = startup::open_storage(
+        &config,
+        durable_config.zip(root_lock.as_ref()),
+        registered.as_ref(),
+    )?;
     let own_kept = stored.kept;
     stored.kept = stored.kept.attested(view.is_some());
     let storage_id = stored.storage_id;
@@ -827,7 +839,10 @@ where
         metrics_shutdown,
     };
     let stopped = running.wait(shutdown).await;
-    running.drain(stopped).await
+    let drained = running.drain(stopped).await;
+    // After the drain closed every store and recorded the stop.
+    drop(root_lock);
+    drained
 }
 
 /// A v9 segment, or a committed vote, is a format an older build refuses, so

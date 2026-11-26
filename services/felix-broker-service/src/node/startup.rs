@@ -70,10 +70,10 @@ pub(super) fn refuse_hybrid_data(root: &std::path::Path) -> Result<()> {
 /// Open storage and the broker over it.
 pub(super) fn open_storage(
     config: &BrokerConfig,
-    durable: Option<DurableStorageConfig>,
+    durable: Option<(DurableStorageConfig, &felix_storage::disk_log::RootLock)>,
     registered: Option<&Registered>,
 ) -> Result<Stored> {
-    let root = durable.as_ref().map(|durable| durable.root.clone());
+    let root = durable.as_ref().map(|(durable, _)| durable.root.clone());
     let (broker, durable_storage, storage_id, unclean, replaced_storage, kept) =
         storage::open_with(config, durable, registered)?;
     // Read after the run began, which distrusts every copy when it rotated
@@ -103,7 +103,7 @@ pub(super) fn open_storage(
 #[cfg(feature = "sim")]
 pub(super) async fn open_broker(
     config: &BrokerConfig,
-    durable: Option<DurableStorageConfig>,
+    durable: Option<(DurableStorageConfig, &felix_storage::disk_log::RootLock)>,
     registered: Option<&Registered>,
     cluster: &Option<ShardState>,
     fleet: &Arc<felix_common::fleet::FleetGate>,

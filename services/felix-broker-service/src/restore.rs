@@ -58,7 +58,10 @@ pub async fn run(args: Vec<String>) -> Result<()> {
     let durable = DurableStorageConfig::from_env()?
         .context("FELIX_DURABLE_STORAGE_DIR is not set, so this broker keeps no logs to restore")?;
     let config = BrokerConfig::from_env_or_yaml().context("load broker configuration")?;
-    let (broker, storage, _, _, _, _) = crate::node::storage::open(&config, None)?;
+    // Held to the end, so a broker started meanwhile is refused.
+    let lock = crate::node::storage::lock_root(&durable.root)?;
+    let (broker, storage, _, _, _, _) =
+        crate::node::storage::open_with(&config, Some((durable.clone(), &lock)), None)?;
 
     let restored = restore(&manifest, node.as_deref(), &durable.root, &broker, storage).await?;
     println!(
