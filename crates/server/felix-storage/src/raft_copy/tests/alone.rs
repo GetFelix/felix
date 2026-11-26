@@ -131,6 +131,31 @@ async fn reform(copies: &CopyRoot, dir: &Path) -> io::Result<Aloned> {
         .await
 }
 
+async fn stop(copies: &CopyRoot, dir: &Path) -> io::Result<Option<crate::raft_copy::AlonePlan>> {
+    let spacing = config().index_spacing_bytes;
+    let dir_owned = dir.to_path_buf();
+    let read = move |probes: &BTreeSet<u64>, epoch: u64| {
+        build_report(&dir_owned, spacing, probes, epoch, false, &NoMemberships)
+            .map(|report| WireReport::from(&report))
+    };
+    let fold = |_copy: u64| Box::new(Fold) as Box<dyn GapFold>;
+    let member = |copy: u64| format!("{BROKER}#{copy}");
+    copies
+        .stop_alone(Alone {
+            shard: SHARD,
+            dir,
+            label: LABEL,
+            incarnation: 1,
+            broker: BROKER,
+            config: &config(),
+            read: &read,
+            fold: &fold,
+            member: &member,
+            record: &LocalRecord,
+        })
+        .await
+}
+
 /// A root whose storage id a relaxed crash rotated after the shard wrote
 /// `count` records, and a gate that passes on it.
 async fn crashed(count: u64) -> (Root, PathBuf) {
@@ -350,4 +375,63 @@ fn a_plan_is_kept_across_a_restart() {
     };
     LocalRecord.store(dir.path(), &plan).expect("store");
     assert_eq!(LocalRecord.load(dir.path()).expect("load"), Some(plan));
+}
+
+/// **The cluster's half plans and stops the copy and writes no epoch**: the
+/// control plane's record decides the epoch, so the copy stays at epoch 0
+/// until a start. A resend gets the same plan, and a crash after the stop
+/// leaves the copy stopped for it.
+#[tokio::test]
+async fn stopping_alone_plans_and_stops_without_writing_an_epoch() {
+    let (root, dir) = crashed(3).await;
+    let copies = root.open();
+    let plan = stop(&copies, &dir).await.expect("stop").expect("owed");
+    assert_eq!(plan.bases.len(), 1);
+    assert_eq!(group_epoch(&dir).expect("epoch"), None, "no epoch written");
+    assert!(
+        crate::raft_copy::stop_file::stopped(&dir)
+            .expect("stopped")
+            .is_some()
+    );
+    assert!(crate::raft_copy::start_due(&dir, 1).expect("due"));
+    let again = stop(&root.open(), &dir).await.expect("again");
+    assert_eq!(again, Some(plan.clone()), "the same plan is sent again");
+    assert_eq!(group_epoch(&dir).expect("epoch"), None);
+    // The start the control plane's record drives finishes the re-form, and
+    // nothing is owed after it.
+    let done = reform(&root.open(), &dir).await.expect("start");
+    assert_eq!(done, Aloned::Reformed { epoch: 1 });
+    assert_eq!(group_epoch(&dir).expect("epoch"), Some(1));
+    assert_eq!(stop(&root.open(), &dir).await.expect("after"), None);
+}
+
+/// **A plan made under an older storage id is planned again** when another
+/// relaxed crash follows, above everything the first plan reserved.
+#[tokio::test]
+async fn stopping_alone_after_another_crash_plans_again() {
+    let (root, dir) = crashed(3).await;
+    let first = stop(&root.open(), &dir).await.expect("stop").expect("owed");
+    relaxed_crash(&root, 3);
+    root.witness_current_id();
+    let second = stop(&root.open(), &dir)
+        .await
+        .expect("stop again")
+        .expect("owed");
+    assert_ne!(first.minted, second.minted, "planned under the new id");
+    assert!(second.bases[0].first_index >= first.bases[0].first_index);
+    assert_eq!(group_epoch(&dir).expect("epoch"), None);
+}
+
+#[tokio::test]
+async fn stopping_alone_without_a_crash_owes_nothing() {
+    let root = Root::new();
+    run_state::begin(root.path(), true, None, boot(1), || false, || [9; 16]).expect("begin");
+    let dir = root.shard_dir();
+    written_copy(&root.open(), &dir, 3).await;
+    assert_eq!(stop(&root.open(), &dir).await.expect("run"), None);
+    assert!(
+        crate::raft_copy::stop_file::stopped(&dir)
+            .expect("stopped")
+            .is_none()
+    );
 }
