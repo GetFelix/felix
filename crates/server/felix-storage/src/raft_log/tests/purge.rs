@@ -33,6 +33,7 @@ async fn a_purge_drops_entries_through_its_id() {
     let segments = raft.disk_log().segments().len();
 
     raft.purge(log_id(1, 10)).await.expect("purge");
+    raft.drain_flushes().await.expect("the removal");
     assert!(raft.disk_log().segments().len() < segments, "nothing went");
     assert!(
         raft.disk_log().base_offset() < 11,
@@ -301,6 +302,50 @@ async fn a_paged_read_restarts_when_entries_are_purged_under_it() {
     assert_eq!(read.await.expect("join").expect("read"), entries[16..25]);
 }
 
+/// A purge returns with its removal still to run: the log starts after the
+/// id at once, a read of the range below it returns nothing purged while
+/// the segments are still on disk, and a read paused across the purge
+/// restarts above it. The removal then runs and changes no read (#3263).
+#[tokio::test]
+async fn a_read_over_a_purge_whose_removal_is_held_returns_nothing_purged() {
+    let dir = tempdir().expect("dir");
+    let mut raft = open(&dir);
+    let entries = thirty();
+    append_flushed(&mut raft, &entries).await;
+    let segments = raft.disk_log().segments().len();
+    let log = raft.disk_log().clone();
+    let removal = log.hold_head_trims().await;
+
+    let (reached_tx, reached_rx) = tokio::sync::oneshot::channel();
+    let (resume_tx, resume_rx) = tokio::sync::oneshot::channel();
+    *raft.shared.pause_after_page.lock() = Some((reached_tx, resume_rx));
+    let mut paused = raft.reader();
+    let read = tokio::spawn(async move { paused.try_get_log_entries(3..25).await });
+    reached_rx.await.expect("the first page");
+    tokio::time::timeout(std::time::Duration::from_secs(5), raft.purge(log_id(1, 15)))
+        .await
+        .expect("the purge waits on no removal")
+        .expect("purge");
+    assert_eq!(
+        raft.disk_log().segments().len(),
+        segments,
+        "removed already"
+    );
+    resume_tx.send(()).expect("resume");
+    assert_eq!(read.await.expect("join").expect("read"), entries[16..25]);
+    let below = raft
+        .reader()
+        .try_get_log_entries(0..25)
+        .await
+        .expect("read");
+    assert_eq!(below, entries[16..25]);
+
+    drop(removal);
+    raft.drain_flushes().await.expect("drain");
+    assert!(raft.disk_log().segments().len() < segments, "nothing went");
+    assert_eq!(all(&raft).await.expect("read"), entries[16..]);
+}
+
 /// A committed trim hides the entries below its floor but deletes none of
 /// them: only a purge may delete a Raft log's entries, so openraft never
 /// reads a log that starts above what it purged.
@@ -487,4 +532,33 @@ async fn a_re_formed_voters_base_stays_below_the_gap() {
         );
         assert_eq!(all(&raft).await.expect("read"), [next]);
     }
+}
+
+/// A call that outlasts the threshold is warned about; one under it, and
+/// any call before a threshold is set, is not.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_call_longer_than_the_threshold_is_warned_about() {
+    let warned = |raft: &RaftLog<Types, Codec>| raft.shared.slow.warned.lock().is_some();
+    let dir = tempdir().expect("dir");
+    let mut raft = open(&dir);
+    append_flushed(&mut raft, &thirty()).await;
+    assert!(!warned(&raft), "warned with no threshold");
+    raft.warn_slow_calls(std::time::Duration::from_secs(60));
+    raft.purge(log_id(1, 10)).await.expect("purge");
+    assert!(!warned(&raft), "warned under the threshold");
+
+    // A purge to the end drains the flushes, and its sync waits behind a
+    // held one.
+    let dir = tempdir().expect("dir");
+    let mut raft = open(&dir);
+    raft.warn_slow_calls(std::time::Duration::from_millis(20));
+    append_flushed(&mut raft, &thirty()).await;
+    let log = raft.disk_log().clone();
+    let flushes = log.hold_flushes().await;
+    let mut purging = raft.clone();
+    let purge = tokio::spawn(async move { purging.purge(log_id(2, 29)).await });
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    drop(flushes);
+    purge.await.expect("join").expect("purge");
+    assert!(warned(&raft), "a 100 ms purge was not warned about");
 }

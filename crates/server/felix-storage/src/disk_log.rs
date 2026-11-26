@@ -77,7 +77,7 @@ pub mod switch;
 mod sync;
 
 pub use carried_floor::CarriedFloor;
-pub use dir_lock::probe as probe_dir_lock;
+pub use dir_lock::RootLock;
 pub use producers::{ForgottenCuts, ProducerSequence, UnfinishedBatch};
 #[cfg(feature = "raft")]
 pub(crate) use producers::{forgotten_file_name, snapshot_file_name as producers_file_name};
@@ -2841,6 +2841,10 @@ impl LogInner {
     /// the generation history and the producer table down with them. Called
     /// holding the flush lock and the `segments` write lock.
     fn cut_suffix(&self, segments: &mut SegmentSet, offset: Offset) -> Result<()> {
+        // Under the manifest lock, which a head removal that poisons the log
+        // holds: its leftover files are off the list, and a cut that empties
+        // the list would start a new base beside them.
+        self.check_not_poisoned()?;
         let cuts_records = offset < segments.tail_offset();
         rewind::begin(&self.dir, rewind::Rewind::Cut(offset)).map_err(StorageError::Io)?;
         segments.truncate(offset)?;
@@ -2993,6 +2997,9 @@ impl LogInner {
             });
         }
         segments.check_open()?;
+        // Under the manifest lock, as in `cut_suffix`: a head removal that
+        // failed leaves files this reset would not unlink.
+        self.check_not_poisoned()?;
         // Inside the closure: a marker left by a failed step must poison the
         // log, or records appended later would be dropped at the next open.
         let rewound = (|| {

@@ -1974,23 +1974,54 @@ opening runs recovery, which cuts a torn tail. So each one is refused on a
 directory a running broker holds. Stop the broker first, or use
 `felixctl data inspect`, which only reads.
 
-Two brokers pointed at one data directory are caught per log directory, as
-each opens it, not at startup. The second broker starts, and each shard it
-tries to open that the first holds fails. The data directory's own files
-(the run record, the storage id and the marks) are not covered by these
-locks: a second broker started on the same directory writes its run record
-and may rotate the storage id under the first before any log refuses it. A
-lock on the whole data directory for the life of the process is tracked in
-#3250.
+A broker also locks its data directory itself, the same way, for as long
+as it runs. That lock covers the directory's own files, which no log's lock
+does: the run record, the run token, the storage id, the marks, the
+registration and rotation records, the control-plane group and view files,
+and the offload node id. It is the first thing a start does with the
+directory, before it reads or writes anything there, so a second broker
+pointed at the same directory stops at startup, before it is ready, with an
+error that names the directory and says another broker process holds it.
+It never gets as far as writing its run record or rotating the storage id
+under the first. The broker lets go of it only once its storage is shut
+down, whichever way the run ends: after the drain, or after a start that
+failed once storage was open (a listener port already taken, say). Before
+letting go it stops every task that can write under the directory, the
+Raft members, the restore gate, cache expiry and, on a late failure, the
+listeners, membership and the catalog sync, then closes storage and records
+the stop. A start that failed this way returns only after all of that, so a
+broker started again in the same process finds the directory free and its
+stop recorded as clean. A running broker dropped without stopping closes
+on a task of its own, and if that cannot finish the lock stays held until
+the process exits. All of this runs against the drain timeout
+(`FELIX_SHUTDOWN_DRAIN_TIMEOUT_MS`). A task or client connection that has
+not stopped by then, or a drain step that may write and was cut short,
+means the stop is not recorded as clean, so the next start reads it as a
+crash, and the lock stays held until the process exits. The broker still
+exits on time. A simulated broker holds the lock too.
 
-The lock goes away with the process that holds it, so a crash leaves no
-stale lock behind. See "One open at a time" in `docs/storage-format.md`.
+Two directories a broker uses outside its data directory are not locked,
+because they are shared: the offload directory
+(`FELIX_DURABLE_OFFLOAD_DIR`), an archive several brokers may write to, and
+the run witness directory under `/dev/shm`, which every broker on the
+machine uses.
+
+`felix-broker restore-point` and `felix-broker rotate-storage-id` take the
+same lock and hold it until they finish, so each is refused while a broker
+runs on the directory, and a broker started while one runs is refused.
+`felix-broker inspect` and `felixctl data inspect` only read and take no
+lock, so they work on a running broker's directory. Copying a directory
+for a backup takes no lock either.
+
+The lock goes away with the process that holds it, so a crash or a kill
+leaves no stale lock behind and the next start goes ahead. See "One open at
+a time" in `docs/storage-format.md`.
 
 Some filesystems cannot lock a directory. On Linux NFS `flock` is emulated
 with byte-range locks, which a directory cannot take, and some FUSE mounts
-do not support it. A broker checks this at startup: it takes and lets go of
-the lock on its data directory before it reports ready, and on a filesystem
-that refuses it the broker does not start. The error names the directory
+do not support it. On such a filesystem the lock on the data directory
+fails at startup, before the broker is ready, and the broker does not
+start. The error names the directory
 and says to keep it on a local disk. `felix-log-tool` fails the same way at
 its open. Other network filesystems may grant the lock on each host
 separately, which keeps two opens on one host apart but not two hosts that
@@ -2212,6 +2243,29 @@ unreadable. A leader purges no further than the match of a member that still
 answers; a member that is down is not waited for, and installs the snapshot
 when it is back. See `docs/per-shard-raft.md`, "Head trims" and "Purging
 below the floor".
+
+openraft makes the purge call on the member's Raft core, which also sends
+its heartbeats, so the purge waits on no fsync it does not need. It writes
+the purged id, synced, and returns; the segments below it are unlinked
+behind it. A crash part way leaves segments whose records are not
+entries; the open ignores them and the next purge removes them. An unlink
+that fails stops the log, since its segment is already off the log's list
+and a later reset would leave it beside the new base. Two kinds of purge
+still wait for every queued flush first, under the log's flush lock: one
+that empties the log (at or past its last entry, as after a snapshot
+install), since it drops the records those flushes wait on, and any purge
+on a log that hides purges past its stored snapshot, which removes its
+segments inline. A read that started before a purge starts
+again above the new first index, so it never returns a purged entry whose
+segment is still on disk.
+
+> `crates/server/felix-storage/src/raft_log/tests/crash_points.rs`,
+> `a_cut_at_each_step_of_a_purges_removal_leaves_the_log_after_its_id`,
+> `a_failed_unlink_behind_a_purge_stops_the_log_before_a_reset`;
+> `crates/server/felix-storage/src/raft_log/tests/purge.rs`,
+> `a_read_over_a_purge_whose_removal_is_held_returns_nothing_purged`;
+> `crates/server/felix-replication/src/raft/tests/core_stall.rs`,
+> `a_leader_core_keeps_answering_while_a_purge_waits_on_a_slow_flush`
 
 > `crates/server/felix-storage/src/raft_log/tests.rs`,
 > `a_trim_entry_applies_once_it_is_committed`;

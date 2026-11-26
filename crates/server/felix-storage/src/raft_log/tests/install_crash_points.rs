@@ -16,7 +16,7 @@
 use openraft::storage::{RaftLogStorage, RaftSnapshotBuilder, RaftStateMachine, StorageHelper};
 use openraft::type_config::alias::SnapshotMetaOf;
 
-use super::crash_points::{Sim, entries};
+use super::crash_points::{Sim, entries, wholly_below};
 use super::machine::{Machine, State};
 use super::writes::append_flushed;
 use super::*;
@@ -161,6 +161,8 @@ async fn a_cut_at_each_step_of_a_purge_opens() {
 
             stop.arm(&raft);
             let purge = raft.purge(written[60].log_id).await;
+            // The removal runs behind the purge; the cut comes after it.
+            raft.drain_flushes().await.expect("drain");
             stop.disarm(&raft);
             sim_fs::crash(&sim.0, seed).expect("crash");
             drop(raft);
@@ -178,12 +180,14 @@ async fn a_cut_at_each_step_of_a_purge_opens() {
             if purge.is_ok() {
                 assert!(purged.is_some(), "{at}: a finished purge came undone");
             }
+            // Its removal ran to its end too.
+            let finished = purge.is_ok() && wholly_below(&raft, 61) == 0;
             raft.purge(written[60].log_id).await.expect("purge again");
             let next = normal(1_000, 90, "after the cut");
             append_flushed(&mut raft, std::slice::from_ref(&next)).await;
             assert_eq!(all(&raft).await.expect("read").last(), Some(&next), "{at}");
             raft.disk_log().shutdown().await.expect("shutdown");
-            purge.is_ok()
+            finished
         }
     })
     .await;
@@ -347,7 +351,9 @@ async fn a_cut_at_each_step_of_an_install_inside_the_log_opens() {
             stop.arm(&raft);
             let installed = async {
                 state_machine.install_snapshot(&meta(leader), data).await?;
-                raft.purge(written[70].log_id).await
+                raft.purge(written[70].log_id).await?;
+                // The removal runs behind the purge; the cut comes after it.
+                raft.drain_flushes().await
             }
             .await;
             stop.disarm(&raft);
@@ -368,10 +374,11 @@ async fn a_cut_at_each_step_of_an_install_inside_the_log_opens() {
                 );
                 assert_eq!(found, written[71..], "{at}");
             }
+            let finished = installed.is_ok() && wholly_below(&raft, 71) == 0;
             let next = normal(1_000, 90, "after the cut");
             append_flushed(&mut raft, std::slice::from_ref(&next)).await;
             raft.disk_log().shutdown().await.expect("shutdown");
-            installed.is_ok()
+            finished
         }
     })
     .await;

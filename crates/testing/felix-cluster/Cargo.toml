@@ -44,7 +44,7 @@ tempfile = { workspace = true }
 # The link proxy sizes its UDP buffers to forward whatever a broker sends.
 socket2 = { workspace = true }
 # `io-util` for the control-plane link proxy, which copies TCP streams.
-tokio = { workspace = true, features = ["io-util"] }
+tokio = { workspace = true, features = ["fs", "io-util"] }
 tokio-util = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }

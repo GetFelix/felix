@@ -326,7 +326,14 @@ async fn crash_at(stop: Stop) {
         .await
         .expect_err("the armed stop fires");
     let image = crash_image(dir.path());
-    log.shutdown().await.expect("shutdown");
+    // A stop once the segment is off the list stops the log, as a failed
+    // unlink does, so its shutdown reports it.
+    let shut = log.shutdown().await;
+    assert_eq!(
+        shut.is_err(),
+        matches!(stop, Stop::Unlinked),
+        "{stop:?}: {shut:?}"
+    );
 
     let config = offload_config(image.path(), tight_retention());
     let recovered = assert_nothing_lost(image.path(), &config, &format!("{stop:?}")).await;
@@ -618,7 +625,13 @@ async fn a_power_loss_at_any_offload_step_loses_nothing() {
             }
         }
     }
-    log.shutdown().await.expect("shutdown");
+    // The last stop was after the unlink began, which stops the log as a
+    // failed unlink does, so its shutdown reports it.
+    let shut = log.shutdown().await;
+    assert!(
+        matches!(&shut, Err(StorageError::Poisoned { reason, .. }) if reason.contains("segment removal")),
+        "{shut:?}"
+    );
 }
 
 /// A failed sync of an upload stops offloading to that archive: a retry

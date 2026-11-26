@@ -353,3 +353,76 @@ fn a_lock_the_filesystem_refuses_names_the_directory() {
         "{err}"
     );
 }
+
+/// **A data directory's lock refuses a second holder until the first drops
+/// it**, with an error that names the directory and says another broker
+/// holds it, and it leaves no file behind.
+#[test]
+fn a_held_data_root_is_refused_until_its_holder_lets_go() {
+    let root = tempdir().expect("tempdir");
+    let dir = root.path().join("data");
+    let held = RootLock::take(&dir).expect("lock");
+    let err = RootLock::take(&dir).expect_err("a second holder was let in");
+    assert_eq!(err.kind(), std::io::ErrorKind::ResourceBusy);
+    let text = err.to_string();
+    assert!(
+        text.contains(&dir.display().to_string()) && text.contains("another broker process"),
+        "{text}"
+    );
+    drop(held);
+    let again = RootLock::take(&dir).expect("lock after the holder let go");
+    assert!(
+        std::fs::read_dir(&dir).expect("read").next().is_none(),
+        "the lock wrote to the directory"
+    );
+    drop(again);
+}
+
+const CHILD_ROOT: &str = "FELIX_TEST_ROOT_LOCK_CHILD";
+
+/// Run by [`a_killed_holder_of_a_data_root_does_not_block_the_next_start`]
+/// in a second process: locks the data directory named in the environment,
+/// says so, and waits to be killed. Does nothing as a test of its own.
+#[test]
+fn root_lock_child() {
+    let Some(dir) = std::env::var_os(CHILD_ROOT) else {
+        return;
+    };
+    let _held = RootLock::take(Path::new(&dir)).expect("child lock");
+    println!("held");
+    let mut line = String::new();
+    let _ = std::io::stdin().read_line(&mut line);
+    std::process::exit(0);
+}
+
+/// **A broker process killed while it held its data directory does not keep
+/// the next one out**: the kernel gave the lock up with the process.
+#[cfg(unix)]
+#[test]
+fn a_killed_holder_of_a_data_root_does_not_block_the_next_start() {
+    use std::io::BufRead;
+
+    let root = tempdir().expect("tempdir");
+    let mut child = std::process::Command::new(std::env::current_exe().expect("this binary"))
+        .args([
+            "--exact",
+            "disk_log::tests::dir_lock::root_lock_child",
+            "--nocapture",
+        ])
+        .env(CHILD_ROOT, root.path())
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .expect("child");
+    let mut stdout = std::io::BufReader::new(child.stdout.take().expect("stdout")).lines();
+    let held = stdout.any(|line| line.is_ok_and(|line| line.trim() == "held"));
+    assert!(held, "the child never locked the directory");
+    let err = RootLock::take(root.path()).expect_err("the child's lock does not hold");
+    assert_eq!(err.kind(), std::io::ErrorKind::ResourceBusy);
+
+    child.kill().expect("kill");
+    child.wait().expect("wait");
+    RootLock::take(root.path())
+        .unwrap_or_else(|err| panic!("the killed holder still blocks the start: {err}"));
+    drop(stdout);
+}
