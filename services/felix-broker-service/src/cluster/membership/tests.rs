@@ -1239,8 +1239,8 @@ async fn a_beat_offers_register_again_only_with_a_registration_time() {
     }
     shutdown.cancel();
     task.handle.await.expect("membership task");
-    let calls = calls.lock().expect("lock");
-    assert_eq!(calls.heartbeat_bodies[0], json!({ "incarnation": 0 }));
+    let first = calls.lock().expect("lock").heartbeat_bodies[0].clone();
+    assert_eq!(first, json!({ "incarnation": 0 }));
 
     let _ = stop.send(());
     let _ = handle.await;

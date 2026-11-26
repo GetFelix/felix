@@ -24,6 +24,7 @@ fn heartbeat_body(incarnation: u64) -> NodeHeartbeatRequest {
         want_assignment_seq: false,
         root: None,
         placement_incarnation: None,
+        registered_at_millis: None,
     }
 }
 
