@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795693908784,
+  "lastUpdate": 1795694323979,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -90618,6 +90618,72 @@ window.BENCHMARK_DATA = {
             "range": "1026.94",
             "unit": "us",
             "extra": "trials: 5\nmedian: 634.00\nmean: 1067.40\nstdev: 1026.94\ncv: 96.21%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1018-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "79bc1bd720d4b86e6826602d7c5ec3f8c17f6199",
+          "message": "fix(raft): the peer handshake states the Raft layouts a broker reads (#2551) (#3262)\n\n* wip(wire): HelloOk can carry the Raft layouts a peer reads (#2551)\n\nSpec-Unaffected: wire encoding of the peer handshake; no model covers it\n\n* wip(replication): Raft senders check the layouts a peer states (#2551)\n\nSpec-Unaffected: wire encoding of the peer handshake; no model covers it\n\n* wip(replication): Raft senders check the layouts a peer states (#2551)\n\nSpec-Unaffected: wire encoding of the peer handshake; no model covers it\n\n* docs: Raft layouts in the peer handshake, mixed layouts in an upgrade (#2551)\n\nSpec-Unaffected: docs and changelog for the peer handshake; no model covers it\n\n* fix(replication): Raft layout docs say what the handshake does today (#2551)\n\nDocs and changelog describe one layout per build and a refusal before\nsending, not a negotiation. A test holds LAYOUTS to what the encoders\nwrite and expect_layout reads. RaftOffer sits above PeerRequester's docs,\nand the refusal metric says a refused batch counts once.\n\nSpec-Unaffected: wire encoding of the peer handshake; no model covers it",
+          "timestamp": "2026-11-26T03:45:36-08:00",
+          "tree_id": "4a49efae48f813f47cd537651d3eaed320cbeedd",
+          "url": "https://github.com/GetFelix/felix/commit/79bc1bd720d4b86e6826602d7c5ec3f8c17f6199"
+        },
+        "date": 1795694307867,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 153,
+            "range": "1.30",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 153.00\nmean: 153.20\nstdev: 1.30\ncv: 0.85%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 208,
+            "range": "8.35",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 208.00\nmean: 211.20\nstdev: 8.35\ncv: 3.95%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 262,
+            "range": "983.57",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 262.00\nmean: 701.60\nstdev: 983.57\ncv: 140.19%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 202,
+            "range": "11.59",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 202.00\nmean: 206.40\nstdev: 11.59\ncv: 5.61%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 401,
+            "range": "309.18",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 401.00\nmean: 540.00\nstdev: 309.18\ncv: 57.26%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 612,
+            "range": "874.95",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 612.00\nmean: 1046.40\nstdev: 874.95\ncv: 83.62%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
