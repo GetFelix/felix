@@ -98,8 +98,8 @@ pub use stop_file::{StoppedCopy, stop, stopped};
 #[cfg(test)]
 pub(crate) use vouch::plan_reform;
 pub use vouch::{
-    BrokerReport, DEFAULT_OFFSET_GAP, GroupRecord, MIN_OFFSET_GAP, RESTORE_OFFSETS_PER_MILLI,
-    RestoreAt, VoterId,
+    BrokerReport, DEFAULT_OFFSET_GAP, GroupRecord, MAX_OFFSET_GAP, MIN_OFFSET_GAP,
+    RESTORE_OFFSETS_PER_MILLI, RestoreAt, VoterId,
 };
 #[allow(
     unused_imports,
