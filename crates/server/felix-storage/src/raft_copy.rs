@@ -22,6 +22,7 @@
 //! and the rules are the ones `docs/formal/FelixRaftIdentity.tla` checks.
 
 mod alone;
+mod base_pull;
 pub(crate) mod copy_file;
 pub(crate) mod epoch_file;
 mod fresh_epoch;
@@ -46,6 +47,7 @@ mod vouch;
 mod wire;
 
 pub use alone::{Alone, AlonePlan, Aloned, EpochRecord, LocalRecord, ReadCopy};
+pub use base_pull::{BaseCheck, Mismatch};
 pub use copy_file::CopyFile;
 #[allow(
     unused_imports,
