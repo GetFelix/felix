@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795690106583,
+  "lastUpdate": 1795690444451,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -90420,6 +90420,72 @@ window.BENCHMARK_DATA = {
             "range": "42.05",
             "unit": "us",
             "extra": "trials: 5\nmedian: 408.00\nmean: 415.00\nstdev: 42.05\ncv: 10.13%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "fb0da41a113d19cd7b44e539b9e40f4c0750472c",
+          "message": "fix(raft): an operator's leadership move completes while another voter is down (#3234) (#3255)\n\n* fix(raft): an operator's leader move completes with one voter down (#3234)\n\nAn operator move of a Raft shard's leader to another member of its set was\naccepted, then undone at the next placement pass while any member was down,\nand the group's leader would not hand over anyway (Held::Degraded).\n\nThe move is now marked as an operator's (move_reason operator, already a\nstored and fed field). Brokers read the mark: the group's leader hands over\nto an operator's name while the caught-up voters, itself and the target\namong them, are a majority. Placement's own names keep both holds as before.\nPlacement leaves a marked name alone until the group reports it leading\n(raft_leader_landed), or gives it up after two minutes\n(raft_leader_timed_out, back to the elected member while a member is\ndown). The move is refused with member_down when fewer than a majority of\nthe set is serving. GET /v1/shard-moves lists it with step leading.\n\nThe Kafka idempotent-producer test's move half runs on Raft again.\n\nSpec-Unaffected: FelixRaftPlacement.tla Transfer under PlacedLeaders already lets a settled leader hand over to any caught-up voter with no condition on the other voters; FelixRaftPlacementPlaced.cfg explores interleavings where the third voter takes no step.\n\n* docs, test: operator leader move needs a caught-up majority, not all voters (#3234)\n\nSpec-Unaffected: docs and test only",
+          "timestamp": "2026-11-26T02:43:44-08:00",
+          "tree_id": "72e32525d18903ec2145aa877a2f32bb9f7d4e3a",
+          "url": "https://github.com/GetFelix/felix/commit/fb0da41a113d19cd7b44e539b9e40f4c0750472c"
+        },
+        "date": 1795690433101,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 73,
+            "range": "1.10",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 73.00\nmean: 73.80\nstdev: 1.10\ncv: 1.48%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 127,
+            "range": "2.19",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 127.00\nmean: 126.40\nstdev: 2.19\ncv: 1.73%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 155,
+            "range": "3.44",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 155.00\nmean: 153.60\nstdev: 3.44\ncv: 2.24%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 89,
+            "range": "0.55",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 89.00\nmean: 89.40\nstdev: 0.55\ncv: 0.61%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 195,
+            "range": "16.93",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 195.00\nmean: 199.00\nstdev: 16.93\ncv: 8.51%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 480,
+            "range": "698.74",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 480.00\nmean: 876.60\nstdev: 698.74\ncv: 79.71%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
