@@ -4634,6 +4634,11 @@ record's floor once the record is below its commit offset, and rebuilds it
 at open from the trim records and the `head` file, as the hybrid does
 (`docs/durable-storage.md`, "Conditional head trim"). So once a member's
 commit passes the trim it hides the same records as every other member.
+A floor also waits for the member's own sync of the record, and a leader can
+answer a trim that its followers synced before it did. So the floor check of
+`propose_trim_at` and of retention's trim first waits for every trim the
+leader's log holds to apply, as a read does; a lower trim checked in that
+gap would otherwise be written below a floor the client was already given.
 
 On the hybrid only the leader serves readers, so once a trim is answered
 no reader on any broker is served below its floor. A Raft follower serves
