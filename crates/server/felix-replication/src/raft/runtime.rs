@@ -493,12 +493,6 @@ pub struct GroupStatus {
     pub client_writes: u64,
     /// Where the membership stands against the control plane's target.
     pub membership: MembershipProgress,
-    /// The voter sets of the last membership in this member's log,
-    /// committed or not: one, or two while a change is joint. Learners are
-    /// in none. Empty for a copy that holds no membership yet.
-    pub voter_sets: Vec<BTreeSet<MemberId>>,
-    /// The log entry that membership is from. `None` for the initial one.
-    pub membership_at: Option<LogPoint>,
 }
 
 /// A leader's replication to one other member of its group.
@@ -1288,6 +1282,21 @@ impl GroupRuntime {
     /// See `docs/per-shard-raft.md`, "A member that stops on a storage error".
     pub fn storage_failure(&self, shard: &ShardKey) -> Option<String> {
         self.inner.registry.get(shard)?.storage_failure()
+    }
+
+    /// The voter sets of the last membership in this broker's member of
+    /// `shard`, committed or not (one, or two while a change is joint;
+    /// learners are in none), with the entry that membership is from. Empty
+    /// sets and `None` for a copy that holds no membership yet. Read for a
+    /// backup point only, so it is not part of [`Self::status`].
+    pub fn voter_sets(
+        &self,
+        shard: &ShardKey,
+    ) -> Option<(Vec<BTreeSet<MemberId>>, Option<LogPoint>)> {
+        self.inner
+            .registry
+            .get(shard)
+            .map(|group| group.voter_sets())
     }
 
     /// The brokers that vote in `shard`'s group, as this member's log has

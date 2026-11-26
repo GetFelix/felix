@@ -2751,19 +2751,6 @@ impl Group {
             dropped_ticks: self.dropped_ticks.load(Ordering::Relaxed),
             client_writes: self.client_writes.load(Ordering::Relaxed),
             membership: self.membership_progress(),
-            voter_sets: metrics
-                .membership_config
-                .membership()
-                .get_joint_config()
-                .clone(),
-            membership_at: metrics
-                .membership_config
-                .log_id()
-                .as_ref()
-                .map(|id| LogPoint {
-                    term: **id.committed_leader_id(),
-                    index: id.index,
-                }),
         }
     }
 
@@ -2879,6 +2866,20 @@ impl Group {
             })
             .collect();
         Some(followers)
+    }
+
+    /// The voter sets of the last membership in this member's log, and the
+    /// entry it is from. See [`super::GroupRuntime::voter_sets`].
+    pub(crate) fn voter_sets(&self) -> (Vec<BTreeSet<MemberId>>, Option<LogPoint>) {
+        use openraft::async_runtime::watch::WatchReceiver;
+        let metrics = self.raft.metrics();
+        let metrics = metrics.borrow_watched();
+        let stored = &metrics.membership_config;
+        let at = stored.log_id().as_ref().map(|id| LogPoint {
+            term: **id.committed_leader_id(),
+            index: id.index,
+        });
+        (stored.membership().get_joint_config().clone(), at)
     }
 
     pub(crate) fn voters(&self) -> BTreeSet<MemberId> {
