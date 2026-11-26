@@ -30,6 +30,10 @@ on:
         description: "Diagnostic: after each cell, restart the broker on its data and time one more rep"
         type: boolean
         default: false
+      profile:
+        description: "Diagnostic: perf stat and perf record of the native broker at light load"
+        type: boolean
+        default: false
       native:
         description: "Diagnostic: measure the uninstrumented broker at light load instead"
         type: boolean
@@ -87,6 +91,7 @@ jobs:
       # Hosted runners expose no hardware performance counters (perf stat
       # reports instructions as unsupported), so the broker runs under callgrind.
       - name: Install valgrind
+        if: ${{ !inputs.profile }}
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq valgrind
@@ -98,6 +103,40 @@ jobs:
           cargo build --locked --release -p felix-broker-service --bin felix-broker
           cargo build --locked --release -p felix-loadgen
           cargo test --locked --release -p felix-cluster --test instructions_per_message --no-run
+
+      - name: Profile natively
+        if: inputs.profile
+        run: |
+          sudo apt-get install -y -qq linux-tools-common "linux-tools-$(uname -r)" || sudo apt-get install -y -qq linux-tools-azure || true
+          sudo sysctl -w kernel.perf_event_paranoid=-1
+          sudo sysctl -w kernel.kptr_restrict=0
+          perf --version
+          ev=""
+          for n in futex write writev pwrite64 pwritev pwritev2 fsync fdatasync sync_file_range sendmsg sendmmsg sendto recvmsg recvmmsg recvfrom read pread64 epoll_wait epoll_pwait epoll_pwait2 clock_gettime io_uring_enter sched_yield nanosleep clock_nanosleep; do
+            if sudo test -d "/sys/kernel/tracing/events/syscalls/sys_enter_$n" || sudo test -d "/sys/kernel/debug/tracing/events/syscalls/sys_enter_$n"; then ev="$ev,syscalls:sys_enter_$n"; fi
+          done
+          ev="raw_syscalls:sys_enter$ev"
+          echo "syscall events: $ev"
+          export FELIX_PERF_SYSCALLS="$ev"
+          mkdir -p prof "$RUNNER_TEMP/perf-rel" "$RUNNER_TEMP/perf-diag"
+          # Stats only, on the shipped release build, for the overhead comparison.
+          FELIX_PROF_RECORD=0 FELIX_PROF_DIR="$RUNNER_TEMP/perf-rel" FELIX_IPM_OUT="$PWD/prof/release.json" \
+            cargo test --locked --release -p felix-cluster --test instructions_per_message \
+            broker_light_load_profile -- --ignored --nocapture --exact 2>&1 | tee prof/release.log || true
+          export RUSTFLAGS="-C force-frame-pointers=yes"
+          cargo build --locked --profile diag -p felix-broker-service --bin felix-broker
+          cargo build --locked --profile diag -p felix-loadgen
+          FELIX_PROF_RECORD=1 FELIX_PROF_DIR="$RUNNER_TEMP/perf-diag" FELIX_IPM_OUT="$PWD/prof/diag.json" \
+            cargo test --locked --profile diag -p felix-cluster --test instructions_per_message \
+            broker_light_load_profile -- --ignored --nocapture --exact 2>&1 | tee prof/diag.log || true
+          for f in "$RUNNER_TEMP"/perf-diag/*.data; do
+            b=$(basename "$f" .data)
+            sudo perf report -i "$f" --stdio --no-children --sort dso,symbol -g none --percent-limit 0.4 2>/dev/null | head -120 > "prof/$b.self.txt" || true
+            sudo perf report -i "$f" --stdio --children --sort symbol -g none --percent-limit 1.5 2>/dev/null | head -160 > "prof/$b.incl.txt" || true
+            sudo perf report -i "$f" --stdio --no-children --sort comm -g none 2>/dev/null | head -60 > "prof/$b.comm.txt" || true
+            sudo perf report -i "$f" --stdio --no-children --sort symbol -g caller,0.5,callee,function,percent --percent-limit 3 2>/dev/null | head -900 > "prof/$b.paths.txt" || true
+          done
+          echo '[]' > ipm-result.json
 
       - name: Measure natively
         if: inputs.native
@@ -111,7 +150,7 @@ jobs:
           cp "$RUNNER_TEMP/ipm-result.json" ipm-result.json
 
       - name: Measure
-        if: ${{ !inputs.native }}
+        if: ${{ !inputs.native && !inputs.profile }}
         run: |
           mkdir -p "$RUNNER_TEMP/cg"
           # Callgrind runs the broker tens of times slower than native, and the
@@ -158,5 +197,5 @@ jobs:
           path: prof
 
       - name: Compare with the baseline
-        if: ${{ !inputs.native }}
+        if: ${{ !inputs.native && !inputs.profile }}
         run: python3 scripts/perf/ipm_gate.py check ipm-result.json

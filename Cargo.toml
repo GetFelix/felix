@@ -67,6 +67,13 @@ debug = false
 lto = "fat"
 codegen-units = 1
 
+# Diagnostic (#3204): release without LTO, with line tables, for perf.
+[profile.diag]
+inherits = "release"
+lto = false
+codegen-units = 16
+debug = "line-tables-only"
+
 [profile.release.package.felix-capi]
 # On Apple targets rustc runs the system `strip` over every linked artifact, and
 # macOS 27's `strip` leaves a cdylib's LINKEDIT string pool 4-byte aligned, which

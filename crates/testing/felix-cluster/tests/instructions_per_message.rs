@@ -108,6 +108,18 @@ fn run_ingest(
     rate: Option<u64>,
     must_be_clean: bool,
 ) -> Result<Ingest> {
+    run_ingest_for(cluster, batch, total, None, rate, must_be_clean)
+}
+
+/// [`run_ingest`], for `duration` seconds instead of `total` records when set.
+fn run_ingest_for(
+    cluster: &Cluster,
+    batch: usize,
+    total: usize,
+    duration: Option<u64>,
+    rate: Option<u64>,
+    must_be_clean: bool,
+) -> Result<Ingest> {
     let brokers = cluster
         .nodes
         .iter()
@@ -131,8 +143,11 @@ fn run_ingest(
         .args(["--in-flight", &IN_FLIGHT.to_string()])
         .args(["--concurrency", "1"])
         .args(["--batch", &batch.to_string()])
-        .args(["--payload-bytes", &PAYLOAD_BYTES.to_string()])
-        .args(["--total", &total.to_string()]);
+        .args(["--payload-bytes", &PAYLOAD_BYTES.to_string()]);
+    match duration {
+        Some(secs) => command.args(["--duration-secs", &secs.to_string()]),
+        None => command.args(["--total", &total.to_string()]),
+    };
     if let Some(rate) = rate {
         command.args(["--rate", &rate.to_string()]);
     }
@@ -857,6 +872,203 @@ async fn broker_light_load_cpu() {
         .await
         .expect("join")
         .expect("native measurement");
+        results.extend(rows);
+    }
+    std::fs::write(&out, serde_json::to_string_pretty(&results).unwrap()).expect("write result");
+}
+
+/// Every counter a broker exports, summed over label sets.
+fn all_counters(cluster: &Cluster, node: usize) -> std::collections::BTreeMap<String, f64> {
+    let addr = cluster.nodes[node].metrics_addr;
+    let handle = tokio::runtime::Handle::current();
+    let body = handle
+        .block_on(async move {
+            reqwest::get(format!("http://{addr}/metrics"))
+                .await?
+                .text()
+                .await
+        })
+        .unwrap_or_default();
+    let mut out = std::collections::BTreeMap::new();
+    for line in body.lines() {
+        if line.starts_with('#') {
+            continue;
+        }
+        let name = line.split(['{', ' ']).next().unwrap_or("");
+        if !name.ends_with("_total") && !name.ends_with("_count") && !name.ends_with("_sum") {
+            continue;
+        }
+        if let Some(v) = line.rsplit(' ').next().and_then(|v| v.parse::<f64>().ok()) {
+            *out.entry(name.to_string()).or_insert(0.0) += v;
+        }
+    }
+    out
+}
+
+/// What one profiled window found on one broker.
+fn perf_stat_csv(text: &str) -> serde_json::Map<String, serde_json::Value> {
+    let mut out = serde_json::Map::new();
+    for line in text.lines() {
+        let fields: Vec<&str> = line.split(',').collect();
+        if fields.len() > 2 {
+            let value = fields[0]
+                .parse::<f64>()
+                .map_or(serde_json::Value::Null, serde_json::Value::from);
+            out.insert(fields[2].to_string(), value);
+        }
+    }
+    out
+}
+
+/// One cell of the native profile: load runs in the background while each
+/// broker gets `perf stat` (stats window) or `perf record` (record window).
+fn profile_cell(
+    cluster: &Cluster,
+    label: &str,
+    rate: Option<u64>,
+    record: bool,
+    prof_dir: &Path,
+) -> Result<serde_json::Value> {
+    const RAMP: u64 = 3;
+    const WINDOW: u64 = 10;
+    let pids: Vec<u32> = cluster.nodes.iter().filter_map(|n| n.pid()).collect();
+    let syscalls = std::env::var("FELIX_PERF_SYSCALLS").unwrap_or_default();
+    std::thread::scope(|scope| -> Result<serde_json::Value> {
+        let load =
+            scope.spawn(|| run_ingest_for(cluster, 1, 0, Some(RAMP + WINDOW + 2), rate, false));
+        std::thread::sleep(Duration::from_secs(RAMP));
+        let counters_before: Vec<_> = (0..pids.len()).map(|i| all_counters(cluster, i)).collect();
+        let procs_before: Vec<ProcSample> = pids.iter().map(|&p| ProcSample::read(p)).collect();
+        let started = Instant::now();
+        let children: Vec<std::process::Child> = pids
+            .iter()
+            .enumerate()
+            .map(|(i, pid)| {
+                let mut cmd = Command::new("sudo");
+                cmd.args(["-n", "perf"]);
+                if record {
+                    let file = prof_dir.join(format!("{label}.b{i}.data").replace(['/', ' '], "_"));
+                    cmd.args(["record", "-q", "-e", "cpu-clock", "-F", "999", "-g", "-o"])
+                        .arg(file);
+                } else {
+                    let mut events =
+                        "instructions,cycles,context-switches,cpu-migrations,task-clock"
+                            .to_string();
+                    if !syscalls.is_empty() {
+                        events.push(',');
+                        events.push_str(&syscalls);
+                    }
+                    cmd.args(["stat", "-x", ",", "-e", &events]);
+                }
+                cmd.args(["-p", &pid.to_string(), "--", "sleep", &WINDOW.to_string()])
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::piped())
+                    .spawn()
+                    .context("spawn perf")
+            })
+            .collect::<Result<_>>()?;
+        let outputs: Vec<String> = children
+            .into_iter()
+            .map(|c| {
+                c.wait_with_output()
+                    .map(|o| String::from_utf8_lossy(&o.stderr).into_owned())
+                    .unwrap_or_default()
+            })
+            .collect();
+        let wall = started.elapsed().as_secs_f64();
+        let procs_after: Vec<ProcSample> = pids.iter().map(|&p| ProcSample::read(p)).collect();
+        let counters_after: Vec<_> = (0..pids.len()).map(|i| all_counters(cluster, i)).collect();
+        let ingest = load.join().map_err(|_| anyhow!("load thread panicked"))??;
+        // Messages acked in the window: the paced rate, or the run's average.
+        let messages = rate.map_or(ingest.msg_s, |r| r as f64) * wall;
+        let mut brokers = Vec::new();
+        for i in 0..pids.len() {
+            let counters: serde_json::Map<String, serde_json::Value> = counters_after[i]
+                .iter()
+                .filter_map(|(k, a)| {
+                    let d = a - counters_before[i].get(k).copied().unwrap_or(0.0);
+                    (d != 0.0).then(|| (k.clone(), serde_json::Value::from(d / messages)))
+                })
+                .collect();
+            let cpu = (procs_after[i].cpu_s - procs_before[i].cpu_s) / wall * 100.0;
+            let vol = procs_after[i]
+                .voluntary_switches
+                .saturating_sub(procs_before[i].voluntary_switches) as f64;
+            let invol = procs_after[i]
+                .involuntary_switches
+                .saturating_sub(procs_before[i].involuntary_switches)
+                as f64;
+            let stat = perf_stat_csv(&outputs[i]);
+            let per_message: serde_json::Map<String, serde_json::Value> = stat
+                .iter()
+                .filter_map(|(k, v)| {
+                    Some((k.clone(), serde_json::Value::from(v.as_f64()? / messages)))
+                })
+                .collect();
+            eprintln!(
+                "profile {label} broker {i}{}: {messages:.0} msgs in {wall:.1}s ({:.0} msg/s run avg), cpu {cpu:.1}%, ctx vol/invol per msg {:.2}/{:.2}\n  perf per msg {per_message:?}\n  counters per msg {counters:?}",
+                if record { " (record)" } else { "" },
+                ingest.msg_s,
+                vol / messages,
+                invol / messages,
+            );
+            brokers.push(serde_json::json!({
+                "cpu_pct": cpu, "vol_per_msg": vol / messages, "invol_per_msg": invol / messages,
+                "perf_per_msg": per_message, "perf_raw": outputs[i], "counters_per_msg": counters,
+            }));
+        }
+        Ok(
+            serde_json::json!({ "label": label, "record": record, "messages": messages, "wall_s": wall, "msg_s": ingest.msg_s, "brokers": brokers }),
+        )
+    })
+}
+
+#[tokio::test(flavor = "multi_thread")]
+#[serial]
+#[ignore = "native profile; run by the Instructions per message workflow"]
+async fn broker_light_load_profile() {
+    let out = std::env::var("FELIX_IPM_OUT").expect("set FELIX_IPM_OUT");
+    let prof_dir = PathBuf::from(std::env::var("FELIX_PROF_DIR").expect("set FELIX_PROF_DIR"));
+    let record = std::env::var("FELIX_PROF_RECORD").is_ok_and(|v| v == "1");
+    let mut results = Vec::new();
+    for rf in [1u32, 3] {
+        let stream = if rf == 1 {
+            StreamSpec::new(STREAM, SHARDS)
+        } else {
+            StreamSpec::quorum(STREAM, SHARDS, rf)
+        };
+        let cluster = Cluster::start(ClusterConfig {
+            nodes: rf as usize,
+            streams: vec![stream],
+            broker_env: vec![(
+                "FELIX_DURABLE_FSYNC_MODE".to_string(),
+                "periodic".to_string(),
+            )],
+            sync_interval_ms: 2000,
+            node_expiry: Duration::from_secs(15),
+            ..Default::default()
+        })
+        .await
+        .expect("start cluster");
+        let prof_dir = prof_dir.clone();
+        let rows = tokio::task::spawn_blocking(move || -> Result<Vec<serde_json::Value>> {
+            let cluster = cluster;
+            run_ingest(&cluster, 1, 5_000, None, false)?;
+            let mut rows = Vec::new();
+            for (name, rate) in [("100", Some(100u64)), ("1000", Some(1000)), ("flat", None)] {
+                let label = format!("rf{rf}_{name}");
+                rows.push(profile_cell(&cluster, &label, rate, false, &prof_dir)?);
+                std::thread::sleep(Duration::from_secs(3));
+                if record {
+                    rows.push(profile_cell(&cluster, &label, rate, true, &prof_dir)?);
+                    std::thread::sleep(Duration::from_secs(3));
+                }
+            }
+            Ok(rows)
+        })
+        .await
+        .expect("join")
+        .expect("profile");
         results.extend(rows);
     }
     std::fs::write(&out, serde_json::to_string_pretty(&results).unwrap()).expect("write result");
