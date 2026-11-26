@@ -37,10 +37,16 @@ fn replicated_cache() -> ClusterConfig {
 /// for every member to hold the log through the leader's last entry.
 pub(crate) async fn replication_settled(cluster: &Cluster, leader: &str, before: f64) {
     if cluster.raft() {
-        cluster
+        let elected = cluster
             .wait_for_every_cache_member_level(CACHE, Duration::from_secs(30))
             .await
             .expect("every member of a healthy Raft cache shard should hold the write");
+        // The caller kills `leader` next. Were it a follower, the test would
+        // pass with no failover at all.
+        assert_eq!(
+            elected, leader,
+            "the Raft group is led by {elected}, not by placement's {leader}"
+        );
         return;
     }
     felix_cluster::wait::until(
