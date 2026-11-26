@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795698791993,
+  "lastUpdate": 1795700635657,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -90882,6 +90882,72 @@ window.BENCHMARK_DATA = {
             "range": "1110.21",
             "unit": "us",
             "extra": "trials: 5\nmedian: 2546.00\nmean: 1766.60\nstdev: 1110.21\ncv: 62.84%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "e0a131811677aa5ff42878cb4b7ed2b4aa9c1981",
+          "message": "perf(broker): plain publishes queued on a Raft shard's lane are one proposal (#2936) (#3236)\n\n* perf(raft): merge queued publishes on a lane into one proposal (#2936)\n\nWIP: not yet tested.\n\nSpec-Unaffected: the models are per record; the proposer already merges batches into one write\n\n* test(raft): format the merged-proposal tests\n\nSpec-Unaffected: tests only\n\n* test(raft): a merged batch that cannot commit leaves every member unknown (#2936)\n\nSpec-Unaffected: a test and a doc sentence\n\n* test(raft): drop clones clippy flags in the merged deadline tests (#2936)\n\nSpec-Unaffected: tests only\n\n* test(raft): merged members timed out by their sweeps hear the quorum wait's error (#2936)\n\nSpec-Unaffected: tests only\n\n* docs(raft): a merged batch keeps one bound per publish (#2936)\n\nSpec-Unaffected: docs and changelog only\n\n* fix(raft): a merged proposal keeps its payloads and holds one group (#2936)\n\nThe merge with #3233 left main's `std::mem::take(&mut job.payloads)` after\nthe merged batch was built, so a proposal went out with no records. It is\nremoved; the merged payloads are what is proposed. The connection-line\npath passes no lane and no group, as before.\n\nA merged proposal uses the group the lane found for its first publish,\nfor all its members; a test counts the lookups.\n\nSpec-Unaffected: resolves the merge with #3233; who holds the group handle and which records a merged proposal carries are what #3233 and #2936 already reviewed",
+          "timestamp": "2026-11-26T05:38:10-08:00",
+          "tree_id": "019f281ad0b97b6e883f2ab53a3f935186951bb4",
+          "url": "https://github.com/GetFelix/felix/commit/e0a131811677aa5ff42878cb4b7ed2b4aa9c1981"
+        },
+        "date": 1795700621092,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 102,
+            "range": "1.48",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 102.00\nmean: 101.80\nstdev: 1.48\ncv: 1.46%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 151,
+            "range": "6.14",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 151.00\nmean: 153.20\nstdev: 6.14\ncv: 4.01%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 191,
+            "range": "16.87",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 191.00\nmean: 196.20\nstdev: 16.87\ncv: 8.60%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 111,
+            "range": "2.51",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 111.00\nmean: 111.60\nstdev: 2.51\ncv: 2.25%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 236,
+            "range": "148.74",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 236.00\nmean: 303.20\nstdev: 148.74\ncv: 49.06%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 534,
+            "range": "379.16",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 534.00\nmean: 645.60\nstdev: 379.16\ncv: 58.73%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
