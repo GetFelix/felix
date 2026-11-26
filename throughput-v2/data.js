@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795661219037,
+  "lastUpdate": 1795662492156,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -70356,6 +70356,58 @@ window.BENCHMARK_DATA = {
             "range": "5206.90",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 835878.46\nmean: 836693.31\nstdev: 5206.90\ncv: 0.62%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "ce596a9c134967ab2cdac40f608201fd39d6b69e",
+          "message": "fix(controlplane): a broker ahead of a restored node record is told to register again (#2604) (#3210)\n\n* fix(membership): a broker ahead of a restored node record registers again (#2604)\n\nAfter a control-plane restore of a backup taken before a broker last\nregistered, the node record holds an older incarnation than the running\nbroker. Its beats were accepted but its placement acknowledgements and\nRaft copy ids were dropped, and nothing told it to register again.\n\nThe heartbeat answer now carries `register_again: true` when the beat is\nabove the record's incarnation, carries the record's registered_at_millis\nand the node is live. It is computed from the record and the beat, so no\nnew replicated state. The broker offers it by sending registered_at_millis\nand handles it by registering again, keeping its lease. An older broker\nsends no registered_at_millis and gets the same bytes as before.\n\nSpec-Unaffected: no TLA model covers node registration or heartbeats; FelixRaftPlacement's AllAcked gate is unchanged, this only lets a rewound broker re-register so its acks are counted\n\n* test(membership): fix the lint on the register-again tests (#2604)\n\nSpec-Unaffected: test-only change",
+          "timestamp": "2026-11-25T18:48:29-08:00",
+          "tree_id": "90e8401d9a597f98784612b427f3d26a09c63eac",
+          "url": "https://github.com/GetFelix/felix/commit/ce596a9c134967ab2cdac40f608201fd39d6b69e"
+        },
+        "date": 1795662491326,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 354624.31,
+            "range": "16441.82",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 354624.31\nmean: 348749.36\nstdev: 16441.82\ncv: 4.71%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 354624.31,
+            "range": "16441.82",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 354624.31\nmean: 348749.36\nstdev: 16441.82\ncv: 4.71%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 79429.13,
+            "range": "520.06",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 79429.13\nmean: 79620.08\nstdev: 520.06\ncv: 0.65%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 794291.32,
+            "range": "5200.58",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 794291.32\nmean: 796200.84\nstdev: 5200.58\ncv: 0.65%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
