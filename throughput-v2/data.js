@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795657685376,
+  "lastUpdate": 1795659388559,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -70200,6 +70200,58 @@ window.BENCHMARK_DATA = {
             "range": "14859.23",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1199828.60\nmean: 1204244.23\nstdev: 14859.23\ncv: 1.23%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "64d6da11714d272a196a8f0eb5079581ba40c558",
+          "message": "fix(auth): token exchange refuses an IdP token issued before its principal was explicitly revoked (#2839) (#3200)\n\n* fix(auth): refuse an IdP token issued before its principal's revocation (#2839)\n\nToken exchange slept past a revocation cutoff and then minted a fresh\ntoken and refresh chain, without comparing the upstream token's iat to\nthe cutoff. An IdP token taken before a revocation kept exchanging for\nthe rest of its lifetime.\n\nExchange now answers 401 when the IdP token's iat is at or before the\nprincipal's cutoff plus the IdP clock skew. The skew is added to the\ncutoff so an IdP clock running ahead cannot carry a pre-revocation\ntoken past it. The check runs again once the refresh token is stored,\nending that chain if a revocation landed in between, and\nrefresh-tokens/revoke now records the cutoff before ending chains so\nthat second check always sees it.\n\nSpec-Unaffected: control-plane token exchange; no TLA model covers auth.\n\n* fix(auth): only an explicit revocation refuses older IdP tokens (#2839)\n\nApplying the IdP-token check to every cutoff turned an ordinary RBAC\nedit into a tenant-wide logout: every client re-exchanging a cached IdP\ntoken got 401 until it fetched a new one. RBAC edits and issuer changes\ntake back rights, not the identity, so their cutoffs keep the old\nbehaviour (wait out the second, mint with current rules).\n\nrefresh-tokens/revoke now also records an assertion cutoff on the\nprincipal's revocation row (RevokePrincipals.assertions,\nassertions_revoked_at), metadata level 53. Below the level the revoke\nwrites what older builds write. Exchange reads both cutoffs in one\nleader read and refuses only against the assertion cutoff. The revoke's\ntwo writes move into cut_off, with a test that an exchange landing\nbetween them keeps no chain.\n\nSpec-Unaffected: control-plane auth; no TLA model covers revocation or exchange.",
+          "timestamp": "2026-11-26T01:55:38Z",
+          "tree_id": "0c1f4ea14e48fe26a997cf1c00ab77bbffe8c608",
+          "url": "https://github.com/GetFelix/felix/commit/64d6da11714d272a196a8f0eb5079581ba40c558"
+        },
+        "date": 1795659387849,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 732312.63,
+            "range": "72554.18",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 732312.63\nmean: 713736.21\nstdev: 72554.18\ncv: 10.17%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 732312.63,
+            "range": "72554.18",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 732312.63\nmean: 713736.21\nstdev: 72554.18\ncv: 10.17%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 169549.16,
+            "range": "8141.65",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 169549.16\nmean: 164995.12\nstdev: 8141.65\ncv: 4.93%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1695491.56,
+            "range": "81416.46",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1695491.56\nmean: 1649951.16\nstdev: 81416.46\ncv: 4.93%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
