@@ -553,6 +553,7 @@ expectations=(
   # A leader names an allowance only after an entry of its own term; run
   # 45743343474 found the violation without that guard.
   "FelixRaftReformLeaseTail pass"
+  "FelixRaftReformLeaseTailNameEarly violates LeaseAckedReformed"
   "FelixRaftReformLeaseTailNoVouch violates LeaseAckedReformed"
   "FelixRaftReformLeaseTailLowestEnd violates LeaseAckedReformed"
   "FelixRaftReformLeaseTailMajorityRead violates LeaseAckedReformed"
@@ -1016,6 +1017,7 @@ weights=(
   "FelixRaftLeaseAllowanceUntimed 22"
   "FelixRaftReformLeaseTail 300"
   "FelixRaftReformLeaseTailWaitsStuck 300"
+  "FelixRaftReformLeaseTailNameEarly 130"
   "FelixRaftReformLeaseTailStuck 60"
   "FelixRaftReformLeaseTailNoVouch 24"
   "FelixRaftReformLeaseTailLowestEnd 16"

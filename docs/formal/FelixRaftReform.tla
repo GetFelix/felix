@@ -200,6 +200,8 @@
 (*   LeaseAckedReformed  -- and in the base of every later epoch.          *)
 (*   LowerNoFloor        -- knob: a voter lowers to the kept end even      *)
 (*                          below what its own log holds.                  *)
+(*   NameEarly           -- knob: a leader names an allowance before its   *)
+(*                          log holds an entry of its own term.            *)
 (*   VouchBy             -- "majority" is the rule above. The others each  *)
 (*                          drop part of it: "majorityRead" takes E from   *)
 (*                          the stores read and never waits; "lowest"      *)
@@ -251,7 +253,8 @@ CONSTANTS
     LeaseAnswers,       \* a leader answers records on its lease (issue 3103)
     MaxNames,           \* allowances named, in all
     VouchBy,            \* "majority", "majorityRead", "lowest" or "none" (see the header)
-    LowerNoFloor        \* a voter lowers to the kept end without its own floor
+    LowerNoFloor,       \* a voter lowers to the kept end without its own floor
+    NameEarly           \* a leader names an allowance before an entry of its term
 
 VARIABLES
     ep,         \* group epoch of the broker's member
@@ -1194,7 +1197,7 @@ LeaseAnswer(l) ==
 \* too, and replacing the older one in a store cannot strand it.
 NameAllowance(l) ==
     /\ LeaseAnswers /\ Leads(l) /\ names < MaxNames
-    /\ \E i \in 1..Len(log[l]) : log[l][i].e = ep[l] /\ log[l][i].t = term[l]
+    /\ NameEarly \/ \E i \in 1..Len(log[l]) : log[l][i].e = ep[l] /\ log[l][i].t = term[l]
     /\ \E n \in Len(log[l])..(Len(log[l]) + MaxWrites - writes) :
           /\ OwnAllow(l) = NoAllow \/ n > OwnAllow(l).end
           /\ allow' = [allow EXCEPT ![l] =
@@ -1373,11 +1376,12 @@ KnownEndsDiffer(p) ==
         \E m1, m2 \in {m \in Vs : StoreKnown(m, DOMAIN p.facts)} :
             StoredEnd(m1, p.e) # StoredEnd(m2, p.e)
 
-\* With one store of three unknown, the re-form waits exactly when the two
-\* known stores hold different ends.
+\* With one store of three unknown, a plan of the current epoch waits
+\* exactly when the two known stores hold different ends. An older plan can
+\* no longer be taken, so it waits on nothing.
 WaitsIffKnownEndsDiffer ==
     \A p \in plans :
-        (OneUnknown(p) /\ Cardinality(VoterSets(p.e, PlanCopies(p))) = 1)
+        (p.e = cpEpoch /\ OneUnknown(p) /\ Cardinality(VoterSets(p.e, PlanCopies(p))) = 1)
             => (PlanWaits(p) <=> KnownEndsDiffer(p))
 
 \* Every copy read is stopped, and no voter can lower its allowance.
