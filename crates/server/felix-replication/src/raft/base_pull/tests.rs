@@ -462,3 +462,13 @@ async fn an_abandoned_pull_signals_nothing_and_starts_no_other() {
         "a pull started after the member caught up another way"
     );
 }
+
+/// **A copy that spent its discards says so once**, not at every refused
+/// snapshot after.
+#[test]
+fn spent_discards_are_reported_once() {
+    let state = PullState::default();
+    assert!(state.exhausted());
+    assert!(!state.exhausted());
+    assert!(!state.exhausted());
+}

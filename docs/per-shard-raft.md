@@ -1656,8 +1656,14 @@ and counts `felix_broker_raft_held_base_refusals_total{reason}`. After it
 has been refused for two seconds it drops the base at its next open and
 pulls again; each later drop waits twice as long, up to a minute, and an
 epoch gets four. The count is kept in the copy's directory, so a reopen
-does not reset it. After that the learner keeps its base and the warning
-repeats until an operator looks.
+does not reset it. After that the learner keeps its base, logs once at
+`warn` that it gave up copying the base for this epoch, and the refusal
+warning repeats until an operator looks.
+
+Not yet working: a stream trimmed before its re-form. The learner pulls
+the base from the floor, but a log that starts above index 0 with no
+purged id below it does not open, so the learner stays a learner. It
+loses nothing and serves nothing; the shard stays under-replicated.
 
 A head trim inside the base does not free a re-formed voter's disk. Its
 purged id sits at the gap's end, so a purge at or below it removes

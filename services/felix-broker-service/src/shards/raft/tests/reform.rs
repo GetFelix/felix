@@ -283,6 +283,12 @@ struct ReFormed {
 }
 
 async fn re_formed(orders: &ShardKey) -> ReFormed {
+    re_formed_trimmed(orders, false).await
+}
+
+/// [`re_formed`], with the stream trimmed to `a3` before the stop when
+/// `trimmed`, so the base the voters serve starts at that floor.
+async fn re_formed_trimmed(orders: &ShardKey, trimmed: bool) -> ReFormed {
     let (net, members, leader) = trio().await;
     assert_eq!(members[leader].name, "broker-a");
     let term = members[leader].shards.leading(orders).expect("term");
@@ -293,7 +299,23 @@ async fn re_formed(orders: &ShardKey) -> ReFormed {
     let target = copies(&members, orders);
     isolate(&net, "broker-c");
     acked.push(members[leader].publish(term, b"a3").await);
-    let last = *acked.last().expect("acked");
+    let mut last = *acked.last().expect("acked");
+    if trimmed {
+        let lead = &members[leader];
+        lead.broker.allow_raft_head_trims_when(|| true);
+        super::trim::trim(&lead.broker, &lead.engine, term, last, last + 1)
+            .await
+            .expect("trimmed");
+        for member in members.iter().filter(|member| member.name != "broker-c") {
+            let log = member.shards.log_of(orders).await.expect("log");
+            until("the trim applies", || {
+                log.readable_base() == last && log.commit_offset() == last + 2
+            })
+            .await;
+        }
+        // The trim record is the base's last entry.
+        last += 1;
+    }
 
     let (view, starts) = stop_and_plan(&members, orders, leader).await;
     assert_eq!(view.learners, ["broker-c"]);
@@ -472,6 +494,61 @@ async fn a_re_formed_stream_learner_pulls_its_base_and_joins() {
     let asked: u64 = re.net.bases_asked.lock().values().sum();
     assert!(asked > 0, "the learner joined without pulling its base");
     caught_up(&re, &orders).await;
+    stop(&re.members).await;
+}
+
+/// **The learner of a stream trimmed before its re-form pulls the base
+/// from the floor and joins**: the gap snapshot names the floor, so the
+/// learner pulls `a3` and the trim record, installs over them and is
+/// promoted. It then keeps the leader's floor, refuses reads below it,
+/// serves what the leader serves, and takes a later trim as the leader
+/// does.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "a base adopted from a floor above 0 does not open: openraft reads index 0 (#3005)"]
+async fn a_learner_of_a_stream_trimmed_before_its_re_form_joins() {
+    let orders = key("orders", 0);
+    let re = re_formed_trimmed(&orders, true).await;
+    let (leader, learner) = (&re.members[re.leader], &re.members[re.learner]);
+    let floor = re.acked[2];
+    assert!(
+        feed_learner(&re, &orders, || promoted(&re, &orders)).await,
+        "the learner was never promoted"
+    );
+    let asked: u64 = re.net.bases_asked.lock().values().sum();
+    assert!(asked > 0, "the learner joined without pulling its base");
+    until("the new voter applies what the leader committed", || {
+        learner.engine.committed_bound(&orders) == leader.engine.committed_bound(&orders)
+    })
+    .await;
+    let floor_of = |log: &felix_storage::DiskLog| log.head_trim().map(|trim| trim.floor);
+    let ours = learner.shards.log_of(&orders).await.expect("log");
+    let theirs = leader.shards.log_of(&orders).await.expect("log");
+    assert_eq!(floor_of(&theirs), Some(floor));
+    assert_eq!(floor_of(&ours), Some(floor), "the learner's floor differs");
+    assert_eq!(ours.readable_base(), floor);
+    assert!(
+        super::trim::too_old(&learner.broker, floor - 1).await,
+        "the learner read below the floor"
+    );
+    let served = records(leader, floor).await;
+    let payloads: Vec<&[u8]> = served.iter().map(|record| &record.3[..]).collect();
+    assert_eq!(payloads, [&b"a3"[..], b"b1"]);
+    assert_eq!(records(learner, floor).await, served, "the base differs");
+
+    // A later trim raises both floors alike.
+    let term = leader.shards.leading(&orders).expect("term");
+    let next = leader.publish(term, b"b2").await;
+    super::trim::trim(&leader.broker, &leader.engine, term, next, next + 1)
+        .await
+        .expect("trimmed");
+    for log in [&theirs, &ours] {
+        until("the later trim applies", || {
+            log.readable_base() == next && log.commit_offset() == next + 2
+        })
+        .await;
+    }
+    assert_eq!(floor_of(&ours), floor_of(&theirs));
+    assert!(super::trim::too_old(&learner.broker, next - 1).await);
     stop(&re.members).await;
 }
 

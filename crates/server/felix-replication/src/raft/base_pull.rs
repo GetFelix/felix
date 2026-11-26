@@ -325,6 +325,8 @@ pub(crate) struct PullState {
     /// When the gap snapshot was first refused over a held base, when that
     /// was last logged, and when a discard was last considered.
     held_refused: parking_lot::Mutex<HeldRefused>,
+    /// Set once the epoch's discards were found spent and that was logged.
+    exhausted: AtomicBool,
     cancel: CancellationToken,
 }
 
@@ -369,6 +371,12 @@ impl PullState {
         let warn = due(&mut held.warned, HELD_WARN_EVERY);
         let check = due(&mut held.checked, HELD_CHECK_EVERY);
         (now.duration_since(since), warn, check)
+    }
+
+    /// The epoch's discards are spent. True only the first time, so the
+    /// give-up is logged once.
+    pub(crate) fn exhausted(&self) -> bool {
+        !self.exhausted.swap(true, Ordering::AcqRel)
     }
 
     /// The member caught up another way: stop any pull and never start or

@@ -1953,7 +1953,12 @@ impl Group {
                 tracing::warn!(group = %self.id, member = %self.member, reason, discards = n, "dropping the held re-formed base so the learner pulls it again");
                 self.base_pull.discard();
             }
-            Ok(Ok(_)) => {}
+            Ok(Ok(felix_storage::raft_copy::BaseDiscard::Exhausted)) => {
+                if self.base_pull.exhausted() {
+                    tracing::warn!(group = %self.id, member = %self.member, reason, discards = felix_storage::raft_copy::MAX_BASE_DISCARDS, "gave up copying the re-formed base for this epoch: the gap snapshot never installed over it ({why}); the member stays a learner");
+                }
+            }
+            Ok(Ok(felix_storage::raft_copy::BaseDiscard::Wait)) => {}
             Ok(Err(err)) => {
                 tracing::warn!(group = %self.id, member = %self.member, error = %err, "could not ask to drop the held re-formed base");
             }
