@@ -1,0 +1,104 @@
+name: Broker aging
+
+# Diagnostic for #3203: does a native broker slow down or grow in memory over
+# a long run of one-record publishes? Runs crates/testing/felix-cluster/tests/broker_aging.rs
+# and uploads the per-minute series and /metrics scrapes.
+
+on:
+  workflow_dispatch:
+    inputs:
+      minutes:
+        description: "Minutes of load per job"
+        default: "40"
+  push:
+    branches: [diag/broker-aging-3203]
+
+concurrency:
+  group: broker-aging-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  aging:
+    name: Aging ${{ matrix.arch }} ${{ matrix.mode }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-latest, ubuntu-24.04-arm]
+        mode: [rf1-flat, rf1-paced100, rf3-flat, rf1-idle-callgrind]
+        include:
+          - runner: ubuntu-latest
+            arch: x86_64
+          - runner: ubuntu-24.04-arm
+            arch: aarch64
+          - mode: rf1-flat
+            rf: "1"
+            rate: ""
+          - mode: rf1-paced100
+            rf: "1"
+            rate: "100"
+          - mode: rf3-flat
+            rf: "3"
+            rate: ""
+          - mode: rf1-idle-callgrind
+            rf: "1"
+            rate: "0"
+            callgrind: true
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
+        with:
+          toolchain: "1.100.0"
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          cache-on-failure: true
+
+      - name: Install valgrind
+        if: matrix.callgrind
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq valgrind
+
+      - name: Build
+        run: |
+          cargo build --locked --release -p felix-broker-service --bin felix-broker
+          cargo build --locked --release -p felix-loadgen
+          cargo test --locked --release -p felix-cluster --test broker_aging --no-run
+
+      - name: Run
+        run: |
+          mkdir -p "$RUNNER_TEMP/aging" "$RUNNER_TEMP/cg"
+          export FELIX_AGING_DIR="$RUNNER_TEMP/aging"
+          export FELIX_AGING_MINUTES="${{ inputs.minutes || '40' }}"
+          export FELIX_AGING_RF="${{ matrix.rf }}"
+          if [ -n "${{ matrix.rate }}" ]; then export FELIX_AGING_RATE="${{ matrix.rate }}"; fi
+          if [ "${{ matrix.callgrind }}" = "true" ]; then
+            export FELIX_TEST_TIMEOUT_SCALE=10
+            export FELIX_BROKER_WRAPPER="valgrind --tool=callgrind --fair-sched=yes --callgrind-out-file=$RUNNER_TEMP/cg/cg.%p"
+            export FELIX_AGING_CALLGRIND_DIR="$RUNNER_TEMP/cg"
+          fi
+          cargo test --locked --release -p felix-cluster --test broker_aging \
+            -- --ignored --nocapture 2>&1 | tee "$RUNNER_TEMP/aging/log.txt" | grep --line-buffered '^AGING\|panicked\|error'
+          cp "$RUNNER_TEMP/aging/series.json" series.json
+
+      - name: Upload
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: aging-${{ matrix.arch }}-${{ matrix.mode }}
+          path: ${{ runner.temp }}/aging
+          if-no-files-found: warn
