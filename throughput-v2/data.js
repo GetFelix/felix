@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795682469700,
+  "lastUpdate": 1795686152847,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -71032,6 +71032,58 @@ window.BENCHMARK_DATA = {
             "range": "53331.14",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 812015.78\nmean: 785705.95\nstdev: 53331.14\ncv: 6.79%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "56e51f709cc4245069e48cb798698faba2bda31b",
+          "message": "perf(storage): a Raft log saves its commit id behind the commit path in every fsync mode (#3222) (#3226)\n\n* perf(raft): save the committed index behind the commit in every fsync mode (#3222)\n\nopenraft awaits save_committed before it applies. Under periodic and none\nfsync a Raft log wrote its replica state inline once a second, so the group\nstalled on a create, two fsyncs and a rename. It now goes through the\nbehind-writer as on_commit already did, still at most once per\nCOMMIT_PERSIST_INTERVAL and at close. The saved id may lag, never lead.\n\nSpec-Unaffected: storage write timing of an optional, lag-tolerant saved commit id; no modelled behaviour changes\n\n* wip(raft): commit-save test edits from the previous worker\n\nSpec-Unaffected: test-only WIP\n\n* test(raft): close waits for a held write behind and writes the newest id (#3222)\n\nThe coverage failure was the slow-disk test saving ids past the entries it\nappended: an open lowers such an id to the tail, so 429 read back as 399.\nKeep every saved id inside the log, and test close against a write held in\nflight.\n\nSpec-Unaffected: test seam and tests only\n\n* test(raft): release the held write before asserting, so a failure cannot hang\n\nSpec-Unaffected: test only\n\n* docs(raft): a clean close waits for a commit save in flight (#3222)\n\nSpec-Unaffected: docs only",
+          "timestamp": "2026-11-26T09:14:49Z",
+          "tree_id": "f444d50eaf6c013d6927b68e18f078b25fe62470",
+          "url": "https://github.com/GetFelix/felix/commit/56e51f709cc4245069e48cb798698faba2bda31b"
+        },
+        "date": 1795686151843,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 515220.4,
+            "range": "22401.66",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 515220.40\nmean: 514545.73\nstdev: 22401.66\ncv: 4.35%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 515220.4,
+            "range": "22401.66",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 515220.40\nmean: 514545.73\nstdev: 22401.66\ncv: 4.35%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 118928.54,
+            "range": "34.14",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 118928.54\nmean: 118933.95\nstdev: 34.14\ncv: 0.03%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1189285.43,
+            "range": "341.41",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1189285.43\nmean: 1189339.52\nstdev: 341.41\ncv: 0.03%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
