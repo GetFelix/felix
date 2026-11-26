@@ -1,14 +1,30 @@
 # Broker instructions per message: written by scripts/perf/ipm_gate.py update.
+# Each value is the median, over at least five workflow runs of the one commit
+# named in its section, of that run's median rep. Every rep runs on a fresh
+# broker; b1 is paced at the rate under [<arch>.pace] for a fixed time, so the
+# broker's per-second work is the same in every rep and is part of the value.
+# Raise or lower a value only this way: dispatch the Instructions per message
+# workflow five times on one commit and run
+#   python3 scripts/perf/ipm_gate.py update <the five ipm-result.json files>
+# See CONTRIBUTING.md.
 tolerance_pct = 3.0
 
-[x86_64]
-commit = "2cc6400caed853d1a1a1dd1509e90d9570f66140"
-toolchain = "rustc 1.99.1 (58cf8f9c3 2026-10-13)"
-b1 = 179499
-b64 = 9126
-
 [aarch64]
-commit = "2cc6400caed853d1a1a1dd1509e90d9570f66140"
-toolchain = "rustc 1.99.1 (58cf8f9c3 2026-10-13)"
-b1 = 220185
-b64 = 8716
+commit = "659683cc7cdefb7230795ef4ba76b318116045c2"
+toolchain = "rustc 1.100.0 (0ef1bc386 2026-11-09)"
+runs = 5
+b1 = 507264
+b64 = 8752
+
+[aarch64.pace]
+b1 = 20
+
+[x86_64]
+commit = "659683cc7cdefb7230795ef4ba76b318116045c2"
+toolchain = "rustc 1.100.0 (0ef1bc386 2026-11-09)"
+runs = 5
+b1 = 283366
+b64 = 9343
+
+[x86_64.pace]
+b1 = 100

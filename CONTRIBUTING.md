@@ -173,13 +173,22 @@ filler that restates what was just said.
     an idle one. So `b1` is paced at a fixed rate for a fixed 300 s (20 msg/s
     on aarch64, 100 msg/s on x86_64, both well under what the slowest runner
     sustains), and its figure includes the same amount of per-second work in
-    every rep and every run. `b64` is not paced: its reps are short and
-    per-second work is a small part of them.
+    every rep and every run. That makes `b1` the cost of a message at that
+    pace: about 507k instructions on aarch64 and 283k on x86_64, against about
+    190k and 184k when the same broker ran flat out. The difference is
+    per-second work above the idle rate plus whatever a message costs when it
+    arrives alone; the gate does not separate the two. `b64` is not paced: its
+    reps take 5 to 12 s and its run-to-run spread was already under the
+    tolerance.
   - What it cannot see: kernel time, time spent waiting on the disk or the
-    network, and a change that only makes per-second work cheaper or costlier
-    shows up in `b1` as if it were per-message cost. Pacing also dilutes `b1`:
-    about a third of its figure is per-second work, so a per-message cost has
-    to grow by about 4.5% to move it 3%.
+    network, and native per-second cost (callgrind's figures say nothing about
+    a broker at full speed). A change to per-second work moves `b1` as if it
+    were per-message cost. And if the extra over the flat-out figure is all
+    per-second work, a per-message cost has to grow by about 8% on aarch64 (5%
+    on x86_64) to move `b1` by 3%. `b64` is the cell that sees small
+    per-message costs. Its remaining variation follows runner speed: an
+    unpaced rep on a fast runner is shorter and picks up less per-second work
+    (one x86_64 run read 1.9% under the baseline for that reason).
   - If a rep cannot hold its pace (it issued more than 3% off the rate, or ran
     more than 3% over 300 s), or unpaced reps slow down one after another, the
     run fails as a measurement failure, not a regression. Rerun it.
@@ -188,8 +197,8 @@ filler that restates what was just said.
     the five `ipm-result.json` artifacts (one per architecture per run). It
     writes the median of the five runs. Commit the baseline with a sentence on
     what the instructions buy. A toolchain bump updates it the same way. A
-    single run is never a baseline: the figure moves by a few tenths of a
-    percent to a percent or two with the runner it lands on.
+    single run is never a baseline: across five runs of one commit `b1` moved
+    by 0.6% (aarch64) and 0.4% (x86_64), and `b64` by 0.9% and 2.1%.
 
 ### How pull request CI picks its jobs
 
