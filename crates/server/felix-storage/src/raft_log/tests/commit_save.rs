@@ -205,11 +205,11 @@ async fn a_close_during_a_write_behind_writes_the_newest_id() {
             async move { log.close().await }
         });
         tokio::time::sleep(Duration::from_millis(200)).await;
-        assert!(
-            !closing.is_finished(),
-            "{mode:?}: close returned with a write in flight"
-        );
+        let returned = closing.is_finished();
+        // Released before asserting: a runtime waits out a held write when
+        // it drops, so a failure would otherwise hang.
         log.hold_replica_writes(false);
+        assert!(!returned, "{mode:?}: close returned with a write in flight");
         closing.await.expect("join").expect("close");
         assert_eq!(on_disk(&raft), 8, "{mode:?}: close wrote the newest id");
         // Past the write behind's next interval: nothing writes over it.
