@@ -555,6 +555,14 @@ async fn a_transfer_that_expires_leaves_the_old_term_void() {
 async fn a_leader_whose_transfer_expires_stands_outside_the_bound() {
     let mut led = Led::leased().await;
     assert!(timers().max_elections_at_once > 0);
+    // The load is cached and refreshed on a ticker report, so until one
+    // lands it still shows the place of the election that made this member
+    // leader. Past it, a place held below is one the leader took.
+    let runtime = led.cluster.runtime(&led.leader.broker);
+    soon("the first election's place was given back", || {
+        runtime.election_load().in_flight == 0
+    })
+    .await;
     led.cluster.net.lose_transfers.store(true, Relaxed);
     led.cluster.net.muted.lock().extend(led.followers());
     let target = MemberId::new(led.followers().next().expect("a follower"), 1);
@@ -564,7 +572,6 @@ async fn a_leader_whose_transfer_expires_stands_outside_the_bound() {
         member.leads() && member.elections_on()
     })
     .await;
-    let runtime = led.cluster.runtime(&led.leader.broker);
     assert_eq!(runtime.election_load().in_flight, 0, "it took a place");
     soon("it did not stand again", || {
         let status = led.status();

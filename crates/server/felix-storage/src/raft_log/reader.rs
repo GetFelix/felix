@@ -71,8 +71,9 @@ where
             if let Some(records) = cached {
                 #[cfg(test)]
                 self.pause().await;
-                // A cut since `cuts` was read may have taken some of them.
-                if log.cuts() != cuts {
+                // A cut since `cuts` was read may have taken some of them,
+                // and a purge since `first` was read hides some.
+                if log.cuts() != cuts || self.shared.first_index() != first {
                     continue 'read;
                 }
                 for record in records {
@@ -102,8 +103,10 @@ where
                     .await;
                 // Checked before the error: a head removed under the read
                 // fails it as `Trimmed`, and openraft takes a range missing
-                // its start, so the read starts again above the new head.
-                if log.cuts() != cuts {
+                // its start, so the read starts again above the new head. A purge
+                // whose segments are still on disk moves the first index
+                // without a cut.
+                if log.cuts() != cuts || self.shared.first_index() != first {
                     continue 'read;
                 }
                 let page = page.map_err(io::Error::other)?;

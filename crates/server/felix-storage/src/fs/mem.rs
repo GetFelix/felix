@@ -48,6 +48,9 @@ pub(crate) struct Tree {
     /// How many more flushes succeed before one fails, and how many have
     /// been asked for. See [`Tree::fail_flush`].
     flush_fault: Mutex<FlushFault>,
+    /// How many more segment unlinks succeed before one fails. See
+    /// [`Tree::fail_segment_unlink`].
+    unlink_fault: Mutex<Option<u64>>,
     /// How many power cuts this machine has come back from. Each is a new
     /// boot, which is what a relaxed run's crash record is compared against.
     boots: std::sync::atomic::AtomicU64,
@@ -171,6 +174,7 @@ impl Tree {
             torn_tails: Mutex::new(Vec::new()),
             opened: Mutex::new(Opened::default()),
             flush_fault: Mutex::new(FlushFault::default()),
+            unlink_fault: Mutex::new(None),
             boots: std::sync::atomic::AtomicU64::new(0),
             poisoned: std::sync::atomic::AtomicBool::new(false),
         })
@@ -279,6 +283,9 @@ impl Tree {
         let mut entries = parent.data.lock();
         match entries.current.get(name) {
             Some(Node::File(file)) => {
+                if crate::segment::parse_segment_file_name(&name.to_string_lossy()).is_some() {
+                    self.before_segment_unlink()?;
+                }
                 file.data.lock().remove();
                 entries.current.remove(name);
                 Ok(())
@@ -394,6 +401,27 @@ impl Tree {
         let mut fault = self.flush_fault.lock();
         fault.fail_in = Some(skip);
         fault.failed = false;
+    }
+
+    /// Fail one unlink of a log segment with an I/O error, after `skip`
+    /// more have succeeded. The failed unlink leaves the file in place.
+    pub(crate) fn fail_segment_unlink(&self, skip: u64) {
+        *self.unlink_fault.lock() = Some(skip);
+    }
+
+    fn before_segment_unlink(&self) -> io::Result<()> {
+        let mut fault = self.unlink_fault.lock();
+        match *fault {
+            Some(0) => {
+                *fault = None;
+                Err(kind(io::ErrorKind::Other, "injected unlink failure (EIO)"))
+            }
+            Some(left) => {
+                *fault = Some(left - 1);
+                Ok(())
+            }
+            None => Ok(()),
+        }
     }
 
     /// Disarm [`Self::fail_flush`], and say whether its flush had failed.

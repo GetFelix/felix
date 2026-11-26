@@ -78,6 +78,10 @@ pub const RAFT_KEPT_COPY_BYTES: &str = "felix_storage_raft_kept_copy_bytes";
 /// From five intervals the root's Raft shards' appends wait for them. Not
 /// labelled, like the kept-copy gauges.
 pub const RAFT_LOG_MARK_AGE_SECONDS: &str = "felix_storage_raft_log_mark_age_seconds";
+/// Calls openraft made into a Raft log, on its core, that took longer than a
+/// heartbeat, labelled by `call` (`append`, `purge`, `truncate_after`,
+/// `save_vote`, `save_committed`, `get_log_state`).
+pub const RAFT_LOG_SLOW_CALLS_TOTAL: &str = "felix_storage_raft_log_slow_calls_total";
 /// Sealed segments whose file and index are open, across every log. Bounded
 /// by `LogConfig::max_open_sealed_segments` for each cache, which the broker
 /// shares across all its logs.
