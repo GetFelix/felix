@@ -148,7 +148,7 @@ jobs:
             callgrind_annotate --inclusive=yes --threshold=99.9 "$f" 2>/dev/null | head -400 > "prof/$b.incl.txt" || true
             callgrind_annotate --threshold=99.9 "$f" 2>/dev/null | head -300 > "prof/$b.self.txt" || true
           done
-          tar czf prof/raw.tgz -C "$RUNNER_TEMP/cg" . || true
+          tar czf "$RUNNER_TEMP/raw.tgz" -C "$RUNNER_TEMP/cg" . && mv "$RUNNER_TEMP/raw.tgz" prof/ || true
 
       - name: Upload profiles
         if: always()

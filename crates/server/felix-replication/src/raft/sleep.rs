@@ -39,6 +39,7 @@ pub(crate) enum ShardSleep {
 }
 
 // Diagnostic counters (#3204), exported once a second.
+static CALLS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 static SOON: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 static YIELDED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 static TIMED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
@@ -49,6 +50,8 @@ fn export_counters() {
         std::thread::spawn(|| {
             use std::sync::atomic::Ordering::Relaxed;
             loop {
+                metrics::counter!("felix_diag_shard_sleep_calls_total")
+                    .absolute(CALLS.load(Relaxed));
                 metrics::counter!("felix_diag_shard_sleep_soon_total").absolute(SOON.load(Relaxed));
                 metrics::counter!("felix_diag_shard_sleep_yields_total")
                     .absolute(YIELDED.load(Relaxed));
@@ -63,6 +66,7 @@ fn export_counters() {
 impl ShardSleep {
     pub(crate) fn until(deadline: TokioInstant) -> Self {
         export_counters();
+        CALLS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         if deadline < TokioInstant::now() + TICK {
             SOON.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             Self::Soon {

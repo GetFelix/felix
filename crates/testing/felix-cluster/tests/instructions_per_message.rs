@@ -689,7 +689,8 @@ async fn broker_instructions_per_message() {
 }
 
 /// The diagnostic ShardSleep counters a broker exports.
-const SLEEP_COUNTERS: [&str; 3] = [
+const SLEEP_COUNTERS: [&str; 4] = [
+    "felix_diag_shard_sleep_calls_total",
     "felix_diag_shard_sleep_soon_total",
     "felix_diag_shard_sleep_yields_total",
     "felix_diag_shard_sleep_timer_total",
@@ -708,7 +709,7 @@ fn node_counters(cluster: &Cluster) -> Vec<Vec<f64>> {
                         .block_on(cluster.metric(&node.node_id, name))
                         .ok()
                         .flatten()
-                        .unwrap_or(0.0)
+                        .unwrap_or(-1.0)
                 })
                 .collect()
         })
@@ -775,7 +776,7 @@ fn native_window(
         .map(|(b, a)| b.iter().zip(a).map(|(b, a)| a - b).collect())
         .collect();
     eprintln!(
-        "native {label}: wall {wall:.1}s acked {acked} cpu% per broker {cpu_pct:.2?} sleep soon/yields/timer per broker {deltas:?}\nperf: {}",
+        "native {label}: wall {wall:.1}s acked {acked} cpu% per broker {cpu_pct:.2?} sleep calls/soon/yields/timer per broker {deltas:?} totals (-1 absent) {counters_after:?}\nperf: {}",
         perf.replace('\n', " | ")
     );
     Ok(serde_json::json!({
