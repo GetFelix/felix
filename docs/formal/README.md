@@ -325,9 +325,9 @@ registered, run by a workflow, nor listed there.
 | `FelixRaftReachInstallCrash.cfg` | witness: a crash between an install's second and third write | violate `NeverCrashesMidInstall` |
 | `FelixRaftReachSnapshotReplace.cfg` | witness: a broker replaces a snapshot it stored | violate `NeverReplacesSnapshot` |
 | `FelixRaftReachDeliverFailover.cfg` | witness: two deliveries in a row from leaders of different terms | violate `NeverDeliversAcrossFailover` |
-| `FelixRaftElectLive.cfg` | `FelixRaftElect.tla`: three voters, one crash or cut, one timeout while a round is open, five terms, under weak fairness (`LiveSpec`, no symmetry) | pass `ElectionSettles` and `EventuallyServes` |
-| `FelixRaftElectLiveFaults.cfg` | the same with two faults and six terms | pass the same |
-| `FelixRaftElectLiveSplits.cfg` | no faults, three terms, timeouts not staggered (`Staggered = FALSE`) | violate `ElectionSettles`: all three pass their pre-vote before any stands, stand in one term, and do it again until no term is left |
+| `FelixRaftElectLive.cfg` | `FelixRaftElect.tla`: three voters, one crash or cut, one timeout while a round is open, five terms, under weak fairness (`LiveSpec`, no symmetry) | pass `ElectionSettles` and `EventuallyServes` (33k distinct states, seconds) |
+| `FelixRaftElectLiveFaults.cfg` | the same with two faults and eight terms. At six it fails on the bound: a pre-vote that passed before a new leader's heartbeat arrived stands anyway, deposes that leader, and the last term goes to a candidate with the shorter log | pass the same |
+| `FelixRaftElectLiveSplits.cfg` | no faults, three terms, timeouts not staggered (`Staggered = FALSE`) | violate `ElectionSettles` (7k distinct states): all three pass their pre-vote before any stands, stand in one term, and do it again until no term is left |
 | `FelixRaftElectLiveNoOpen.cfg` | no faults, two terms, the commit of the blank entry not owed (`NoOpenSpec`) | violate `EventuallyServes`: a leader is elected and never opens |
 | `FelixRaftMembership.cfg` | `FelixRaftMembership.tla`: three voters and a newcomer, two terms, one write, two membership calls (a whole move), every rule on | pass `OneLeaderPerTerm`, `LogMatching`, `LeaderCompleteness`, `StateMachineSafety`, `AckedSurvive`, `NeverStops` (4.5M distinct states) |
 | `FelixRaftMembershipFailover.cfg` | the newcomer already a learner, two terms, no write, three calls: a joint change and a new leader's repeat of it | pass the same (7.1M distinct states) |
@@ -2549,7 +2549,10 @@ term.
 
 Terms are bounded too, and a behaviour that uses them all with no leader
 fails the check, so the passing configurations allow more terms than their
-faults and the one split can spend. What they do not show: more than two faults,
+faults and the one split can spend. That takes more than it seems: a pre-vote
+that passed before a new leader's heartbeat reached the member still stands,
+and deposes that leader, so one fault can cost several terms. Two faults and
+six terms fail this way, and `FelixRaftElectLiveFaults.cfg` runs with eight. What they do not show: more than two faults,
 more than three voters, a partition other than one member cut off, lost or
 reordered messages, membership changes, and the lease's own timing, which
 `FelixRaftLease.tla` covers. The bound on splits is an assumption about the
