@@ -2238,6 +2238,8 @@ pub(crate) struct Loopback {
     pub(crate) bent_base: parking_lot::Mutex<std::collections::HashSet<String>>,
     /// Base pulls sent to each broker.
     pub(crate) bases_asked: parking_lot::Mutex<HashMap<String, u64>>,
+    /// Brokers whose base pulls wait here, unanswered, until taken out.
+    pub(crate) held_base: parking_lot::Mutex<std::collections::HashSet<String>>,
 }
 
 /// One broker's way onto a [`Loopback`], so the net knows who sent what.
@@ -2292,6 +2294,9 @@ impl RaftTransport for Loopback {
         }
         if base && self.no_base.lock().contains(&to) {
             return Err(Refused::Unreachable(format!("broker {to} serves no base")));
+        }
+        while base && self.held_base.lock().contains(&to) {
+            tokio::time::sleep(Duration::from_millis(10)).await;
         }
         let runtime = self.runtimes.lock().get(&to).cloned();
         if base && let Some(runtime) = &runtime {

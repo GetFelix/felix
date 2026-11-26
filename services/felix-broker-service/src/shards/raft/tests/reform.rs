@@ -494,6 +494,107 @@ async fn a_learner_abandons_a_voter_serving_another_history() {
     stop(&re.members).await;
 }
 
+/// **A learner that catches up from a normal snapshot in the middle of its
+/// base pull stops the pull**: the leader trimmed and purged past the gap
+/// while the pull waited on a voter, so the learner installs the purge
+/// snapshot and is promoted. The pull, released after that, stages
+/// nothing, the member is never closed to adopt a base, and its log is the
+/// one the snapshot and the appends gave it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_learner_caught_up_by_a_snapshot_mid_pull_drops_the_pull() {
+    let orders = key("orders", 0);
+    let re = re_formed(&orders).await;
+    let (leader, learner) = (&re.members[re.leader], &re.members[re.learner]);
+    let other = re
+        .members
+        .iter()
+        .find(|member| member.name != leader.name && member.name != "broker-c")
+        .expect("the other voter");
+    // The pull goes to the other voter, which holds it unanswered.
+    re.net.no_base.lock().insert(leader.name.to_string());
+    re.net.held_base.lock().insert(other.name.to_string());
+    let asked = || {
+        re.net
+            .bases_asked
+            .lock()
+            .get(other.name)
+            .copied()
+            .unwrap_or(0)
+    };
+    assert!(
+        feed_learner(&re, &orders, || asked() > 0).await,
+        "the learner never started its pull"
+    );
+
+    let term = leader.shards.leading(&orders).expect("term");
+    leader.broker.allow_raft_head_trims_when(|| true);
+    leader.publish(term, b"b2").await;
+    let floor = leader.publish(term, b"b3").await;
+    super::trim::trim(&leader.broker, &leader.engine, term, floor, floor + 1)
+        .await
+        .expect("trimmed");
+    // Cut off, the learner stops counting as live, so the leader purges.
+    re.net.cut.lock().insert("broker-c".to_string());
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
+    let purged = loop {
+        if let Some(at) = leader.shards.runtime.purge_below_floor(&orders).await {
+            break at;
+        }
+        assert!(tokio::time::Instant::now() < deadline, "no purge");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    };
+    assert_eq!(purged, floor - 1);
+    re.net.cut.lock().clear();
+
+    let fed = with_target(&re.next, re.target.clone());
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
+    while !promoted(&re, &orders) {
+        assert!(tokio::time::Instant::now() < deadline, "never promoted");
+        unstaged_pass(learner, &orders, &fed).await;
+    }
+    let log = learner.shards.log_of(&orders).await.expect("log");
+    assert_eq!(
+        log.carried_floor().map(|carried| carried.floor),
+        Some(floor)
+    );
+
+    // The voter answers now. A pull still running would get the whole
+    // base within its longest backoff and one chunk's wait.
+    re.net.held_base.lock().clear();
+    let quiet = tokio::time::Instant::now() + Duration::from_secs(12);
+    while tokio::time::Instant::now() < quiet {
+        unstaged_pass(learner, &orders, &fed).await;
+    }
+    assert!(
+        !log.dir().join("base-staging").exists(),
+        "a staging log was left behind"
+    );
+    let now = learner.shards.log_of(&orders).await.expect("log");
+    assert_eq!(
+        now.carried_floor().map(|carried| carried.floor),
+        Some(floor)
+    );
+    let served = records(leader, floor).await;
+    assert!(!served.is_empty());
+    until("the learner serves what the leader serves", || {
+        learner.engine.committed_bound(&orders) == leader.engine.committed_bound(&orders)
+    })
+    .await;
+    assert_eq!(records(learner, floor).await, served);
+    stop(&re.members).await;
+}
+
+/// One feed pass on a learner that must never have staged a base, which
+/// would close it to adopt one.
+async fn unstaged_pass(learner: &Member, orders: &ShardKey, fed: &ShardAssignment) {
+    assert!(
+        !learner.shards.runtime.base_staged(orders),
+        "a pull staged a base over a member that caught up"
+    );
+    learner.shards.take(&mut assignments([fed.clone()])).await;
+    tokio::time::sleep(Duration::from_millis(50)).await;
+}
+
 /// **A learner that cannot pull its base stays a learner**: it installs
 /// nothing, is never promoted, serves no reads, and the leader's commit
 /// does not count it, so it can lose no acknowledged record.
