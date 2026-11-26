@@ -15,8 +15,8 @@ publish = false
 
 [features]
 # The per-shard Raft runtime (`src/raft.rs`): many openraft groups on one
-# broker, driven by one ticker. No release enables it, and nothing in the
-# broker calls it yet. See docs/per-shard-raft.md.
+# broker, driven by one ticker. The broker service enables it by default and
+# builds the runtime in `node/cluster.rs`. See docs/per-shard-raft.md.
 raft = ["dep:crc32fast", "dep:openraft", "dep:openraft-multi", "dep:openraft-rt-tokio", "dep:rand", "felix-storage/raft", "bytes/serde", "serde/rc"]
 # Entry points for the libFuzzer targets in `fuzz/`. Not an API.
 fuzzing = ["raft"]

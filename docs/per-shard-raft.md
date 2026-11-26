@@ -2558,9 +2558,22 @@ and sends back the answer. Only a listener that runs the runtime offers the
 `RAFT` capability, and a broker that has not offered it is never sent a
 Raft message: the transport answers `Unreachable` without sending. The
 bytes are Felix's own layout, not openraft's serde output
-(`docs/internal-protocol.md`, "Raft messages"). Nothing in the broker
-builds the runtime yet, so no shipping broker offers the capability. The
-unit tests join three runtimes with a transport that calls `handle`
+(`docs/internal-protocol.md`, "Raft messages"). The broker builds the
+runtime in `node/cluster.rs` whenever it runs Raft shards.
+
+**Mixed layouts during an upgrade.** Each listener states the Raft layouts
+it reads in the handshake (`RAFT_LAYOUTS`), and a sender writes the highest
+layout both sides read. When two builds share none, the sender sends
+nothing: Raft sees the peer as unreachable, the reason names both ranges,
+the broker logs it about once a minute per peer and counts it in
+`felix_broker_raft_peer_refusals_total{reason="layout"}`. A group keeps
+quorum only while a majority of its voters share a layout, so an upgrade
+that changes layouts replaces voters one at a time, and a build that adds a
+layout keeps reading the old one for at least one release. Two brokers on
+the same build always share their layout. A peer that offers `RAFT` but
+states no layouts predates the handshake field and is read as layout 6;
+if that reading is wrong the peer refuses the body at its first byte, so
+nothing is misread. The unit tests join three runtimes with a transport that calls `handle`
 directly; one test forms a group over real listeners on loopback.
 
 A leader's messages carry the gap described in "Idle groups", which is
