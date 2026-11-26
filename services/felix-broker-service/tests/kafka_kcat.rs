@@ -11,6 +11,8 @@
 
 #[path = "kafka_kcat/fixture.rs"]
 mod fixture;
+#[path = "support/raft_shard.rs"]
+mod raft_shard;
 
 use std::path::Path;
 use std::process::Output;

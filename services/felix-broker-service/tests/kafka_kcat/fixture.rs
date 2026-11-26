@@ -19,7 +19,7 @@ use felix_broker::{Broker, DurableStorage, StreamMetadata};
 use felix_broker_service::config::KafkaListenerConfig;
 use felix_broker_service::serving::auth::{BrokerAuth, ControlPlaneKeyStore};
 use felix_broker_service::serving::kafka::{BrokerCluster, KafkaListener, tls_config};
-use felix_cluster::{Cluster, ClusterConfig, StreamSpec};
+use felix_cluster::{ClusterConfig, StreamSpec};
 use felix_storage::EphemeralCache;
 use felix_storage::log::{FsyncMode, LogConfig, RecordMark};
 use jsonwebtoken::Algorithm;
@@ -28,6 +28,7 @@ use tempfile::TempDir;
 use tokio_util::sync::CancellationToken;
 use tokio_util::task::TaskTracker;
 
+use super::raft_shard::RaftShard;
 use super::{SHARDS, TENANT, container_host};
 
 const NAMESPACE: &str = "orders";
@@ -75,8 +76,7 @@ enum Backend {
     /// A one-node cluster. Its broker runs one Kafka listener, so a test that
     /// asks for another restarts it with that one; the shard's log stays.
     Raft {
-        cluster: Box<Cluster>,
-        node: String,
+        shard: Box<RaftShard>,
         listener: Listener,
         record_headers: bool,
     },
@@ -114,32 +114,28 @@ impl Felix {
     /// `listener`'s address, once it is up.
     pub(crate) async fn listener(&mut self, listener: Listener) -> String {
         if let Backend::Raft {
-            cluster,
-            node,
+            shard,
             listener: current,
             record_headers,
         } = &mut self.backend
             && *current != listener
         {
-            cluster.stop_node(node).await.expect("stop the broker");
-            cluster.set_kafka_listener(felix_cluster::KafkaListener {
-                tls: listener == Listener::Tls,
-                anonymous: listener == Listener::Anonymous,
-                record_headers: *record_headers,
-            });
-            cluster
-                .restart_node(node)
-                .await
-                .expect("restart the broker");
-            await_shards(cluster, node).await;
-            let broker = cluster.node(node).expect("the broker");
+            shard
+                .cluster
+                .set_kafka_listener(felix_cluster::KafkaListener {
+                    tls: listener == Listener::Tls,
+                    anonymous: listener == Listener::Anonymous,
+                    record_headers: *record_headers,
+                });
+            shard.restart().await;
             // A new certificate on every start.
+            let broker = shard.cluster.node(&shard.node).expect("the broker");
             std::fs::copy(
                 broker.client_certificate(),
                 self.certs.path().join("ca.pem"),
             )
             .expect("copy the broker's certificate");
-            self.addrs = HashMap::from([(listener, kafka_addr(cluster, node))]);
+            self.addrs = HashMap::from([(listener, kafka_addr(shard))]);
             *current = listener;
         }
         self.addrs
@@ -165,8 +161,8 @@ impl Felix {
                     .await
                     .expect("publish");
             }
-            Backend::Raft { cluster, node, .. } => {
-                let client = cluster.client_on(node).await.expect("connect");
+            Backend::Raft { shard: raft, .. } => {
+                let client = raft.cluster.client_on(&raft.node).await.expect("connect");
                 let publisher = client.publisher().await.expect("publisher");
                 publisher
                     .publish_batch_on_shard(
@@ -196,7 +192,8 @@ impl Felix {
                     payload: record.payload,
                 })
                 .collect(),
-            Backend::Raft { cluster, node, .. } => replay(cluster, node, shard)
+            Backend::Raft { shard: raft, .. } => raft
+                .replay(shard)
                 .await
                 .into_iter()
                 .map(|event| Stored {
@@ -241,103 +238,40 @@ impl Felix {
     }
 }
 
-fn kafka_addr(cluster: &Cluster, node: &str) -> String {
-    cluster
-        .node(node)
+fn kafka_addr(shard: &RaftShard) -> String {
+    shard
+        .cluster
+        .node(&shard.node)
         .and_then(|node| node.kafka_addr.clone())
         .expect("a Kafka listener")
 }
 
-/// A one-node cluster on Raft with the test's stream created after it starts,
-/// so the harness's readiness probes write to another stream and every shard
-/// of this one starts empty.
 async fn start_raft(record_headers: bool) -> Felix {
-    let cluster = Cluster::start(ClusterConfig {
-        nodes: 1,
-        tenant_id: TENANT.to_string(),
-        namespace: NAMESPACE.to_string(),
-        streams: vec![StreamSpec::new("ready", 1)],
-        kafka: true,
-        kafka_listener: felix_cluster::KafkaListener {
-            record_headers,
+    let shard = RaftShard::start(
+        ClusterConfig {
+            tenant_id: TENANT.to_string(),
+            namespace: NAMESPACE.to_string(),
+            kafka: true,
+            kafka_listener: felix_cluster::KafkaListener {
+                record_headers,
+                ..Default::default()
+            },
             ..Default::default()
         },
-        // Named, so the fixture is Raft whatever engine a suite defaults to.
-        broker_env: vec![("FELIX_SHARD_ENGINE".to_string(), "raft".to_string())],
-        ..Default::default()
-    })
-    .await
-    .expect("start a one-node Raft cluster");
-    // A new Raft cluster has every Raft feature finalized; a test that names
-    // its engine finalizes them itself.
-    let mut features: Vec<&str> = felix_common::fleet::IMPLEMENTED
-        .iter()
-        .map(|feature| feature.name())
-        .filter(|name| name.starts_with("raft_"))
-        .collect();
-    if record_headers {
-        features.push(felix_common::fleet::RECORD_HEADERS.name());
-    }
-    cluster
-        .finalize_fleet_features(&features, Duration::from_secs(30))
-        .await
-        .expect("finalize the Raft features");
-    cluster
-        .create_stream(&StreamSpec::new(STREAM, SHARDS))
-        .await
-        .expect("create the stream");
-    let node = cluster.node_ids().remove(0);
-    await_shards(&cluster, &node).await;
-    let certs = tempfile::tempdir().expect("certs");
-    let addrs = HashMap::from([(Listener::Plain, kafka_addr(&cluster, &node))]);
+        StreamSpec::new(STREAM, SHARDS),
+        record_headers,
+    )
+    .await;
     Felix {
-        token: cluster.client_token(),
-        addrs,
-        certs,
+        token: shard.cluster.client_token(),
+        addrs: HashMap::from([(Listener::Plain, kafka_addr(&shard))]),
+        certs: tempfile::tempdir().expect("certs"),
         backend: Backend::Raft {
-            cluster: Box::new(cluster),
-            node,
+            shard: Box::new(shard),
             listener: Listener::Plain,
             record_headers,
         },
     }
-}
-
-/// Wait until every shard of the stream has a leader that serves a read,
-/// without writing to it.
-async fn await_shards(cluster: &Cluster, node: &str) {
-    cluster
-        .await_raft_leaders_placed(Duration::from_secs(60))
-        .await
-        .expect("every shard led");
-    felix_cluster::wait::until(
-        Duration::from_secs(60),
-        "the broker to route the stream at its full width",
-        || async move {
-            cluster
-                .stream_shards_via(node, STREAM)
-                .await
-                .is_ok_and(|width| width == SHARDS)
-        },
-    )
-    .await
-    .expect("stream width");
-    for shard in 0..SHARDS {
-        replay(cluster, node, shard).await;
-    }
-}
-
-async fn replay(cluster: &Cluster, node: &str, shard: u32) -> Vec<felix_client::Event> {
-    cluster
-        .whole_replay_of_shard(
-            node,
-            STREAM,
-            shard,
-            Duration::from_secs(1),
-            Duration::from_secs(30),
-        )
-        .await
-        .expect("replay the shard")
 }
 
 async fn start_local(record_headers: bool) -> Felix {
