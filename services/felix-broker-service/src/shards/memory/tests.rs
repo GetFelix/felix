@@ -509,7 +509,7 @@ async fn closes_share_one_bound() {
     assert_eq!(memory.servable().get(&key(10)), Some(&6));
     for shard in &closing {
         assert_eq!(fence.admit(&key(*shard), 5).err(), Some(Fenced::NotServing));
-        assert!(memory.servable().get(&key(*shard)).is_none());
+        assert!(!memory.servable().contains_key(&key(*shard)));
     }
     drop(held);
 }
