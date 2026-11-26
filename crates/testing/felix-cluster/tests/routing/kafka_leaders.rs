@@ -243,16 +243,35 @@ async fn kcat_follows_a_moved_shard() {
         .map(|i| format!("s{moved}-after-{i}"))
         .collect();
     publish(&cluster, &new, moved, &after).await;
-    let mut owed: Vec<String> = after
-        .iter()
-        .zip(end..)
-        .map(|(payload, offset)| format!("{moved}:{offset}:{payload}"))
-        .collect();
-    owed.sort();
-
     let output = follower.await.expect("kcat task");
     assert!(output.status.success(), "{}", stderr(&output));
-    assert_eq!(records(&output), owed);
+    // On Raft a move writes entries that are not records (membership
+    // changes, the new leader's blank entry), and each takes an offset, so
+    // the offsets after a move skip. They still rise and stay above what
+    // was there before; on hybrid they are contiguous.
+    let owed = parsed(&lines(&output));
+    assert_eq!(
+        owed.iter().map(|r| r.partition).collect::<Vec<_>>(),
+        vec![moved; PER_SHARD],
+        "{owed:?}"
+    );
+    assert_eq!(
+        owed.iter().map(|r| r.payload.as_str()).collect::<Vec<_>>(),
+        after.iter().map(String::as_str).collect::<Vec<_>>(),
+        "each post-move record once, in publish order: {owed:?}"
+    );
+    assert!(
+        owed.windows(2).all(|pair| pair[1].offset > pair[0].offset),
+        "{owed:?}"
+    );
+    assert!(owed[0].offset >= end, "{owed:?} reuse offsets before {end}");
+    if !felix_cluster::suite_runs_on_raft() {
+        let contiguous: Vec<u64> = (end..).take(PER_SHARD).collect();
+        assert_eq!(
+            owed.iter().map(|r| r.offset).collect::<Vec<_>>(),
+            contiguous
+        );
+    }
     assert!(
         kafka_requests(&cluster, &old, "Fetch", "not_leader_or_follower").await > 0.0,
         "the old leader never refused a fetch, so kcat did not follow the move"
@@ -262,11 +281,37 @@ async fn kcat_follows_a_moved_shard() {
     // the moved shard from its new leader.
     let output = kcat(sasl(&cluster, &old_bootstrap, &everything_args)).await;
     assert!(output.status.success(), "{}", stderr(&output));
-    let mut everything = expected;
+    let mut everything = parsed(&expected);
     everything.extend(owed);
     everything.sort();
-    assert_eq!(records(&output), everything);
+    let mut read = parsed(&records(&output));
+    read.sort();
+    assert_eq!(read, everything);
     cluster.shutdown().await;
+}
+
+/// One `partition:offset:payload` line of kcat's output.
+#[derive(Debug, PartialEq, Eq, PartialOrd, Ord)]
+struct Seen {
+    partition: u32,
+    offset: u64,
+    payload: String,
+}
+
+/// The lines in their order, with partition and offset as numbers.
+fn parsed(lines: &[String]) -> Vec<Seen> {
+    lines
+        .iter()
+        .map(|line| {
+            let mut parts = line.splitn(3, ':');
+            let mut next = || parts.next().expect("a partition:offset:payload line");
+            Seen {
+                partition: next().parse().expect("partition"),
+                offset: next().parse().expect("offset"),
+                payload: next().to_string(),
+            }
+        })
+        .collect()
 }
 
 fn other_node(cluster: &Cluster, not: &str) -> String {
@@ -473,11 +518,16 @@ fn stderr(output: &Output) -> String {
 
 /// `partition:offset:value` lines, sorted.
 fn records(output: &Output) -> Vec<String> {
-    let mut lines: Vec<String> = stdout(output)
+    let mut lines = lines(output);
+    lines.sort();
+    lines
+}
+
+/// The record lines in the order kcat printed them.
+fn lines(output: &Output) -> Vec<String> {
+    stdout(output)
         .lines()
         .filter(|line| !line.is_empty())
         .map(str::to_string)
-        .collect();
-    lines.sort();
-    lines
+        .collect()
 }
