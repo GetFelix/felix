@@ -51,6 +51,9 @@ const READ_INDEX: u8 = 8;
 /// Many groups' heartbeats for members on one broker, each a whole body of
 /// its own. Sent only to a peer that offered `RAFT_BEATS`.
 pub(crate) const BEATS: u8 = 9;
+/// A peer that predates it refuses it, and the asking member asks again
+/// later: a mark is never needed for safety.
+const WATCHED: u8 = 10;
 
 /// The second byte of an answer.
 const APPENDED: u8 = 1;
@@ -61,6 +64,7 @@ const WRITTEN_TAKEN: u8 = 5;
 const READ_INDEX_TAKEN: u8 = 6;
 /// The answer to `BEATS`: one answer body for each heartbeat, in order.
 const BEATS_TAKEN: u8 = 7;
+const WATCHED_TAKEN: u8 = 8;
 const UNREACHABLE: u8 = 16;
 const NO_SUCH_MEMBER: u8 = 17;
 const STOPPED: u8 = 18;
@@ -194,6 +198,7 @@ pub(crate) fn encode_request(request: &RaftRequest) -> io::Result<Bytes> {
         Request::TransferLeader(_) => TRANSFER_LEADER,
         Request::Written { .. } => WRITTEN,
         Request::ReadIndex => READ_INDEX,
+        Request::Watched => WATCHED,
     });
     // At a fixed place, so a listener reads it without reading the rest.
     buf.put_u32(u32::try_from(request.deadline.as_millis()).unwrap_or(u32::MAX));
@@ -255,7 +260,7 @@ pub(crate) fn encode_request(request: &RaftRequest) -> io::Result<Bytes> {
             buf.put_u64(at.term);
             buf.put_u64(at.index);
         }
-        Request::ReadIndex => {}
+        Request::ReadIndex | Request::Watched => {}
     }
     Ok(buf.freeze())
 }
@@ -357,6 +362,7 @@ pub(crate) fn decode_request(mut buf: Bytes) -> io::Result<RaftRequest> {
             }
         }
         READ_INDEX => Request::ReadIndex,
+        WATCHED => Request::Watched,
         other => return Err(invalid(format!("{other} is not a Raft request"))),
     };
     expect_empty(&buf)?;
@@ -416,6 +422,7 @@ fn put_reply(buf: &mut BytesMut, reply: &Result<RaftReply, Refused>) -> io::Resu
             }
         }
         Ok(RaftReply(Reply::Written)) => buf.put_u8(WRITTEN_TAKEN),
+        Ok(RaftReply(Reply::Watched)) => buf.put_u8(WATCHED_TAKEN),
         Ok(RaftReply(Reply::ReadIndex { index })) => {
             buf.put_u8(READ_INDEX_TAKEN);
             match index {
@@ -480,6 +487,7 @@ pub(crate) fn decode_reply(mut buf: Bytes) -> io::Result<Result<RaftReply, Refus
             other => return Err(invalid(format!("{other} is not a transfer outcome"))),
         })),
         WRITTEN_TAKEN => Ok(Reply::Written),
+        WATCHED_TAKEN => Ok(Reply::Watched),
         READ_INDEX_TAKEN => Ok(Reply::ReadIndex {
             index: match take_u8(&mut buf)? {
                 0 => None,

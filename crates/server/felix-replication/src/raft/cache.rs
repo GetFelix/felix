@@ -21,16 +21,16 @@ use std::io;
 
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 
-pub(crate) use recent::Change;
 #[cfg(test)]
 pub(crate) use recent::WINDOW_MICROS;
+pub(crate) use recent::{Change, MARK_RETRY_MICROS};
 pub(crate) use record::{CacheCommand, Request};
 #[cfg(test)]
 pub(crate) use snapshot::{ENCODED, restores_of};
 #[cfg(test)]
 pub(crate) use state::floor;
 pub(crate) use state::{Answer, CacheState, Cut, Read, Watched, stamp};
-pub(crate) use watch::CacheWatch;
+pub(crate) use watch::{CacheWatch, WatchSignal};
 
 use super::codec::invalid;
 
