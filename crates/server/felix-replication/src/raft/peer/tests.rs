@@ -1198,11 +1198,8 @@ async fn a_listener_states_its_layouts_to_the_pool() {
     let book = Book::default();
     let a = Broker::start("a", &book, true).await;
     let b = Broker::start("b", &book, true).await;
-    let offer = a
-        .pool
-        .raft_offer("b", book.lock()["b"])
-        .await
-        .expect("offer");
+    let addr = book.lock()["b"];
+    let offer = a.pool.raft_offer("b", addr).await.expect("offer");
     assert!(offer.capabilities.contains(PeerCapabilities::RAFT));
     assert!(offer.capabilities.contains(PeerCapabilities::RAFT_LAYOUTS));
     assert_eq!(offer.layouts, Some(wire::LAYOUTS));
