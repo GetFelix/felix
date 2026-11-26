@@ -2674,6 +2674,17 @@ installs the leader's purge snapshot when it is back and keeps the floor it
 carries; the install starts its log at the purge point, so it holds no more
 than the others.
 
+A leader's openraft runs the purge on its Raft core, and holds it back while
+a replication stream still reads the range, even one to a member that is
+going away; it runs it when that stream answers or fails. A purge that
+waited on the disk there would stop the leader's heartbeats and writes
+right after a follower went away, long enough on a slow disk to lose the
+lease. So the purge only writes its purged id and returns, and the segments
+are unlinked behind it (`docs/durable-storage.md`, "Deleting below the
+floor"). Every call openraft makes into the log that outlasts a heartbeat is
+counted in `felix_storage_raft_log_slow_calls_total`, labelled by `call`,
+and logged as a warning at most every ten seconds.
+
 > `services/felix-broker-service/src/shards/raft/tests/retention.rs`,
 > `the_leader_trims_what_the_streams_retention_drops`,
 > `retention_trims_a_shard_when_a_publish_lands_mid_pass`,

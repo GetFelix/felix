@@ -376,7 +376,13 @@ impl LogInner {
         for descriptor in &removed {
             #[cfg(test)]
             super::segments::stop_point(&self.dir)?;
-            remove_segment_files(&self.dir, descriptor.id)?;
+            {
+                // Not once the log is closed: the directory may already be
+                // another log's. Only the unlink holds the lock, not its sync.
+                let segments = self.segments.read();
+                segments.check_open()?;
+                remove_segment_files(&self.dir, descriptor.id)?;
+            }
             // A removal that may come back after a crash, behind a newer
             // one that did not, is a gap recovery refuses.
             self.poison_on_sync_failure(
