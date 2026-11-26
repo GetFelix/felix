@@ -561,7 +561,7 @@ pub(crate) async fn run<M: Member>(
     mut driver: Driver<M>,
     mut target: watch::Receiver<Option<Told>>,
     mut lead: watch::Receiver<Lead>,
-    mut preferred: watch::Receiver<Option<String>>,
+    mut preferred: watch::Receiver<Option<super::placed::Preferred>>,
     stop: CancellationToken,
 ) {
     // Logged when it changes, so a stalled change says why without a line

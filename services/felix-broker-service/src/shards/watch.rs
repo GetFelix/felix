@@ -128,6 +128,11 @@ pub struct ShardAssignment {
     /// end. Absent from a control plane that predates it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub raft_seed: Option<RaftVoters>,
+    /// Why the control plane named this leader, when a move it tracks did:
+    /// `operator` for an operator's move. Absent otherwise, and from a
+    /// control plane that predates it, which reads as placement's own.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub move_reason: Option<String>,
 }
 
 /// The epoch half of the control plane's record of the brokers placed in
@@ -214,6 +219,12 @@ pub struct PendingSet {
 }
 
 impl ShardAssignment {
+    /// An operator move named `leader`: its group's leader hands over even
+    /// with a voter not answering, while a majority is caught up.
+    pub(crate) fn leader_by_operator(&self) -> bool {
+        self.move_reason.as_deref() == Some("operator")
+    }
+
     /// The group epoch the control plane's record is at. Without a record,
     /// as for a shard restored from an export, it is the number of bases
     /// recorded at this incarnation: only a re-form adds one, so 0 means
@@ -346,6 +357,7 @@ impl PreviousSet {
             raft_voters: None,
             raft_bases: None,
             raft_seed: None,
+            move_reason: None,
             placed: None,
         }
     }

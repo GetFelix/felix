@@ -514,6 +514,7 @@ fn plan_once(
                 &leaving,
                 &eligible,
                 &mut load,
+                now,
             );
             shards.push(ShardPlan { key, decision });
             note_spread(&mut unspread, shards.last(), &current, &eligible);
