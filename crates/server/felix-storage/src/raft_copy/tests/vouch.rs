@@ -1010,17 +1010,21 @@ fn a_restore_starts_its_epoch_past_the_point_plus_the_gap() {
 /// `FelixRaftRestoreLeaderMoved`: `a` stopped leading after the point and
 /// fell behind, `b` and `c` acknowledged 6..=9, and `a`'s directory was
 /// copied with its reservation still at 7. Neither restored file knows of
-/// 8 or 9, so a restore planned with no time line gives out 8 again. The
+/// 8 or 9, so a restore planned with no time line would give out 8 again;
+/// one whose line does not clear the restored floor is refused instead. The
 /// lost cluster gave those out before the plan, below the line.
 #[test]
 fn a_leader_that_moved_after_the_point_is_below_the_time_line() {
     let acked_after = 6..=9;
-    let first = restored_first(restore_from(6, 0));
-    assert_eq!(first, 8);
-    assert!(acked_after.contains(&first));
+    let (rec, reports) = restored_trio(restore_from(6, 0));
+    let reports: BTreeMap<_, _> = reports.into_iter().collect();
+    assert_eq!(
+        plan_reform(&rec, &reports),
+        Err(Refused::LineBehind { line: 0, given: 3 })
+    );
 
     let at = RestoreAt {
-        planned_at_millis: 1,
+        planned_at_millis: 1_800_000_000_000,
         ..restore_from(6, 0)
     };
     assert!(restored_first(at) > *acked_after.end());
@@ -1175,4 +1179,133 @@ fn the_gap_outlives_a_crash_mid_restore() {
     assert_eq!(plan.base_end(), 6);
     assert_eq!(plan.first_index, first);
     assert_eq!(plan.offset_gap, None);
+}
+
+/// A restore whose record holds an earlier epoch on the time line: `a`'s
+/// copy comes from a backup taken before that epoch, cut at the point 6.
+fn restore_after_line_epoch(
+    earlier_first: u64,
+    restore: RestoreAt,
+) -> Result<u64, Refused<&'static str>> {
+    let bases = [EpochBase {
+        base_last: floor(5, 0, 1),
+        first_index: earlier_first,
+    }];
+    let mut rec = record(&["a", "b", "c"], &[], &bases, None);
+    rec.restore = Some(restore);
+    let cut = kept(copy("a", &[1; 6], Some(5), Some(1)), RotatedBy::Restore);
+    let reports: BTreeMap<_, _> = [
+        ("a", report(blank(), vec![cut])),
+        ("b", report(blank(), vec![])),
+        ("c", report(blank(), vec![])),
+    ]
+    .into_iter()
+    .collect();
+    plan_reform(&rec, &reports).map(|plan| plan.first_index)
+}
+
+/// The earlier epoch was planned on a clock 2 minutes ahead, and the next
+/// restore comes 2 minutes and 1 ms later on a correct clock. Its line is
+/// only 1 ms above the earlier first index, while that epoch can have given
+/// out 2 minutes of offsets past it. Being above the earlier first index is
+/// not enough: the restore is refused until the line is a full gap past it,
+/// and then it clears everything that epoch gave out.
+#[test]
+fn a_restore_after_an_epoch_planned_on_a_fast_clock_waits_for_a_full_gap() {
+    let t0 = 1_800_000_000_000;
+    let ahead = 2 * 60_000;
+    let earlier = R * (t0 + ahead) + DEFAULT_OFFSET_GAP;
+    let at = |now: u64| RestoreAt {
+        end: 6,
+        gap: DEFAULT_OFFSET_GAP,
+        planned_at_millis: now,
+    };
+    let soon = t0 + ahead + 1;
+    assert_eq!(
+        restore_after_line_epoch(earlier, at(soon)),
+        Err(Refused::LineBehind {
+            line: earlier + R,
+            given: earlier
+        }),
+        "{} offsets of the earlier epoch would be given out again",
+        last_given(earlier, t0, soon) - (earlier + R)
+    );
+    let gap_millis = MIN_OFFSET_GAP / R;
+    let later = t0 + ahead + gap_millis + 1;
+    assert!(restore_after_line_epoch(earlier, at(later - 1)).is_err());
+    let first = restore_after_line_epoch(earlier, at(later)).expect("a plan");
+    assert!(first > last_given(earlier, t0, later));
+}
+
+/// Every mix of an earlier epoch's gap, this restore's gap and the earlier
+/// clock running ahead by up to `MIN_OFFSET_GAP / R` (about four minutes):
+/// the first plan the bound lets through starts past everything the earlier
+/// epoch gave out, and the wait is bounded. An earlier gap larger than this
+/// restore's is the case a full gap above the earlier first index alone
+/// lets through 18 hours on with half a terabyte of offsets reused.
+#[test]
+fn the_first_restore_the_line_lets_through_clears_the_earlier_epoch() {
+    let t0 = 1_800_000_000_000;
+    let gaps = [MIN_OFFSET_GAP, 1 << 36, MAX_OFFSET_GAP];
+    let skew_bound = MIN_OFFSET_GAP / R;
+    for ahead in [0, skew_bound / 2, skew_bound] {
+        for earlier_gap in gaps {
+            for gap in gaps {
+                let earlier = R * (t0 + ahead) + earlier_gap;
+                let at = |elapsed: u64| RestoreAt {
+                    end: 6,
+                    gap,
+                    planned_at_millis: t0 + elapsed,
+                };
+                let (mut low, mut high) = (0, 1 << 30);
+                assert!(restore_after_line_epoch(earlier, at(high)).is_ok());
+                while low + 1 < high {
+                    let mid = (low + high) / 2;
+                    match restore_after_line_epoch(earlier, at(mid)) {
+                        Ok(_) => high = mid,
+                        Err(Refused::LineBehind { .. }) => low = mid,
+                        Err(other) => panic!("{other:?}"),
+                    }
+                }
+                let first = restore_after_line_epoch(earlier, at(high)).expect("a plan");
+                let given = last_given(earlier, t0, t0 + high);
+                assert!(
+                    first > given,
+                    "ahead {ahead} ms, gaps {earlier_gap} then {gap}: \
+                     {first} <= {given} after {high} ms"
+                );
+                assert!(high <= ahead + 2 * (MAX_OFFSET_GAP / R), "waited {high} ms");
+            }
+        }
+    }
+}
+
+/// A floor reported near the line refuses the restore like an earlier
+/// epoch's first index does: the floor is below what the epoch gave out.
+#[test]
+fn a_restore_waits_for_the_line_to_clear_the_floor() {
+    let now = 1_800_000_000_000;
+    let line = R * now + DEFAULT_OFFSET_GAP;
+    let mut rec = record(&["a", "b", "c"], &[], &[], None);
+    rec.offset_floor = Some(line - MIN_OFFSET_GAP);
+    rec.restore = Some(RestoreAt {
+        end: 6,
+        gap: DEFAULT_OFFSET_GAP,
+        planned_at_millis: now,
+    });
+    let cut = kept(copy("a", &[1; 6], Some(5), Some(1)), RotatedBy::Restore);
+    let reports: BTreeMap<_, _> = [
+        ("a", report(blank(), vec![cut])),
+        ("b", report(blank(), vec![])),
+        ("c", report(blank(), vec![])),
+    ]
+    .into_iter()
+    .collect();
+    assert_eq!(
+        plan_reform(&rec, &reports),
+        Err(Refused::LineBehind {
+            line,
+            given: line - MIN_OFFSET_GAP
+        })
+    );
 }

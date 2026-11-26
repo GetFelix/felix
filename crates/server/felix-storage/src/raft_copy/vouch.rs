@@ -62,6 +62,11 @@ pub const DEFAULT_OFFSET_GAP: u64 = 1 << 40;
 /// a short one by name.
 pub const MIN_OFFSET_GAP: u64 = 1 << 32;
 
+/// The largest gap a restore takes. The bound a later restore or abandon
+/// checks assumes no earlier epoch started further above the line.
+/// `docs/per-shard-raft.md`, "A restore from a backup point is a re-form".
+pub const MAX_OFFSET_GAP: u64 = DEFAULT_OFFSET_GAP;
+
 /// The slope of the time line a restore starts on, in offsets per
 /// millisecond of control-plane wall time (16 per microsecond). Safety
 /// assumes a shard gives out offsets at no more than half of it, which
@@ -231,6 +236,10 @@ pub(crate) enum Refused<B> {
     NoIndexLeft,
     /// A restore's time line at its plan time is past the last index.
     RestoreTooLate { planned_at_millis: u64 },
+    /// A restore's time line plus gap is not far enough above `given`, the
+    /// floor or an earlier epoch's first index, to clear what that epoch
+    /// can have given out (`restore_line_clears`).
+    LineBehind { line: u64, given: u64 },
     /// No copy was read.
     NothingRead,
     /// No broker with a copy id holds the base, so the epoch would have no
@@ -553,9 +562,22 @@ pub(crate) fn plan_reform_as<B: Ord + Clone>(
     // earlier restore from any backup, are in no restored file. All of
     // them are below the time line at the plan's time.
     let first_index = match record.restore {
-        Some(restore) => first_index.max(restore.first_index().ok_or(Refused::RestoreTooLate {
-            planned_at_millis: restore.planned_at_millis,
-        })?),
+        Some(restore) => {
+            let line = restore.first_index().ok_or(Refused::RestoreTooLate {
+                planned_at_millis: restore.planned_at_millis,
+            })?;
+            let given = record
+                .floor
+                .map(|floor| floor.index)
+                .max(record.offset_floor)
+                .max(earlier);
+            if let Some(given) = given
+                && !restore_line_clears(line, restore.gap, given)
+            {
+                return Err(Refused::LineBehind { line, given });
+            }
+            first_index.max(line)
+        }
         None => first_index,
     };
 
@@ -572,6 +594,23 @@ pub(crate) fn plan_reform_as<B: Ord + Clone>(
         cut_by_vote,
         floor,
     })
+}
+
+/// Whether a restore whose time line plus `gap` is `line` starts past every
+/// offset an epoch whose first index or floor is `given` can have given
+/// out.
+///
+/// Being above `given` is not enough: the clock that planned that epoch may
+/// have run ahead, or planned it with a larger gap, so its start says little
+/// about how long it has run. Say it ran `D` ahead with gap `g0 <=
+/// MAX_OFFSET_GAP`, and this plan comes `E` of true time later. Then `line -
+/// given = R (E - D) + gap - g0`, and the epoch gave out at most `R/2 x E`
+/// past `given`. Requiring `line - given > MIN_OFFSET_GAP + MAX_OFFSET_GAP -
+/// gap` covers that for any `g0` and any `D` up to `MIN_OFFSET_GAP / R`
+/// (about four minutes). With the default gap it is the abandon's bound.
+fn restore_line_clears(line: u64, gap: u64, given: u64) -> bool {
+    let margin = MIN_OFFSET_GAP.saturating_add(MAX_OFFSET_GAP.saturating_sub(gap));
+    line > given.saturating_add(margin)
 }
 
 /// Whether one broker is placed, none is dead, and every voter set the
