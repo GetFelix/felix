@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795687251858,
+  "lastUpdate": 1795690112672,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -71136,6 +71136,58 @@ window.BENCHMARK_DATA = {
             "range": "34775.17",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1029364.89\nmean: 1015302.42\nstdev: 34775.17\ncv: 3.43%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "1d5e238d4de2b4f11cd777eddc52d701ecabac68",
+          "message": "feat: a broker without durable storage joins a Raft cluster for in-memory shards only (#3067) (#3252)\n\n* feat(controlplane): a node registered without durable storage holds only in-memory stream shards (#3067)\n\nPlacement keeps a node labelled felix.dev/node-storage=none out of every\ndurable stream's and cache's shard, the way a region is kept out, so one\nalready there is moved off. An operator move of such a shard onto it is\nrefused. A label edit keeps what the broker registered. The registration\nresponse says storage_placement so a diskless broker can refuse an older\ncontrol plane.\n\nSpec-Unaffected: placement eligibility and node labels; no TLA-modelled state or transition changes\n\n* feat(broker): a broker with a node id and no durable storage joins a Raft cluster (#3067)\n\nIt starts on the Raft engine and runs no group. It registers the\nfelix.dev/node-storage=none label, and refuses a control plane whose\nregistration answer lacks storage_placement, which would place durable\nshards on it. A cache's shard on such a broker goes to the Raft engine,\nwhich only routes to the group, so nothing reaches the hybrid lifecycle.\n\nSpec-Unaffected: startup engine choice, a registration label and routing intake for caches on a broker with no disk; no TLA-modelled state or transition changes\n\n* test(cluster): a broker without durable storage holds and serves only in-memory shards (#3067)\n\nSpec-Unaffected: test only\n\n* feat(controlplane): a broker without durable storage registers only at metadata level 54 (#3067)\n\nAs for the internal role: the label is something every member stores, so\na field cannot gate it. A leader below level 54 would ignore it and place\ndurable shards there, so a registration or import carrying it is held to\n54 and refused with 409 before.\n\nSpec-Unaffected: a metadata level gate on registrations; the metadata Raft spec does not model node labels\n\n* docs: brokers without durable storage in a Raft cluster (#3067)\n\nSpec-Unaffected: docs and changelog only\n\n* fix(broker): only a broker with no durable storage routes caches through Raft (#3067)\n\nA broker with storage and a cache store without logs keeps leaving its\ncaches to the hybrid, as before.\n\nSpec-Unaffected: routing intake for caches on a broker with no disk\n\n* fix(controlplane): brokers without storage are not counted for durable copies (#3067)\n\nThe stream create warning counts only brokers with durable storage, an\noperator move's zone report leaves diskless nodes out of a durable shard's\nspread, and a durable shard with only diskless nodes to use says so instead\nof NoNodeInRegion. The label level function covers both label rules.\n\nSpec-Unaffected: placement eligibility and API warnings; no TLA-modelled state",
+          "timestamp": "2026-11-26T02:37:38-08:00",
+          "tree_id": "db46adbad307dad69e07411336db458fa4e47d6f",
+          "url": "https://github.com/GetFelix/felix/commit/1d5e238d4de2b4f11cd777eddc52d701ecabac68"
+        },
+        "date": 1795690111794,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 437249.46,
+            "range": "48913.66",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 437249.46\nmean: 460487.49\nstdev: 48913.66\ncv: 10.62%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 437249.46,
+            "range": "48913.66",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 437249.46\nmean: 460487.49\nstdev: 48913.66\ncv: 10.62%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 98031.48,
+            "range": "6934.77",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 98031.48\nmean: 98941.64\nstdev: 6934.77\ncv: 7.01%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 980314.81,
+            "range": "69347.66",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 980314.81\nmean: 989416.45\nstdev: 69347.66\ncv: 7.01%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
