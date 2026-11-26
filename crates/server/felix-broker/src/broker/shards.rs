@@ -293,6 +293,12 @@ impl Broker {
         if tail > state.tail_seq() {
             let run = tail - log.event_end(0, tail).await?;
             state.lead_from(tail, run, || super::shard_logs::accepted_leader(&state));
+        } else if state.jumped() && tail == state.tail_seq() {
+            // An unwatched pass jumped to the tail without counting the
+            // generation-start records below it; the first publish reports them.
+            let run = tail - log.event_end(0, tail).await?;
+            state.set_generation_start_run(tail, run);
+            state.clear_jumped();
         }
         // `lead_from` leaves a stream with held batches where it is.
         if state.tail_seq() < tail {
@@ -871,7 +877,7 @@ impl StreamHandle {
 
     /// Bring a stream that follows its engine's log up to what is committed,
     /// when nobody reads it yet, so a tail-only reader joins at the end and
-    /// not at old records. Far behind, that is a jump, not a read. On a task
+    /// not at old records. That is a jump, not a read. On a task
     /// of its own: a pass cancelled half way would leave a batch in the ring
     /// that was never fanned out.
     pub(crate) async fn catch_up_unwatched(&self) {
