@@ -6343,9 +6343,14 @@ change: the control plane's record decides the epoch, not a file beside the
 copy. Before the member opens, the broker:
 
 1. Plans the next epoch from its kept copy with the standalone rule and
-   stops the copy (`CopyRoot::stop_alone`). Nothing is started and no epoch
-   is written. The plan is recorded on disk, so after a crash the same
-   request is built again.
+   decides what the plan owes the control plane's record. A record one
+   epoch behind the plan gets a request. A record that already holds the
+   plan's epoch, with the same bases and this copy as its only voter, is
+   started from. Anything else, such as a directory restored from before an
+   earlier re-form, leaves the copy as it is and the shard not ready. Only
+   then is the copy stopped (`CopyRoot::stop_alone`). Nothing is started
+   and no epoch is written. The plan is recorded on disk, so after a crash
+   the same request is built again.
 2. Sends `POST /v1/nodes/{node_id}/reform/alone`. The control plane applies
    `StartAloneEpoch` (metadata level 55) in one command: the group must be
    alone on this broker, with no set change or move in flight, and the epoch
@@ -6357,9 +6362,12 @@ copy. Before the member opens, the broker:
 
 A crash before step 2 sends the same request again. A crash between steps 2
 and 3 finds the epoch recorded, sends nothing, and starts from the recorded
-seed. After step 3 nothing is owed. A refusal leaves the shard not ready and
-the copy stopped where an operator's own stop leaves it, so an operator's
-re-form still works.
+seed. After step 3 nothing is owed. A lost answer or a timeout is retried
+on the next pass, since the open of a stopped copy fails and the next pass
+claims it again. A refusal leaves the shard not ready and the copy stopped
+where an operator's own stop leaves it, so an operator's re-form still
+works: its stop round answers, and the next pass starts the copy from the
+epoch the operator's re-form wrote.
 
 Why it is safe:
 
@@ -6374,8 +6382,12 @@ Why it is safe:
 - An RF 3 group that lost members is refused by the control plane's atomic
   check, and the broker only asks when membership and placement both name
   only itself.
-- A stale or restored directory is refused by the storage id evidence, and
-  a second writer by the epoch compare-and-swap.
+- A directory restored from before an earlier re-form plans an epoch the
+  record already holds, for another copy, so the broker neither asks nor
+  stops it. A start from that record's seed would be refused anyway: the
+  restored copy was rotated to a new copy id, and a start refuses a plan
+  whose voter is another copy. A second writer is refused by the epoch
+  compare-and-swap.
 
 ### A standalone broker re-forms itself
 

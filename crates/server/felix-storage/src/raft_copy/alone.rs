@@ -138,18 +138,30 @@ impl CopyRoot {
         }
     }
 
-    /// The cluster's half of [`Self::reform_alone`]: plan and stop the copy,
-    /// and leave the epoch to the control plane. The plan is kept only so
-    /// the request can be sent again after a crash; nothing here starts the
-    /// copy or counts the epoch as written. Run again, it returns the same
-    /// plan while the copy is stopped for it, so the control plane's
-    /// idempotent write is never bumped twice.
-    pub async fn stop_alone(&self, a: Alone<'_>) -> io::Result<Option<AlonePlan>> {
+    /// The cluster's half of [`Self::reform_alone`]: plan the copy, and stop
+    /// it only if `may_stop` accepts the plan, leaving the epoch to the
+    /// control plane. The plan is kept only so the request can be sent
+    /// again after a crash; nothing here starts the copy or counts the epoch
+    /// as written. Returns the plan once the copy is stopped for it, and
+    /// `None` when nothing is owed or `may_stop` refused, in which case the
+    /// copy is not stopped. Run again, it returns the same plan while the
+    /// copy is stopped for it, so the control plane's idempotent write is
+    /// never bumped twice.
+    pub async fn stop_alone(
+        &self,
+        a: Alone<'_>,
+        may_stop: &(dyn Fn(&AlonePlan) -> bool + Sync),
+    ) -> io::Result<Option<AlonePlan>> {
         let parent = parent_of(a.dir)?;
         let step = || crash_point::reached(&parent);
         let Some((plan, lock)) = self.planned_alone(&a, &step).await? else {
             return Ok(None);
         };
+        // Decided before the stop: a plan the control plane's record does
+        // not lead to must leave the copy as it is.
+        if !may_stop(&plan) {
+            return Ok(None);
+        }
         stop_for(&a, &plan, &step, &lock)?;
         Ok(Some(plan))
     }

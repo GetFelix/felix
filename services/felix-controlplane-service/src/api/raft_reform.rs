@@ -194,8 +194,10 @@ pub(crate) async fn reports(
     )
 )]
 /// A broker's request to start the next epoch of a replication factor 1
-/// group it holds the only copy of. Requires the node's own credential. The
-/// control plane starts the epoch only if the shard is placed, seeded and
+/// group it holds the only copy of. Requires `node.manage` on the node, as
+/// the node's own credential holds, or on `cluster:*`: an operator with that
+/// scope can already run a full re-form, and the command still checks the
+/// group is alone on `node_id`. The control plane starts the epoch only if the shard is placed, seeded and
 /// ordered on this broker alone, with no set change or move in flight and
 /// the epoch the plan was made at; any other state answers 409 and changes
 /// nothing. A request already written answers the shard as it is.

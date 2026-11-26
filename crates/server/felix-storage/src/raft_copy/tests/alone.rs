@@ -132,6 +132,15 @@ async fn reform(copies: &CopyRoot, dir: &Path) -> io::Result<Aloned> {
 }
 
 async fn stop(copies: &CopyRoot, dir: &Path) -> io::Result<Option<crate::raft_copy::AlonePlan>> {
+    stop_if(copies, dir, &|_| true).await
+}
+
+/// [`stop`], stopping only for a plan `may_stop` accepts.
+async fn stop_if(
+    copies: &CopyRoot,
+    dir: &Path,
+    may_stop: &(dyn Fn(&crate::raft_copy::AlonePlan) -> bool + Sync),
+) -> io::Result<Option<crate::raft_copy::AlonePlan>> {
     let spacing = config().index_spacing_bytes;
     let dir_owned = dir.to_path_buf();
     let read = move |probes: &BTreeSet<u64>, epoch: u64| {
@@ -141,18 +150,21 @@ async fn stop(copies: &CopyRoot, dir: &Path) -> io::Result<Option<crate::raft_co
     let fold = |_copy: u64| Box::new(Fold) as Box<dyn GapFold>;
     let member = |copy: u64| format!("{BROKER}#{copy}");
     copies
-        .stop_alone(Alone {
-            shard: SHARD,
-            dir,
-            label: LABEL,
-            incarnation: 1,
-            broker: BROKER,
-            config: &config(),
-            read: &read,
-            fold: &fold,
-            member: &member,
-            record: &LocalRecord,
-        })
+        .stop_alone(
+            Alone {
+                shard: SHARD,
+                dir,
+                label: LABEL,
+                incarnation: 1,
+                broker: BROKER,
+                config: &config(),
+                read: &read,
+                fold: &fold,
+                member: &member,
+                record: &LocalRecord,
+            },
+            may_stop,
+        )
         .await
 }
 
@@ -405,20 +417,35 @@ async fn stopping_alone_plans_and_stops_without_writing_an_epoch() {
     assert_eq!(stop(&root.open(), &dir).await.expect("after"), None);
 }
 
-/// **A plan made under an older storage id is planned again** when another
-/// relaxed crash follows, above everything the first plan reserved.
+/// **A second crash after the control plane recorded the first plan plans
+/// again, and a plan the record does not hold leaves the copy unstopped.**
+/// The first plan's epoch is recorded, so the second plan for the same
+/// epoch, under a new copy id, matches nothing and must not stop the copy:
+/// a stopped copy is one a start from the record's seed would run on.
 #[tokio::test]
 async fn stopping_alone_after_another_crash_plans_again() {
     let (root, dir) = crashed(3).await;
-    let first = stop(&root.open(), &dir).await.expect("stop").expect("owed");
+    let recorded = stop(&root.open(), &dir).await.expect("stop").expect("owed");
     relaxed_crash(&root, 3);
     root.witness_current_id();
-    let second = stop(&root.open(), &dir)
+    let held = |plan: &crate::raft_copy::AlonePlan| {
+        plan.copy == recorded.copy && plan.bases == recorded.bases
+    };
+    let second = stop_if(&root.open(), &dir, &held)
         .await
-        .expect("stop again")
-        .expect("owed");
-    assert_ne!(first.minted, second.minted, "planned under the new id");
-    assert!(second.bases[0].first_index >= first.bases[0].first_index);
+        .expect("stop again");
+    assert_eq!(second, None, "a plan the record does not hold");
+    let planned = LocalRecord.load(&dir).expect("load").expect("a plan");
+    assert_ne!(planned.minted, recorded.minted, "planned under the new id");
+    assert_ne!(planned.copy, recorded.copy, "for the rotated copy");
+    assert!(planned.bases[0].first_index >= recorded.bases[0].first_index);
+    assert!(
+        crate::raft_copy::stop_file::stopped(&dir)
+            .expect("stopped")
+            .is_none(),
+        "the copy was stopped for a plan the record does not hold"
+    );
+    assert!(!crate::raft_copy::start_due(&dir, 1).expect("due"));
     assert_eq!(group_epoch(&dir).expect("epoch"), None);
 }
 

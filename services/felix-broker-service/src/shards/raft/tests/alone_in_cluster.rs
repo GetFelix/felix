@@ -15,7 +15,7 @@ use super::super::alone_cluster::AloneWriter;
 use super::super::standalone::tests::members;
 use super::super::standalone::tests::publish;
 use super::super::standalone::tests::reform::{
-    PERIODIC, Written, begin, broker_in, payloads, write, written,
+    PERIODIC, Written, begin, broker_in, copy_tree, payloads, put_back, write, written,
 };
 use super::super::standalone::{LOCAL_MEMBER, fleet_of_one};
 use super::*;
@@ -446,12 +446,19 @@ async fn a_shard_that_is_not_alone_is_not_re_formed() {
     }
 }
 
-/// **A refusal leaves the shard not ready and the operator's path open**:
-/// the copy stays stopped at its epoch, which is where an operator's own
-/// stop leaves it, so the operator's stop round still answers.
+/// **A refusal leaves the shard not ready and an operator's re-form still
+/// works**: the copy stays stopped at its epoch, which is where an
+/// operator's own stop leaves it, so the operator's stop round answers, the
+/// plan from its report is recorded, and the next pass starts the copy from
+/// that record and serves with every synced record kept.
 #[tokio::test]
 async fn a_conflict_leaves_the_shard_down_for_an_operator() {
     use crate::shards::raft::reform_survey::SurveyKind;
+    use felix_storage::raft_copy::{
+        BrokerReport, EpochRecord, GroupRecord, LocalRecord, SurveyStep, first_probes, plan_starts,
+        survey_step,
+    };
+    let orders = key("orders", 0);
     let root = tempfile::tempdir().expect("tempdir");
     let w = crashed(root.path()).await;
     let cp = FakeControlPlane::new(Say::Conflict);
@@ -459,16 +466,161 @@ async fn a_conflict_leaves_the_shard_down_for_an_operator() {
     c.feed(&cp, &|_| {}).await;
     assert!(!cp.requests().is_empty(), "the request was sent");
     assert_eq!(cp.epoch(), 0);
-    assert!(c.shards.leading(&key("orders", 0)).is_none());
+    assert!(c.shards.leading(&orders).is_none());
     assert!(stopped(&w.dir));
     assert_eq!(group_epoch(&w.dir).expect("epoch"), None, "not started");
 
-    let stop = super::reform::survey(&key("orders", 0), SurveyKind::Stop, 0, Default::default());
+    // The operator's re-form, as the control plane runs it: the stop
+    // round, the plan from its reports with the loss accepted, the epoch
+    // write.
+    let copy = LocalRecord
+        .load(&w.dir)
+        .expect("load")
+        .expect("a plan")
+        .copy;
+    let me = BTreeSet::from([(LOCAL_MEMBER.to_string(), copy)]);
+    let record = GroupRecord {
+        incarnation: INCARNATION,
+        bases: Vec::new(),
+        floor: None,
+        offset_floor: None,
+        placed: Some(BTreeSet::from([LOCAL_MEMBER.to_string()])),
+        dead: BTreeSet::new(),
+        seed: Some(me.clone()),
+        ordered: Some(vec![me]),
+        restore: None,
+    };
+    let mut asked = first_probes(&record);
+    let read = c.shards.reform_reader();
+    let mut kind = SurveyKind::Stop;
+    let (view, starts) = loop {
+        let ask = super::reform::survey(&orders, kind, 0, asked.clone());
+        let wire = if kind == SurveyKind::Stop {
+            c.shards.stop_for_reform(&ask).await
+        } else {
+            read(&ask)
+        }
+        .expect("the copy answers");
+        let reports = std::collections::BTreeMap::from([(
+            LOCAL_MEMBER.to_string(),
+            BrokerReport::<String>::try_from(wire).expect("version"),
+        )]);
+        match survey_step(&record, &reports, &asked) {
+            SurveyStep::Planned(view) => {
+                break (view, plan_starts(&record, &reports, true).expect("starts"));
+            }
+            SurveyStep::Ask(more) => {
+                asked = more;
+                kind = SurveyKind::Survey;
+            }
+            other => panic!("no plan: {other:?}"),
+        }
+    };
+    {
+        let mut held = cp.record.lock();
+        held.epoch = 1;
+        held.bases = vec![RaftEpochBase {
+            base_last: view
+                .base_last
+                .map(|(index, epoch, term)| crate::shards::watch::RaftLogId { index, epoch, term }),
+            first_index: view.first_index,
+        }];
+        held.seed = Some(RaftVoters {
+            incarnation: INCARNATION,
+            epoch: 1,
+            members: view.voters.iter().cloned().collect(),
+            starts,
+        });
+    }
+    c.serve(&cp, w.end).await;
+    assert_eq!(group_epoch(&w.dir).expect("epoch"), Some(1));
+    // The operator's plan keeps the log to the saved commit, the first
+    // batch here, and accepts the loss of the rest.
+    let kept = payloads(&c.broker).await;
     assert!(
-        c.shards.stop_for_reform(&stop).await.is_some(),
-        "the operator's stop round answers on the copy"
+        kept.len() >= 3 && written().starts_with(&kept),
+        "kept {kept:?}"
     );
-    assert!(felix_storage::raft_copy::start_due(&w.dir, 1).expect("due"));
+    let next = publish(&c.broker, &c.engine, &[b"six"]).await;
+    assert!(
+        next > w.reserved.expect("a reservation"),
+        "offset {next} at or below the crashed run's reservation"
+    );
     let _ = highest_reserved;
+    c.stop().await;
+}
+
+/// Stop the cluster's shards and record a clean stop, so the next begin
+/// rotates nothing.
+async fn stop_cleanly(root: &std::path::Path, c: Cluster) {
+    c.stop().await;
+    let id = felix_storage::storage_identity::load(root)
+        .expect("id")
+        .expect("an id");
+    run_state::mark_clean(root, id).expect("clean");
+}
+
+/// **A directory restored from before a self re-form is not started in the
+/// epoch the control plane recorded for it.** That epoch's seed was planned
+/// for the copy the backup predates; starting the restored copy from it
+/// would give out again the offsets the epoch gave out after the backup.
+/// The shard stays down, its copy not stopped, and nothing is asked.
+#[tokio::test]
+async fn a_restore_from_before_the_re_form_is_not_started_from_its_seed() {
+    let root = tempfile::tempdir().expect("tempdir");
+    let backup = tempfile::tempdir().expect("backup");
+    begin(root.path(), true, 1);
+    let w = write(root.path(), PERIODIC).await;
+    copy_tree(root.path(), backup.path());
+
+    assert!(begin(root.path(), true, 2), "a relaxed crash rotates");
+    let cp = FakeControlPlane::new(Say::Take);
+    let c = cluster(root.path(), PERIODIC, fleet_of_one(), &cp).await;
+    c.serve(&cp, w.end).await;
+    assert_eq!(cp.epoch(), 1);
+    let after = publish(&c.broker, &c.engine, &[b"six"]).await;
+    stop_cleanly(root.path(), c).await;
+    let sent = cp.requests().len();
+
+    put_back(backup.path(), root.path());
+    crate::node::storage::rotate_storage_id(root.path()).expect("rotate-storage-id");
+    begin(root.path(), true, 3);
+    let c = cluster(root.path(), PERIODIC, fleet_of_one(), &cp).await;
+    c.feed(&cp, &|_| {}).await;
+    if c.shards.leading(&key("orders", 0)).is_some() {
+        let next = publish(&c.broker, &c.engine, &[b"seven"]).await;
+        assert!(
+            next > after,
+            "offset {next} reused: the re-formed epoch gave out {after} after the backup"
+        );
+    }
+    assert!(
+        c.shards.leading(&key("orders", 0)).is_none(),
+        "the shard stays down"
+    );
+    assert!(!stopped(&w.dir), "the restored copy was stopped");
+    assert_eq!(group_epoch(&w.dir).expect("epoch"), None, "started");
+    assert_eq!(cp.requests().len(), sent, "asked the control plane");
+    assert_eq!(cp.epoch(), 1);
+    c.stop().await;
+}
+
+/// **A lost answer is retried while the broker runs**: the record was
+/// written but the answer never came, and a later pass starts the copy
+/// without a restart and without a second bump.
+#[tokio::test]
+async fn a_lost_answer_starts_the_copy_on_a_later_pass() {
+    let root = tempfile::tempdir().expect("tempdir");
+    let w = crashed(root.path()).await;
+    let cp = FakeControlPlane::new(Say::TakeThenSilence);
+    let c = cluster(root.path(), PERIODIC, fleet_of_one(), &cp).await;
+    c.pass(&cp, &|_| {}).await;
+    assert_eq!(cp.epoch(), 1, "the record was written");
+    assert_eq!(group_epoch(&w.dir).expect("epoch"), None, "not started");
+    cp.say(Say::Take);
+    c.serve(&cp, w.end).await;
+    assert_eq!(cp.bumps.load(Ordering::SeqCst), 1);
+    assert_eq!(group_epoch(&w.dir).expect("epoch"), Some(1));
+    assert_eq!(payloads(&c.broker).await, written());
     c.stop().await;
 }

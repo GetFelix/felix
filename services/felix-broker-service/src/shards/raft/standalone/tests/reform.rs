@@ -328,7 +328,7 @@ fn time_line_now() -> u64 {
 }
 
 /// Copy the directory tree at `from` to `to`, as an operator's backup does.
-fn copy_tree(from: &Path, to: &Path) {
+pub(in crate::shards::raft) fn copy_tree(from: &Path, to: &Path) {
     std::fs::create_dir_all(to).expect("create");
     for entry in std::fs::read_dir(from).expect("read dir") {
         let entry = entry.expect("entry");
@@ -342,7 +342,7 @@ fn copy_tree(from: &Path, to: &Path) {
 }
 
 /// Put the copy at `backup` back as the whole data directory at `root`.
-fn put_back(backup: &Path, root: &Path) {
+pub(in crate::shards::raft) fn put_back(backup: &Path, root: &Path) {
     std::fs::remove_dir_all(root).expect("wipe");
     copy_tree(backup, root);
 }

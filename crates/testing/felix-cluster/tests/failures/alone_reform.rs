@@ -12,6 +12,8 @@ use serial_test::serial;
 
 const STREAM: &str = "orders";
 const RECORDS: usize = 20;
+/// Records acknowledged after the sync, so the crash can take them.
+const TAIL: usize = 10;
 
 /// How long the brokers' periodic sync gets to reach the disk before the
 /// crash, so the records are synced ones.
@@ -28,7 +30,8 @@ fn config() -> ClusterConfig {
 
 /// **A one-replica shard recovers from a machine crash with no operator
 /// re-form.** The synced records are all there, and the first offset after
-/// the crash is above every one given out before it.
+/// the crash is above every one acknowledged before it, the unsynced tail's
+/// too.
 #[tokio::test]
 #[serial]
 async fn a_crashed_one_replica_shard_re_forms_itself() {
@@ -38,15 +41,24 @@ async fn a_crashed_one_replica_shard_re_forms_itself() {
     }
     let mut cluster = Cluster::start(config()).await.expect("start");
     let owner = cluster.owner(STREAM).await.expect("owner");
-    let mut last = 0;
     for i in 0..RECORDS {
-        let offset = cluster
+        cluster
             .publish_via_at(&owner, STREAM, format!("record-{i}").into_bytes())
             .await
             .expect("publish");
-        last = offset.unwrap_or(last);
     }
     tokio::time::sleep(SYNCED_BY).await;
+    // An acknowledged tail the periodic sync has not reached yet: the crash
+    // may take it, but its offsets were given out and must not be again.
+    let mut acked = 0;
+    for i in 0..TAIL {
+        let offset = cluster
+            .publish_via_at(&owner, STREAM, format!("tail-{i}").into_bytes())
+            .await
+            .expect("publish the tail")
+            .expect("a durable stream's ack names its offset");
+        acked = acked.max(offset);
+    }
 
     cluster.kill_node(&owner).expect("kill the owner");
     cluster
@@ -66,7 +78,7 @@ async fn a_crashed_one_replica_shard_re_forms_itself() {
             Err(err) => Err(err),
         };
         if let Ok(offset) = served {
-            break offset;
+            break offset.expect("a durable stream's ack names its offset");
         }
         assert!(
             Instant::now() < deadline,
@@ -74,12 +86,10 @@ async fn a_crashed_one_replica_shard_re_forms_itself() {
         );
         tokio::time::sleep(Duration::from_millis(500)).await;
     };
-    if let Some(after) = after {
-        assert!(
-            after > last,
-            "offset {after} was given out again, the crashed run reached {last}"
-        );
-    }
+    assert!(
+        after > acked,
+        "offset {after} was given out again: the crashed run acknowledged up to {acked}"
+    );
     let kept = replay(&cluster, &owner).await;
     assert_eq!(kept, all_records(), "every synced record is kept");
     cluster.shutdown().await;

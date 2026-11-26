@@ -8,7 +8,7 @@
 //! already holds is started from, never written again. See
 //! `docs/per-shard-raft.md`, "Shards with one replica".
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
@@ -18,7 +18,9 @@ use felix_replication::controlplane_link::{ControlPlaneLink, LinkResponse};
 use felix_replication::raft::{GapSnapshot, GroupId, MemberId, mark_name, reform_report};
 use felix_replication::reporter::Credential;
 use felix_storage::log::LogConfig;
-use felix_storage::raft_copy::{Alone, AlonePlan, CopyRoot, GapFold, LocalRecord, WireReport};
+use felix_storage::raft_copy::{
+    Alone, AlonePlan, CopyRoot, EpochBase, GapFold, LocalRecord, WireReport,
+};
 
 use super::RaftShards;
 use crate::shards::ShardKey;
@@ -78,19 +80,22 @@ impl RaftShards {
         if !self.fleet.supports(fleet::RAFT_ALONE_REFORM) || !alone_here(&self.local, assignment) {
             return Ok(None);
         }
-        let Some(plan) = self.stop_alone(key, assignment, root, dir, config).await? else {
+        // Decided before the copy is stopped: a plan the record does not
+        // lead to, as for a directory restored from before an earlier
+        // re-form, leaves the copy as it is and the shard not ready.
+        let decide = |plan: &AlonePlan| owed(key, &self.local, assignment, plan) != Owed::Refused;
+        let Some(plan) = self
+            .stop_alone(key, assignment, root, dir, config, &decide)
+            .await?
+        else {
             return Ok(None);
         };
+        if owed(key, &self.local, assignment, &plan) != Owed::Send {
+            // The control plane already holds this plan's epoch: the start
+            // reads it.
+            return Ok(None);
+        }
         let epoch = plan.bases.len() as u64;
-        let recorded = assignment.group_epoch();
-        if recorded >= epoch {
-            // The control plane already holds the epoch: the start reads it.
-            return Ok(None);
-        }
-        if recorded + 1 != epoch {
-            tracing::warn!(shard = ?key, recorded, planned = epoch, "the control plane is not one epoch behind this copy's plan; not re-forming it");
-            return Ok(None);
-        }
         let body = request(key, assignment, &plan, &self.local);
         let sent = tokio::time::timeout(REQUEST_TIMEOUT, writer.send(&body)).await;
         let answer = match sent {
@@ -120,6 +125,7 @@ impl RaftShards {
         root: &CopyRoot,
         dir: &Path,
         config: &LogConfig,
+        may_stop: &(dyn Fn(&AlonePlan) -> bool + Sync),
     ) -> anyhow::Result<Option<AlonePlan>> {
         let incarnation = assignment.incarnation;
         let spacing = config.index_spacing_bytes;
@@ -137,20 +143,56 @@ impl RaftShards {
         };
         let member = |copy: u64| MemberId::new(local, copy).to_string();
         Ok(root
-            .stop_alone(Alone {
-                shard: &mark_name(key),
-                dir,
-                label: &GroupId::new(key.clone(), incarnation).to_string(),
-                incarnation,
-                broker: local,
-                config,
-                read: &read,
-                fold: &fold,
-                member: &member,
-                record: &LocalRecord,
-            })
+            .stop_alone(
+                Alone {
+                    shard: &mark_name(key),
+                    dir,
+                    label: &GroupId::new(key.clone(), incarnation).to_string(),
+                    incarnation,
+                    broker: local,
+                    config,
+                    read: &read,
+                    fold: &fold,
+                    member: &member,
+                    record: &LocalRecord,
+                },
+                may_stop,
+            )
             .await?)
     }
+}
+
+/// What a plan owes the control plane's record.
+#[derive(Debug, PartialEq, Eq)]
+enum Owed {
+    /// The record is one epoch behind the plan: ask it to take the epoch.
+    Send,
+    /// The record holds this plan's epoch, bases and voter: start from it.
+    Recorded,
+    /// The record leads somewhere this plan does not, so the copy is left
+    /// for an operator.
+    Refused,
+}
+
+fn owed(key: &ShardKey, local: &str, a: &ShardAssignment, plan: &AlonePlan) -> Owed {
+    let epoch = plan.bases.len() as u64;
+    let recorded = a.group_epoch();
+    if recorded + 1 == epoch {
+        return Owed::Send;
+    }
+    let bases: Vec<EpochBase> = plan.bases.iter().copied().map(EpochBase::from).collect();
+    let voters = a
+        .raft_seed
+        .as_ref()
+        .filter(|seed| seed.incarnation == a.incarnation && seed.epoch == epoch)
+        .map(|seed| &seed.members);
+    let mine = BTreeMap::from([(local.to_string(), plan.copy)]);
+    if recorded == epoch && a.epoch_bases().as_deref() == Some(&bases[..]) && voters == Some(&mine)
+    {
+        return Owed::Recorded;
+    }
+    tracing::warn!(shard = ?key, recorded, planned = epoch, "the control plane's record does not match this copy's plan; not re-forming it");
+    Owed::Refused
 }
 
 /// Whether the assignment names `local` the only broker of the shard's
