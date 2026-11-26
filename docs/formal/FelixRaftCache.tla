@@ -68,6 +68,17 @@
 (*     proposed after its answer came: a retry held in a queue or on the   *)
 (*     network. That is what makes the tombstone necessary: dropping the   *)
 (*     floor too (`RetireDropsFloor`) applies such a copy again.           *)
+(*   - A group's state has a bound (`Bound`), so every state it reaches    *)
+(*     fits in a snapshot a member takes. A put or an add that would take  *)
+(*     the state past it is refused: it answers "full", the answer is      *)
+(*     kept like any other, and it changes nothing else. The size is the   *)
+(*     record, if unexpired at the entry's time, and the counter once an   *)
+(*     add made it; counters are never removed. A record expired at that   *)
+(*     time counts as gone, as it does to every write, so a member that    *)
+(*     restored a snapshot that left it out judges the same. Deletes and   *)
+(*     expiry deletes are never refused, so a full group can be emptied.   *)
+(*     Kept answers and floors are not counted here: the implementation    *)
+(*     holds a reserve under the snapshot cap for them.                    *)
 (*                                                                         *)
 (* One key and one counter. Seven requests: an add (id 1), a put that      *)
 (* expires one time unit after its stamp (id 2), a put-if-absent (id 3),   *)
@@ -100,7 +111,8 @@
 (*                       up to what it applied. With SnapshotDropsExpired  *)
 (*                       these two compare what a request can observe: a   *)
 (*                       record expired at the log's time counts as gone.  *)
-(*   SumExact         -- a counter counts each request once.               *)
+(*   SumExact         -- a counter counts each add once, unless its first  *)
+(*                       commit answered "full": then never.               *)
 (*   AppliedOnce      -- a request id changes the projection once.         *)
 (*   AnswersKept      -- an answer a client got is the answer the first    *)
 (*                       commit of its request gave.                       *)
@@ -126,6 +138,10 @@
 (*                       whose answer the producer already had.            *)
 (*   RetriesKeepAnswers -- a later commit of a request that is not         *)
 (*                       forgotten answers what its first commit did.      *)
+(*   FullFinal        -- a request one commit answered "full" is answered  *)
+(*                       "full" or "forgotten" by every commit of it, so   *)
+(*                       it is never applied, and one that applied is      *)
+(*                       never answered "full".                            *)
 (*                                                                         *)
 (* Each knob removes one rule:                                             *)
 (*                                                                         *)
@@ -160,6 +176,10 @@
 (*   NoFloorClamp       -- apply raises the floor to the entry's floor     *)
 (*                         even past the entry's own sequence. Only        *)
 (*                         FloorPastOwn sends such a floor.                *)
+(*   FullOnRawSize      -- the bound counts a record that has expired but  *)
+(*                         that no expiry delete removed yet.              *)
+(*   FullNotRecorded    -- a "full" answer is not kept, so a retry is      *)
+(*                         judged again.                                   *)
 (*                                                                         *)
 (* FloorPastOwn is not a dropped rule: it is a producer that sends its     *)
 (* sequence plus one as the floor, which apply must clamp.                 *)
@@ -202,7 +222,10 @@ CONSTANTS
     RetireLocal,
     FloorPastUnanswered,
     FloorPastOwn,
-    NoFloorClamp
+    NoFloorClamp,
+    Bound,              \* the most state a group holds; 2 is never full
+    FullOnRawSize,
+    FullNotRecorded
 
 VARIABLES
     clog,       \* the committed entries
@@ -238,9 +261,12 @@ NoAns == <<>>
 
 Forgotten == <<"forgotten", 0>>
 
+FullAns == <<"full", 0>>
+
 \* `t` is the log's time; `ans` the answer each applied request got that
-\* is still kept; `floor` the producer's floor.
-Empty == [val |-> 0, ver |-> 0, exp |-> 0, sum |-> 0, t |-> 0,
+\* is still kept; `floor` the producer's floor; `ctr` whether an add made
+\* the counter.
+Empty == [val |-> 0, ver |-> 0, exp |-> 0, sum |-> 0, ctr |-> FALSE, t |-> 0,
           ans |-> [r \in Requests |-> NoAns], floor |-> 0]
 
 Blank == [rid |-> 0, op |-> "blank", t |-> 0, exp |-> 0, ver |-> 0, cond |-> 0,
@@ -270,14 +296,15 @@ Obs(s) == IF Live(s, s.t) THEN s ELSE [s EXCEPT !.val = 0, !.ver = 0, !.exp = 0]
 \* Whether a write of this kind finds the key present at time t.
 Present(s, t, op) == IF op \in SeesExpired THEN s.val # 0 ELSE Live(s, t)
 
-\* A client entry applied at index i, checking expiry at time t.
-Write(s, e, i, t) ==
+\* A client entry applied at index i, checking expiry at time t, with no
+\* bound.
+Unbounded(s, e, i, t) ==
     LET here == Present(s, t, e.op)
         put == [s EXCEPT !.val = e.rid, !.ver = i, !.exp = e.exp, !.ans[e.rid] = <<"ok", i>>]
         del == [s EXCEPT !.val = 0, !.ver = i, !.exp = 0, !.ans[e.rid] = <<"ok", s.ver>>]
         conflict == [s EXCEPT !.ans[e.rid] = <<"conflict", IF here THEN s.ver ELSE 0>>]
     IN CASE e.op = "add" ->
-            [s EXCEPT !.sum = @ + 1, !.ans[e.rid] = <<"ok", s.sum + 1>>]
+            [s EXCEPT !.sum = @ + 1, !.ctr = TRUE, !.ans[e.rid] = <<"ok", s.sum + 1>>]
       [] e.op = "put" -> put
       [] e.op = "putAbsent" ->
             IF here THEN [s EXCEPT !.ans[e.rid] = <<"refused", s.ver>>] ELSE put
@@ -285,6 +312,32 @@ Write(s, e, i, t) ==
             IF here THEN del ELSE [s EXCEPT !.ans[e.rid] = <<"absent", 0>>]
       [] e.op = "putIf" -> IF here /\ s.ver = e.cond THEN put ELSE conflict
       [] e.op = "deleteIf" -> IF here /\ s.ver = e.cond THEN del ELSE conflict
+
+\* Whether the record counts toward the bound at time t.
+Held(s, t) == IF FullOnRawSize THEN s.val # 0 ELSE Live(s, t)
+
+Size(s, t) == (IF Held(s, t) THEN 1 ELSE 0) + (IF s.ctr THEN 1 ELSE 0)
+
+\* What a write of this kind adds to the size if it applies.
+Grows(s, t, op) ==
+    CASE op = "add" -> IF s.ctr THEN 0 ELSE 1
+      [] op \in {"put", "putAbsent", "putIf"} -> IF Held(s, t) THEN 0 ELSE 1
+      [] OTHER -> 0
+
+\* A client entry with the bound judged: a write that would apply and take
+\* the size past the bound answers "full" and changes nothing else.
+Judged(s, e, i, t) ==
+    LET w == Unbounded(s, e, i, t)
+        grows == Grows(s, t, e.op)
+    IN IF w.ans[e.rid][1] = "ok" /\ grows > 0 /\ Size(s, t) + grows > Bound
+       THEN [s EXCEPT !.ans[e.rid] = FullAns]
+       ELSE w
+
+\* What apply does with a client entry. With FullNotRecorded a "full"
+\* answer is not kept.
+Write(s, e, i, t) ==
+    LET j == Judged(s, e, i, t)
+    IN IF FullNotRecorded /\ j.ans[e.rid] = FullAns THEN s ELSE j
 
 \* Apply entry e at index i, checking expiry at time t.
 Step(s, e, i, t) ==
@@ -540,17 +593,36 @@ MembersAgree ==
 
 ProjectionIsFold == \A s \in Servers : View(st[s]) = View(FoldTo(applied[s]))
 
+\* What client entry j answered: the kept answer on a retry, "forgotten"
+\* below the floor, or what its write judged, kept or not.
+Answered(j) ==
+    LET e == clog[j]
+        s == FoldTo(j - 1)
+    IN IF e.op \notin NotDeduped /\ s.ans[e.rid] # NoAns THEN s.ans[e.rid]
+       ELSE IF Forgot(s, e) THEN Forgotten
+       ELSE Judged([s EXCEPT !.t = e.t], e, j, e.t).ans[e.rid]
+
+First(r) == CHOOSE i \in 1..Len(clog) : clog[i].rid = r /\ \A j \in 1..(i - 1) : clog[j].rid # r
+
+\* An add whose first commit answered "full" never counts, retries,
+\* leader changes and installs included: FullFinal says no commit of it
+\* applies.
 SumExact ==
     \A s \in Servers :
-        st[s].sum = Cardinality({clog[i].rid : i \in {j \in 1..applied[s] : clog[j].op = "add"}})
+        st[s].sum = Cardinality({clog[i].rid :
+                        i \in {j \in 1..applied[s] :
+                                clog[j].op = "add" /\ Answered(First(clog[j].rid)) # FullAns}})
+
+FullFinal ==
+    \A i, j \in 1..Len(clog) :
+        (clog[i].rid # 0 /\ clog[j].rid = clog[i].rid /\ Answered(i) = FullAns)
+        => Answered(j) \in {FullAns, Forgotten}
 
 \* A second commit of a request id moves the log's time and nothing else.
 AppliedOnce ==
     \A i, j \in 1..Len(clog) :
         (i < j /\ clog[i].rid # 0 /\ clog[i].rid = clog[j].rid)
         => FoldTo(j) = [FoldTo(j - 1) EXCEPT !.t = clog[j].t]
-
-First(r) == CHOOSE i \in 1..Len(clog) : clog[i].rid = r /\ \A j \in 1..(i - 1) : clog[j].rid # r
 
 AnswersKept == \A g \in given : g.ans = FoldTo(First(g.rid)).ans[g.rid]
 
@@ -698,5 +770,8 @@ NeverRetryAfterRetire ==
 \* A member installs a snapshot whose floor passed a request.
 NeverInstalledFloor ==
     ~ \E s \in hist.installed : snap[s].st.floor > SetMin(Requests)
+
+\* A write is answered "full".
+NeverFull == ~ \E j \in 1..Len(clog) : clog[j].rid # 0 /\ Answered(j) = FullAns
 
 =============================================================================

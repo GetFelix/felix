@@ -778,6 +778,11 @@ expectations=(
   "FelixRaftCacheTrimReachRetryAboveFloor violates NeverRetryAboveFloor"
   "FelixRaftCacheTrimReachRetryAfterRetire violates NeverRetryAfterRetire"
   "FelixRaftCacheTrimReachInstalledFloor violates NeverInstalledFloor"
+  "FelixRaftCacheFull pass"
+  "FelixRaftCacheFullSnapshot pass"
+  "FelixRaftCacheFullNotRecorded violates FullFinal"
+  "FelixRaftCacheFullSnapshotRawSize violates MembersAgree"
+  "FelixRaftCacheFullReachFull violates NeverFull"
 )
 
 # The long random walks, for `--simulate`: configurations too big to check
