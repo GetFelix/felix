@@ -23,27 +23,36 @@
 (* log is its sequence of terms. A message is one atomic step between two  *)
 (* members, and an append copies the leader's whole log.                   *)
 (*                                                                         *)
-(* Faults are crashes and cuts (one member cut off from every other), at  *)
+(* Faults are crashes and cuts (one member cut off from every other), at   *)
 (* most MaxFaults of them. A crashed member may come back and a cut may    *)
 (* heal, but nothing makes either happen. The faults stopping is the       *)
 (* stable suffix the properties ask for: after the last one, who is up and *)
 (* connected never changes again.                                          *)
 (*                                                                         *)
 (* Time is abstract, as in FelixRaftSleep.tla. An election timeout fires   *)
-(* only while no leader the member would follow can reach it: that        *)
+(* only while no leader the member would follow can reach it: that         *)
 (* leader's heartbeat comes first. The randomised timeout is what keeps    *)
 (* two members' rounds apart. The model cannot say how long that takes, so *)
 (* with Staggered at most Splits timeouts in a behaviour fire while some   *)
-(* round is open: a pre-vote that passed and has not stood yet, or a      *)
+(* round is open: a pre-vote that passed and has not stood yet, or a       *)
 (* candidate that can still win. Without Staggered they fire whenever.     *)
-(* Splits = 1 rests on openraft drawing each timeout from [1 s, 2 s)      *)
-(* (`raft/runtime.rs:152`, passed at `:280`) on top of a fixed per-member *)
-(* offset (`raft/group.rs:339`), against a vote round of one round trip:  *)
-(* two draws that close are rare, two in one election are taken as none.  *)
+(* Splits = 1 rests on openraft drawing each timeout from [1 s, 2 s)       *)
+(* (`raft/runtime.rs:152`, passed at `:280`) on top of a fixed per-member  *)
+(* offset (`raft/group.rs:339`), against a vote round of one round trip:   *)
+(* two draws that close are rare, two in one election are taken as none.   *)
+(* What it excludes: two colliding rounds in one behaviour. Repeated       *)
+(* collisions are unlikely, not impossible, so termination under them is   *)
+(* left unproven, as for any randomised-timeout Raft.                      *)
 (*                                                                         *)
 (* Terms are bounded by MaxTerm. A behaviour that uses them all and has no *)
-(* leader violates the properties, so the passing configurations set it   *)
-(* above what their faults and splits can spend.                           *)
+(* leader violates the properties, so the passing configurations set it    *)
+(* above what their faults and splits can spend: one term for the first    *)
+(* election, one for the split, and at most three per fault (the election  *)
+(* it forces, a crashed leader's restore, one stale pre-vote standing).    *)
+(* That reasoning is not trusted on its own. The `Slack` configurations    *)
+(* add one term and check TermsLeft, that no member ever reaches MaxTerm,  *)
+(* so no step is ever held back by the bound and their verdict holds with  *)
+(* terms unbounded.                                                        *)
 (***************************************************************************)
 EXTENDS Naturals, Sequences, FiniteSets
 
@@ -299,6 +308,9 @@ TypeOK ==
     /\ used.splits <= Splits
 
 OneLeaderPerTerm == \A x, y \in elected : x[1] = y[1] => x[2] = y[2]
+
+\* No member reaches the last term, so the MaxTerm guards never disable a step.
+TermsLeft == \A s \in Servers : vote[s].term < MaxTerm
 
 \* A leader up and connected that no member up and connected has outvoted.
 Settled(l) ==
