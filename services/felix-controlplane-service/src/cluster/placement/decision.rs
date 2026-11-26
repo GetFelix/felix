@@ -162,6 +162,9 @@ pub enum MoveStep {
     /// draining or gone before it votes, or draining while it votes, or an
     /// operator moved the shard back.
     RaftMoveUndone { node: String },
+    /// An operator moved an in-memory shard to `to`: one write names it the
+    /// owner at the next generation. Nothing is copied, so it starts empty.
+    OwnerReplaced { from: String, to: String },
 }
 
 impl MoveStep {
@@ -208,6 +211,7 @@ impl MoveStep {
             Self::RaftReplace { .. } => "raft_replace",
             Self::RaftMoveDropped => "raft_move_dropped",
             Self::RaftMoveUndone { .. } => "raft_move_undone",
+            Self::OwnerReplaced { .. } => "owner_replaced",
         }
     }
 }

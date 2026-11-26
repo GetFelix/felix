@@ -898,8 +898,17 @@ pub struct BackupMember {
     pub key: ShardKey,
     /// The stream or cache incarnation the group runs.
     pub incarnation: u64,
+    /// This member, as its group's membership names it.
+    pub member: felix_replication::raft::MemberId,
     /// The member's current term.
     pub term: u64,
+    /// The voter sets of the last membership in the member's log: one, or
+    /// two while a change is joint. A backup point needs a majority of
+    /// each to answer before it trusts the newest term it sees.
+    pub voter_sets: Vec<std::collections::BTreeSet<felix_replication::raft::MemberId>>,
+    /// The entry that membership is from, so the collector can tell which
+    /// of several members' memberships is the newest.
+    pub membership_at: Option<felix_replication::raft::LogPoint>,
     /// One past the furthest entry this member acknowledged (its commit
     /// index, or a write answered before its commit), while it leads `term`
     /// and serves it. Every write acknowledged before the read is below it.

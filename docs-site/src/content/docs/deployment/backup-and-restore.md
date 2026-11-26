@@ -37,6 +37,15 @@ brokers keep running, are cut back to the point on restore.
   of it. That is decided again every round, so a shard whose members are
   not listed yet is asked about again rather than read on the broker
   placement names, which need not lead it.
+- **A Raft shard needs a majority of its brokers reachable.** Its point is
+  taken only when most of the brokers that vote in its group answered in
+  the same round, and while a membership change is in progress, most of the
+  old set and most of the new one. A broker that has lost its leadership
+  without hearing so yet cannot then pass for the leader, because one of
+  the brokers that answered has already seen the newer leader. A broker
+  that only copies the log and does not vote counts for nothing. Short of
+  a majority the shard is asked about again a few times, and then the
+  command fails naming it. A single-broker shard needs only that broker.
 
 "Acknowledged" means what the ack promised. A durable `Leader` publish is acknowledged
 after the write unless the broker runs with `FELIX_ACK_ON_COMMIT=0`, so with

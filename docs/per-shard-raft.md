@@ -677,6 +677,9 @@ A kept directory is also held while its reservation (`raft-reserved`, see
 highest reservation into the new copy, so this holds only a directory some
 other path left uncovered, and deleting it would lose how far a re-form must
 pad.
+Each held directory is logged with both reservations, the kept one's and the
+current copy's, so an operator can check the damaged-file step in
+`docs/storage-format.md` against them.
 
 The first index comes from the running member, so a purge held only in memory
 counts. The flushed tail is read from the log's durable offset, so a copy
@@ -995,7 +998,14 @@ mechanism:
   once did for `backup_members`. The point is read only from a member serving its term
   at the newest term any member reports: a leader at an older term may be
   deposed without knowing it, and a new one knows the commit index only
-  once it has committed in its own term. The point is one past the furthest
+  once it has committed in its own term. That check means something only
+  when the answering members include a majority of each voter set of the
+  newest membership any of them reports (by its entry's log id), so the
+  collector requires one (#3179). Every answer is read after the barrier
+  and terms only grow, so that majority meets the voters that elected any
+  leader that acknowledged a write before the barrier. A joint membership
+  needs both majorities; a learner, or a copy back under a new copy id, is
+  in no voter set. A member that reports no voters counts toward none. The point is one past the furthest
   entry of that term the leader acknowledged, which is its commit index or
   past it: a `Quorum` write on a `Periodic` stream is answered on a written
   majority, and a `Leader` write on the lease, before the commit reaches
@@ -6249,8 +6259,10 @@ A cache shard's group has one log holding puts, deletes and counter deltas
 - **The snapshot** is the applied state as of one log id: the cache records
   that are unexpired at the log's time, with their values, versions and
   expiries, the counter sums, the
-  log's time (the stamp of the last stamped entry applied) and, per
-  producer, its floor and the answers it still keeps.
+  log's time (the stamp of the last stamped entry applied), when the last
+  watched entry's life ends and, per producer, its floor and the answers
+  it still keeps. The format is versioned; this build writes version 2 and
+  still reads version 1, which has no watched entry's end.
 - **Apply never reads a clock.** The leader stamps each entry, no earlier
   than the last stamped entry in its log (the uncommitted tail it inherited
   included, blank and membership entries skipped), or the snapshot's time
@@ -6287,6 +6299,15 @@ A cache shard's group has one log holding puts, deletes and counter deltas
   in a queue or on the network can commit after the retire, and without the
   floor it would be applied a second time. The snapshot holds each
   producer's floor and kept answers.
+- **A watched entry changes nothing a read or a write sees.** It moves the
+  log's time to its stamp, as every stamped entry does, and changes no
+  key, answer or floor. When its life ends is a function of the applied
+  entries, so it is in the snapshot and in state equality. What a member
+  records because of it is that member's own memory, kept out of the
+  snapshot and out of every answer, so two members that applied the same
+  entries hold the same state whether or not they record. A build that predates the entry stops at
+  it, as at any cache entry it cannot read; skipping it is never safe in
+  general, so no entry kind is skipped.
 
 `FelixRaftCache.tla` checks these rules (`docs/formal/README.md`, "Raft
 cache state machine").
@@ -6304,6 +6325,43 @@ no more of them than are in flight. A write that fails or whose caller gives
 up stops holding the floor. Such a write has no retry guarantee: a client that
 sends it again after an unknown outcome may apply it twice, as on the
 hybrid.
+
+### Cache entry and snapshot bytes
+
+Both are little-endian and start with a version byte
+(`raft/cache/record.rs`, `raft/cache/snapshot.rs`). A key is a four-byte
+length and its UTF-8 bytes. A member refuses an entry or a snapshot whose
+version or kind it does not know: an entry stops the member, as skipping
+it would leave its state unlike the others', and a snapshot is refused
+before it is stored.
+
+A cache entry is version 1, then a one-byte kind. A request is three
+eight-byte fields: producer, sequence and floor. A condition is a tag byte
+(0 none, 1 absent, 2 version) and an eight-byte version.
+
+| Kind | Name | After the kind |
+|---|---|---|
+| 0 | put | request, condition, expiry (8), key, then the value to the entry's end |
+| 1 | delete | request, condition (none or version), key |
+| 2 | expire | version (8), key |
+| 3 | add | request, delta (8, signed), key |
+| 4 | retire | producer (8), floor (8) |
+| 5 | watched | nothing |
+
+A cache snapshot is version 2:
+
+| Field | Size |
+|---|---|
+| version | 1 |
+| log's time | 8 |
+| end of the last watched entry's life, in the log's time (0 for none) | 8 |
+| value count, then per value: key, version (8), expiry (8), value length (4), value | 8 + each |
+| counter count, then per counter: key, sum (8, signed) | 8 + each |
+| producer count, then per producer: id (8), floor (8), answer count (8), then per answer: sequence (8), answer tag (1), answer value (8) | 8 + each |
+
+Version 1 is the same without the watched entry's end. This build still
+reads it, as a snapshot with no live watched entry, and writes only
+version 2.
 
 ### Serving a cache shard from its group
 
@@ -6363,24 +6421,37 @@ on the hybrid.
   watch is handed. That edge is the member's own, so a follower that is
   behind can hand a retained watch a value older than one the client just
   read from the leader. The newer value is committed and arrives as a
-  change once the follower applies it; nothing is lost. A member keeps
-  its latest applied changes in memory while it serves a watch of the
-  shard and for five minutes after (in the log's time), long enough for a
-  client to reconnect after a dropped connection or a broker failover. It
-  starts at the first change a watch of the shard took, or at the live
-  edge when one ends, and keeps up to 4096 changes or 1 MiB per shard,
-  counting each change's key, value and slot (`raft/cache/recent.rs`). A
-  member that has not served a watch of the shard in that window keeps
-  nothing and pays nothing extra per write; its tick frees what an idle
-  shard kept. A client that resumes on a member that kept nothing for the
-  shard, such as one it never watched on, is resnapshotted. A resume
+  change once the follower applies it; nothing is lost. Every member
+  keeps its latest applied changes in memory while the shard is watched
+  anywhere in the group, so a client that reconnects to another member
+  after a dropped connection or a broker failover, the new leader
+  included, is replayed. A member that serves a watch has the group's
+  leader append a watched entry when the watch joins, takes a change or
+  ends: the leader appends it itself, and a follower asks its leader with
+  the `Watched` peer message, again every 10 s until one is applied.
+  Every member that applies the entry records from that entry on, until
+  ten minutes past its stamp (in the log's time). The leader appends
+  another only once the last has less than five minutes left, so a
+  watched shard costs one entry about every five minutes and an unwatched
+  one costs none. A member that serves a watch also records from the
+  first change the watch took, and for five minutes after it ends. A
+  member keeps up to 4096 changes or 1 MiB per shard, counting each
+  change's key, value and slot (`raft/cache/recent.rs`). A member that is
+  not recording keeps nothing and pays nothing extra per write; its tick
+  frees what an idle shard kept. Where a member's recording starts is its
+  floor: every change from there on is kept, so a resume from below it,
+  for example from before the first watched entry, or on a member that
+  is not recording, is resnapshotted. A resume
   whose offset is still kept is replayed `[from_offset, edge)` from them,
   deletes included, exactly as the hybrid replays its log, then joins live
   delivery. One from below the oldest kept change is answered with
   `resnapshot` and each key's current value, read after the member has
   applied every put acknowledged before the watch began. A snapshot
-  install starts the kept changes empty, past the snapshot's entry, and a
-  restart keeps none, so a resume from before either resnapshots. A value
+  install or a restart starts the kept changes empty, past the snapshot's
+  entry: recording again at once if the snapshot is inside a watched
+  entry's life, which the snapshot carries, and otherwise from the next
+  watched entry applied. A resume from at or before the snapshot's entry
+  resnapshots. A value
   bigger than the byte bound still reaches live watches, and moves the
   oldest kept change past it. A resume from past the
   edge, an offset a member further ahead gave out, waits for this one to
