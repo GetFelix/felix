@@ -57,19 +57,21 @@ fn state() -> AppState {
 #[tokio::test]
 async fn a_mint_waits_out_the_second_of_a_revocation() {
     let state = state();
-    revoke(&state, "t1", vec!["alice".into()]).await.unwrap();
+    revoke_explicitly(&state, "t1", vec!["alice".into()])
+        .await
+        .unwrap();
     let revoked_at = state
         .store
         .principal_revoked_at("t1", "alice")
         .await
         .unwrap()
         .unwrap();
-    wait_out_revocation(&state, "t1", "alice").await.unwrap();
+    wait_past(cutoffs(&state, "t1", "alice").await.unwrap().tokens).await;
     assert!(crate::auth::refresh::now_secs() > revoked_at);
 
     // Nobody else waits.
     let started = std::time::Instant::now();
-    wait_out_revocation(&state, "t1", "bob").await.unwrap();
+    wait_past(cutoffs(&state, "t1", "bob").await.unwrap().tokens).await;
     assert!(started.elapsed() < Duration::from_millis(100));
 }
 
@@ -83,6 +85,6 @@ async fn a_revocation_far_ahead_does_not_hold_a_mint_for_long() {
         .await
         .unwrap();
     let started = std::time::Instant::now();
-    wait_out_revocation(&state, "t1", "alice").await.unwrap();
+    wait_past(cutoffs(&state, "t1", "alice").await.unwrap().tokens).await;
     assert!(started.elapsed() <= MAX_MINT_WAIT + Duration::from_millis(500));
 }

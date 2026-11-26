@@ -20,27 +20,41 @@ impl Roots {
         let dir = tempdir().expect("dir");
         let mut roots = HashMap::new();
         for (n, broker) in BROKERS.iter().enumerate() {
-            let root = dir.path().join(broker);
-            std::fs::create_dir_all(&root).expect("root");
-            storage_identity::load_or_create(&root, || [n as u8 + 1; 16]).expect("id");
-            let Gate::Passed(passed) = check(
-                &root,
-                Evidence {
-                    witness_dir: None,
-                    control_plane: None,
-                    restored: false,
-                },
-            )
-            .expect("gate") else {
-                panic!("a new root did not pass");
-            };
-            let next = std::sync::atomic::AtomicU64::new(100 * (n as u64 + 1));
-            let copies = CopyRoot::open(&root, passed, move || {
-                next.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-            });
+            let copies = Self::start(&dir.path().join(broker), n as u8 + 1);
             roots.insert(*broker, copies);
         }
         Self { dir, roots }
+    }
+
+    /// A data root that starts with storage id `[id; 16]` and mints copy
+    /// ids from `100 * id`.
+    fn start(root: &Path, id: u8) -> CopyRoot {
+        std::fs::create_dir_all(root).expect("root");
+        storage_identity::load_or_create(root, || [id; 16]).expect("id");
+        let Gate::Passed(passed) = check(
+            root,
+            Evidence {
+                witness_dir: None,
+                control_plane: None,
+                restored: false,
+            },
+        )
+        .expect("gate") else {
+            panic!("a new root did not pass");
+        };
+        let next = std::sync::atomic::AtomicU64::new(100 * u64::from(id));
+        CopyRoot::open(root, passed, move || {
+            next.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        })
+    }
+
+    /// `broker` loses its whole data root and starts on an empty one, under
+    /// storage id `[id; 16]`.
+    fn wipe(&mut self, broker: &'static str, id: u8) {
+        drop(self.roots.remove(broker));
+        let root = self.dir.path().join(broker);
+        std::fs::remove_dir_all(&root).expect("wipe");
+        self.roots.insert(broker, Self::start(&root, id));
     }
 
     fn shard_dir(&self, broker: &str) -> std::path::PathBuf {
@@ -502,6 +516,195 @@ async fn a_wiped_copy_comes_back_under_a_new_id_that_does_not_vote() {
     assert_eq!(status.member, new);
     assert_eq!(status.role, Role::Learner);
     assert_eq!(status.term, 0, "the new copy voted");
+
+    reopened.log.close().await.ok();
+    cluster.stop().await;
+    for (_, log) in logs {
+        log.close().await.ok();
+    }
+}
+
+/// The acceptance of issue #1331 on a Raft shard: a wiped voter never votes
+/// under its old member id, and an acknowledged record it held survives
+/// every later election. `a` leads and `b` and `c` follow; R is
+/// acknowledged on `a` and `b` while `c` lags. `b` loses its data root and
+/// comes back under a new storage id and copy id. With `a` down, `b` and
+/// `c` would elect `c` without R if `b` voted as the voter it was. They do
+/// not: every vote asked of `b`'s old id is refused, and no leader is
+/// elected. Once `a` is back, R is read where it was kept.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_wiped_voter_never_votes_under_its_old_id_and_its_record_survives() {
+    let mut cluster = Cluster::new(true);
+    let mut roots = Roots::new();
+    let mut members = BTreeSet::new();
+    let mut logs = HashMap::new();
+    for broker in BROKERS {
+        let opened = cluster
+            .runtime(broker)
+            .open_copy(
+                group(0),
+                &roots.shard_dir(broker),
+                log_config(),
+                &roots.roots[broker],
+            )
+            .await
+            .expect("open copy");
+        members.insert(opened.member);
+        logs.insert(broker, opened.log);
+    }
+    for runtime in cluster.runtimes() {
+        runtime
+            .initialize(&shard(0), members.clone())
+            .await
+            .expect("initialize");
+    }
+    let before = cluster.write(0, b"before").await;
+    cluster.committed_everywhere(0, before).await;
+
+    let leader = cluster.elected(0).await;
+    let a: &'static str = BROKERS
+        .into_iter()
+        .find(|broker| *broker == &*leader.broker)
+        .expect("a broker");
+    let mut followers = BROKERS.into_iter().filter(|broker| *broker != a);
+    let b = followers.next().expect("a follower");
+    let c = followers.next().expect("another follower");
+    let old = cluster.runtime(b).status(&shard(0)).expect("status").member;
+
+    // R is acknowledged with `a` and `b` holding it, `c` lagging.
+    cluster.net.cut.lock().insert(c.into());
+    cluster.net.muted.lock().insert(c.into());
+    let engine = RaftEngine::new(cluster.runtime(a));
+    let r = engine
+        .propose(
+            &shard(0),
+            Batch {
+                expected: None,
+                trim: None,
+                commit: false,
+                records: vec![Record {
+                    timestamp_micros: 1_700_000_000,
+                    payload: Bytes::from_static(b"R"),
+                    headers: None,
+                }],
+                ack: AckAt::Flushed,
+                term: None,
+                producer: None,
+                publisher: None,
+            },
+        )
+        .await
+        .expect("written");
+    engine
+        .await_commit(&shard(0), r, PATIENCE)
+        .await
+        .expect("R acknowledged");
+    let r_at = r.end - 1;
+    let read_r = async |log: &DiskLog| {
+        let range = felix_storage::log::ReadRange {
+            start: r_at,
+            max_bytes: 1 << 20,
+        };
+        let records = log.read_range_with_trims(range).await.expect("read");
+        records.first().map(|record| record.payload.clone())
+    };
+    let deadline = tokio::time::Instant::now() + PATIENCE;
+    while read_r(&logs[b]).await.as_deref() != Some(&b"R"[..]) {
+        assert!(tokio::time::Instant::now() < deadline, "{b} never held R");
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert_ne!(
+        read_r(&logs[c]).await.as_deref(),
+        Some(&b"R"[..]),
+        "{c} was not lagging"
+    );
+
+    // `b` loses its data root and starts again on an empty one.
+    let old_storage = roots.roots[b].storage_id();
+    cluster.net.cut.lock().insert(b.into());
+    assert!(cluster.runtime(b).close(&shard(0)).await);
+    logs.remove(b).expect("log").close().await.expect("close");
+    roots.wipe(b, 9);
+    assert_ne!(roots.roots[b].storage_id(), old_storage);
+    let reopened = cluster
+        .runtime(b)
+        .open_copy(group(0), &roots.shard_dir(b), log_config(), &roots.roots[b])
+        .await
+        .expect("reopen");
+    let new = reopened.member.clone();
+    assert_eq!(new.broker, old.broker);
+    assert_ne!(new.copy, old.copy);
+
+    // `a` goes down; `b` and `c` hear each other and nobody else.
+    {
+        let mut cut = cluster.net.cut.lock();
+        cut.clear();
+        cut.insert(a.into());
+    }
+    {
+        let mut muted = cluster.net.muted.lock();
+        muted.clear();
+        muted.insert(a.into());
+    }
+    let since = cluster.net.votes.lock().len();
+    let settle = tokio::time::Instant::now() + 3 * timers().election_max;
+    while tokio::time::Instant::now() < settle {
+        for broker in [b, c] {
+            let status = cluster.runtime(broker).status(&shard(0));
+            assert!(
+                status.is_none_or(|status| status.role != Role::Leader),
+                "{broker} was elected without R"
+            );
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    let votes: Vec<VoteSeen> = cluster.net.votes.lock()[since..].to_vec();
+    let asked_old: Vec<_> = votes.iter().filter(|seen| seen.to == old).collect();
+    assert!(
+        !asked_old.is_empty(),
+        "{c} never asked {b}'s old id for a vote: {votes:?}"
+    );
+    assert!(
+        asked_old
+            .iter()
+            .all(|seen| seen.answer == VoteAnswer::OtherCopy),
+        "{b}'s old id answered a vote: {asked_old:?}"
+    );
+    assert!(
+        votes
+            .iter()
+            .all(|seen| seen.from != old && seen.from != new),
+        "{b} asked for a vote: {votes:?}"
+    );
+    let status = cluster.runtime(b).status(&shard(0)).expect("status");
+    assert_eq!(status.member, new);
+    assert_eq!(status.role, Role::Learner);
+    assert_eq!(status.term, 0, "the new copy voted");
+
+    // `a` comes back, and R is still there. `b`'s new copy is not in the
+    // membership, so it hears no leader and is left out of the look.
+    cluster.net.muted.lock().clear();
+    {
+        let mut cut = cluster.net.cut.lock();
+        cut.clear();
+        cut.insert(b.into());
+    }
+    let after = cluster.write(0, b"after").await;
+    assert!(after > r_at);
+    for broker in [a, c] {
+        let deadline = tokio::time::Instant::now() + PATIENCE;
+        loop {
+            let held = read_r(&logs[broker]).await;
+            if held.as_deref() == Some(&b"R"[..]) {
+                break;
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "{broker} lost R: {held:?}"
+            );
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    }
 
     reopened.log.close().await.ok();
     cluster.stop().await;

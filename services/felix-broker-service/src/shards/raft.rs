@@ -1823,6 +1823,7 @@ impl EngineShards for RaftShards {
             .filter_map(|group| {
                 let key = (*group.shard).clone();
                 let status = self.runtime.status(&key)?;
+                let (voter_sets, membership_at) = self.runtime.voter_sets(&key)?;
                 let acked = (self.leading(&key) == Some(status.term))
                     .then(|| self.runtime.led_acked(&key))
                     .flatten()
@@ -1831,7 +1832,10 @@ impl EngineShards for RaftShards {
                 Some(super::routing::BackupMember {
                     key,
                     incarnation: group.epoch,
+                    member: status.member,
                     term: status.term,
+                    voter_sets,
+                    membership_at,
                     committed_end: acked.map(|last| last.index + 1),
                     end_term: acked.map(|last| last.term),
                 })

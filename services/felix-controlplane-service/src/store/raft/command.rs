@@ -56,7 +56,7 @@ pub const COMMAND_VERSION: u16 = 1;
 /// it the next level and raises this, so nothing proposes it until every
 /// member runs that release. New fields get their level in `fields.txt`.
 /// Never lower it: members report it, and the group's level is the minimum.
-pub const METADATA_VERSION: u16 = 52;
+pub const METADATA_VERSION: u16 = 53;
 
 /// The metadata level whose members' placement acts on the internal node
 /// role ([`MetaCommand::internal_role_level`]).
@@ -537,6 +537,10 @@ pub enum MetaCommand {
         tenant_id: String,
         principal_ids: Vec<String>,
         revoked_at: i64,
+        /// Level 53: an explicit revocation, which also refuses the
+        /// principals' IdP tokens issued at or before `revoked_at`.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        assertions: bool,
     },
     /// An auth change and the revocation it calls for, in one entry, so no
     /// member applies one without the other. Level 9.
@@ -956,6 +960,10 @@ pub enum MetaResponse {
     /// answer to a leader request, never written to the log.
     RevokedAt {
         cutoffs: Vec<Option<i64>>,
+        /// The assertion cutoffs, when asked for. A leader that predates
+        /// them leaves this out.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        assertion_cutoffs: Option<Vec<Option<i64>>>,
     },
     /// A refresh token as the leader holds it, unspent. Leader requests only.
     RefreshToken {

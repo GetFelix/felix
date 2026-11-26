@@ -75,6 +75,10 @@ pub(crate) enum LeaderRequest {
     RevocationCutoffs {
         tenant_id: String,
         principal_ids: Vec<String>,
+        /// Also answer the assertion cutoffs. A leader that predates them
+        /// ignores this and leaves them out of its answer.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        assertions: bool,
     },
     /// A refresh token as the leader holds it, read without spending it, so
     /// a refresh does not miss a token this member has not applied yet.
@@ -301,17 +305,37 @@ impl SoftState {
             LeaderRequest::RevocationCutoffs {
                 tenant_id,
                 principal_ids,
+                assertions,
             } => {
                 // Read-index first: a deposed leader may be missing the
                 // revocation the asker needs.
                 self.confirm_read().await?;
-                Ok(self
-                    .machine
-                    .store()
-                    .principals_revoked_at(&tenant_id, &principal_ids)
+                let store = self.machine.store();
+                let read = async {
+                    if !assertions {
+                        let cutoffs = store
+                            .principals_revoked_at(&tenant_id, &principal_ids)
+                            .await?;
+                        return Ok(MetaResponse::RevokedAt {
+                            cutoffs,
+                            assertion_cutoffs: None,
+                        });
+                    }
+                    let mut cutoffs = Vec::with_capacity(principal_ids.len());
+                    let mut assertion_cutoffs = Vec::with_capacity(principal_ids.len());
+                    for principal_id in &principal_ids {
+                        let both = store.principal_cutoffs(&tenant_id, principal_id).await?;
+                        cutoffs.push(both.tokens);
+                        assertion_cutoffs.push(both.assertions);
+                    }
+                    Ok(MetaResponse::RevokedAt {
+                        cutoffs,
+                        assertion_cutoffs: Some(assertion_cutoffs),
+                    })
+                };
+                Ok(read
                     .await
-                    .map(|cutoffs| MetaResponse::RevokedAt { cutoffs })
-                    .map_err(Into::into))
+                    .map_err(|err: crate::store::StoreError| err.into()))
             }
             LeaderRequest::PeekRefreshToken {
                 tenant_id,

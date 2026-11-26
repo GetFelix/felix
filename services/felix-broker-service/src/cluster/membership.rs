@@ -171,6 +171,10 @@ struct HeartbeatRequest {
     /// out while no root is open, as `root` is.
     #[serde(skip_serializing_if = "Option::is_none")]
     placement_incarnation: Option<u64>,
+    /// This process's registration time, which offers `register_again`.
+    /// Left out when the control plane gave none.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    registered_at_millis: Option<u64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -200,6 +204,10 @@ struct HeartbeatResponse {
     /// control plane that predates it.
     #[serde(default)]
     placement_incarnation: Option<u64>,
+    /// This process is above the node record's incarnation, as after a
+    /// control-plane restore: register again so the record is this process.
+    #[serde(default)]
+    register_again: bool,
 }
 
 /// A registered identity, and what the control plane told us about it.
@@ -637,6 +645,10 @@ pub enum HeartbeatEnd {
     /// is spent: the broker has to register again, under a new incarnation,
     /// before placement will use it.
     MarkedDown,
+    /// The control plane holds an older registration than this process's,
+    /// as after a restore, and asked for a new one. The node is live and the
+    /// answer renewed the lease, so the broker registers again holding it.
+    RegisterAgain,
 }
 
 /// Report health until `shutdown` fires or the control plane says this node is
@@ -741,6 +753,7 @@ async fn run_heartbeat_checked(
                         sequence,
                     }),
                 placement_incarnation: registration.root.placement_acked(),
+                registered_at_millis: registration.registered_at_millis,
             },
             lease.usable() / LEASE_REQUEST_FRACTION,
         )
@@ -802,6 +815,12 @@ async fn run_heartbeat_checked(
                 // asked for, and registering over it would undo it.
                 if response.lifecycle == NodeLifecycle::Down {
                     return HeartbeatEnd::MarkedDown;
+                }
+                // Only on a placeable answer, which renewed the lease above:
+                // registering touches no lease, so the broker serves on
+                // through it.
+                if response.register_again && placeable {
+                    return HeartbeatEnd::RegisterAgain;
                 }
             }
             Err(err) => {
@@ -1078,6 +1097,20 @@ pub(crate) fn spawn_with(
                         );
                         // The first beat is immediate, so without this a
                         // control plane answering down would be hit in a loop.
+                        tokio::select! {
+                            _ = shutdown.cancelled() => return,
+                            _ = tokio::time::sleep(jittered(pace)) => {}
+                        }
+                    }
+                    HeartbeatEnd::RegisterAgain => {
+                        tracing::warn!(
+                            node_id = %config.node_id,
+                            "the control plane holds an older registration of this broker, as \
+                             after a restore; registering again",
+                        );
+                        // One interval, as the next beat would wait, so a
+                        // control plane that keeps asking costs one
+                        // registration per interval.
                         tokio::select! {
                             _ = shutdown.cancelled() => return,
                             _ = tokio::time::sleep(jittered(pace)) => {}
