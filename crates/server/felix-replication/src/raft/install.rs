@@ -71,6 +71,9 @@ impl Unsendable {
         }
         metrics::counter!(UNSENDABLE_TOTAL).increment(1);
         let now = tokio::time::Instant::now();
+        // Forgets a member that left the group, or stopped being sent to,
+        // once its warning would be due again anyway.
+        warned.retain(|_, at| now.duration_since(*at) < WARN_EVERY);
         if warned
             .get(&key)
             .is_none_or(|at| now.duration_since(*at) >= WARN_EVERY)
@@ -89,6 +92,11 @@ impl Unsendable {
             "a snapshot of {len} bytes is over the cap of {} that {target} takes",
             self.cap
         ))
+    }
+
+    #[cfg(test)]
+    pub(crate) fn remembered(&self) -> usize {
+        self.warned.lock().len()
     }
 }
 

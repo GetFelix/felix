@@ -5645,7 +5645,7 @@ before.
 | `felix_broker_raft_shards_led_off_placement` | Shards this broker leads whose placement names another leader. Above zero for long means a hand-over is held back, or placement names a broker that holds no voter of the group |
 | `felix_broker_raft_membership_steps_total{step="placed_transfer"}` | Placement transfers asked |
 | `felix_broker_raft_placed_transfers_total` | By `outcome`: `landed` (this member stopped leading), `failed` (it still led a later term), `held` (counted once per reason, `why`: `unsettled`, `lagging`, `degraded`, `budget`) |
-| `felix_broker_raft_snapshot_unsendable_total` | Cache snapshots a leader did not send because they were over the 1 GiB a member takes; each is also logged with the group and member, once a minute per member ("How big a cache group gets") |
+| `felix_broker_raft_snapshot_unsendable_total` | Snapshot sends a leader refused, one per attempt, because the snapshot was over the 1 GiB a member takes, for stream and cache groups; each is also logged with the group and member, once a minute per member ("How big a cache group gets") |
 
 #### Where a target comes from
 
@@ -6358,7 +6358,10 @@ every state it reaches can be sent (`raft/cache/size.rs`):
   client was told it had not (`FelixRaftCacheFullNotRecorded.cfg`). A
   retry of a write applied before the group filled still gets its own
   answer: kept answers are looked up before the bound is judged.
-- **Deletes and expiries always apply,** so a full group can be emptied.
+- **Deletes and expiries always apply,** and free the bytes of the values
+  they remove. Nothing frees a counter's bytes yet: no command removes a
+  counter, so a group filled by counters stays full
+  ([#3243](https://github.com/GetFelix/felix/issues/3243)).
 - **The sixteenth left over** holds the producers' floors and kept
   answers, which the bound does not count. Each producer keeps only the
   answers at or above its floor. A broker writes as one producer per
@@ -6371,7 +6374,7 @@ every state it reaches can be sent (`raft/cache/size.rs`):
 - **The bound is a constant,** never a setting: two members with
   different bounds would judge the same write differently.
 - **A group already past the bound** starts and serves as before. Its
-  puts and adds answer "full" until deletes and expiries bring it under,
+  puts and adds answer "full" until deletes and expiries of values bring it under,
   and nothing it holds is dropped.
 
 The leader also checks a snapshot's size before it sends one

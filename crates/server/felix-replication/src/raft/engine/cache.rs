@@ -94,8 +94,8 @@ pub enum CacheReply {
     Forgotten,
     /// A put or an add refused because the shard's values and counters
     /// are at their bound, which keeps every snapshot small enough to
-    /// send to a member. Nothing was written: deletes and expiries go on,
-    /// and a write fits again once they free room.
+    /// send to a member. Nothing was written. Deletes and expiries go on
+    /// and free value bytes; counter bytes are never freed (#3243).
     Full,
 }
 

@@ -46,7 +46,8 @@ pub(crate) enum Answer {
     Forgotten,
     /// A put or an add that would have taken the group's values and
     /// counters past their [`Bound`]. Nothing was written, and a retry
-    /// gets this answer too.
+    /// gets this answer too. Deletes and expiries free value bytes;
+    /// counter bytes are never freed (#3243).
     Full,
 }
 

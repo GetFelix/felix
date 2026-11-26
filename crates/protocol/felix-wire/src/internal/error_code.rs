@@ -57,7 +57,8 @@ pub enum ErrorCode {
     /// The owner refused a cache put or counter add because the shard's
     /// Raft group is at its state bound. Nothing was written. Sent only in
     /// answer to a forwarded cache op on a Raft shard. Not retryable until
-    /// deletes or expiries free room.
+    /// deletes or expiries of values free room; counters are never freed
+    /// (#3243).
     CacheFull = 14,
 }
 

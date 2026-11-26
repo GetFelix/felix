@@ -82,8 +82,8 @@ impl ClientError {
 
     /// A cache put or counter add refused because its shard holds as much
     /// as one can; nothing was written. `limit_exceeded` and `fatal`: the
-    /// same write fails the same way until deletes or expiries free room,
-    /// which an older client already treats as a refusal, not an outage.
+    /// same write fails the same way until deletes or expiries of values
+    /// free room (counters are never freed, #3243), which an older client already treats as a refusal, not an outage.
     pub(crate) fn cache_full(message: impl Into<String>) -> Self {
         Self::limit_exceeded(message).with_reason(CACHE_FULL_REASON)
     }

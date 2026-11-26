@@ -92,3 +92,35 @@ fn a_state_at_its_bound_snapshots_and_installs() {
     let installed = CacheState::restore(&Bytes::from(whole.expect("whole")), true).unwrap();
     assert!(installed == state);
 }
+
+/// A member stops being remembered once its warning would be due again,
+/// so members that left a group do not pile up.
+#[tokio::test(start_paused = true)]
+async fn an_unsendable_member_is_forgotten_after_its_warning_window() {
+    use crate::raft::types::GroupId;
+    use crate::{ShardKey, ShardKind};
+    let unsendable = Unsendable::capped(16);
+    let shard = ShardKey {
+        tenant_id: "t".into(),
+        namespace: "ns".into(),
+        stream: "c".into(),
+        shard: 0,
+        kind: ShardKind::Cache,
+    };
+    let group = GroupId::new(shard, 0);
+    for member in ["b", "c"] {
+        assert!(
+            unsendable
+                .check(&group, &MemberId::new(member, 1), 17)
+                .is_err()
+        );
+    }
+    assert_eq!(unsendable.remembered(), 2);
+    tokio::time::advance(WARN_EVERY).await;
+    assert!(
+        unsendable
+            .check(&group, &MemberId::new("d", 1), 17)
+            .is_err()
+    );
+    assert_eq!(unsendable.remembered(), 1);
+}
