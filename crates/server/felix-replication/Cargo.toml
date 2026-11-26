@@ -22,7 +22,7 @@ raft = ["dep:crc32fast", "dep:openraft", "dep:openraft-multi", "dep:openraft-rt-
 fuzzing = ["raft"]
 # Test-only entry points, such as opening a Raft member with no copy
 # checks. Not an API.
-testing = ["raft"]
+testing = ["raft", "felix-broker/test-support"]
 
 [dependencies]
 ahash = { workspace = true }
@@ -78,7 +78,7 @@ required-features = ["raft"]
 # Turns `raft` on for this crate's own tests, so `cargo test` runs the
 # runtime's without a feature flag.
 felix-replication = { path = ".", features = ["raft", "testing"] }
-felix-broker = { path = "../felix-broker", version = "0.8.0-preview.2", features = ["fault-injection"] }
+felix-broker = { path = "../felix-broker", version = "0.8.0-preview.2", features = ["fault-injection", "test-support"] }
 # `DiskLog::fail_next_flush` and the simulated power cut, for the identity tests.
 felix-storage = { path = "../felix-storage", version = "0.8.0-preview.2", features = ["fault-injection", "sim"] }
 axum = { workspace = true }

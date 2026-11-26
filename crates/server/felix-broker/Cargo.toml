@@ -33,7 +33,7 @@ telemetry = []
 perf_debug = []
 # Exposes `StreamLog::append_v9_for_tests` to other crates' tests in release.
 fault-injection = ["felix-storage/fault-injection"]
-# Exposes `RaftGroups::tracked` to other crates' tests.
+# Exposes `RaftGroups::tracked` and `timer_probe` to other crates' tests.
 test-support = []
 
 [dev-dependencies]
