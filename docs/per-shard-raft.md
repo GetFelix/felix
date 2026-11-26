@@ -1051,10 +1051,10 @@ mechanism:
   together with the other bounds every re-form takes. The plan time is the
   control plane's wall clock in Unix milliseconds, stamped once when the
   plan is made, so the re-plan after the stop reaches the same index. The
-  offset gap defaults to 2^40 (`--offset-gap N`; below 2^32 it also needs
-  `--accept-short-gap`, which also takes a plan whose line plus gap falls
-  below the point's end, as when the control plane's clock is far behind;
-  otherwise the plan is blocked). The point's `taken_at_millis` comes from the
+  offset gap defaults to 2^40 and is never above it (`--offset-gap N`;
+  below 2^32 it also needs `--accept-short-gap`, which also takes a plan
+  whose line plus gap falls below the point's end, as when the control
+  plane's clock is far behind; otherwise the plan is blocked). The point's `taken_at_millis` comes from the
   clock of the host that ran `felixctl backup-point`; it is shown in the
   plan and never used for the index.
 
@@ -1073,13 +1073,27 @@ mechanism:
   its plan time, and the line rises twice as fast as the epoch can give
   out offsets, so at any time t every offset ever given out is below
   `R * t + gap` plus what skew added. A later restore planned at t2 starts
-  at `R * t2 + gap`, past all of them. Skew is what is left: if the
-  control-plane node that planned the earlier restore ran S ahead and the
-  one planning the later one (another leader, after a leader change) runs
-  S behind, the later restore needs `(R - R/2) * Δ > 2 * R * S` of true
-  time Δ between them, that is Δ > 4 S. With clocks within a minute, that
-  is four minutes between restores; stopping every broker, restoring the
-  files and planning again takes longer.
+  at `R * t2 + gap`, past all of them.
+
+  Skew and the gap are what is left. Being above an earlier epoch's first
+  index is not enough: if the clock that planned it ran 2 minutes ahead and
+  the next restore comes 2 minutes and 1 ms later on a correct clock, its
+  line is 1 ms above that first index, while the earlier epoch can have
+  given out 2 minutes of offsets past it. An earlier epoch planned with a
+  larger gap than this one starts higher still. So a restore whose line
+  plus gap is not more than `2^32 + (2^40 - gap)` above the floor and every
+  earlier epoch's first index is blocked (`not far enough above index`).
+  With the default gap that is a full 2^32, about four and a half minutes of
+  line, the bound an abandon uses. Why it is enough: say the earlier epoch
+  was planned on a clock D ahead with a gap g0 of at most 2^40, and this
+  plan comes E later. The line plus gap is then `R * (E - D) + gap - g0`
+  above that epoch's first index, and the epoch gave out at most
+  `R/2 * E` past it. The check covers that for every g0 up to 2^40 and
+  every D up to 2^18 ms. So the bound needs control-plane clocks that agree
+  within about four minutes, and no epoch planned with a gap above 2^40,
+  which is why a larger gap is refused. A restore with a smaller gap after
+  a recent one with the default gap waits longer, up to about 37 hours for
+  a 2^32 gap: plan it with the default gap instead.
 
   The gap is added to the line, never to the point: a backup taken from a
   restored epoch ends near the line, and adding the gap past its end would
@@ -1108,10 +1122,14 @@ mechanism:
   from one backup reuses one (`FelixRaftRestoreRepeatedNoTime`), and so does
   adding the gap past the backup's end (`FelixRaftRestoreRepeatedEndGap`).
 - What this does not cover: a shard giving out offsets faster than 2^13
-  per millisecond sustained, or two restores closer together than four
-  times the skew between the clocks that planned them. Either can give an
-  offset out again, and readers who kept offsets past the point must then
-  treat them as reassigned.
+  per millisecond sustained, or control-plane clocks more than about four
+  minutes apart. Either can give an offset out again, and readers who kept
+  offsets past the point must then treat them as reassigned. The check
+  reads the floor and bases the control plane holds, so a restore over
+  metadata restored from before an epoch does not see that epoch. The line
+  alone covers it then only when this restore's gap is no smaller than
+  that epoch's and it comes more than twice as long after that epoch began
+  as the earlier clock ran ahead of this one.
 - The gap costs no space. The first append past it starts a segment whose
   header carries `FOLLOWS_GAP` and the low 32 bits of where the gap starts
   (`docs/storage-format.md`), so neither the segments nor the sparse
