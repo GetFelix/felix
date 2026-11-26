@@ -3507,8 +3507,10 @@ async fn calls_to_a_flaky_peer(wake: bool) -> (u32, usize) {
 /// openraft's own backoff any more often than without the wake (#2543).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_peer_timing_out_every_other_call_is_called_no_more_than_without_the_wake() {
-    let (without, _) = calls_to_a_flaky_peer(false).await;
-    let (with, walks) = calls_to_a_flaky_peer(true).await;
+    // Side by side, so a busy runner slows both windows alike. One after the
+    // other, a slow first half made the second look like extra calls.
+    let ((without, _), (with, walks)) =
+        tokio::join!(calls_to_a_flaky_peer(false), calls_to_a_flaky_peer(true));
     eprintln!(
         "calls to the flaky peer: {without} without the wake, {with} with it ({walks} walks)"
     );
