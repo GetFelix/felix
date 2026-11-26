@@ -2,6 +2,8 @@
 //! and the bounded in-memory log that backs cursor replay.
 
 use felix_common::random::HashMap;
+#[cfg(test)]
+use std::sync::atomic::AtomicU64;
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering};
 use std::sync::{Arc, OnceLock};
 
@@ -102,6 +104,9 @@ pub(crate) struct StreamState {
     /// Holds a trim's commit scan after it reads the log, for a test to act there.
     #[cfg(test)]
     pub(crate) stall_trim_scan: Stall,
+    /// Reads of the log a pass over an engine's log made, for a test to count.
+    #[cfg(test)]
+    pub(crate) pass_reads: AtomicU64,
     /// What this broker knows about atomic commits in the log, for refusing
     /// a head trim on a stream that holds one. See [`CommitScan`].
     pub(crate) commits: CommitScan,
@@ -232,6 +237,8 @@ impl StreamState {
             stall_release: Stall::default(),
             #[cfg(test)]
             stall_trim_scan: Stall::default(),
+            #[cfg(test)]
+            pass_reads: AtomicU64::new(0),
             commits: CommitScan::default(),
         }
     }
@@ -328,15 +335,22 @@ impl StreamState {
 
     /// Start again at `to` with an empty ring, if nobody is registered to
     /// miss what lies between. A reader below `to` is served from the log.
-    pub(crate) fn jump_unwatched(&self, to: u64) -> bool {
+    ///
+    /// Unless `far`, a built state view also keeps the ring: a state read
+    /// asked for it, and dropping it would send every read to the log again.
+    pub(crate) fn jump_unwatched(&self, to: u64, far: bool) -> bool {
         let mut state = self.log_state.lock();
-        if to <= state.next_seq || !self.subscribers.lock().senders.is_empty() {
+        if to <= state.next_seq
+            || (!far && state.state_view.is_some())
+            || !self.subscribers.lock().senders.is_empty()
+        {
             return false;
         }
         state.log.clear();
         state.state_view = None;
         state.generation_start_run = None;
         state.next_seq = to;
+        self.ring_moved.notify_waiters();
         true
     }
 

@@ -871,7 +871,7 @@ impl StreamHandle {
 
     /// Bring a stream that follows its engine's log up to what is committed,
     /// when nobody reads it yet, so a tail-only reader joins at the end and
-    /// not at old records. Far behind, that is a jump, not a read. On a task
+    /// not at old records. That is a jump, not a read. On a task
     /// of its own: a pass cancelled half way would leave a batch in the ring
     /// that was never fanned out.
     pub(crate) async fn catch_up_unwatched(&self) {

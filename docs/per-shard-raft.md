@@ -3700,6 +3700,12 @@ been had it waited for the write.
   leader acknowledged. The pass waits while the broker still holds a batch
   it was handed as leader, so a record is never delivered once from the
   batch and again from the log.
+- With no subscriber registered, and no state view a state read built,
+  the pass reads nothing: the stream moves to the bound with an empty
+  replay ring, so a follower does no read of its log per commit. A
+  subscriber registers under the same ring lock the move takes, so it
+  either joins above the move and reads what lies below from the log, or
+  is registered first and the pass reads for it.
 - Records are grouped into frames by append time, so a follower's frame
   boundaries can differ from the leader's. Order and offsets are the same.
 - A batch that reaches the stream at offsets the log already delivered is
@@ -3730,6 +3736,9 @@ been had it waited for the write.
   joins by offset instead, at the committed end. No pass runs first: the
   records the pass still delivers below that offset are skipped for it.
 
+> `crates/server/felix-broker/src/broker/shards/tests.rs`,
+> `a_follower_with_no_subscriber_reads_nothing_back` and
+> `a_subscriber_joining_mid_stream_gets_every_offset_once`;
 > `crates/server/felix-replication/src/raft/tests/deliver.rs`,
 > `a_record_a_later_leader_replaced_reaches_no_subscriber`,
 > `a_record_is_delivered_only_once_a_majority_holds_it`,

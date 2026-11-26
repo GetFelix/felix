@@ -748,12 +748,17 @@ pub(crate) async fn deliver_from_log(handle: &StreamHandle) -> Result<LogDeliver
         state.advance_to(base, || crate::broker::shard_logs::accepted_leader(state));
         next = state.tail_seq();
     }
-    // Far behind with nobody subscribed (a restart, a long catch-up): the
-    // ring is a cache of the tail, so the log is not read through it.
-    if bound.saturating_sub(next) > log_capacity as u64 && state.jump_unwatched(bound) {
+    // With nobody subscribed the ring is a cache of the tail that nothing
+    // reads, so the sequence moves to the bound and the log is not read. A
+    // subscriber registers under the ring lock this takes, so it either joins
+    // above the jump and reads below it from the log, or stops the jump.
+    let far = bound.saturating_sub(next) > log_capacity as u64;
+    if state.jump_unwatched(bound, far) {
         return Ok(LogDelivery::CaughtUp);
     }
     while next < bound {
+        #[cfg(test)]
+        state.pass_reads.fetch_add(1, Ordering::Relaxed);
         let mut records = log
             .read_data_from(next, LOG_PAGE_BYTES)
             .await?
