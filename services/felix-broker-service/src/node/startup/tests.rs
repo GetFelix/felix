@@ -15,7 +15,8 @@ async fn a_start_hands_the_quorum_marks_its_rotated_ids() {
         offload_dir: None,
     };
     let config = BrokerConfig::default();
-    let stored = open_storage(&config, Some(durable), None).expect("open");
+    let lock = storage::lock_root(root.path()).expect("lock");
+    let stored = open_storage(&config, Some((durable, &lock)), None).expect("open");
     let fleet = Arc::new(felix_common::fleet::FleetGate::new(Vec::<String>::new()));
     let marks = Arc::new(QuorumMarks::new());
     let engine = Arc::new(crate::shards::routing::StreamEngine::new(
@@ -84,7 +85,8 @@ async fn wiring_registers_no_stream_a_directory_holds() {
         offload_dir: None,
     };
     let config = BrokerConfig::default();
-    let stored = open_storage(&config, Some(durable), None).expect("open");
+    let lock = storage::lock_root(root.path()).expect("lock");
+    let stored = open_storage(&config, Some((durable, &lock)), None).expect("open");
     let fleet = Arc::new(felix_common::fleet::FleetGate::new(Vec::<String>::new()));
     let marks = Arc::new(QuorumMarks::new());
     let engine = Arc::new(crate::shards::routing::StreamEngine::new(
@@ -163,21 +165,15 @@ fn the_hybrid_engine_keeps_a_hybrid_root() {
 }
 
 /// **A data directory that cannot be locked fails the start**, before
-/// anything is written there, naming the directory. Logs open lazily, so
-/// without the probe the broker would come up and fail every shard.
+/// anything is written there, naming the directory.
 #[test]
 fn a_root_that_cannot_be_locked_does_not_start() {
     let root = tempfile::tempdir().expect("tempdir");
-    let durable = DurableStorageConfig {
-        root: root.path().to_path_buf(),
-        log: Default::default(),
-        offload_dir: None,
-    };
     felix_storage::fault::fail_locks_under(root.path());
-    let opened = open_storage(&BrokerConfig::default(), Some(durable), None);
+    let locked = storage::lock_root(root.path());
     felix_storage::fault::stop_failing_locks_under(root.path());
-    let Err(err) = opened else {
-        panic!("a broker started on a root it cannot lock");
+    let Err(err) = locked else {
+        panic!("a broker locked a root that cannot be locked");
     };
     let err = format!("{err:#}");
     assert!(
@@ -189,6 +185,31 @@ fn a_root_that_cannot_be_locked_does_not_start() {
             .expect("read")
             .next()
             .is_none(),
-        "the start wrote to the root before the probe"
+        "the start wrote to the root before the lock"
+    );
+}
+
+/// **Storage opens only under the lock on its own root**, so no caller can
+/// begin a run on a directory it did not lock first.
+#[test]
+fn storage_opens_only_under_the_lock_on_its_root() {
+    let root = tempfile::tempdir().expect("tempdir");
+    let other = tempfile::tempdir().expect("tempdir");
+    let durable = DurableStorageConfig {
+        root: root.path().to_path_buf(),
+        log: Default::default(),
+        offload_dir: None,
+    };
+    let lock = storage::lock_root(other.path()).expect("lock");
+    let Err(err) = open_storage(&BrokerConfig::default(), Some((durable, &lock)), None) else {
+        panic!("storage opened under the lock on another directory");
+    };
+    assert!(format!("{err:#}").contains("under the lock"), "{err:#}");
+    assert!(
+        std::fs::read_dir(root.path())
+            .expect("read")
+            .next()
+            .is_none(),
+        "the open wrote to a root it did not lock"
     );
 }

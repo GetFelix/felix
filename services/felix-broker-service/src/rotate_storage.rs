@@ -56,6 +56,14 @@ pub fn run(args: Vec<String>) -> Result<()> {
 /// Rotate the storage id of the data directory at `root`, which must have
 /// one. Returns the old id and the new.
 fn rotate(root: &Path) -> Result<(StorageId, StorageId)> {
+    // A broker running on the directory would keep serving under the old id.
+    // Checked first so a mistyped path is not created by the lock.
+    anyhow::ensure!(
+        root.is_dir(),
+        "{} is not a directory; is it a broker's data directory?",
+        root.display()
+    );
+    let _lock = crate::node::storage::lock_root(root)?;
     let previous = felix_storage::storage_identity::load(root)
         .with_context(|| format!("read the storage id under {}", root.display()))?
         .with_context(|| {

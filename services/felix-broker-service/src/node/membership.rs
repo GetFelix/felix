@@ -134,7 +134,7 @@ pub(super) fn spawn<L: ControlPlaneLink + Clone>(
 #[derive(Debug)]
 pub(super) enum Start {
     /// The control plane's record of this node's last registration, for
-    /// `storage::open` to judge whether the data directory is older than it
+    /// `storage::open_with` to judge whether the data directory is older than it
     /// and whether the node held copies under another storage id. `None`
     /// from a broker that is not asked, or a node never registered. Today's
     /// start.
