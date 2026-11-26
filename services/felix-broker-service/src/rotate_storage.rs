@@ -1,13 +1,16 @@
 //! `felix-broker rotate-storage-id`: give a stopped broker's data directory
 //! a new storage id.
 //!
-//! Run it after putting back a snapshot of a data directory taken while the
-//! broker ran. Every copy on the directory then starts over: peers resync
-//! the hybrid's shards, and each Raft shard directory opens as a new member
-//! that never voted. Without it, a snapshot newer than what the control
-//! plane last heard from the broker can vote a second time in a term it
-//! already voted in. See `docs/per-shard-raft.md`, "The root sequence", and
-//! the runbook in `docs-site/src/content/docs/deployment/backup-and-restore.md`.
+//! Run it after putting back a copy of a data directory. Every copy on the
+//! directory then starts over: peers resync the hybrid's shards, and each
+//! Raft shard directory opens as a new member that never voted. Without it,
+//! a snapshot newer than what the control plane last heard from the broker
+//! can vote a second time in a term it already voted in. It also records the
+//! restore, so a standalone broker re-forms each group from its restored
+//! copy above every offset it could have given out since the copy was taken.
+//! See `docs/per-shard-raft.md`, "The root sequence" and "A standalone broker
+//! re-forms itself", and the runbook in
+//! `docs-site/src/content/docs/deployment/backup-and-restore.md`.
 
 use std::path::{Path, PathBuf};
 
@@ -19,7 +22,9 @@ usage: felix-broker rotate-storage-id [--dir DIR]
 
 Gives the broker's data directory a new storage id, so every copy on it
 starts over as a new one. Run it with the broker stopped, after restoring the
-directory from a snapshot. DIR defaults to FELIX_DURABLE_STORAGE_DIR.";
+directory from a snapshot or a copy. A standalone broker then re-forms each
+shard from the restored data and gives out no offset it gave out before.
+DIR defaults to FELIX_DURABLE_STORAGE_DIR.";
 
 /// Run `rotate-storage-id`; `args` starts after the subcommand.
 pub fn run(args: Vec<String>) -> Result<()> {

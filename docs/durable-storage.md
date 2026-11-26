@@ -1465,7 +1465,9 @@ storage, stop the broker and replace or wipe its whole data directory. Version
 without storage ids looks the same, so the first start on this release gives
 every broker a new id even though its shards are intact. A file that does not
 decode is replaced with a new id. `felixctl data restore-point` also writes a
-new one, because restored logs are an older copy of what peers last saw here.
+new one, because restored logs are an older copy of what peers last saw here,
+and so does `felix-broker rotate-storage-id`; both record the restore for a
+standalone broker (see below).
 
 A machine crash under `Periodic` or `None` (a power loss, a kernel panic, a
 reboot) keeps the directory but can lose the unsynced tail of a log, records
@@ -1546,9 +1548,11 @@ memory snapshot, or a disk snapshot taken with the machine running, puts
 the broker back in a boot whose id has not changed, with the page cache and
 the disk both older than what peers last saw. A run that crashes after such
 a restore keeps its id. Where snapshot restores are part of operations, run
-`on_commit`, or delete `storage-id` from the restored data directory before
-the broker starts, as for any restored copy (see "Restoring to a backup
-point" and [#1334](https://github.com/GetFelix/felix/issues/1334)).
+`felix-broker rotate-storage-id` on the restored data directory before the
+broker starts, as for any restored copy (see "Restoring to a backup point"
+and [#1334](https://github.com/GetFelix/felix/issues/1334)). On a standalone
+broker that is the only way: deleting `storage-id` by hand records no
+restore, and its Raft shards stay closed.
 
 A crash under `OnCommit` keeps the id, since every record it acknowledged was
 synced first. The record names the mode of the run that crashed, so changing
@@ -1685,11 +1689,30 @@ records a relaxed crash's rotation in `relaxed-crash-id`, and each Raft group
 of one then re-forms itself from its own kept copy: it keeps every record
 that reached the disk, including ones past the saved commit, and starts its
 next offsets above everything the crashed run reserved. What it loses is the
-unsynced tail `Periodic` allows. A data directory restored from a snapshot or
-backup is not detected: it starts from the reservation the snapshot holds and
-can give out offsets handed out after that point again
-([#3048](https://github.com/GetFelix/felix/issues/3048)). See `docs/per-shard-raft.md`, "A standalone
-broker re-forms itself".
+unsynced tail `Periodic` allows.
+
+A standalone data directory put back from a backup or a snapshot holds the
+reservation of the moment it was copied, not of the run that came after it.
+Started as it is, its groups would hand out offsets that run already handed
+out, in every fsync mode: under `OnCommit` nothing rotates at all, and a
+re-form from the copy starts only above the copy's own reservation. So after
+putting one back, run `felix-broker rotate-storage-id` with the broker
+stopped. It records the restore in `relaxed-crash-id` as well as rotating
+the id, and each group then re-forms from its restored copy with its next
+epoch on the backup-point restore's time line: 2^14 offsets per
+millisecond of the broker's clock, plus 2^40. That is above every offset
+given out since the copy was taken, as long as a shard averaged at most
+2^13 offsets per millisecond since its last restore and the clock has not
+gone back. What it loses is what was acknowledged after the copy.
+
+The tool writes `restore-pending` before it starts and removes it once the
+evidence and the new id are on disk. A start that finds it refuses, naming
+the command to run again, so a tool that crashed part way cannot leave
+restored data under the old id. Nothing in a directory can show it was put
+back without the tool: a copy made by hand, a volume snapshot rolled back or
+a VM restored is not detected and can reuse offsets
+([#3048](https://github.com/GetFelix/felix/issues/3048)). See
+`docs/per-shard-raft.md`, "A standalone broker re-forms itself".
 
 Losing the directory does reset them. So a copy with no promise on disk, on
 any broker, answers a fence only as its routing view backs it: with no route
