@@ -26,7 +26,7 @@ on:
         required: false
         default: "1700"
       report:
-        description: "idle, publish-latency (RF 3 Leader and Quorum publish p50/p99 with the lease on and off), or storm (many groups electing at once)"
+        description: "idle, sizing (one run at `groups` that prints key=value lines for the sizing fit), publish-latency (RF 3 Leader and Quorum publish p50/p99 with the lease on and off), or storm (many groups electing at once)"
         required: false
         default: "idle"
       rounds:
@@ -37,6 +37,22 @@ on:
         description: "Groups in the write-burst run"
         required: false
         default: "300"
+      peers:
+        description: "sizing only: stub, real, transport, or none (the logs alone, the base to subtract)"
+        required: false
+        default: "transport"
+      dead:
+        description: "sizing only, with peers=real: stop broker c before the burst (memory under load with a broker lost)"
+        required: false
+        default: "0"
+      heartbeat_ms:
+        description: "sizing only: idle heartbeat in milliseconds, empty for the default"
+        required: false
+        default: ""
+      burst_secs:
+        description: "sizing only: seconds of write burst after the idle window, 0 for none"
+        required: false
+        default: "0"
       storm_rows:
         description: "Storm report rows: all, pr (2000 leader lost, formed at once, +20 ms and the slow disks), or slow (the 2000 +20 ms row and the 200 x1 row)"
         required: false
@@ -46,7 +62,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: raft-idle-${{ github.ref }}-${{ inputs.transport_groups || 'nightly' }}-${{ inputs.report || 'idle' }}
+  group: raft-idle-${{ github.ref }}-${{ inputs.transport_groups || inputs.groups || 'nightly' }}-${{ inputs.report || 'idle' }}-${{ inputs.peers }}-${{ inputs.dead }}-${{ inputs.burst_secs }}
   cancel-in-progress: true
 
 env:
@@ -112,6 +128,41 @@ jobs:
             echo
             grep -hE 'idle groups|groups after|test result' raft-idle-stub.log raft-idle-transport.log raft-idle-burst.log || echo "no result"
           } >> "$GITHUB_STEP_SUMMARY"
+
+  # One run at `groups`, for fitting a base cost plus a cost per group from a
+  # ladder of dispatches. Prints `sizing key=value` lines.
+  sizing:
+    name: Raft sizing run
+    if: github.event_name == 'workflow_dispatch' && inputs.report == 'sizing'
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
+        with:
+          toolchain: "1.100.0"
+      - uses: swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          key: raft-idle
+      - name: Measure
+        env:
+          RAFT_IDLE_GROUPS: ${{ inputs.groups }}
+          RAFT_IDLE_PEERS: ${{ inputs.peers == 'stub' && '' || inputs.peers }}
+          RAFT_IDLE_DEAD: ${{ inputs.dead }}
+          RAFT_IDLE_HEARTBEAT_MS: ${{ inputs.heartbeat_ms }}
+          RAFT_IDLE_BURST_SECS: ${{ inputs.burst_secs != '0' && inputs.burst_secs || '' }}
+          RAFT_IDLE_WINDOW_SECS: "30"
+        run: |
+          set -o pipefail
+          ulimit -n "$(ulimit -Hn)"
+          cargo test --locked --release -p felix-replication --features raft --test raft_idle_cpu \
+            -- --ignored --nocapture 2>&1 | tee raft-sizing.log
+      - name: Summary
+        if: always()
+        run: |
+          { echo "### Raft sizing run"; echo; echo '```'; grep -h '^sizing ' raft-sizing.log || echo "no result"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
 
   # What a publisher waits for on a three-broker Raft shard, at each level,
   # with the leader lease on (the default) and off (FELIX_SHARD_RAFT_LEASE_MS=0,

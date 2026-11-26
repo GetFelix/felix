@@ -90,6 +90,60 @@ fn resident_mb() -> Option<f64> {
     Some(kb / 1024.0)
 }
 
+/// Descriptors open in this process.
+fn open_files() -> Option<usize> {
+    let dir = if cfg!(target_os = "linux") {
+        "/proc/self/fd"
+    } else {
+        "/dev/fd"
+    };
+    // The listing holds one itself.
+    Some(std::fs::read_dir(dir).ok()?.count().saturating_sub(1))
+}
+
+/// Threads in this process, where `/proc` says.
+fn threads() -> Option<usize> {
+    let status = std::fs::read_to_string("/proc/self/status").ok()?;
+    let line = status.lines().find(|line| line.starts_with("Threads:"))?;
+    line.split_whitespace().nth(1)?.parse().ok()
+}
+
+/// Bytes a directory tree holds: file lengths, and the blocks the
+/// filesystem has set aside for them (preallocation shows only in the second).
+fn disk_bytes(dir: &std::path::Path) -> (u64, u64) {
+    use std::os::unix::fs::MetadataExt;
+    let (mut length, mut allocated) = (0, 0);
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return (0, 0);
+    };
+    for entry in entries.flatten() {
+        let Ok(meta) = entry.metadata() else { continue };
+        if meta.is_dir() {
+            let (l, a) = disk_bytes(&entry.path());
+            length += l;
+            allocated += a;
+        } else {
+            length += meta.len();
+            allocated += meta.blocks() * 512;
+        }
+    }
+    (length, allocated)
+}
+
+/// One `key=value` line a script can fit. Process-wide figures (RSS, fds,
+/// threads, disk) are totals over `brokers`; divide to get one broker.
+fn sizing_line(phase: &str, groups: u32, peers: &str, brokers: usize, root: &std::path::Path) {
+    let (length, allocated) = disk_bytes(root);
+    let field = |value: Option<String>| value.unwrap_or_else(|| "na".into());
+    println!(
+        "sizing phase={phase} groups={groups} peers={peers} brokers={brokers} rss_mb={} fds={} \
+         threads={} disk_bytes={length} disk_allocated_bytes={allocated}",
+        field(resident_mb().map(|mb| format!("{mb:.1}"))),
+        field(open_files().map(|n| n.to_string())),
+        field(threads().map(|n| n.to_string())),
+    );
+}
+
 const BROKERS: [&str; 3] = ["a", "b", "c"];
 
 /// The logs of `groups` shards on three brokers, written to and left open
@@ -116,6 +170,7 @@ async fn logs_alone(groups: u32, config: LogConfig) {
         }
     }
     tokio::time::sleep(Duration::from_secs(15)).await;
+    sizing_line("base", groups, "none", BROKERS.len(), root.path());
     if let Some(resident) = resident_mb() {
         println!(
             "{groups} shards, logs alone: {:.0} MB resident per broker",
@@ -360,6 +415,15 @@ async fn idle_groups_cost_little_cpu() {
             .any(|runtime| runtime.status(&shard(n)).map(|s| s.role) == Some(Role::Leader))
     };
 
+    let peers_name = if transport {
+        "transport"
+    } else if real {
+        "real"
+    } else {
+        "stub"
+    };
+    // Open every member first so the files and memory of a member that has
+    // not written anything can be read off before the first group starts.
     for n in 0..groups {
         for (broker, runtime) in brokers.iter().zip(&runtimes) {
             let dir = root.path().join(broker).join(n.to_string());
@@ -368,6 +432,9 @@ async fn idle_groups_cost_little_cpu() {
             let group = GroupId::new(shard(n), 0);
             runtime.open(group, 1, log).await.expect("open");
         }
+    }
+    sizing_line("opened", groups, peers_name, brokers.len(), root.path());
+    for n in 0..groups {
         // The member told first stands at once and wins, so leaders spread
         // evenly over the brokers.
         let first = n as usize % runtimes.len();
@@ -411,20 +478,22 @@ async fn idle_groups_cost_little_cpu() {
     let before = leading();
     let (cpu_before, ticks_before, terms_before) = (cpu(), ticks(), terms());
     let resident_before = resident_mb();
+    sizing_line("idle", groups, peers_name, brokers.len(), root.path());
     tokio::time::sleep(window).await;
     let used = cpu() - cpu_before;
     let sent = ticks() - ticks_before;
     let each = runtimes.len() as f64;
     println!(
-        "{groups} idle groups, {} peers, idle heartbeat {:?}, leaders per broker {before:?}: \
+        "sizing phase=idle_cpu groups={groups} peers={peers_name} brokers={} cpu_pct_per_broker={:.3} \
+         timer_checks_per_s_per_broker={:.0} idle_heartbeat_ms={}",
+        runtimes.len(),
+        100.0 * used.as_secs_f64() / window.as_secs_f64() / each,
+        sent as f64 / window.as_secs_f64() / each,
+        timers.idle_heartbeat.as_millis(),
+    );
+    println!(
+        "{groups} idle groups, {peers_name} peers, idle heartbeat {:?}, leaders per broker {before:?}: \
          {:.2}% of one core per broker, {:.0} timer checks a second per broker",
-        if transport {
-            "transport"
-        } else if real {
-            "real"
-        } else {
-            "stub"
-        },
         timers.idle_heartbeat,
         100.0 * used.as_secs_f64() / window.as_secs_f64() / each,
         sent as f64 / window.as_secs_f64() / each,
@@ -440,15 +509,32 @@ async fn idle_groups_cost_little_cpu() {
     assert_eq!(terms(), terms_before, "an election ran while idle");
     assert_eq!(before.iter().sum::<u32>(), groups, "a group has no leader");
 
-    if real && !transport && env::<u8>("RAFT_IDLE_DEAD") == Some(1) {
+    let dead = real && !transport && env::<u8>("RAFT_IDLE_DEAD") == Some(1);
+    let burst_secs = env::<u64>("RAFT_IDLE_BURST_SECS");
+    if dead && burst_secs.is_none() {
         return with_a_dead_peer(&net, &runtimes, groups, &timers, window).await;
     }
-    if let Some(secs) = env::<u64>("RAFT_IDLE_BURST_SECS") {
+    if let Some(secs) = burst_secs {
         let depth = env("RAFT_IDLE_BURST_DEPTH").unwrap_or(32);
+        // With DEAD set, broker c goes first and the burst runs on the two
+        // left, which then lead every group: memory under load with a broker
+        // lost.
+        let live = if dead {
+            net.brokers.lock().remove(BROKERS[2]);
+            runtimes[2].shutdown().await;
+            &runtimes[..2]
+        } else {
+            &runtimes[..]
+        };
+        let each = live.len() as f64;
+        let leading = || -> Vec<u32> { live.iter().map(leaders).collect() };
+        let settled = tokio::time::Instant::now() + LEADERS_SETTLE;
+        while leading().iter().sum::<u32>() != groups && tokio::time::Instant::now() < settled {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
         let idle = resident_mb();
         let calls = || -> u64 {
-            runtimes
-                .iter()
+            live.iter()
                 .flat_map(|runtime| (0..groups).filter_map(|n| runtime.status(&shard(n))))
                 .map(|status| status.client_writes)
                 .sum()
@@ -456,17 +542,22 @@ async fn idle_groups_cost_little_cpu() {
         let calls_before = calls();
         let length = Duration::from_secs(secs);
         let written: u64 = futures::future::join_all(
-            runtimes
-                .iter()
+            live.iter()
                 .map(|runtime| burst(runtime, groups, depth, length)),
         )
         .await
         .into_iter()
         .sum();
         let busy = resident_mb();
+        sizing_line("burst_end", groups, peers_name, live.len(), root.path());
+        println!(
+            "sizing phase=burst_writes groups={groups} dead={} writes={written}",
+            u8::from(dead)
+        );
         let calls = calls() - calls_before;
         let settle = timers.idle_after + Duration::from_secs(20);
         tokio::time::sleep(settle).await;
+        sizing_line("burst_settled", groups, peers_name, live.len(), root.path());
         let members = f64::from(groups) * each;
         if let (Some(idle), Some(busy), Some(after)) = (idle, busy, resident_mb()) {
             println!(
@@ -493,7 +584,13 @@ async fn idle_groups_cost_little_cpu() {
             "a group has no leader {LEADERS_SETTLE:?} after the burst"
         );
     }
-    for runtime in &runtimes {
+    // Broker c is already stopped when the burst ran with it dead.
+    let up = if dead && burst_secs.is_some() {
+        2
+    } else {
+        runtimes.len()
+    };
+    for runtime in &runtimes[..up] {
         runtime.shutdown().await;
     }
     stop.cancel();
