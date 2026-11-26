@@ -50,6 +50,22 @@ on:
         description: "Diagnostic: reps per cell"
         type: string
         default: "6"
+      arms:
+        description: "Diagnostic A/B: space-separated ref:engine arms, interleaved (e.g. main:raft main:hybrid)"
+        type: string
+        default: ""
+      record_arms:
+        description: "Diagnostic: ref:engine arms to perf record on a no-LTO frame-pointer build; the first is diffed against the rest"
+        type: string
+        default: ""
+      passes:
+        description: "Diagnostic: interleaved passes over the arms"
+        type: string
+        default: "2"
+      arch:
+        description: "Diagnostic: runner architecture (both, aarch64, x86_64)"
+        type: string
+        default: "both"
 
 concurrency:
   group: ipm-${{ github.ref }}-${{ github.event_name == 'workflow_dispatch' && github.run_id || '' }}
@@ -71,16 +87,14 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - arch: x86_64
-            runner: ubuntu-latest
-          - arch: aarch64
-            runner: ubuntu-24.04-arm
+        include: ${{ fromJSON(inputs.arch == 'aarch64' && '[{"arch":"aarch64","runner":"ubuntu-24.04-arm"}]' || inputs.arch == 'x86_64' && '[{"arch":"x86_64","runner":"ubuntu-latest"}]' || '[{"arch":"x86_64","runner":"ubuntu-latest"},{"arch":"aarch64","runner":"ubuntu-24.04-arm"}]') }}
     steps:
       - name: Checkout
         uses: actions/checkout@v7
         with:
           persist-credentials: false
+          # Diagnostic arms check out other refs of this repository.
+          fetch-depth: ${{ (inputs.arms != '' || inputs.record_arms != '') && '0' || '1' }}
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8 # v1
@@ -95,7 +109,7 @@ jobs:
       # Hosted runners expose no hardware performance counters (perf stat
       # reports instructions as unsupported), so the broker runs under callgrind.
       - name: Install valgrind
-        if: ${{ !inputs.profile && !inputs.ab }}
+        if: ${{ !inputs.profile && !inputs.ab && inputs.arms == '' && inputs.record_arms == '' }}
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y -qq valgrind
@@ -104,12 +118,93 @@ jobs:
       # Release profile, as shipped: LTO and one codegen unit change the count.
       - name: Build
         run: |
-          cargo build --locked --release -p felix-broker-service --bin felix-broker
+          if [ -z "${{ inputs.arms }}${{ inputs.record_arms }}" ]; then
+            cargo build --locked --release -p felix-broker-service --bin felix-broker
+          fi
           cargo build --locked --release -p felix-loadgen
           cargo test --locked --release -p felix-cluster --test instructions_per_message --no-run
 
+      # Diagnostic: each arm's broker is built from its own ref and swapped in
+      # under the test binary; the harness, loadgen and test are this branch's.
+      - name: Profile arms natively
+        if: inputs.arms != '' || inputs.record_arms != ''
+        env:
+          ARMS: ${{ inputs.arms }}
+          RECORD_ARMS: ${{ inputs.record_arms }}
+          PASSES: ${{ inputs.passes || '2' }}
+          CELLS: ${{ inputs.cells }}
+        run: |
+          sudo apt-get install -y -qq linux-tools-common "linux-tools-$(uname -r)" || sudo apt-get install -y -qq linux-tools-azure || true
+          sudo sysctl -w kernel.perf_event_paranoid=-1
+          sudo sysctl -w kernel.kptr_restrict=0
+          mkdir -p prof/ab prof/rec "$RUNNER_TEMP/perf-rel" "$RUNNER_TEMP/perf-rec" "$RUNNER_TEMP/bin"
+          if [ -n "$CELLS" ]; then export FELIX_IPM_CELLS="$CELLS"; fi
+          slug() { echo "$1" | tr '/:' '__'; }
+          build_arm() {
+            local ref=$1 kind=$2 s dir out
+            s=$(slug "$ref"); dir="$RUNNER_TEMP/src/$s"; out="$RUNNER_TEMP/bin/$kind-$s"
+            [ -f "$out" ] && return 0
+            if [ ! -d "$dir" ]; then
+              local rev
+              rev=$(git rev-parse --verify -q "origin/$ref^{commit}" || git rev-parse --verify "$ref^{commit}")
+              echo "arm $ref -> $rev"
+              git worktree add -q --detach "$dir" "$rev"
+            fi
+            if [ "$kind" = diag ]; then
+              (cd "$dir" && CARGO_PROFILE_RELEASE_LTO=false CARGO_PROFILE_RELEASE_CODEGEN_UNITS=16 \
+                RUSTFLAGS="-C force-frame-pointers=yes" \
+                cargo build --locked --release -p felix-broker-service --bin felix-broker --target-dir "$RUNNER_TEMP/tgt-diag")
+              cp "$RUNNER_TEMP/tgt-diag/release/felix-broker" "$out"
+            else
+              (cd "$dir" && cargo build --locked --release -p felix-broker-service --bin felix-broker --target-dir "$RUNNER_TEMP/tgt-rel")
+              cp "$RUNNER_TEMP/tgt-rel/release/felix-broker" "$out"
+            fi
+          }
+          use_arm() { cp "$RUNNER_TEMP/bin/$1-$(slug "${2%%:*}")" target/release/felix-broker; }
+          run_test() {
+            cargo test --locked --release -p felix-cluster --test instructions_per_message \
+              broker_light_load_profile -- --ignored --nocapture --exact 2>&1
+          }
+          for arm in $ARMS; do build_arm "${arm%%:*}" release; done
+          for arm in $RECORD_ARMS; do build_arm "${arm%%:*}" diag; done
+          for pass in $(seq 1 "$PASSES"); do
+            for arm in $ARMS; do
+              use_arm release "$arm"
+              FELIX_TEST_SHARD_ENGINE="${arm##*:}" FELIX_PROF_RECORD=0 FELIX_PROF_DIR="$RUNNER_TEMP/perf-rel" \
+                FELIX_IPM_OUT="$PWD/prof/ab/$pass-$(slug "$arm").json" run_test | tee "prof/ab/$pass-$(slug "$arm").log" | grep -E "^profile " || true
+            done
+          done
+          if [ -n "$ARMS" ]; then python3 scripts/perf/ab_table.py prof/ab $ARMS | tee prof/ab-table.txt; fi
+          if [ -n "$RECORD_ARMS" ]; then
+            # Sample by instructions where the runner counts them, so a sample is a fixed cost.
+            if sudo perf stat -e instructions -x, -- true 2>&1 | grep -qE '^[0-9]+,'; then
+              export FELIX_PERF_RECORD_EVENT="-e instructions -c 500000" PROF_UNIT=instructions
+            else
+              export FELIX_PERF_RECORD_EVENT="-e cpu-clock -c 100000" PROF_UNIT=ns
+            fi
+            first=""
+            for arm in $RECORD_ARMS; do
+              s=$(slug "$arm"); first=${first:-$s}
+              use_arm diag "$arm"
+              sudo rm -f "$RUNNER_TEMP"/perf-rec/*.data
+              FELIX_TEST_SHARD_ENGINE="${arm##*:}" FELIX_PROF_ARM="$s" FELIX_PROF_RECORD=1 FELIX_PROF_DIR="$RUNNER_TEMP/perf-rec" \
+                FELIX_IPM_OUT="$PWD/prof/rec/$s.json" run_test | tee "prof/rec/$s.log" | grep -E "^profile " || true
+              # Symbolised now, while this arm's binary is the one in place.
+              for f in "$RUNNER_TEMP"/perf-rec/*.data; do
+                [ -e "$f" ] || continue
+                sudo perf script -i "$f" -F comm,tid,period,ip,sym --no-inline 2>/dev/null > "prof/rec/$(basename "$f" .data).txt" || true
+              done
+            done
+            for arm in $RECORD_ARMS; do
+              s=$(slug "$arm"); [ "$s" = "$first" ] && continue
+              python3 scripts/perf/prof_diff.py prof/rec "$first" "$s" | tee "prof/diff-$first-vs-$s.txt"
+            done
+            gzip -q prof/rec/*.txt || true
+          fi
+          echo '[]' > ipm-result.json
+
       - name: Profile natively
-        if: inputs.profile || inputs.ab
+        if: (inputs.profile || inputs.ab) && inputs.arms == '' && inputs.record_arms == ''
         run: |
           sudo apt-get install -y -qq linux-tools-common "linux-tools-$(uname -r)" || sudo apt-get install -y -qq linux-tools-azure || true
           sudo sysctl -w kernel.perf_event_paranoid=-1
@@ -167,7 +262,7 @@ jobs:
           cp "$RUNNER_TEMP/ipm-result.json" ipm-result.json
 
       - name: Measure
-        if: ${{ !inputs.native && !inputs.profile && !inputs.ab }}
+        if: ${{ !inputs.native && !inputs.profile && !inputs.ab && inputs.arms == '' && inputs.record_arms == '' }}
         run: |
           mkdir -p "$RUNNER_TEMP/cg"
           # Callgrind runs the broker tens of times slower than native, and the
@@ -199,6 +294,7 @@ jobs:
         run: |
           mkdir -p prof
           for f in "$RUNNER_TEMP"/cg/cg.*; do
+            [ -e "$f" ] || continue
             b=$(basename "$f")
             head -c 2000 "$f" | grep -E "^(cmd|part|desc|summary|totals):" > "prof/$b.head" || true
             callgrind_annotate --inclusive=yes --threshold=99.9 "$f" 2>/dev/null | head -400 > "prof/$b.incl.txt" || true
@@ -214,5 +310,5 @@ jobs:
           path: prof
 
       - name: Compare with the baseline
-        if: ${{ !inputs.native && !inputs.profile && !inputs.ab }}
+        if: ${{ !inputs.native && !inputs.profile && !inputs.ab && inputs.arms == '' && inputs.record_arms == '' }}
         run: python3 scripts/perf/ipm_gate.py check ipm-result.json
