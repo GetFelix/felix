@@ -297,16 +297,18 @@ TypeOK ==
 OneLeaderPerTerm == \A x, y \in elected : x[1] = y[1] => x[2] = y[2]
 
 \* A leader up and connected that no member up and connected has outvoted.
+\* TLC expands a quantifier in a temporal property over its bound before it
+\* has a state, so these range over Servers.
 Settled(l) ==
     /\ l \in Healthy
     /\ role[l] = "leader"
-    /\ \A s \in Healthy : VoteGE(vote[l], vote[s])
+    /\ \A s \in Servers : s \in Healthy => VoteGE(vote[l], vote[s])
 
 \* That leader is open and every member up and connected follows it.
 Serves(l) ==
     /\ Settled(l)
     /\ open[l]
-    /\ \A s \in Healthy : vote[s] = vote[l] /\ log[s] = log[l]
+    /\ \A s \in Servers : s \in Healthy => vote[s] = vote[l] /\ log[s] = log[l]
 
 MajorityHealthy == Quorum(Healthy)
 
