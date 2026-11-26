@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795674936173,
+  "lastUpdate": 1795676169685,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -70876,6 +70876,58 @@ window.BENCHMARK_DATA = {
             "range": "40426.02",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1244276.84\nmean: 1226234.30\nstdev: 40426.02\ncv: 3.30%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "ad4f4cd672731572ac106be0a2dc588aa9fccfc0",
+          "message": "perf(broker): a Raft follower with no subscriber does not read back what it just wrote (#3223) (#3227)\n\n* perf(raft): a follower with no subscriber reads nothing back per commit (#3223)\n\nOn each commit advance a follower read the records it had just written\nback from its log, on the blocking pool, to fill a replay ring nobody\nread. With no subscriber and no built state view the pass now moves the\nstream to the committed bound with an empty ring, as it already did when\nfar behind. A subscriber registers under the same ring lock, so it joins\nabove the move and reads below it from the log, or stops the move.\n\nSpec-Unaffected: follower-local delivery cache; no Raft, ack, lease or commit timing changes\n\n* fix(raft): a jump past generation-start records still reports them skipped (#3223)\n\nThe unwatched jump clears generation_start_run and moves past trailing\ngeneration-start records without reading them. A subscriber that joined\nafter it saw the next event with no skip and read the record as a drop,\nand a member promoted at that tail reported no run. The jump now leaves\na flag; the first pass that reads, or the term that opens there, counts\nthe run from the log.\n\nSpec-Unaffected: follower-local skip accounting; no Raft, ack, lease or commit timing changes\n\n* test(raft): the follower probe waits for its sequence to pass the second record (#3223)\n\nWith nobody subscribed the follower jumps instead of filling its ring, so\nan empty backlog no longer means it is behind.",
+          "timestamp": "2026-11-26T06:49:42Z",
+          "tree_id": "a42d2727b69958acfee91c4a19233499227f2fc8",
+          "url": "https://github.com/GetFelix/felix/commit/ad4f4cd672731572ac106be0a2dc588aa9fccfc0"
+        },
+        "date": 1795676168946,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 355729.4,
+            "range": "9525.56",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 355729.40\nmean: 352583.45\nstdev: 9525.56\ncv: 2.70%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 355729.4,
+            "range": "9525.56",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 355729.40\nmean: 352583.45\nstdev: 9525.56\ncv: 2.70%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 81601.46,
+            "range": "471.62",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 81601.46\nmean: 81443.27\nstdev: 471.62\ncv: 0.58%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 816014.59,
+            "range": "4716.19",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 816014.59\nmean: 814432.71\nstdev: 4716.19\ncv: 0.58%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
