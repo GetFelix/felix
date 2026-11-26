@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795722376992,
+  "lastUpdate": 1795723522041,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -72020,6 +72020,58 @@ window.BENCHMARK_DATA = {
             "range": "2783.94",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 814936.38\nmean: 813594.40\nstdev: 2783.94\ncv: 0.34%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "55849c0957fb7acc20dbf09899dc28c6d4a32e90",
+          "message": "chore: two SonarCloud findings fixed (async wipe in the nemesis, grouped regex in affected.py) (#3283)\n\n* chore(ci): group the test-only path regex alternatives explicitly\n\nSpec-Unaffected: no modelled behaviour changes\n\n* chore(cluster): the wipe fault removes the directory without blocking the runtime\n\nSpec-Unaffected: no modelled behaviour changes",
+          "timestamp": "2026-11-26T19:56:52Z",
+          "tree_id": "a1bf8de752304c487627b7e22b7565abda0843bb",
+          "url": "https://github.com/GetFelix/felix/commit/55849c0957fb7acc20dbf09899dc28c6d4a32e90"
+        },
+        "date": 1795723521379,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 361929.09,
+            "range": "20155.20",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 361929.09\nmean: 358540.44\nstdev: 20155.20\ncv: 5.62%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 361929.09,
+            "range": "20155.20",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 361929.09\nmean: 358540.44\nstdev: 20155.20\ncv: 5.62%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 81778.02,
+            "range": "720.07",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 81778.02\nmean: 81339.30\nstdev: 720.07\ncv: 0.89%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 817780.18,
+            "range": "7200.72",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 817780.18\nmean: 813393.02\nstdev: 7200.72\ncv: 0.89%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
