@@ -18,7 +18,7 @@ use super::{
     ReplicaSetView, ReplicateBootstrap, ReplicateError, ReplicateFetch, ReplicateOk,
     ReplicateRebuild, ReplicateRecords, SetMember, ShardRef,
 };
-use super::{ClientCertified, MAX_CLIENT_CERTS, MAX_CLIENT_CHAIN_BYTES};
+use super::{ClientCertified, MAX_CLIENT_CERTS, MAX_CLIENT_CHAIN_BYTES, RaftLayouts};
 use super::{FROM_COPY_BYTES, FromCopy, SealAck, SealAckOk, SealFence, SealFenceOk, SealStarts};
 use crate::error::{Error, Result};
 
@@ -172,6 +172,17 @@ impl InternalMessage {
                     (true, None) => body.put_u8(0),
                     (false, None) => {}
                     (false, Some(_)) => return Err(Error::Incomplete),
+                }
+                let carries_layouts = m
+                    .capabilities
+                    .is_some_and(|c| c.contains(PeerCapabilities::RAFT_LAYOUTS));
+                match (carries_layouts, m.raft_layouts) {
+                    (true, Some(layouts)) => {
+                        body.put_u8(layouts.lowest());
+                        body.put_u8(layouts.highest());
+                    }
+                    (false, None) => {}
+                    _ => return Err(Error::Incomplete),
                 }
             }
             Self::Fence(m) => {
@@ -807,12 +818,23 @@ impl InternalMessage {
                     }
                     _ => None,
                 };
+                // A range no build writes is refused, not narrowed to one
+                // this build would accept.
+                let raft_layouts = match capabilities {
+                    Some(c) if c.contains(PeerCapabilities::RAFT_LAYOUTS) => {
+                        let lowest = take_u8(&mut body)?;
+                        let highest = take_u8(&mut body)?;
+                        Some(RaftLayouts::new(lowest, highest).ok_or(Error::Incomplete)?)
+                    }
+                    _ => None,
+                };
                 let message = HelloOk {
                     correlation_id,
                     node_id,
                     capabilities,
                     identity,
                     incarnation,
+                    raft_layouts,
                 };
                 expect_empty(&body)?;
                 Ok(Self::HelloOk(message))

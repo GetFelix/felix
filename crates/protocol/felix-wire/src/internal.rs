@@ -34,7 +34,7 @@ pub use forward::{
     ForwardCacheOk, ForwardCacheOp, ForwardCacheOutcome, ForwardLease, ForwardProducer,
     ForwardPublish, ForwardPublishError, ForwardPublishOk, LeaseForwardCacheOk, NotLeader,
 };
-pub use handshake::{Hello, HelloOk};
+pub use handshake::{Hello, HelloOk, RaftLayouts};
 pub use header::{
     FROM_COPY_BYTES, FrameEnvelope, INTERNAL_MAGIC, INTERNAL_VERSION, InternalHeader, Kind,
     MAX_BODY_BYTES, MAX_ENVELOPE_BYTES, MAX_INNER_BODY_BYTES, correlation_id_in,

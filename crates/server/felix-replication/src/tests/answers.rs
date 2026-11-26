@@ -55,6 +55,7 @@ fn an_unexpected_answer_is_retried() {
             capabilities: None,
             identity: None,
             incarnation: None,
+            raft_layouts: None,
         })),
         Progress::Retry,
     );

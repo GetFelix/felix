@@ -25,7 +25,7 @@ pub use capabilities::KnownCapabilities;
 pub use config::PeerTransportConfig;
 pub(crate) use identity::{Incarnation, PeerIdentity};
 pub(crate) use partition::PartitionInjector;
-pub use pool::{PeerError, PeerPool, PeerRequester};
+pub use pool::{PeerError, PeerPool, PeerRequester, RaftOffer};
 pub use server::{PeerRequestHandler, PeerServer, RaftHandler, UnavailableHandler};
 
 /// The second byte of a Raft body for an append that carries entries (see

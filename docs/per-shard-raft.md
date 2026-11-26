@@ -2560,9 +2560,21 @@ and sends back the answer. Only a listener that runs the runtime offers the
 `RAFT` capability, and a broker that has not offered it is never sent a
 Raft message: the transport answers `Unreachable` without sending. The
 bytes are Felix's own layout, not openraft's serde output
-(`docs/internal-protocol.md`, "Raft messages"). Nothing in the broker
-builds the runtime yet, so no shipping broker offers the capability. The
-unit tests join three runtimes with a transport that calls `handle`
+(`docs/internal-protocol.md`, "Raft messages"). The broker builds the
+runtime in `node/cluster.rs` whenever it runs Raft shards.
+
+**Mixed layouts during an upgrade.** Each listener states the Raft layouts
+it reads in the handshake (`RAFT_LAYOUTS`). Each build reads and writes one
+layout today. When a peer's range does not hold it, the sender sends
+nothing: Raft sees the peer as unreachable, the reason names both, and the
+broker logs it about once a minute per peer and counts each refused send in
+`felix_broker_raft_peer_refusals_total{reason="layout"}`. A group keeps
+quorum only while a majority of its voters share a layout. The stated range
+is what lets a later build read two layouts and pick the one its peer
+reads. Two brokers on the same build always share their layout. A peer that offers `RAFT` but
+states no layouts predates the handshake field and is read as layout 6;
+if that reading is wrong the peer refuses the body at its first byte, so
+nothing is misread. The unit tests join three runtimes with a transport that calls `handle`
 directly; one test forms a group over real listeners on loopback.
 
 A leader's messages carry the gap described in "Idle groups", which is
@@ -3689,6 +3701,18 @@ been had it waited for the write.
   also runs the longer ack timeout, so it arms no timer of its own.
   Idempotent, forwarded, direct, Kafka and MQTT publishes, and those
   acknowledged on enqueue, keep a timer per publish for it.
+- A publish looks its shard's group up in the runtime's registry once, when
+  the publish lane picks the Raft path (`RaftEngine::shard`). The proposal,
+  the skip count, the lease or majority answer and the commit wait all use
+  the group it found. A close or a shutdown marks the group released under
+  the registry's lock, before the shard can be opened again, and every one
+  of those steps checks the mark. So a publish that found a group that has
+  since closed, or been replaced by another member of the shard, is refused
+  as a publish finding no group is, and never reaches or is answered by the
+  other member. The broker asks the read bound once more before it releases
+  the committed batch.
+- A batch of one record is answered by that record's responder alone. A
+  batch of several counts its records' answers in one shared tally.
 - A batch whose `await_commit` fails because this broker stopped leading,
   or the group stopped, is never delivered: a deposed leader's record may
   have been replaced. It may also have committed, so in its place in the

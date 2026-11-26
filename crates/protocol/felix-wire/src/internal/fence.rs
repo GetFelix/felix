@@ -180,6 +180,13 @@ impl PeerCapabilities {
     /// and answers it with one result per heartbeat, in order. Offered with
     /// `RAFT`; a peer without it is sent each heartbeat on its own.
     pub const RAFT_BEATS: Self = Self(1 << 28);
+    /// Answers a `HelloCapable` offering this bit with the Raft body layouts
+    /// it reads and writes ([`HelloOk::raft_layouts`]), when it offers
+    /// `RAFT`. A caller sends a Raft message only in a layout the range
+    /// holds.
+    ///
+    /// [`HelloOk::raft_layouts`]: super::HelloOk::raft_layouts
+    pub const RAFT_LAYOUTS: Self = Self(1 << 29);
 
     pub fn from_bits(bits: u64) -> Self {
         Self(bits)
