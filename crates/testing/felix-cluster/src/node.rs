@@ -76,6 +76,13 @@ impl BrokerNode {
         storage_dir(&self.data_dir)
     }
 
+    /// The certificate the broker generated for its client listeners, QUIC
+    /// and Kafka alike, as PEM: what a client trusts to verify it. A new one
+    /// on every start.
+    pub fn client_certificate(&self) -> PathBuf {
+        self.data_dir.join(CLIENT_CERTIFICATE)
+    }
+
     /// The (client, internal) addresses to respawn on: the same ones if the
     /// caller pinned them, else `None` for fresh picks.
     pub(crate) fn pinned_ports(&self) -> Option<(SocketAddr, SocketAddr)> {
@@ -88,6 +95,9 @@ impl BrokerNode {
         self.process.take()
     }
 }
+
+/// Where a broker exports its generated client certificate, in its data dir.
+pub(crate) const CLIENT_CERTIFICATE: &str = "broker-cert.pem";
 
 /// Where a broker's storage is rooted. A directory of its own, so the fault
 /// files, logs and certificates beside it are not part of what a simulated
