@@ -13,6 +13,7 @@
 
 mod delivery;
 mod elle;
+mod offsets;
 
 pub(super) use delivery::dropped;
 pub use elle::check_list_append;
@@ -109,6 +110,10 @@ pub enum Rule {
     /// 21. Two brokers opened one shard for writes at the same generation,
     ///     as their logs record it.
     OneLeaderPerGeneration,
+    /// 22. One offset of a list is held as two records by any two
+    ///     observations: the final read, a read from any broker, a delivery
+    ///     to any subscriber, or a `Quorum` append's acknowledgement.
+    OffsetReuse,
     /// The final read has a hole, so the lost-write rule cannot be trusted.
     IncompleteFinalRead,
     /// The history itself is malformed: the recorder is wrong, not the broker.
@@ -200,6 +205,7 @@ impl Rule {
             Rule::G0Realtime => "19 G0-realtime",
             Rule::NotLinearizable => "20 not-linearizable",
             Rule::OneLeaderPerGeneration => "21 one-leader-per-generation",
+            Rule::OffsetReuse => "22 offset-reuse",
             Rule::IncompleteFinalRead => "incomplete-final-read",
             Rule::MalformedHistory => "malformed-history",
         }
@@ -241,6 +247,7 @@ pub fn check(history: &History) -> Report {
         &mut violations,
     );
     delivery::check(history, &mut violations);
+    offsets::check(history, &mut violations);
     elle::check(history, &mut violations);
     super::leaders::check(&history.opens, &mut violations);
     Report {

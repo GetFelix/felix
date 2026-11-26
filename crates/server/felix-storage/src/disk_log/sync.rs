@@ -58,6 +58,21 @@ pub(super) struct Durability {
     /// from "this machine could not put enough appends in flight to coalesce",
     /// which is how a CI runner with two cores reads as a regression.
     flushes: AtomicU64,
+    /// Told, on the thread that moved it, each time the durable bound rises
+    /// or a waiter is woken to look again. Set once, by a Raft log.
+    #[cfg(feature = "raft")]
+    progress: std::sync::OnceLock<Progress>,
+}
+
+/// What [`Durability`] tells of its progress.
+#[cfg(feature = "raft")]
+pub(super) struct Progress(pub(super) Box<dyn Fn() + Send + Sync>);
+
+#[cfg(feature = "raft")]
+impl std::fmt::Debug for Progress {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Progress")
+    }
 }
 
 impl Durability {
@@ -69,6 +84,22 @@ impl Durability {
             durable_tx: watch::channel(durable_upto).0,
             flush_lock: Mutex::new(()),
             flushes: AtomicU64::new(0),
+            #[cfg(feature = "raft")]
+            progress: std::sync::OnceLock::new(),
+        }
+    }
+
+    /// Have `progress` told of every rise and wake from here on. Only the
+    /// first call takes; a later one returns false.
+    #[cfg(feature = "raft")]
+    pub(super) fn tell_progress(&self, progress: Progress) -> bool {
+        self.progress.set(progress).is_ok()
+    }
+
+    fn told(&self) {
+        #[cfg(feature = "raft")]
+        if let Some(progress) = self.progress.get() {
+            (progress.0)();
         }
     }
 
@@ -131,6 +162,7 @@ impl Durability {
     /// Wake [`Self::reached`] waiters to look again, as after a poison.
     pub(super) fn wake(&self) {
         self.durable_tx.send_modify(|_| {});
+        self.told();
     }
 
     /// Run an unconditional flush under the same lock used by group commit.
@@ -147,7 +179,7 @@ impl Durability {
 
     /// Publish flush progress. Monotonic: a late report cannot walk it back.
     pub(super) fn note_durable(&self, durable_upto: Offset) {
-        self.durable_tx.send_if_modified(|current| {
+        let rose = self.durable_tx.send_if_modified(|current| {
             if durable_upto > *current {
                 *current = durable_upto;
                 true
@@ -155,6 +187,9 @@ impl Durability {
                 false
             }
         });
+        if rose {
+            self.told();
+        }
     }
 
     /// Prevent flush progress from racing an operation that rewrites the log.
@@ -169,6 +204,7 @@ impl Durability {
     /// truncated tail before this reset.
     pub(super) fn reset_after_truncate(&self, durable_upto: Offset) {
         self.durable_tx.send_replace(durable_upto);
+        self.told();
     }
 
     async fn flush_until<F, Fut>(
