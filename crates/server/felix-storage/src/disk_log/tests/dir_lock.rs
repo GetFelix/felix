@@ -167,3 +167,74 @@ async fn a_stream_log_reopens_at_once_after_a_close_under_load() {
         }
     }
 }
+
+const CHILD_DIR: &str = "FELIX_TEST_DIR_LOCK_CHILD";
+
+/// Run by [`a_holder_that_dies_without_closing_does_not_block_the_next_open`]
+/// in a second process: opens the log named in the environment, appends one
+/// record, says so, and exits without closing once its stdin ends, unless
+/// it is killed first. Does nothing as a test of its own.
+#[tokio::test]
+async fn dir_lock_child() {
+    let Some(dir) = std::env::var_os(CHILD_DIR) else {
+        return;
+    };
+    let log = DiskLog::open(
+        Path::new(&dir),
+        "t/ns/orders/0",
+        config(FsyncMode::OnCommit),
+    )
+    .expect("child open");
+    log.append(&records(&["held"])).await.expect("child append");
+    println!("held");
+    let mut line = String::new();
+    let _ = std::io::stdin().read_line(&mut line);
+    std::process::exit(0);
+}
+
+/// A holder that dies without a close, killed or exiting on its own, leaves
+/// nothing behind that refuses the next open: the kernel drops a `flock`
+/// with the last descriptor, and a process's death closes them all.
+#[cfg(unix)]
+#[tokio::test]
+async fn a_holder_that_dies_without_closing_does_not_block_the_next_open() {
+    use std::io::BufRead;
+
+    for killed in [true, false] {
+        let dir = tempdir().expect("tempdir");
+        let mut child = std::process::Command::new(std::env::current_exe().expect("this binary"))
+            .args([
+                "--exact",
+                "disk_log::tests::dir_lock::dir_lock_child",
+                "--nocapture",
+            ])
+            .env(CHILD_DIR, dir.path())
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .expect("child");
+        // Kept open to the end, so the child never writes into a closed pipe.
+        let mut stdout = std::io::BufReader::new(child.stdout.take().expect("stdout")).lines();
+        let held = stdout.any(|line| line.is_ok_and(|line| line.trim() == "held"));
+        assert!(held, "the child never opened the log");
+        let open = || DiskLog::open(dir.path(), "t/ns/orders/0", config(FsyncMode::OnCommit));
+        assert!(
+            is_busy(open()),
+            "the child's open does not hold the directory"
+        );
+
+        if killed {
+            child.kill().expect("kill");
+        } else {
+            drop(child.stdin.take());
+        }
+        let status = child.wait().expect("wait");
+        assert!(killed || status.success(), "the child failed: {status}");
+        let reopened = open().unwrap_or_else(|err| {
+            panic!("killed: {killed}: the dead holder still blocks the open: {err}")
+        });
+        assert_eq!(read_all(&reopened, 0).await, ["held"]);
+        reopened.close().await.expect("close");
+        drop(stdout);
+    }
+}

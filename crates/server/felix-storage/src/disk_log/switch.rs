@@ -443,7 +443,8 @@ pub(crate) async fn side_holds(log: &DiskLog, range: &SideRange) -> Result<bool>
 async fn check_side_dir(side: &SideDir<'_>, range: &SideRange) -> Result<bool> {
     let log = DiskLog::open(side.dir, side.label, without_retention(side.config.clone()))?;
     let held = side_holds(&log, range).await;
-    let shut = log.shutdown().await;
+    // Closed, so the directory's lock is free for the next step's open.
+    let shut = log.close().await;
     let held = held?;
     shut?;
     Ok(held)
@@ -478,7 +479,7 @@ async fn check_and_cut(
         },
         _ => Ok(()),
     };
-    let shut = log.shutdown().await;
+    let shut = log.close().await;
     let checked = checked?;
     cut?;
     shut?;
