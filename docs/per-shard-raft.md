@@ -2029,6 +2029,39 @@ keeps N+1 only if it keeps N.
 > `a_stopped_groups_publisher_stops_waiting` and
 > `a_batch_not_reported_whole_is_an_unknown_outcome`.
 
+**Publishes queued on one lane are one proposal.** The broker's publish
+lane for a Raft shard does what the hybrid's claim does. When a plain
+publish's turn comes, the plain publishes already queued behind it on the
+lane join it, up to 64 publishes or 1 MiB of payload. They are then one
+batch: one `propose`, one place in the commit order, one openraft write,
+one wait and one delivery. Nothing waits for more to arrive, so a lone
+publish costs what it did. A publish joins only if it is for the same
+shard, was admitted at the same term, has records and no headers, has the
+first one's publisher when publishers are recorded, and its connection
+has no idempotent batch waiting for its turn on the shard. The first one
+that does not qualify ends the batch, so lane order holds. Idempotent
+batches, conditional publishes, commits and trims never join.
+
+Each publish gets its own offsets, sliced from the batch's first by record
+count, and is answered when the batch is: at the point the stream's ack
+level names for the batch's last record. The level belongs to the stream,
+so all members share it. If the batch fails, every member gets the same
+error: failed when openraft refused the whole write before appending any of
+it, and outcome unknown otherwise. A leader change that cuts the batch
+partway therefore leaves every member unknown, including one whose
+records were kept. Refusals of one publish (authorisation, quotas, rates,
+size) happen at admission, before the publish is queued, so one bad
+publish cannot fail its neighbours.
+
+> `services/felix-broker-service/src/serving/quic/handlers/publish/worker/tests.rs`,
+> `queued_publishes_to_a_raft_shard_are_one_proposal`,
+> `a_merge_stops_at_its_cap`,
+> `a_refused_publish_does_not_refuse_its_neighbours`,
+> `a_refused_merged_proposal_fails_every_publish_in_it`,
+> `a_cancelled_publisher_keeps_its_place_in_the_merge`,
+> `an_idempotent_batch_is_never_merged` and
+> `a_shared_raft_error_keeps_its_class_for_every_member`.
+
 **A token never leaves the broker.** The codec does not encode it, and the
 router clears it from every append it sends. A transport inside one
 process hands a message over as it is. A token that went with it would be

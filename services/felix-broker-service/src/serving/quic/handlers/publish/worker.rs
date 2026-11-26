@@ -173,6 +173,11 @@ impl Waiting {
         }
     }
 
+    /// Whether a line is open at `place`.
+    fn holds(&self, place: Place) -> bool {
+        self.lines.lock().contains_key(&place)
+    }
+
     /// Start a line at `place`. Called on the shard's lane, like `join`.
     fn open(self: &Arc<Self>, place: Place) -> Line {
         self.lines.lock().insert(place, VecDeque::new());
@@ -537,7 +542,7 @@ impl LaneWork {
             Some(place) => self.waiting.join(place, job),
             None => Some(job),
         };
-        let Some((job, turn)) = job.and_then(|job| self.propose_on_raft(job)) else {
+        let Some((job, turn)) = job.and_then(|job| self.propose_on_raft(job, Some(&lane))) else {
             return;
         };
         let this = Arc::clone(self);
@@ -566,7 +571,14 @@ impl LaneWork {
     /// Propose `job` to its shard's Raft group and leave its answer to a
     /// task, or hand it back with the producer's turn it has to wait for.
     /// The turn's place in the producer's line is already taken.
-    fn propose_on_raft(self: &Arc<Self>, mut job: PublishJob) -> Option<(PublishJob, Turn)> {
+    ///
+    /// Proposed on its `lane`, a plain publish takes the plain publishes
+    /// queued behind it into its proposal (`take_queued_on_raft`).
+    fn propose_on_raft(
+        self: &Arc<Self>,
+        mut job: PublishJob,
+        lane: Option<&LaneGuard>,
+    ) -> Option<(PublishJob, Turn)> {
         let (handle, shard, term) = match &job.target {
             PublishTarget::Resolved {
                 handle,
@@ -596,6 +608,29 @@ impl LaneWork {
             }
             _ => unreachable!("only local publishes with a shard are proposed"),
         };
+        let mut payloads = std::mem::take(&mut job.payloads);
+        let mut members = vec![GroupMember {
+            response: job.response.take(),
+            acked_on_enqueue: job.acked_on_enqueue,
+            records: payloads.len(),
+        }];
+        let mut permits = Vec::new();
+        // As on the hybrid, a publish with headers is proposed alone.
+        if let Some(lane) = lane
+            && job.headers.is_none()
+            && !payloads.is_empty()
+        {
+            self.take_queued_on_raft(
+                handle,
+                term,
+                lane,
+                job.publisher.as_ref(),
+                &mut payloads,
+                &mut members,
+                &mut permits,
+            );
+            metrics::histogram!(PUBLISH_CLAIM_JOBS).record(members.len() as f64);
+        }
         let attribution = felix_broker::Attribution {
             publisher: job.publisher.take(),
             headers: job.headers.take(),
@@ -608,7 +643,7 @@ impl LaneWork {
                 handle,
                 shard,
                 term,
-                std::mem::take(&mut job.payloads),
+                payloads,
                 attribution,
                 self.quorum_timeout,
             )
@@ -621,37 +656,84 @@ impl LaneWork {
             Ok(proposed) => {
                 // A client's ack is timed out by its control stream's
                 // sweep, at the quorum wait and with the engine's error, so
-                // the engine need not arm a timer per publish for it.
+                // the engine need not arm a timer per publish for it. Every
+                // member of a merged proposal must be bounded that way.
                 let timeout = self.quorum_timeout;
                 let timed_out =
                     |timeout| crate::shards::routing::RaftPublish::timed_out(timeout).into();
-                let bounded = job
-                    .response
-                    .as_ref()
-                    .is_some_and(|reply| reply.answer_within(timeout, timed_out));
+                let bounded = members.iter().all(|member| {
+                    member
+                        .response
+                        .as_ref()
+                        .is_some_and(|reply| reply.answer_within(timeout, timed_out))
+                });
                 let proposed = if bounded {
                     proposed.without_deadline()
                 } else {
                     proposed
                 };
-                // The delivery is finished on this task once the publisher
-                // is answered: one task per publish, not two.
+                // The delivery is finished on this task once the publishers
+                // are answered: one task per proposal, not two. The permits
+                // are held until then, as each job's own would be.
                 self.work.spawn(async move {
                     proposed
                         .complete_then(|result| {
-                            settle(
-                                job.response,
-                                job.acked_on_enqueue,
-                                Some(&shard),
-                                result.map_err(Into::into),
-                            );
+                            settle_group(members, Some(&shard), result.map_err(Into::into));
                         })
                         .await;
+                    drop((job, permits));
                 });
             }
-            Err(err) => settle(job.response, job.acked_on_enqueue, Some(&shard), Err(err)),
+            Err(err) => settle_group(members, Some(&shard), Err(err)),
         }
         None
+    }
+
+    /// Move the plain publishes queued on `lane` behind the one being
+    /// proposed into its proposal, as many as fit. They become one batch:
+    /// consecutive offsets, one answer at the point the last record reaches,
+    /// sliced per publish by [`settle_group`].
+    ///
+    /// Only what is already queued joins, so a lone publish waits for
+    /// nothing. Taking stops at the first job that cannot join, so lane
+    /// order holds.
+    #[allow(clippy::too_many_arguments)]
+    fn take_queued_on_raft(
+        &self,
+        handle: &felix_broker::StreamHandle,
+        term: u64,
+        lane: &LaneGuard,
+        publisher: Option<&Bytes>,
+        payloads: &mut Vec<Bytes>,
+        members: &mut Vec<GroupMember>,
+        permits: &mut Vec<super::AdmissionPermit>,
+    ) {
+        let mut bytes = payload_bytes(payloads);
+        let records_publishers = self.broker.records_publishers();
+        let taken = lane.take_more(CLAIM_MAX_JOBS - 1, |next, _| {
+            let joins = joins_raft_proposal(
+                next,
+                handle,
+                term,
+                publisher,
+                records_publishers,
+                bytes,
+                &self.waiting,
+            );
+            if joins {
+                bytes += payload_bytes(&next.payloads);
+            }
+            joins
+        });
+        for mut next in taken {
+            members.push(GroupMember {
+                response: next.response.take(),
+                acked_on_enqueue: next.acked_on_enqueue,
+                records: next.payloads.len(),
+            });
+            permits.extend(next.admission_permit.take());
+            payloads.append(&mut next.payloads);
+        }
     }
 
     /// Propose an idempotent batch whose producer's `turn` has come, and
@@ -722,7 +804,7 @@ impl LaneWork {
                 let Some(next) = line.next() else {
                     return;
                 };
-                if let Some(waits) = self.propose_on_raft(next) {
+                if let Some(waits) = self.propose_on_raft(next, None) {
                     (job, turn) = waits;
                     break;
                 }
@@ -1017,6 +1099,58 @@ fn settle_group(members: Vec<GroupMember>, shard: Option<&ShardKey>, result: sup
             }
         }
     }
+}
+
+/// Whether `next`, queued behind a plain publish proposed to a Raft shard,
+/// may join its proposal, which then holds `bytes` of payload. Anything not
+/// listed here is refused, so a new kind of job is proposed alone until it
+/// is added on purpose. It joins only if:
+///
+/// - it is a plain local publish (`Resolved`). Idempotent batches carry
+///   producer marks and wait for their producer's turn; forwards are not
+///   ours to write.
+/// - it is for the same stream shard, admitted at the same `term`. A term
+///   the group moved past is refused, and must be refused alone.
+/// - it has no headers and at least one record. A batch stores headers one
+///   per record; an empty publish claims no offset.
+/// - its publisher is the first's, when publishers are recorded: a batch
+///   stores one publisher on every record.
+/// - the proposal stays within [`CLAIM_MAX_BYTES`], far below the Raft
+///   record limit, so joining cannot make the batch too large.
+/// - its connection has no idempotent batch waiting for a turn on the
+///   shard: its later publishes queue behind that batch ([`Waiting`]).
+///   Lines on the shard open only on its lane, which the caller holds, so
+///   none opens before the proposal. Lock order: scheduler, then lines.
+///
+/// The ack level is the stream's and the timeout the broker's, so every
+/// member is answered at the point it would be alone. Every refusal of one
+/// publish (authorisation, quotas, rates, payload size) happens at
+/// admission, before it is queued.
+fn joins_raft_proposal(
+    next: &PublishJob,
+    handle: &felix_broker::StreamHandle,
+    term: u64,
+    publisher: Option<&Bytes>,
+    records_publishers: bool,
+    bytes: usize,
+    waiting: &Waiting,
+) -> bool {
+    let PublishTarget::Resolved {
+        handle: next_handle,
+        shard: Some(_),
+        generation,
+        ..
+    } = &next.target
+    else {
+        return false;
+    };
+    next_handle.id() == handle.id()
+        && *generation == term
+        && next.headers.is_none()
+        && !next.payloads.is_empty()
+        && (!records_publishers || next.publisher.as_ref() == publisher)
+        && bytes + payload_bytes(&next.payloads) <= CLAIM_MAX_BYTES
+        && place_of(next).is_none_or(|place| !waiting.holds(place))
 }
 
 fn payload_bytes(payloads: &[Bytes]) -> usize {

@@ -31,6 +31,13 @@ reports the fan-in actually achieved, in records per flush (a client batch of N
 records counts N). A value near 1 under concurrent single-record load means
 appends are serialising on the device and something has regressed.
 
+On a Raft shard the publish lane also merges publishes before they reach the
+log, as the hybrid's claim does. The plain publishes queued behind one are
+proposed with it as one batch: one proposal, one openraft write, one commit
+wait and one delivery for up to 64 publishes or 1 MiB, instead of one of each
+per publish (`docs/per-shard-raft.md`, "Publishes queued on one lane are one
+proposal").
+
 ### 2. One `write` per batch, not per record
 
 Records are encoded into a reusable staging buffer and handed to the kernel in a
