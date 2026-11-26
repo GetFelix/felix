@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795714479748,
+  "lastUpdate": 1795718394485,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -71864,6 +71864,58 @@ window.BENCHMARK_DATA = {
             "range": "7124.15",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1081160.47\nmean: 1078512.46\nstdev: 7124.15\ncv: 0.66%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "5230a5dc693a1d5cbad98aad13740c892925fbab",
+          "message": "fix(sim): judge only the opens before the Raft run's final log read (#3126) (#3278)\n\nThe members keep running after the final reads until shutdown, and a\nplacement hand-over in that window can open a later term. The opens check\nthen held that open to a log read before it existed. The run now counts\nthe opens when it reads the final log, at the same instant it picks the\nleader and reads its bound, and the committed-log rule judges only those.\nLater opens are still held to the other rules. The commit state goes\nwith the groups at shutdown, so the read cannot move after it.\n\nRaftSimConfig::runtime_seed seeds select! apart from the seed, which\nreplays the interleaving: seed 1 with majority relaxed cuts on runtime\nseeds 76 and 94 is pinned in raft_seed_1_opens_after_the_final_read, and\nraft_runtime_seeds searches more.\n\nSpec-Unaffected: simulator harness only",
+          "timestamp": "2026-11-26T10:12:00-08:00",
+          "tree_id": "8155bbe59f6e06f06d2c554214c8b55a7e39b7f3",
+          "url": "https://github.com/GetFelix/felix/commit/5230a5dc693a1d5cbad98aad13740c892925fbab"
+        },
+        "date": 1795718393773,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 669924.51,
+            "range": "83453.12",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 669924.51\nmean: 690081.14\nstdev: 83453.12\ncv: 12.09%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 669924.51,
+            "range": "83453.12",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 669924.51\nmean: 690081.14\nstdev: 83453.12\ncv: 12.09%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 165704.65,
+            "range": "5533.17",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 165704.65\nmean: 165325.21\nstdev: 5533.17\ncv: 3.35%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1657046.54,
+            "range": "55331.74",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1657046.54\nmean: 1653252.15\nstdev: 55331.74\ncv: 3.35%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
