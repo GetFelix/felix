@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795661215177,
+  "lastUpdate": 1795662486749,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -89364,6 +89364,72 @@ window.BENCHMARK_DATA = {
             "range": "200.80",
             "unit": "us",
             "extra": "trials: 5\nmedian: 486.00\nmean: 603.80\nstdev: 200.80\ncv: 33.26%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "ce596a9c134967ab2cdac40f608201fd39d6b69e",
+          "message": "fix(controlplane): a broker ahead of a restored node record is told to register again (#2604) (#3210)\n\n* fix(membership): a broker ahead of a restored node record registers again (#2604)\n\nAfter a control-plane restore of a backup taken before a broker last\nregistered, the node record holds an older incarnation than the running\nbroker. Its beats were accepted but its placement acknowledgements and\nRaft copy ids were dropped, and nothing told it to register again.\n\nThe heartbeat answer now carries `register_again: true` when the beat is\nabove the record's incarnation, carries the record's registered_at_millis\nand the node is live. It is computed from the record and the beat, so no\nnew replicated state. The broker offers it by sending registered_at_millis\nand handles it by registering again, keeping its lease. An older broker\nsends no registered_at_millis and gets the same bytes as before.\n\nSpec-Unaffected: no TLA model covers node registration or heartbeats; FelixRaftPlacement's AllAcked gate is unchanged, this only lets a rewound broker re-register so its acks are counted\n\n* test(membership): fix the lint on the register-again tests (#2604)\n\nSpec-Unaffected: test-only change",
+          "timestamp": "2026-11-25T18:48:29-08:00",
+          "tree_id": "90e8401d9a597f98784612b427f3d26a09c63eac",
+          "url": "https://github.com/GetFelix/felix/commit/ce596a9c134967ab2cdac40f608201fd39d6b69e"
+        },
+        "date": 1795662470598,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 154,
+            "range": "0.84",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 154.00\nmean: 154.20\nstdev: 0.84\ncv: 0.54%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 218,
+            "range": "15.93",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 218.00\nmean: 219.20\nstdev: 15.93\ncv: 7.27%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 805,
+            "range": "869.57",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 805.00\nmean: 931.40\nstdev: 869.57\ncv: 93.36%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 202,
+            "range": "1.79",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 202.00\nmean: 202.20\nstdev: 1.79\ncv: 0.88%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 389,
+            "range": "9.15",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 389.00\nmean: 390.20\nstdev: 9.15\ncv: 2.34%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 529,
+            "range": "600.75",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 529.00\nmean: 794.40\nstdev: 600.75\ncv: 75.62%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
