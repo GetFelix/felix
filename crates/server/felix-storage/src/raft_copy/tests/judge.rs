@@ -862,12 +862,15 @@ async fn a_copy_reopens_at_once_after_a_close_under_load() {
             })
             .collect();
         tokio::task::yield_now().await;
+        // A clone that outlives the close, as a stopped member's task can.
+        let lingering = opened.log.clone();
         close(opened).await;
         let again = copies
             .open_copy(SHARD, &dir, "t/ns/orders/0", config())
             .await;
         assert!(again.is_ok(), "round {round}: {:?}", again.err());
         close(again.expect("open")).await;
+        drop(lingering);
         for writer in writers {
             writer.await.expect("writer");
         }
