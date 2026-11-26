@@ -212,13 +212,10 @@ filler that restates what was just said.
     and the message "baseline predates the fixed pace: refresh needed". It is
     not a regression and says so in the job summary and the annotation; the job
     is red until the baseline is refreshed.
-  - The Raft baseline must be refreshed once Raft members in the test cluster
-    open in written-commit mode (#1774). Until then the cluster harness starts
-    them in strict mode (fsync on every commit), which costs more per
-    message. Refresh with one command from a pushed branch:
+  - To refresh both architectures in one go from a pushed branch, run
     `scripts/perf/ipm_refresh.sh <branch>`. It dispatches five runs, waits,
-    and rewrites both sections of `scripts/perf/ipm-baseline.toml`. Commit the
-    result only after the change that opens members that way has merged.
+    and rewrites both sections of `scripts/perf/ipm-baseline.toml`. The test
+    cluster opens Raft members in written-commit mode, as a deployment does.
   - If the extra cost is deliberate, dispatch the workflow five times on the
     PR's head commit and run `python3 scripts/perf/ipm_gate.py update` with
     the five `ipm-result.json` artifacts (one per architecture per run). It

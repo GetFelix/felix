@@ -10,22 +10,24 @@
 # See CONTRIBUTING.md.
 tolerance_pct = 3.0
 
-[aarch64]
-commit = "659683cc7cdefb7230795ef4ba76b318116045c2"
-toolchain = "rustc 1.100.0 (0ef1bc386 2026-11-09)"
-runs = 5
-b1 = 507264
-b64 = 8752
-
-[aarch64.pace]
-b1 = 20
-
 [x86_64]
-commit = "659683cc7cdefb7230795ef4ba76b318116045c2"
+commit = "c4a7a3fa30b739d55e6f42d03459151736e3fe4b"
 toolchain = "rustc 1.100.0 (0ef1bc386 2026-11-09)"
 runs = 5
-b1 = 283366
-b64 = 9343
+b1 = 262977
+b64 = 11108
 
 [x86_64.pace]
 b1 = 100
+b64 = 4000
+
+[aarch64]
+commit = "c4a7a3fa30b739d55e6f42d03459151736e3fe4b"
+toolchain = "rustc 1.100.0 (0ef1bc386 2026-11-09)"
+runs = 5
+b1 = 487638
+b64 = 10477
+
+[aarch64.pace]
+b1 = 20
+b64 = 4000
