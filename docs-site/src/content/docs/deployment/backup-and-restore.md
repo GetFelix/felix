@@ -313,6 +313,10 @@ so its backup is a copy of that directory, taken with the broker stopped.
    felix-broker rotate-storage-id --dir /var/lib/felix
    ```
 
+   Both tools lock the data directory, as a running broker does, so either
+   one refuses to run while a broker still holds it, with an error naming
+   the directory.
+
 4. Start the broker.
 
 Each stream and cache shard starts again from the records in the copy.

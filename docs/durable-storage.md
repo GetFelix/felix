@@ -1974,23 +1974,37 @@ opening runs recovery, which cuts a torn tail. So each one is refused on a
 directory a running broker holds. Stop the broker first, or use
 `felixctl data inspect`, which only reads.
 
-Two brokers pointed at one data directory are caught per log directory, as
-each opens it, not at startup. The second broker starts, and each shard it
-tries to open that the first holds fails. The data directory's own files
-(the run record, the storage id and the marks) are not covered by these
-locks: a second broker started on the same directory writes its run record
-and may rotate the storage id under the first before any log refuses it. A
-lock on the whole data directory for the life of the process is tracked in
-#3250.
+A broker also locks its data directory itself, the same way, for as long
+as it runs. That lock covers the directory's own files, which no log's lock
+does: the run record, the run token, the storage id, the marks, the
+registration and rotation records, the control-plane group and view files,
+and the offload node id. It is the first thing a start does with the
+directory, before it reads or writes anything there, so a second broker
+pointed at the same directory stops at startup, before it is ready, with an
+error that names the directory and says another broker process holds it.
+It never gets as far as writing its run record or rotating the storage id
+under the first. The broker lets go of it when its run ends: after the
+drain has closed every store and recorded the stop, on a startup error, or
+when a test drops the running broker. Tasks the broker spawned never hold
+it, so a broker stopped and started again in the same process is not kept
+out by one that outlived its run. A simulated broker holds it the same way.
 
-The lock goes away with the process that holds it, so a crash leaves no
-stale lock behind. See "One open at a time" in `docs/storage-format.md`.
+`felix-broker restore-point` and `felix-broker rotate-storage-id` take the
+same lock and hold it until they finish, so each is refused while a broker
+runs on the directory, and a broker started while one runs is refused.
+`felix-broker inspect` and `felixctl data inspect` only read and take no
+lock, so they work on a running broker's directory. Copying a directory
+for a backup takes no lock either.
+
+The lock goes away with the process that holds it, so a crash or a kill
+leaves no stale lock behind and the next start goes ahead. See "One open at
+a time" in `docs/storage-format.md`.
 
 Some filesystems cannot lock a directory. On Linux NFS `flock` is emulated
 with byte-range locks, which a directory cannot take, and some FUSE mounts
-do not support it. A broker checks this at startup: it takes and lets go of
-the lock on its data directory before it reports ready, and on a filesystem
-that refuses it the broker does not start. The error names the directory
+do not support it. On such a filesystem the lock on the data directory
+fails at startup, before the broker is ready, and the broker does not
+start. The error names the directory
 and says to keep it on a local disk. `felix-log-tool` fails the same way at
 its open. Other network filesystems may grant the lock on each host
 separately, which keeps two opens on one host apart but not two hosts that

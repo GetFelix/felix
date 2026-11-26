@@ -1,7 +1,8 @@
 //! The lock on a log's directory: one open log at a time, across processes
 //! and within one. Every open takes it, so two brokers on one data
 //! directory, or a broker and `felix-log-tool`, never both write, cut or
-//! rotate a log.
+//! rotate a log. [`RootLock`] is the same lock on a broker's data directory,
+//! held for as long as the broker runs on it.
 //!
 //! An exclusive `flock` on the directory itself, so no file is added to it
 //! and no segment file is touched. The kernel ties the lock to the open
