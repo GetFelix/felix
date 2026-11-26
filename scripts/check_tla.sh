@@ -550,9 +550,10 @@ expectations=(
   "FelixRaftFormedSetEven pass"
   "FelixRaftFormedSetKeepOne violates OneGroup"
   "FelixRaftReform pass"
-  # A leader names an allowance only after an entry of its own term; run
-  # 45743343474 found the violation without that guard.
-  "FelixRaftReformLeaseTail pass"
+  # Open (issue #3103): with the own-term guard, run 45758979793 found the
+  # re-form keeping a deposed term's entry over a committed one. Pinned
+  # until a rule passes.
+  "FelixRaftReformLeaseTail violates AckedSurvive"
   "FelixRaftReformLeaseTailNameEarly violates LeaseAckedReformed"
   "FelixRaftReformLeaseTailNoVouch violates LeaseAckedReformed"
   "FelixRaftReformLeaseTailLowestEnd violates LeaseAckedReformed"

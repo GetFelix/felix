@@ -3630,6 +3630,12 @@ leader, a configuration without the vote rule that finds a lease-answered
 write lost, and a reach configuration where an idle group's followers elect
 after the leader dies. The kept-log re-form belongs in `FelixRaftReform.tla`.
 
+The re-form rule above does not hold yet. `FelixRaftReformLeaseTail.cfg`
+finds it dropping a committed record: a deposed leader's own store names an
+allowance of the older term that nobody echoed, it counts toward the
+majority-held end beside the new leader's, and the re-form keeps the deposed
+term's entry at the committed record's index (run 45758979793).
+
 ### Reads
 
 `read_bound` is the commit index plus one, for every stream and every
