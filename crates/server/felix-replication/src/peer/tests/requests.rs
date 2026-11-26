@@ -191,6 +191,10 @@ async fn raft_calls_do_not_take_the_budget_pings_need() {
             tokio::time::sleep(Duration::from_secs(30)).await;
             body
         }
+
+        fn layouts(&self) -> felix_wire::internal::RaftLayouts {
+            felix_wire::internal::RaftLayouts::new(6, 6).expect("layouts")
+        }
     }
     let config = PeerTransportConfig {
         max_inflight_per_peer: 2,
@@ -259,6 +263,10 @@ impl crate::peer::RaftHandler for StuckGroup {
             std::future::pending::<()>().await;
         }
         body
+    }
+
+    fn layouts(&self) -> felix_wire::internal::RaftLayouts {
+        felix_wire::internal::RaftLayouts::new(6, 6).expect("layouts")
     }
 }
 

@@ -137,6 +137,7 @@ fn every_body_begins_with_its_correlation_id() {
             capabilities: None,
             identity: None,
             incarnation: None,
+            raft_layouts: None,
         }),
         InternalMessage::Hello(Hello {
             correlation_id: id,
@@ -149,6 +150,7 @@ fn every_body_begins_with_its_correlation_id() {
             capabilities: Some(PeerCapabilities::FENCE),
             identity: None,
             incarnation: None,
+            raft_layouts: None,
         }),
         InternalMessage::Fence(Fence {
             correlation_id: id,
