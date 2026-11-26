@@ -7,9 +7,10 @@
 //! and so replaces it. Holds end on a grid shared by every group on the
 //! broker, so the held appends of many groups to one follower go out at
 //! the same instant and ride one heartbeat batch (`raft/beats.rs`). A
-//! heartbeat to the follower ends the hold, and the held append goes in its
-//! batch. See docs/per-shard-raft.md, "A commit goes on the next
-//! append".
+//! heartbeat to the follower that carries the held commit replaces the held
+//! append, which is then never sent; one that does not ends the hold, and
+//! the held append goes in its batch. See docs/per-shard-raft.md, "A commit
+//! goes on the next append".
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -25,7 +26,7 @@ use openraft::raft::{
     AppendEntriesRequest, AppendResult, SnapshotResponse, TransferLeaderRequest,
     TransferLeaderResponse, VoteRequest, VoteResponse,
 };
-use openraft::type_config::alias::{SnapshotOf, VoteOf};
+use openraft::type_config::alias::{LogIdOf, SnapshotOf, VoteOf};
 use openraft_multi::GroupNetworkAdapter;
 
 use super::Router;
@@ -69,14 +70,34 @@ impl Hold {
 pub(crate) struct Link {
     /// Heartbeats sent to the follower. A held append goes with the next.
     beats: AtomicU64,
+    /// The vote and commit the latest heartbeat to the follower carried.
+    beat: parking_lot::Mutex<Option<Reach>>,
     wake: tokio::sync::Notify,
 }
 
 impl Link {
-    fn beat(&self) {
+    fn beat(&self, beat: &Append) {
+        *self.beat.lock() = Some((beat.vote.clone(), reach(beat)));
         self.beats.fetch_add(1, Ordering::AcqRel);
         self.wake.notify_waiters();
     }
+
+    /// Whether a heartbeat sent already told the follower all `held` would.
+    fn covers(&self, held: &Append) -> bool {
+        self.beat
+            .lock()
+            .as_ref()
+            .is_some_and(|(vote, reach_of)| *vote == held.vote && *reach_of >= reach(held))
+    }
+}
+
+/// The vote an entry-less append went under, and its [`reach`].
+type Reach = (VoteOf<ShardTypes>, Option<LogIdOf<ShardTypes>>);
+
+/// How far an entry-less append lets the follower commit: no further than
+/// the log id it checks, since the follower's log may differ after it.
+fn reach(append: &Append) -> Option<LogIdOf<ShardTypes>> {
+    append.leader_commit.min(append.prev_log_id)
 }
 
 /// The links of one group's leader to its followers, by follower.
@@ -164,23 +185,37 @@ struct Appends<S> {
 
 impl<S: Stream<Item = Append> + Unpin> Appends<S> {
     async fn next(&mut self) -> Option<Append> {
-        let mut held = match self.next.take() {
-            Some(append) => append,
-            None if self.ended => return None,
-            None => match self.input.next().await {
+        loop {
+            let held = match self.next.take() {
                 Some(append) => append,
-                None => {
-                    self.ended = true;
-                    return None;
-                }
-            },
-        };
-        let Some(hold) = self.hold.filter(|hold| !hold.every.is_zero()) else {
-            return Some(held);
-        };
-        if !held.entries.is_empty() {
-            return Some(held);
+                None if self.ended => return None,
+                None => match self.input.next().await {
+                    Some(append) => append,
+                    None => {
+                        self.ended = true;
+                        return None;
+                    }
+                },
+            };
+            let Some(hold) = self.hold.filter(|hold| !hold.every.is_zero()) else {
+                return Some(held);
+            };
+            if !held.entries.is_empty() {
+                return Some(held);
+            }
+            if let Some(held) = self.hold(hold, held).await {
+                return Some(held);
+            }
+            // A heartbeat carried the held commit: nothing to send. openraft
+            // waits for no answer to it, as for one a later append replaces.
+            #[cfg(test)]
+            crate::raft::beats::counts::skipped();
         }
+    }
+
+    /// Hold the entry-less `held` until its grid point, a replacing append,
+    /// or a heartbeat. `None` when a heartbeat already carried its commit.
+    async fn hold(&mut self, hold: Hold, mut held: Append) -> Option<Append> {
         #[cfg(test)]
         crate::raft::beats::counts::timer();
         let until = tokio::time::sleep_until(hold.until(tokio::time::Instant::now()));
@@ -205,7 +240,7 @@ impl<S: Stream<Item = Append> + Unpin> Appends<S> {
                         let entries = !next.entries.is_empty();
                         held = next;
                         if entries {
-                            break;
+                            return Some(held);
                         }
                     }
                     Some(next) => {
@@ -216,6 +251,11 @@ impl<S: Stream<Item = Append> + Unpin> Appends<S> {
                 () = &mut woken => {}
                 () = &mut until => break,
             }
+        }
+        // Checked whatever ended the hold, since a heartbeat may have gone
+        // since it began without waking it yet.
+        if held.entries.is_empty() && self.link.covers(&held) {
+            return None;
         }
         Some(held)
     }
@@ -257,7 +297,7 @@ where
             let last = append.entries.last().map(|entry| entry.log_id()).or(prev);
             if beats {
                 // Before the send, so a held append joins its batch.
-                appends.link.beat();
+                appends.link.beat(&append);
             }
             let answer = network.append_entries(append, option).await;
             if let Ok(Ok(acked)) = &answer {

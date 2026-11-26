@@ -239,6 +239,7 @@ pub(crate) mod counts {
         static TIMERS: Cell<u64> = const { Cell::new(0) };
         static SPAWNS: Cell<u64> = const { Cell::new(0) };
         static SENT: Cell<u64> = const { Cell::new(0) };
+        static SKIPPED: Cell<u64> = const { Cell::new(0) };
     }
 
     pub(crate) fn timer() {
@@ -251,6 +252,15 @@ pub(crate) mod counts {
 
     pub(crate) fn sent() {
         SENT.set(SENT.get() + 1);
+    }
+
+    pub(crate) fn skipped() {
+        SKIPPED.set(SKIPPED.get() + 1);
+    }
+
+    /// Held appends a heartbeat made needless, so far on this thread.
+    pub(crate) fn skips() -> u64 {
+        SKIPPED.get()
     }
 
     /// `(timers, spawns, batches sent)` so far on this thread.

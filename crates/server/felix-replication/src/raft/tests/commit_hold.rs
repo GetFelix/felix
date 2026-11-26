@@ -314,25 +314,52 @@ async fn the_held_commits_of_many_groups_share_one_message() {
     }
 }
 
-/// **A heartbeat ends the hold.** The held commit goes with the heartbeat to
-/// the same follower, in the same message, so it costs no message of its
-/// own.
-#[tokio::test(start_paused = true)]
-async fn a_heartbeat_takes_the_held_commit_along() {
-    let mut rig = Rig::new(1);
-    let (tx, task) = stream(rig.client(0, "b").await);
-    tx.unbounded_send(append(5, 5, 5)).expect("send");
-    tokio::time::sleep(Duration::from_millis(3)).await;
-    let beat_at = tokio::time::Instant::now();
-    let mut beats = rig.heartbeat_client(0, "b").await;
+/// Sends one heartbeat from group 0's leader to `to`, as openraft's
+/// heartbeat worker does, and waits for its answer.
+async fn heartbeat(rig: &mut Rig, to: &str, beat: Append) {
+    let mut beats = rig.heartbeat_client(0, to).await;
     let answers = beats
         .stream_append(
-            Box::pin(futures::stream::once(async { append(5, 5, 5) })),
+            Box::pin(futures::stream::once(async { beat })),
             RPCOption::new(Duration::from_secs(1)),
         )
         .await
         .expect("stream");
     assert_eq!(answers.count().await, 1);
+}
+
+/// **A heartbeat that carries the held commit replaces it.** The held
+/// append is never sent, not even in the heartbeat's batch, and is not
+/// sent later when its hold would have ended.
+#[tokio::test(start_paused = true)]
+async fn a_heartbeat_that_carries_the_held_commit_skips_it() {
+    let mut rig = Rig::new(1);
+    let skips = counts::skips();
+    let (tx, task) = stream(rig.client(0, "b").await);
+    tx.unbounded_send(append(5, 5, 5)).expect("send");
+    tokio::time::sleep(Duration::from_millis(3)).await;
+    heartbeat(&mut rig, "b", append(5, 5, 5)).await;
+    tokio::time::sleep(rig.bound() * 2).await;
+    let sent = rig.wire.commit_messages("b");
+    assert_eq!(sent.len(), 1, "{sent:?}");
+    assert_eq!(sent[0].commits, 1, "only the heartbeat went: {sent:?}");
+    assert_eq!(counts::skips() - skips, 1);
+    drop(tx);
+    assert_eq!(task.await.expect("stream"), 0);
+}
+
+/// **A heartbeat that does not carry the held commit takes it along.** The
+/// hold ends, and the held append goes in the heartbeat's batch, so it
+/// costs no message of its own.
+#[tokio::test(start_paused = true)]
+async fn a_heartbeat_behind_the_held_commit_takes_it_along() {
+    let mut rig = Rig::new(1);
+    let (tx, task) = stream(rig.client(0, "b").await);
+    tx.unbounded_send(append(5, 5, 5)).expect("send");
+    tokio::time::sleep(Duration::from_millis(3)).await;
+    let beat_at = tokio::time::Instant::now();
+    // Built before the commit reached 5.
+    heartbeat(&mut rig, "b", append(5, 5, 4)).await;
     tokio::time::sleep(Duration::from_millis(1)).await;
     let sent = rig.wire.commit_messages("b");
     assert_eq!(sent.len(), 1, "{sent:?}");

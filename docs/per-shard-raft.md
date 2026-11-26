@@ -2944,9 +2944,11 @@ messages a second, not one per commit.
 
 Two things end a hold early:
 
-- A heartbeat to the same follower. The heartbeat already carries the
-  commit index, and the held append goes in the same batch, so it costs no
-  message of its own.
+- A heartbeat to the same follower. A heartbeat carries the commit index
+  too, so when it carries the held commit, under the same vote and checked
+  at a log id no lower, the held append is dropped and never sent. When the
+  heartbeat was built before the commit, the held append goes in the
+  heartbeat's batch, so it costs no message of its own.
 - The end of the stream: openraft ends it when the leader stops or loses
   its leadership, and the held append goes at once.
 
