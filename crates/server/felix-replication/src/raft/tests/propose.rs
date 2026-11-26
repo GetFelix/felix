@@ -626,6 +626,7 @@ async fn a_token_does_not_leave_with_an_append() {
         )),
         Arc::new(super::super::reach::Refusals::new(group(0))),
         Arc::new(timers().raft(ShardKind::Stream).expect("timers")),
+        Arc::default(),
     );
     let (token, written) = WrittenToken::channel();
     let command = Command {
@@ -752,6 +753,7 @@ async fn a_record_past_the_heartbeat_gets_the_time_it_needs() {
         )),
         Arc::new(super::super::reach::Refusals::new(group(0))),
         Arc::new(timers().raft(ShardKind::Stream).expect("timers")),
+        Arc::default(),
     );
     // 240 ms on the link, past a 200 ms heartbeat.
     let command = Command {

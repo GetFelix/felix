@@ -704,10 +704,11 @@ impl GroupReader {
         // crashes, fails or is cancelled in between moves nothing and clears
         // nothing (see `resolve_clears`). The other order would settle those
         // dead letters below a cursor moved back.
-        let abandon = Abandon {
+        let mut abandon = Abandon {
             reader: self,
             key,
             cell: &slot,
+            armed: true,
         };
         let clear = self.dead_letters.begin_clear(key, offset).await?;
         let requires = match clear {
@@ -728,7 +729,7 @@ impl GroupReader {
         if let Some(clear) = clear {
             self.dead_letters.finish_clear(key, clear).await?;
         }
-        std::mem::forget(abandon);
+        abandon.disarm();
         self.replace(key, offset, &slot).await?;
         drop(old);
         self.wake(key);
@@ -1205,10 +1206,20 @@ struct Abandon<'a> {
     reader: &'a GroupReader,
     key: &'a GroupKey,
     cell: &'a Arc<OnceCell<Arc<Mutex<GroupTracker>>>>,
+    armed: bool,
+}
+
+impl Abandon<'_> {
+    /// The seek finished, so dropping the guard no longer abandons the group.
+    fn disarm(&mut self) {
+        self.armed = false;
+    }
 }
 
 impl Drop for Abandon<'_> {
     fn drop(&mut self) {
-        self.reader.abandon(self.key, self.cell);
+        if self.armed {
+            self.reader.abandon(self.key, self.cell);
+        }
     }
 }

@@ -26,7 +26,7 @@ use super::cache::{Answer, CacheCommand, CacheWatch, MARK_RETRY_MICROS, WatchSig
 use super::codec::ShardCodec;
 use super::commit::{self, Commits, SkipClaim, Skips};
 use super::executor::Placed;
-use super::install::{self, Incoming, Piece};
+use super::install::{self, Incoming, Piece, Unsendable};
 use super::lead::{self, Leadership};
 use super::lease::{Lease, View};
 use super::machine::{self, Cache, Groups, Machine, SnapshotData};
@@ -707,6 +707,9 @@ pub(crate) struct Host {
     pub(crate) placement: Placement,
     /// The broker's placement transfers, shared by all its groups.
     pub(crate) placed_budget: Arc<placed::Budget>,
+    /// The members the broker's leaders could not send a snapshot to,
+    /// shared by all its groups so that an idle member holds none of it.
+    pub(crate) unsendable: Arc<Unsendable>,
     /// The highest placement incarnation the broker has heard of.
     pub(crate) acked: Arc<AtomicU64>,
     /// Where a cache shard's member reports its changes for watches.
@@ -761,6 +764,7 @@ impl Group {
             clock,
             placement,
             placed_budget,
+            unsendable,
             acked,
             cache_changes,
             stands_after,
@@ -860,6 +864,7 @@ impl Group {
                 reach,
                 Arc::clone(&refusals),
                 Arc::clone(&config),
+                unsendable,
             ),
             group: id.clone(),
             commit_hold: timers.commit_hold,
@@ -1770,7 +1775,7 @@ impl Group {
                         };
                         let snapshot = SnapshotData {
                             bytes,
-                            restored: Some(restored),
+                            restored: Some(Box::new(restored)),
                         };
                         self.hold.vote_may_change(Some(&vote));
                         self.raft

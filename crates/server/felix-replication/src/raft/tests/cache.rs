@@ -690,7 +690,7 @@ async fn an_install_takes_the_state_the_receiver_parsed() {
     };
     let snapshot = SnapshotData {
         bytes: sent.snapshot(),
-        restored: Some(parsed.clone()),
+        restored: Some(Box::new(parsed.clone())),
     };
     machine
         .install_snapshot(&meta, snapshot)
@@ -1022,7 +1022,7 @@ async fn install(
     };
     let snapshot = SnapshotData {
         bytes: sent.snapshot(),
-        restored: Some(sent.clone()),
+        restored: Some(Box::new(sent.clone())),
     };
     machine
         .install_snapshot(&meta, snapshot)

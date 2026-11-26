@@ -158,14 +158,109 @@ filler that restates what was just said.
   nightly or dispatch); runs on main are never cancelled.
 - The `Instructions per message` workflow counts the CPU instructions the
   broker retires per acknowledged message (a durable Raft broker with periodic
-  fsync, 256 B, acked, 48 keys over 48 shards, batch 1 and 64, each cell on
-  a broker of its own) and fails when a cell is more than
-  3% over `scripts/perf/ipm-baseline.toml`. The broker runs under callgrind,
-  since hosted runners expose no hardware counters, so only user-space
-  instructions are counted, less the idle broker's per-second cost. If the extra cost is deliberate, run
-  `python3 scripts/perf/ipm_gate.py update <ipm-result.json>` (the result is
-  an artifact of the run, one per architecture) and commit the baseline with a
-  sentence on what the instructions buy. A toolchain bump updates it the same way.
+  fsync, 256 B, acked, 48 keys over 48 shards, batch 1 and 64) and fails when a
+  cell is more than 3% over or under `scripts/perf/ipm-baseline.toml`. The broker runs
+  under callgrind, since hosted runners expose no hardware counters, so only
+  user-space instructions are counted, less the idle broker's per-second cost.
+  - Each cell runs five reps. Every rep starts a fresh broker with a fresh
+    data directory, gives it a fixed unmeasured warm-up, then counts. The cell
+    reports its median rep, with the spread across reps. A broker that runs
+    for a long time under callgrind gets slower, so reusing one would make
+    later reps cost more.
+  - Under callgrind the broker runs hundreds of times slower than native while
+    its timers fire in real time, so its per-second work (timers, heartbeats,
+    polling) is a large share of what it executes. Taking the idle rate off
+    does not remove all of it, because a broker under load does more per
+    second than an idle one. So every cell publishes at a fixed pace for a
+    fixed time, and its figure includes the same per-second work in every rep
+    and every run:
+    - `b1`: 20 msg/s on aarch64 and 100 msg/s on x86_64, for 300 s.
+    - `b64`: 4,000 msg/s for 20 s on both.
+
+    Unpaced, a rep on a fast runner finishes sooner and picks up less
+    per-second work. More reps do not help with that, since every rep in a
+    run shares the runner.
+  - What each cell can see, in instructions per message. `b1` publishes one
+    message at a time, so it measures the cost of a lone publish plus the
+    broker's per-second work at that pace: 487,638 on aarch64 and 262,977 on
+    x86_64. It turns red at +3%, which is +14.6k per message on aarch64 and
+    +7.9k on x86_64; a smaller change to the per-message path cannot move it
+    past the tolerance. `b1` is the cell for a cost added to a lone publish (a
+    timer, a wake, a syscall, an extra task hop). `b64` publishes batches,
+    costs 10,477 (aarch64) and 11,108 (x86_64) per message, and turns red at
+    +314 and +333 per message. It is the cell for a cost added per message
+    inside a batch. A cost added per batch or per publish call shows in `b1`
+    first. `b64_mqtt_idle` repeats `b64` on a broker whose MQTT listener is on
+    and idle, and is held to `b64` from the same run; it has no baseline value
+    of its own, but the gate fails a run that does not contain it.
+  - A cell more than 3% *under* its baseline also turns the gate red (exit
+    code 4, "improved beyond the tolerance: refresh the baseline in this
+    PR"). A gain left out of the baseline lets a later change spend it
+    unseen, so the PR that earned the gain lowers the baseline. A drop of
+    more than 30% is treated as a broken measurement and fails with exit
+    code 1; pass `--allow-big-drop` to `check` once it is shown to be real.
+  - Numbers from the five runs the baseline was taken from (commit
+    `c4a7a3fa3`, runs 45826230871, 45826259315, 45826287188, 45826314102 and
+    45826342981). Run-to-run spread is the highest run's median over the
+    lowest, across those five:
+
+    | cell | x86_64 | aarch64 |
+    |---|---|---|
+    | `b1` | 0.74% | 1.47% |
+    | `b64` | 0.50% | 0.35% |
+    | `b64_mqtt_idle` | 0.37% | 0.53% |
+
+    Within a run, the five reps of a cell differed by 0.07% to 2.91%. The
+    runner's CPU model does not move the count by more than that. The five
+    x86_64 runs landed on three models. Medians of `b1` and `b64` by model:
+    AMD EPYC 7763 (two runs) 263,023 and 11,109; AMD EPYC 9V74 (two runs)
+    262,455 and 11,105; Intel Xeon Platinum 8370C (one run) 264,077 and
+    11,159. The widest gap between models is 0.62% on `b1` and 0.49% on `b64`,
+    inside the run-to-run spread above. aarch64 landed on one model (implementer
+    0x41, part 0xd49) in all five. With one or two runs per model, a model
+    effect under about 0.6% cannot be ruled out, so the models seen are
+    recorded in the baseline but not compared.
+  - What it cannot see: kernel time, time spent waiting on the disk or the
+    network, and native per-second cost (callgrind's figures say nothing about
+    a broker at full speed). A change to per-second work moves both cells as
+    if it were per-message cost.
+  - A rep that could not hold its pace is a measurement failure: it issued
+    more than 3% off the rate, or took more than 3% (plus 1 s for the last
+    acks) over its time. The run fails, says which rep and why, prints each
+    cell's count and issued rate next to the baseline, and still uploads the
+    result file with every rep in it. A slow runner does this, so rerun once.
+    A broker that got much costlier per message does it too: under callgrind
+    instructions are time, so a per-message cost far over the baseline (roughly
+    40 to 50% on `b64` and aarch64 `b1`) misses the pace instead of reading
+    as a regression. If the printed count is well over the baseline, or the
+    failure repeats on the rerun, treat it as a regression.
+  - The gate also fails a run with a cell the baseline lists missing, with
+    `b64_mqtt_idle` missing, with fewer reps in a cell than the baseline's, or
+    at another pace. The result records each cell's rep count and pace, and
+    the runner's CPU model.
+  - If the gate is red, read which cell and why. A cell over the tolerance in
+    a run that held its pace is a real cost: find what the PR added per
+    message (look at the `b64` cell first, it is the more sensitive one) and
+    remove it, or explain it and refresh the baseline as below. Do not rerun a
+    red gate until it goes green.
+  - A run whose baseline was taken at another pace fails with exit code 3
+    and the message "baseline predates the fixed pace: refresh needed". It is
+    not a regression and says so in the job summary and the annotation; the job
+    is red until the baseline is refreshed.
+  - To refresh both architectures, run `scripts/perf/ipm_refresh.sh <branch>`
+    from a pushed branch. It dispatches five runs, identifies each by branch,
+    event, head commit and creation time (and fails if it cannot), waits, and
+    refuses any result not measured at the branch head. It rewrites both
+    sections of `scripts/perf/ipm-baseline.toml` with the median of the five
+    runs, and records the commit, run ids, rep count and CPU models beside the
+    values. The test cluster opens Raft members in written-commit mode, as a
+    deployment does.
+  - If the extra cost is deliberate, or a gain turned the gate red, refresh as
+    above and commit the baseline with a sentence on what the instructions buy.
+    A toolchain bump updates it the same way. To do it by hand, run
+    `python3 scripts/perf/ipm_gate.py update --commit <sha> --run-ids <ids>`
+    with the five `ipm-result.json` artifacts of one architecture. A single
+    run is never a baseline: see the spread above.
 
 ### How pull request CI picks its jobs
 

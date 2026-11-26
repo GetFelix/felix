@@ -10,6 +10,7 @@ use std::io;
 use bytes::{BufMut, Bytes, BytesMut};
 
 use super::layers::{Layers, Tables};
+use super::size;
 use super::state::{Answer, CacheState, Entry, Producer};
 use super::{Fields, invalid, put_key};
 
@@ -24,6 +25,9 @@ const REFUSED: u8 = 3;
 const REFUSED_AT: u8 = 4;
 const SUM: u8 = 5;
 const FORGOTTEN: u8 = 6;
+/// Read only by a build that has the bound; an older one refuses the
+/// snapshot rather than misread it.
+const FULL: u8 = 7;
 
 fn put_answer(buf: &mut BytesMut, answer: Answer) {
     let (tag, value) = match answer {
@@ -36,6 +40,7 @@ fn put_answer(buf: &mut BytesMut, answer: Answer) {
         } => (REFUSED_AT, version),
         Answer::Sum(sum) => (SUM, sum as u64),
         Answer::Forgotten => (FORGOTTEN, 0),
+        Answer::Full => (FULL, 0),
     };
     buf.put_u8(tag);
     buf.put_u64_le(value);
@@ -53,6 +58,7 @@ fn answer(fields: &mut Fields<'_>) -> io::Result<Answer> {
         },
         SUM => Answer::Sum(value as i64),
         FORGOTTEN => Answer::Forgotten,
+        FULL => Answer::Full,
         found => return Err(invalid(format!("a cache snapshot has answer {found}"))),
     })
 }
@@ -91,19 +97,22 @@ pub(super) fn encode(time: u64, marked_until: u64, maps: Layers<'_>) -> Bytes {
     // An expired value is left out. No write or read can tell: each
     // treats it as absent.
     let live = || maps.entries().filter(|(_, entry)| entry.live(time));
-    let (mut count, mut len) = (0u64, 1 + 8 + 8 + 8);
+    // The sizes `size` counts, so the bound on the state is a bound on
+    // this.
+    let (mut count, mut len) = (0u64, size::HEADER);
     for (key, entry) in live() {
         count += 1;
-        len += 4 + key.len() + 8 + 8 + 4 + entry.value.len();
+        len += size::entry(key, entry.value.len());
     }
-    len += 8 + maps
+    len += maps
         .counters()
-        .map(|(key, _)| 4 + key.len() + 8)
-        .sum::<usize>();
-    len += 8 + maps
+        .map(|(key, _)| size::counter(key))
+        .sum::<u64>();
+    len += maps
         .producers()
-        .map(|(_, known)| 8 + 8 + 8 + known.answers().count() * (8 + 1 + 8))
-        .sum::<usize>();
+        .map(|(_, known)| size::PRODUCER + known.answers().count() as u64 * size::ANSWER)
+        .sum::<u64>();
+    let len = len as usize;
     // Sized up front: growing a buffer of hundreds of megabytes remaps it,
     // which stalls page faults on every other thread, apply's included.
     let mut buf = BytesMut::with_capacity(len);

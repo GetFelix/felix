@@ -92,6 +92,11 @@ pub enum CacheReply {
     /// A client's request below its floor: it was applied by an earlier
     /// entry, and its answer is gone.
     Forgotten,
+    /// A put or an add refused because the shard's values and counters
+    /// are at their bound, which keeps every snapshot small enough to
+    /// send to a member. Nothing was written. Deletes and expiries go on
+    /// and free value bytes; counter bytes are never freed (#3243).
+    Full,
 }
 
 /// A client producer's request, which the shard applies at most once across
@@ -286,6 +291,7 @@ fn reply(answer: Answer) -> CacheReply {
         Answer::Refused { version } => CacheReply::Refused { version },
         Answer::Sum(sum) => CacheReply::Sum(sum),
         Answer::Forgotten => CacheReply::Forgotten,
+        Answer::Full => CacheReply::Full,
     }
 }
 
