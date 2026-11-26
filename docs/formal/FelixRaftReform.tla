@@ -76,6 +76,16 @@
 (* Membership inside an epoch changes through a joint configuration, and a *)
 (* member uses the newest membership in its log, committed or not.         *)
 (*                                                                         *)
+(* With MaxPurges above 0 a copy takes a snapshot at or below its saved    *)
+(* commit and purges its log up to it (Purge). The snapshot's metadata     *)
+(* holds the newest membership at or below it, so the membership entries   *)
+(* the purge drops are no longer read as entries (issue 2689). The re-form *)
+(* reads each copy's entries above its purge and its snapshot's            *)
+(* membership. The model keeps the purged entries in the log for Raft and  *)
+(* for the base, so only the re-form's read of memberships sees the purge. *)
+(* A member's own membership does not change: the newest one is in the     *)
+(* snapshot or above it.                                                   *)
+(*                                                                         *)
 (* Checked:                                                                *)
 (*                                                                         *)
 (*   AckedSurvive       -- an acknowledged record is in the base of every  *)
@@ -111,6 +121,8 @@
 (*   PlacedIsRecorded   -- every broker a membership of the current epoch  *)
 (*                         names is in the control plane's record of the   *)
 (*                         brokers placed in the epoch.                    *)
+(*   PurgeBelowSnapshot -- a log is purged only up to its snapshot, which  *)
+(*                         is at or below its saved commit.                *)
 (*                                                                         *)
 (* Each knob removes one rule:                                             *)
 (*                                                                         *)
@@ -138,6 +150,17 @@
 (*   CutToCommit        -- a cut base ends at the saved commit index even  *)
 (*                         on a copy whose last log id has the floor's     *)
 (*                         epoch and term.                                 *)
+(*                                                                         *)
+(* Two more are operators a cfg overrides (`X <- On`), so the cfgs that do *)
+(* not use them need no line:                                              *)
+(*                                                                         *)
+(*   SnapshotNotRead    -- the re-form reads memberships only from log     *)
+(*                         entries, not from snapshot metadata.            *)
+(*   OrderedNotRead     -- the re-form leaves out the targets the control  *)
+(*                         plane ordered. Not a design option: an unknown  *)
+(*                         list marks the plan. Every membership of the    *)
+(*                         model is on the list, so without this the       *)
+(*                         copies' own memberships add no voter set.       *)
 (*                                                                         *)
 (* Three constants are not knobs:                                          *)
 (*                                                                         *)
@@ -238,9 +261,13 @@ VARIABLES
     keptLogs,   \* the copies a broker's rotations kept (Kept)
     synced,     \* how far the current copy's log is on disk (Kept)
     reserve,    \* the index the current copy reserved, synced (Kept)
-    cuts, returns
+    cuts, returns,
+    snap,       \* the current copy's snapshot index and how far its log is purged
+    purges
 
-diskVars == <<keptLogs, synced, reserve, cuts, returns>>
+snapVars == <<snap, purges>>
+
+diskVars == <<keptLogs, synced, reserve, cuts, returns, snapVars>>
 
 vars == <<ep, cid, term, role, log, commit, match, retired, boot, msgs,
           cpEpoch, cpMem, ordered, placed, everPlaced, dead, cpFloor, plans, forms, acked, lost,
@@ -314,6 +341,17 @@ SendsTo(l, f) ==
     /\ f \in placed
     /\ f \in Named(Config(l)) \/ f \notin EverNamed(l)
 
+\* Overridden by the cfgs that purge (see the header).
+MaxPurges == 0
+OnePurge == 1
+SnapshotNotRead == FALSE
+OrderedNotRead == FALSE
+On == TRUE
+
+NoSnap == [at |-> 0, purged |-> 0]
+\* What is left of a snapshot and a purge when the log is cut to n entries.
+ClipSnap(s, n) == [at |-> Min(s.at, n), purged |-> Min(s.purged, n)]
+
 \* Q is a set of brokers whose current copies answered.
 Quorum(c, Q) ==
     \A S \in Sets(c) :
@@ -358,6 +396,8 @@ Init ==
     /\ synced = [b \in Brokers |-> 0]
     /\ reserve = [b \in Brokers |-> 0]
     /\ cuts = 0 /\ returns = 0
+    /\ snap = [b \in Brokers |-> NoSnap]
+    /\ purges = 0
 
 cpVars == <<cpEpoch, cpMem, ordered, placed, everPlaced, dead, cpFloor, plans, forms, lost>>
 counters == <<writes, steps, places, rotations, rejoins, restarts>>
@@ -466,7 +506,7 @@ Replicate(l, f) ==
     /\ term' = [term EXCEPT ![f] = term[l]]
     /\ role' = [role EXCEPT ![f] = "follower"]
     /\ UNCHANGED <<ep, cid, retired, boot, msgs, acked, elected>>
-    /\ UNCHANGED <<cpVars, counters, keptLogs, cuts, returns>>
+    /\ UNCHANGED <<cpVars, counters, keptLogs, cuts, returns, snapVars>>
 
 Send(l) ==
     /\ Leads(l)
@@ -493,7 +533,7 @@ Receive(f, m) ==
     /\ term' = [term EXCEPT ![f] = m.t]
     /\ role' = [role EXCEPT ![f] = "follower"]
     /\ UNCHANGED <<ep, cid, commit, match, retired, boot, msgs, acked, elected>>
-    /\ UNCHANGED <<cpVars, counters, keptLogs, cuts, returns>>
+    /\ UNCHANGED <<cpVars, counters, keptLogs, cuts, returns, snapVars>>
 
 Commit(l, i) ==
     /\ Leads(l)
@@ -510,7 +550,7 @@ Commit(l, i) ==
     /\ reserve' = IF Kept /\ Reserve # "none" THEN [reserve EXCEPT ![l] = Max(@, i)] ELSE reserve
     /\ UNCHANGED <<ep, cid, term, role, log, match, retired, boot, msgs, elected>>
     /\ UNCHANGED <<cpEpoch, cpMem, ordered, placed, everPlaced, dead, plans, forms, lost, counters>>
-    /\ UNCHANGED <<keptLogs, synced, cuts, returns>>
+    /\ UNCHANGED <<keptLogs, synced, cuts, returns, snapVars>>
 
 \* A leader that no longer hears a quorum steps down.
 StepDown(l) ==
@@ -519,6 +559,27 @@ StepDown(l) ==
     /\ UNCHANGED <<ep, cid, term, log, commit, match, retired, boot, msgs, acked, elected>>
     /\ UNCHANGED <<cpVars, counters>>
     /\ UNCHANGED diskVars
+
+\* A snapshot at s, then a purge of the log through p, in one step. A stream
+\* shard purges through its snapshot (raft/group.rs, purge_below_floor); a
+\* cache shard keeps a tail (raft/runtime.rs, max_in_snapshot_log_to_keep),
+\* so p can be below s. A snapshot covers only applied entries, so s is at
+\* most the saved commit, and its builder syncs the log before storing it
+\* (raft/machine.rs, build_snapshot). Its metadata holds the membership in
+\* force at s (raft/machine.rs, meta). A purge is never past the snapshot
+\* (raft_log.rs, purge_within). A stopped member takes no snapshot.
+Purge(b, s, p) ==
+    /\ purges < MaxPurges
+    /\ Alive(b)
+    /\ ~retired[b]
+    /\ snap[b].at <= s /\ s <= commit[b]
+    /\ snap[b].purged <= p /\ p <= s
+    /\ snap[b] # [at |-> s, purged |-> p]
+    /\ purges' = purges + 1
+    /\ snap' = [snap EXCEPT ![b] = [at |-> s, purged |-> p]]
+    /\ synced' = IF Kept THEN [synced EXCEPT ![b] = Len(log[b])] ELSE synced
+    /\ UNCHANGED <<ep, cid, term, role, log, commit, match, retired, boot, msgs, acked, elected>>
+    /\ UNCHANGED <<cpVars, counters, keptLogs, reserve, cuts, returns>>
 
 --------------------------------------------------------------------------------
 \* Faults.
@@ -560,7 +621,7 @@ LostReserve(b) == [reserve EXCEPT ![b] = 0]
 \* older vote; only a power cut keeps the newest vote.
 KeptCopy(b, l, t, by) ==
     [e |-> ep[b], cid |-> cid[b], log |-> l, commit |-> Min(commit[b], Len(l)),
-     vote |-> <<ep[b], t>>, by |-> by, res |-> reserve[b]]
+     vote |-> <<ep[b], t>>, by |-> by, res |-> reserve[b], snap |-> ClipSnap(snap[b], Len(l))]
 
 \* A kept copy whose saved commit is `s`.
 KeepCopyAt(b, l, t, by, s) ==
@@ -568,6 +629,8 @@ KeepCopyAt(b, l, t, by, s) ==
     /\ NewCopy(b, <<>>)
     /\ synced' = [synced EXCEPT ![b] = 0]
     /\ reserve' = [reserve EXCEPT ![b] = 0]
+    /\ snap' = [snap EXCEPT ![b] = NoSnap]
+    /\ UNCHANGED purges
 
 KeepCopy(b, l, t, by) == KeepCopyAt(b, l, t, by, Min(commit[b], Len(l)))
 
@@ -581,7 +644,8 @@ ReplaceDisk(b) ==
     /\ NewCopy(b, <<>>)
     /\ synced' = [synced EXCEPT ![b] = 0]
     /\ reserve' = ReplacedReserve(b)
-    /\ UNCHANGED keptLogs
+    /\ snap' = [snap EXCEPT ![b] = NoSnap]
+    /\ UNCHANGED <<keptLogs, purges>>
 
 \* The shard directory is lost, or restored from an older copy: the copy id
 \* rotates and any prefix of the log is left. The stop marker goes with it.
@@ -593,7 +657,9 @@ Rotate(b, n) ==
     /\ IF Kept
        THEN \/ \E t \in 0..term[b] : KeepCopy(b, SubSeq(log[b], 1, n), t, "restore")
             \/ n = 0 /\ ReplaceDisk(b)
-       ELSE NewCopy(b, SubSeq(log[b], 1, n)) /\ UNCHANGED <<keptLogs, synced, reserve>>
+       ELSE /\ NewCopy(b, SubSeq(log[b], 1, n))
+            /\ snap' = [snap EXCEPT ![b] = ClipSnap(@, n)]
+            /\ UNCHANGED <<keptLogs, synced, reserve, purges>>
     /\ UNCHANGED <<cpVars, writes, steps, places, rejoins, restarts, cuts, returns>>
 
 \* The current copy's log reaches the disk.
@@ -603,7 +669,7 @@ Sync(b) ==
     /\ synced[b] < Len(log[b])
     /\ synced' = [synced EXCEPT ![b] = Len(log[b])]
     /\ UNCHANGED <<ep, cid, term, role, log, commit, match, retired, boot, msgs, acked, elected>>
-    /\ UNCHANGED <<cpVars, counters, keptLogs, reserve, cuts, returns>>
+    /\ UNCHANGED <<cpVars, counters, keptLogs, reserve, cuts, returns, snapVars>>
 
 \* A power cut on a relaxed broker: the copy loses some of its unsynced
 \* tail and rotates (the log is below its mark). It keeps its term and vote.
@@ -854,7 +920,8 @@ Reform(p, pick) ==
 \* and kept, and takes the longest prefix one of them vouches for.
 Copies(b) ==
     {[e |-> ep[b], cid |-> cid[b], log |-> log[b], commit |-> commit[b],
-      vote |-> <<ep[b], term[b]>>, by |-> "current", res |-> reserve[b]]} \cup keptLogs[b]
+      vote |-> <<ep[b], term[b]>>, by |-> "current", res |-> reserve[b], snap |-> snap[b]]}
+        \cup keptLogs[b]
 
 MaxKey(K) == CHOOSE k \in K : \A j \in K : ~KeyLess(k, j)
 MinOf(X) == CHOOSE x \in X : \A y \in X : x <= y
@@ -871,14 +938,26 @@ Cap(e, E) ==
     LET ends == {f.end : f \in {g \in forms : e < g.e /\ g.e <= E}}
     IN IF ends = {} THEN MaxWrites + MaxEpoch * 8 ELSE MinOf(ends)
 
+\* The membership a copy's snapshot metadata holds: the newest membership
+\* entry at or below the snapshot. It is a voter set of E only when that
+\* entry is of E; below the epoch's first index is the base, whose voters
+\* are the seed (raft_copy/report.rs, epoch_memberships).
+SnapshotSets(c, E) ==
+    LET idx == {j \in 1..Min(c.snap.at, Len(c.log)) : c.log[j].k = "cfg"}
+    IN IF idx = {} THEN {}
+       ELSE LET top == MaxOf(idx)
+            IN IF c.log[top].e = E THEN Sets(c.log[top].v) ELSE {}
+
 \* The voter sets of epoch E a re-form can know: the seed voters the control
-\* plane recorded for E, each target it ordered in E, and both halves of
-\* every membership entry of E in a copy read, committed or not. Never the
-\* placed brokers: a placed broker need not be a voter.
+\* plane recorded for E, each target it ordered in E, both halves of every
+\* membership entry of E above the purge in a copy read, committed or not,
+\* and the membership in that copy's snapshot. Never the placed brokers: a
+\* placed broker need not be a voter.
 VoterSets(E, R) ==
     (IF E = 0 THEN {InitConfig.o} ELSE {f.voters : f \in {g \in forms : g.e = E}})
-        \cup UNION {Sets(o.v) : o \in {x \in ordered : x.e = E}}
-        \cup UNION {UNION {Sets(c.log[j].v) : j \in CfgIdx(c.log, E)} : c \in R}
+        \cup (IF OrderedNotRead THEN {} ELSE UNION {Sets(o.v) : o \in {x \in ordered : x.e = E}})
+        \cup UNION {UNION {Sets(c.log[j].v) : j \in {h \in CfgIdx(c.log, E) : h > c.snap.purged}} : c \in R}
+        \cup (IF SnapshotNotRead THEN {} ELSE UNION {SnapshotSets(c, E) : c \in R})
 
 \* A member's epoch-E vote is read when the re-form read the copy it gave it
 \* from, current or kept by a power cut, and its broker is not dead and has
@@ -988,8 +1067,9 @@ StartEpoch(b, f) ==
     \* The start syncs the copy and reserves up to the epoch's first index.
     /\ synced' = IF Kept THEN [synced EXCEPT ![b] = Len(log'[b])] ELSE synced
     /\ reserve' = IF Kept THEN [reserve EXCEPT ![b] = Max(@, Len(f.base))] ELSE reserve
+    /\ snap' = [snap EXCEPT ![b] = ClipSnap(@, Len(log'[b]))]
     /\ UNCHANGED <<cid, match, msgs, acked, elected>>
-    /\ UNCHANGED <<cpVars, counters, keptLogs, cuts, returns>>
+    /\ UNCHANGED <<cpVars, counters, keptLogs, cuts, returns, purges>>
 
 Next ==
     \/ \E b \in Brokers : \E Q \in SUBSET Brokers : Elect(b, Q)
@@ -1000,6 +1080,7 @@ Next ==
     \/ \E b \in Brokers : StepDown(b) \/ Restart(b) \/ RetiredRejoins(b)
     \/ \E b \in Brokers : \E n \in 0..Len(log[b]) : Rotate(b, n) \/ PowerCutRotate(b, n)
     \/ \E b \in Brokers : Sync(b) \/ Return(b)
+    \/ \E b \in Brokers : \E s, p \in 0..commit[b] : Purge(b, s, p)
     \/ \E b \in Brokers : Place(b) \/ Unplace(b) \/ CpObserve(b) \/ ReportFloor(b)
     \/ \E b \in Brokers : DeclareDead(b) \/ Stop(b) \/ SelfStart(b)
     \/ \E e \in 0..cpEpoch : \E S \in SUBSET Brokers : Plan(e, S)
@@ -1077,6 +1158,9 @@ BootIsRecorded ==
 PlacedIsRecorded ==
     /\ placed \subseteq everPlaced
     /\ \A b \in Brokers : ep[b] = cpEpoch => EverNamed(b) \subseteq everPlaced
+
+PurgeBelowSnapshot ==
+    \A b \in Brokers : snap[b].purged <= snap[b].at /\ snap[b].at <= commit[b]
 
 \* Witnesses: each is an invariant that must fail.
 

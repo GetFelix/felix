@@ -563,6 +563,8 @@ expectations=(
   "FelixRaftReformKeptTermsT violates NeverVouchesByT"
   "FelixRaftReformReplacedDiskByBroker violates OffsetNeverReused"
   "FelixRaftReformReplacedDiskLost violates OffsetNeverReused"
+  "FelixRaftReformSnapshotMembership pass"
+  "FelixRaftReformSnapshotMembershipLogOnly violates OffsetNeverReused"
   "FelixRaftReformEpochNotChecked pass"
   "FelixRaftReformRejoin pass"
   "FelixRaftReformStaleMembershipIntact pass"
