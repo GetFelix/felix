@@ -89,6 +89,12 @@ pub struct ClusterConfig {
     /// serves and stays it (#3157). Only a test about the hand-over itself
     /// wants it pending.
     pub pending_raft_hand_overs: bool,
+    /// Bring a Raft cluster up as an upgraded one: its streams and caches
+    /// exist before any broker registers, so the control plane finalizes
+    /// nothing by itself and the harness does not either. Off by default: a
+    /// Raft cluster comes up as a new one does (#3238). Only a test of what
+    /// is refused before a finalize wants it.
+    pub upgraded_fleet: bool,
 }
 
 impl Default for ClusterConfig {
@@ -116,6 +122,7 @@ impl Default for ClusterConfig {
             node_expiry: Duration::from_secs(1),
             control_plane_engine: None,
             pending_raft_hand_overs: false,
+            upgraded_fleet: false,
         }
     }
 }
@@ -145,11 +152,11 @@ impl ClusterConfig {
         }
     }
 
-    /// Whether the cluster is Raft only because the suite is, not because the
-    /// test asked for it. A test that names its engine controls its own fleet
-    /// features, e.g. to check what is refused before one is finalized.
-    pub(crate) fn raft_by_suite_default(&self) -> bool {
-        self.named_engine().is_none() && default_engine() == "raft"
+    /// Whether a start brings the cluster up as a new Raft cluster: brokers
+    /// first, then the Raft fleet features, then streams and caches. However
+    /// the engine was named, unless [`Self::upgraded_fleet`] asks otherwise.
+    pub(crate) fn comes_up_new(&self) -> bool {
+        self.raft_brokers() && !self.upgraded_fleet
     }
 
     /// Whether a start waits for every Raft shard's placed leader to lead.

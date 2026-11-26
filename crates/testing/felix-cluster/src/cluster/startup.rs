@@ -73,13 +73,13 @@ impl Cluster {
         // before its streams exist has to wait for the next sync to become
         // useful. Creating them up front means readiness means what it says.
         //
-        // Except on a Raft suite, whose streams and caches come after the
-        // fleet features: a member reads `raft_written_commit` when it opens,
-        // and one opened before the finalize fsyncs on every commit until it
+        // Except on Raft, whose streams and caches come after the fleet
+        // features: a member reads `raft_written_commit` when it opens, and
+        // one opened before the finalize fsyncs on every commit until it
         // opens again (#3238). A new cluster finalizes at the first
         // registration only while it has no streams, so this is also the
         // order a real one comes up in.
-        let shards_after_fleet = config.raft_by_suite_default();
+        let shards_after_fleet = config.comes_up_new();
         seed_namespace(&http, &control_plane, &config, &credentials.admin_token()).await?;
         if !shards_after_fleet {
             seed_shards(&http, &control_plane, &config, &credentials.admin_token()).await?;
@@ -130,9 +130,9 @@ impl Cluster {
         let ready = async {
             cluster.await_brokers_ready().await?;
             cluster.await_registered().await?;
-            // A new Raft cluster has every Raft feature finalized, so a suite
-            // moved to Raft forms its cluster the same way (#3003), and every
-            // broker has taken them before a member opens.
+            // A new Raft cluster has every Raft feature finalized, so a
+            // cluster here forms the same way (#3003), and every broker has
+            // taken them before a member opens.
             if shards_after_fleet {
                 let features: Vec<&str> = felix_common::fleet::IMPLEMENTED
                     .iter()

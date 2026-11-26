@@ -97,6 +97,9 @@ async fn a_jump_hash_stream_routes_alike_everywhere_and_a_legacy_one_is_unaffect
     let cluster = Cluster::start(ClusterConfig {
         nodes: 3,
         streams: vec![StreamSpec::new(LEGACY, SHARDS)],
+        // The legacy stream comes before the finalize, which a new cluster
+        // would take at its first registration.
+        upgraded_fleet: true,
         ..Default::default()
     })
     .await

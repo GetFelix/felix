@@ -36,19 +36,38 @@ async fn a_periodic_raft_member_leaves_the_fsync_to_the_tick() {
         eprintln!("skipped: a Raft-only check");
         return;
     }
+    leaves_the_fsync_to_the_tick(Vec::new()).await;
+}
+
+/// **The same with the engine named**, as the release performance gate
+/// starts its brokers (`scripts/ci/gate-perf-cell.sh`).
+#[serial]
+#[tokio::test]
+async fn a_periodic_raft_member_named_by_engine_leaves_the_fsync_to_the_tick() {
+    if !felix_cluster::suite_runs_on_raft() {
+        eprintln!("skipped: a Raft-only check");
+        return;
+    }
+    leaves_the_fsync_to_the_tick(vec![("FELIX_SHARD_ENGINE".to_string(), "raft".to_string())])
+        .await;
+}
+
+async fn leaves_the_fsync_to_the_tick(extra_env: Vec<(String, String)>) {
+    let mut broker_env = vec![
+        (
+            "FELIX_DURABLE_FSYNC_MODE".to_string(),
+            "periodic".to_string(),
+        ),
+        (
+            "FELIX_DURABLE_FSYNC_INTERVAL_MS".to_string(),
+            "3600000".to_string(),
+        ),
+    ];
+    broker_env.extend(extra_env);
     let cluster = Cluster::start(ClusterConfig {
         nodes: 3,
         streams: vec![StreamSpec::quorum(STREAM, 1, 3)],
-        broker_env: vec![
-            (
-                "FELIX_DURABLE_FSYNC_MODE".to_string(),
-                "periodic".to_string(),
-            ),
-            (
-                "FELIX_DURABLE_FSYNC_INTERVAL_MS".to_string(),
-                "3600000".to_string(),
-            ),
-        ],
+        broker_env,
         inherit_output: std::env::var("FELIX_TEST_BROKER_OUTPUT").is_ok(),
         ..Default::default()
     })
