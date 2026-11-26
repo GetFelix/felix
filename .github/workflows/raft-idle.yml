@@ -46,7 +46,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: raft-idle-${{ github.ref }}
+  group: raft-idle-${{ github.ref }}-${{ inputs.transport_groups || 'nightly' }}-${{ inputs.report || 'idle' }}
   cancel-in-progress: true
 
 env:
