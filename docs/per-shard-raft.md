@@ -6308,7 +6308,12 @@ The planner refuses this mode unless the group's only placed broker is this
 one and every voter set it reads names only it. `FelixRaftReform` checks it
 with `Alone`: `FelixRaftReformAlone` holds `KeptLossBound`, and
 `FelixRaftReformAloneCutToCommit`, which cuts at the saved commit, breaks it.
-`FelixRaftReform` does not model a standalone restore. Its first index is
+`FelixRaftReformAloneTwoCuts` allows a second relaxed crash, between any two
+steps of the re-form or after it finished, and holds the same checks. In the
+model a crash after the epoch is written and before the start leaves the copy
+to start as a learner and re-form once more, where the broker replaces the
+unstarted plan under the same epoch; nothing was served under that plan, and
+both read the same kept copies. `FelixRaftReform` does not model a standalone restore. Its first index is
 the rule `FelixRaftRestoreRepeated` checks with `Line`, with the broker's
 clock as the planner's.
 
