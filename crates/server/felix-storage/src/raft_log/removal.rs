@@ -5,9 +5,12 @@
 //! made durable before the next, one removal at a time. Until then they hold
 //! only records below the log's first index, which no read returns as
 //! entries, so a removal a crash cut short leaves a longer log and never a
-//! gap. The next purge finishes it. An open does not: a re-formed or
-//! switched copy keeps its base's records below its purged id on purpose,
-//! and an open cannot tell those from a removal's leftovers.
+//! gap. Leftovers below the purged id are ignored at open and removed by
+//! the next purge. An open does not remove them: a re-formed or switched
+//! copy keeps its base's records below its purged id on purpose, and an
+//! open cannot tell those from a removal's leftovers. An unlink that fails
+//! stops the log, because its segment is off the list by then and a later
+//! reset would leave it beside the new base.
 
 use std::sync::Arc;
 
@@ -34,7 +37,8 @@ impl Default for Removals {
 
 impl Removals {
     /// Remove `log`'s sealed segments wholly below `before`, behind the
-    /// caller. A failure is logged; the next purge or open tries again.
+    /// caller. A failed unlink stops the log, since the segments are off its
+    /// list by then; one that never started is left for the next purge.
     pub(super) fn behind(&self, log: &DiskLog, before: Offset) {
         self.pending.send_modify(|pending| *pending += 1);
         let settle = Settle(Arc::clone(&self.pending));
@@ -42,6 +46,9 @@ impl Removals {
         let log = log.clone();
         tokio::spawn(async move {
             let _settle = settle;
+            // Dropped before `_settle`, so a drain that returns leaves no
+            // clone holding the directory and a reopen can take it.
+            let log = log;
             let _turn = turn.lock().await;
             match log.trim_before(before).await {
                 Ok(_) | Err(StorageError::Closed(_)) => {}
@@ -49,7 +56,7 @@ impl Removals {
                     shard = %log.label(),
                     before,
                     error = %err,
-                    "removing a purged Raft log's segments failed; the next purge retries"
+                    "removing a purged Raft log's segments failed"
                 ),
             }
         });

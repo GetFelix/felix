@@ -2153,16 +2153,21 @@ below the floor".
 openraft makes the purge call on the member's Raft core, which also sends
 its heartbeats, so the purge waits on no fsync it does not need. It writes
 the purged id, synced, and returns; the segments below it are unlinked
-behind it, and a crash part way leaves only records that are already no
-entries, which the next open removes. Only a purge that empties the log
-(one at or past its last entry, as after a snapshot install) still waits for
-every queued flush first, under the log's flush lock, since it drops the
-records those flushes wait on. A read that started before a purge starts
+behind it. A crash part way leaves segments whose records are not
+entries; the open ignores them and the next purge removes them. An unlink
+that fails stops the log, since its segment is already off the log's list
+and a later reset would leave it beside the new base. Two kinds of purge
+still wait for every queued flush first, under the log's flush lock: one
+that empties the log (at or past its last entry, as after a snapshot
+install), since it drops the records those flushes wait on, and any purge
+on a log that hides purges past its stored snapshot, which removes its
+segments inline. A read that started before a purge starts
 again above the new first index, so it never returns a purged entry whose
 segment is still on disk.
 
 > `crates/server/felix-storage/src/raft_log/tests/crash_points.rs`,
-> `a_cut_at_each_step_of_a_purges_removal_leaves_the_log_after_its_id`;
+> `a_cut_at_each_step_of_a_purges_removal_leaves_the_log_after_its_id`,
+> `a_failed_unlink_behind_a_purge_stops_the_log_before_a_reset`;
 > `crates/server/felix-storage/src/raft_log/tests/purge.rs`,
 > `a_read_over_a_purge_whose_removal_is_held_returns_nothing_purged`;
 > `crates/server/felix-replication/src/raft/tests/core_stall.rs`,
