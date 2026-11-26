@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795673706283,
+  "lastUpdate": 1795674583775,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -70772,6 +70772,58 @@ window.BENCHMARK_DATA = {
             "range": "9613.07",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 809676.71\nmean: 807473.77\nstdev: 9613.07\ncv: 1.19%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "55f8d27ea605be12098dd4cadc731a5b19d79147",
+          "message": "test(cluster): no offset is held as two records across leader faults (history rule 22) (#2258) (#3221)\n\n* test(sim): no Raft offset is delivered as two values or at a blank entry (#2258)\n\nThe Raft simulation judged each delivery against the final log only up to\nthe final read. Deliveries are now also compared with each other, so two\nsubscribers handed different records at one offset is a finding past the\nfinal read and on a list with no final read. That is the subscriber half of\nthe duplicate-offset nemesis.\n\nThe judgement moves into raft/deliveries.rs with unit tests over hand-built\ndeliveries, including one at a blank entry's offset, which is the Raft check\nfor routing/generation_start.rs: the blank of a term takes no offset a\nconsumer sees.\n\nSpec-Unaffected: simulator checker only; no modelled code changes\n\n* test(cluster): failover heal runs on Raft with no flag (#2258)\n\nOn Raft the broker to kill is the one the groups elected, read from each\nmember's report, since placement's assigned leader is only a hint there. No\nfleet feature is finalized and FELIX_INTERNAL_ELECTION is not set. The\nelection variant is the hybrid's switch and skips on Raft, where the other\nvariant is the same test.\n\nSpec-Unaffected: cluster test only; no modelled code changes\n\n* docs(replication): the coverage hand-off says where each Raft check is (#2258)\n\nRows the tables still called Missing have Raft checks on main: the cluster\nharness runs Raft by default, so the history checks, rule 21 by term and the\nelection nemesis run on Raft, and the wiped-copy and deposed-leader read and\ngroup-ack tests run there too. The blank-entry row is held by the\nsimulator's delivery check, and failover heal is ported on this branch.\nWhat waits on another issue is marked Blocked with the issue.\n\nSpec-Unaffected: docs only\n\n* test(history): rule 22, no offset is held as two records (#2258)\n\nEvery observation of an offset is held against every other: the final\nread, reads from any broker, every subscriber delivery, and a Quorum\nappend's acknowledged offset. Leader lists get the rule too; a Leader\nacknowledgement may be lost across a change of leader, so it is not an\nobservation. A Quorum list with a final read is left to rules 1, 3 and 10.\n\nSpec-Unaffected: test-only checker rule; no protocol or model change\n\n* test(history): an offset-reuse campaign on a Leader stream's leader (#2258)\n\nA Leader list joins the campaign's Quorum lists, two subscribers follow\neach list, and every list is read from every broker after each recovery\nand before the final reads. The nemesis kills, partitions, machine-crashes\nand wipes whichever broker leads the Leader list; the two new fault kinds\nwait on heal until every copy the broker holds votes again. Rule 22 judges\nthe result.\n\nSpec-Unaffected: test harness and docs only; no protocol or model change",
+          "timestamp": "2026-11-26T06:24:02Z",
+          "tree_id": "1378e59bf2437925eb92a29515db86e12380f479",
+          "url": "https://github.com/GetFelix/felix/commit/55f8d27ea605be12098dd4cadc731a5b19d79147"
+        },
+        "date": 1795674583016,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 501083.52,
+            "range": "7728.48",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 501083.52\nmean: 504382.10\nstdev: 7728.48\ncv: 1.53%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 501083.52,
+            "range": "7728.48",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 501083.52\nmean: 504382.10\nstdev: 7728.48\ncv: 1.53%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 122009.85,
+            "range": "336.12",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 122009.85\nmean: 122023.12\nstdev: 336.12\ncv: 0.28%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1220098.46,
+            "range": "3361.17",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1220098.46\nmean: 1220231.26\nstdev: 3361.17\ncv: 0.28%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
