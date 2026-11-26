@@ -23,8 +23,9 @@ stays small. Each is marked "Decided" where it applies:
 - Writes go through openraft's `client_write` and the adapter appends
   ("Writing through openraft"). Adopting the leader's own appends is left
   for later.
-- Re-forming a group is an operator command and never automatic
-  ("Re-forming a group").
+- Re-forming a group is an operator command, except for an RF 1 shard whose
+  copy a relaxed crash rotated, which re-forms itself ("A cluster's RF 1 shard
+  re-forms itself").
 - `Leader` streams keep the local acknowledgement. A restarted member
   waits out the promise behind it and stores nothing ("Acknowledging a
   write").
@@ -742,6 +743,12 @@ leave a group without a majority of voters: lose the disks of two of three
 brokers, or restore both from backups, and every group they share has one
 voter left. An RF 1 shard has that problem after any rotation. Raft cannot
 elect in such a group, and some acknowledged records may be gone.
+
+An RF 1 shard whose copy a relaxed crash rotated is the one exception: its
+broker re-forms it through the control plane once the fleet finalizes
+`raft_alone_reform` ("A cluster's RF 1 shard re-forms itself"). Any other
+rotation, and any shard on a fleet that has not finalized it, waits for the
+operator.
 
 **A group is never formed again on rotated copies.** When every copy of a
 shard rotated, as after `rotate-storage-id` on each of its brokers, a
@@ -6323,6 +6330,52 @@ change. This removes the last use of the control-plane lease. If its one
 copy rotates its id, the group has no voter. A copy that kept its records
 restarts as the single voter, and one that lost them waits for the
 operator command ("Re-forming a group"). See Questions, 1.
+
+In a cluster, a copy that a relaxed crash rotated re-forms itself through
+the control plane ("A cluster's RF 1 shard re-forms itself"), and needs no
+operator while the fleet has finalized `raft_alone_reform`. Until it has, the
+shard stays not ready, as before, for an operator's re-form.
+
+### A cluster's RF 1 shard re-forms itself
+
+The standalone rules ("A standalone broker re-forms itself") apply with one
+change: the control plane's record decides the epoch, not a file beside the
+copy. Before the member opens, the broker:
+
+1. Plans the next epoch from its kept copy with the standalone rule and
+   stops the copy (`CopyRoot::stop_alone`). Nothing is started and no epoch
+   is written. The plan is recorded on disk, so after a crash the same
+   request is built again.
+2. Sends `POST /v1/nodes/{node_id}/reform/alone`. The control plane applies
+   `StartAloneEpoch` (metadata level 55) in one command: the group must be
+   alone on this broker, with no set change or move in flight, and the epoch
+   compare-and-swaps from the one the broker planned from. A request for an
+   epoch the record already holds is answered with the recorded shard and
+   writes nothing.
+3. Starts the copy from the seed the record holds, as an operator's re-form
+   would.
+
+A crash before step 2 sends the same request again. A crash between steps 2
+and 3 finds the epoch recorded, sends nothing, and starts from the recorded
+seed. After step 3 nothing is owed. A refusal leaves the shard not ready and
+the copy stopped where an operator's own stop leaves it, so an operator's
+re-form still works.
+
+Why it is safe:
+
+- An RF 1 shard acks on its one copy, so the ack level does not matter.
+  Under `Periodic` or `None` only the unsynced tail is lost, as it already
+  could be, and every synced record is kept: the plan vouches for the whole
+  log, not the saved commit.
+- `OnCommit` never takes this path. It rotates nothing, so there is no
+  evidence.
+- Offsets start past every reserved index plus the gap, so none given out
+  before is given out again.
+- An RF 3 group that lost members is refused by the control plane's atomic
+  check, and the broker only asks when membership and placement both name
+  only itself.
+- A stale or restored directory is refused by the storage id evidence, and
+  a second writer by the epoch compare-and-swap.
 
 ### A standalone broker re-forms itself
 
