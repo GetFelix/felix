@@ -851,6 +851,11 @@ impl ForwardingHandler {
                 metrics::record_served(metrics::OUTCOME_REFUSED);
                 return error(correlation_id, ErrorCode::Unavailable, refused.to_string());
             }
+            #[cfg(feature = "raft")]
+            Err(full @ NotServed::Full(_)) => {
+                metrics::record_served(metrics::OUTCOME_REFUSED);
+                return error(correlation_id, ErrorCode::CacheFull, full.to_string());
+            }
             // A write may still commit, so this is not a refusal; a read
             // changed nothing and is only not available here.
             Err(err) => {

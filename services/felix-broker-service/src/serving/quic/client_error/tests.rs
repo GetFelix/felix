@@ -1,6 +1,6 @@
 use felix_wire::{ErrorCode, Message, RetryClass};
 
-use super::{ClientError, ErrorCodeSupport, MOVING_RETRY_AFTER_MS};
+use super::{CACHE_FULL_REASON, ClientError, ErrorCodeSupport, MOVING_RETRY_AFTER_MS};
 use crate::serving::forward::ForwardError;
 use crate::shards::routing::Reason;
 use felix_replication::quorum::QuorumError;
@@ -340,4 +340,28 @@ fn a_raft_write_is_retryable_only_before_its_proposal() {
         code_of(lost.into()),
         (ErrorCode::LeadershipLost, RetryClass::OutcomeUnknown)
     );
+}
+
+/// A full Raft cache shard is `limit_exceeded` with reason `cache_full`,
+/// a refusal a client does not retry, whether the shard is led here or the
+/// op was forwarded to its owner.
+#[test]
+fn a_full_cache_shard_is_limit_exceeded_with_its_reason() {
+    use felix_wire::internal::ErrorCode as Internal;
+    let forwarded = ForwardError::Refused {
+        stream: "s".into(),
+        detail: "full".into(),
+        code: Some(Internal::CacheFull),
+    };
+    for err in [
+        ClientError::cache_full("full"),
+        ClientError::from_anyhow(&forwarded.into()),
+    ] {
+        assert_eq!(err.code(), &ErrorCode::LimitExceeded);
+        assert_eq!(err.retry(), RetryClass::Fatal);
+        assert_eq!(
+            err.detail().and_then(|d| d.reason.as_deref()),
+            Some(CACHE_FULL_REASON)
+        );
+    }
 }

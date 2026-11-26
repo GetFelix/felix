@@ -917,3 +917,238 @@ fn a_member_building_snapshots_answers_like_one_that_does_not() {
         assert!(layered == plain, "run {run}");
     }
 }
+
+/// The bytes of values and counters `state` holds, counted from its maps.
+fn recount(state: &CacheState) -> u64 {
+    let maps = state.view();
+    let values = maps
+        .entries()
+        .map(|(key, entry)| super::size::entry(key, entry.value.len()));
+    let counters = maps.counters().map(|(key, _)| super::size::counter(key));
+    values.chain(counters).sum()
+}
+
+/// Room for exactly two four-byte values under two-byte keys.
+const TWO_VALUES: super::Bound = super::Bound(60);
+
+fn bounded() -> CacheState {
+    CacheState::default().bounded(TWO_VALUES)
+}
+
+/// FullFinal, MembersAgree with SnapshotDropsExpired: a put past the bound
+/// answers full on a member that replayed the log, one restored from a
+/// snapshot that left an expired value out, and one building a snapshot.
+/// The bound counts only what is unexpired at the entry's stamp, so the
+/// expired value the first still holds does not count.
+#[test]
+fn a_write_past_the_bound_answers_full_on_every_member_alike() {
+    let mut replayed = bounded();
+    assert_eq!(super::size::entry("k1", 4), 30);
+    let before = [
+        (
+            1,
+            0,
+            put_with("k1", "aaaa", 10, Condition::None, request(1, 1)),
+        ),
+        (2, 0, put("k2", "bbbb", request(1, 2))),
+        // Moves the log's time past k1's expiry.
+        (3, 10, delete("zz", None, request(1, 3))),
+    ];
+    for (index, stamp, command) in &before {
+        replayed.apply(*index, *stamp, command);
+    }
+    let mut restored = CacheState::restore(&replayed.snapshot(), true)
+        .unwrap()
+        .bounded(TWO_VALUES);
+    assert!(replayed.view().entry("k1").is_some());
+    assert!(restored.view().entry("k1").is_none());
+    let mut layered = replayed.clone();
+    let cut = layered.cut();
+    let after = [
+        // Fits: k1 has expired.
+        (
+            4,
+            10,
+            put("k3", "cccc", request(1, 4)),
+            Answer::Written { version: 4 },
+        ),
+        (5, 10, put("k4", "dddd", request(1, 5)), Answer::Full),
+        (6, 10, add("n", 1, request(1, 6)), Answer::Full),
+        // A put that replaces a value with one no longer still applies.
+        (
+            7,
+            10,
+            put("k3", "eeee", request(1, 7)),
+            Answer::Written { version: 7 },
+        ),
+        (8, 10, put("k3", "eeeee", request(1, 8)), Answer::Full),
+        // A refusal on its condition is not a full answer.
+        (
+            9,
+            10,
+            put_with("k3", "x", 0, Condition::Absent, request(1, 9)),
+            Answer::Refused { version: Some(7) },
+        ),
+    ];
+    for (index, stamp, command, expected) in &after {
+        for member in [&mut replayed, &mut restored, &mut layered] {
+            assert_eq!(
+                member.apply(*index, *stamp, command),
+                Some(*expected),
+                "{index}"
+            );
+        }
+    }
+    drop(cut);
+    while layered.fold(1) {}
+    assert_eq!(replayed.snapshot(), restored.snapshot());
+    assert_eq!(replayed.snapshot(), layered.snapshot());
+    for member in [&replayed, &restored, &layered] {
+        assert_eq!(member.data(), recount(member));
+        assert_eq!(value(member, "k4", 10), None);
+        assert_eq!(member.sum("n"), None);
+    }
+}
+
+/// AnswersKept, FullFinal: a retry of a write applied before the group
+/// filled gets its answer, and a retry of one answered full stays full
+/// after deletes free room, across a snapshot install too.
+#[test]
+fn a_retry_gets_its_first_answer_whether_applied_or_full() {
+    let mut state = bounded();
+    let first = put("k1", "aaaa", request(1, 1));
+    assert_eq!(
+        state.apply(1, 0, &first),
+        Some(Answer::Written { version: 1 })
+    );
+    state.apply(2, 0, &put("k2", "bbbb", request(1, 2)));
+    let refused = put("k3", "cccc", request(1, 3));
+    assert_eq!(state.apply(3, 0, &refused), Some(Answer::Full));
+    // The group is full: the first put's retry still gets its answer.
+    assert_eq!(
+        state.apply(4, 0, &first),
+        Some(Answer::Written { version: 1 })
+    );
+    // Room again, and the refused put's retry does not apply.
+    state.apply(5, 0, &delete("k1", None, request(1, 5)));
+    assert_eq!(state.apply(6, 0, &refused), Some(Answer::Full));
+    let mut installed = CacheState::restore(&state.snapshot(), true)
+        .unwrap()
+        .bounded(TWO_VALUES);
+    assert_eq!(installed.apply(7, 0, &refused), Some(Answer::Full));
+    assert_eq!(value(&installed, "k3", 0), None);
+    // The same write under a new request id is a new write, and fits.
+    let again = put("k3", "cccc", request(1, 8));
+    assert_eq!(
+        installed.apply(8, 0, &again),
+        Some(Answer::Written { version: 8 })
+    );
+}
+
+/// A full group can be emptied: deletes, conditional deletes and expiry
+/// deletes are never refused, and a counter that exists still adds.
+#[test]
+fn a_full_group_takes_deletes_and_expiries() {
+    let mut state = CacheState::default().bounded(super::Bound(30 + 13));
+    state.apply(
+        1,
+        0,
+        &put_with("k1", "aaaa", 5, Condition::None, request(1, 1)),
+    );
+    state.apply(2, 0, &add("n", 1, request(1, 2)));
+    assert_eq!(
+        state.apply(3, 0, &put("k2", "bbbb", request(1, 3))),
+        Some(Answer::Full)
+    );
+    assert_eq!(
+        state.apply(4, 0, &add("m", 1, request(1, 4))),
+        Some(Answer::Full)
+    );
+    assert_eq!(
+        state.apply(5, 0, &add("n", 1, request(1, 5))),
+        Some(Answer::Sum(2))
+    );
+    assert_eq!(
+        state.apply(6, 0, &delete("k1", Some(1), request(1, 6))),
+        Some(Answer::Removed { version: 1 })
+    );
+    assert_eq!(
+        state.apply(
+            7,
+            0,
+            &put_with("k1", "aaaa", 5, Condition::None, request(1, 7))
+        ),
+        Some(Answer::Written { version: 7 })
+    );
+    assert_eq!(state.apply(8, 5, &expire("k1", 7)), None);
+    assert_eq!(state.view().entry("k1"), None);
+    assert_eq!(
+        state.apply(9, 5, &put("k2", "bbbb", request(1, 9))),
+        Some(Answer::Written { version: 9 })
+    );
+    assert_eq!(
+        state.apply(10, 5, &delete("k2", None, request(1, 10))),
+        Some(Answer::Removed { version: 9 })
+    );
+    assert_eq!(state.data(), recount(&state));
+}
+
+/// MembersAgree, FullFinal: random writes against a small bound, with
+/// expiries, cuts and installs at random points. Every member answers
+/// alike, and the counted size is the size of the maps.
+#[test]
+fn members_agree_on_full_answers_under_random_writes() {
+    for run in 0..300u64 {
+        let mut seed = run;
+        let bound = super::Bound(40 + next(&mut seed) % 80);
+        let mut plain = CacheState::default().bounded(bound);
+        let mut layered = CacheState::default().bounded(bound);
+        let mut installed = CacheState::default().bounded(bound);
+        let mut cut = None;
+        let mut stamp = 0;
+        for index in 1..=80 {
+            stamp += next(&mut seed) % 3;
+            let command = match next(&mut seed) % 5 {
+                0 => {
+                    let key = ["a", "b", "c"][next(&mut seed) as usize % 3];
+                    match plain.view().entry(key) {
+                        Some(entry) => expire(key, entry.version),
+                        None => random_command(&mut seed, index, stamp),
+                    }
+                }
+                _ => random_command(&mut seed, index, stamp),
+            };
+            let answer = plain.apply(index, stamp, &command);
+            assert_eq!(
+                answer,
+                layered.apply(index, stamp, &command),
+                "run {run} index {index}"
+            );
+            assert_eq!(
+                answer,
+                installed.apply(index, stamp, &command),
+                "run {run} index {index}"
+            );
+            match next(&mut seed) % 8 {
+                0 => cut = Some(layered.cut()),
+                1 => cut = None,
+                2 => {
+                    layered.fold(1);
+                }
+                3 => {
+                    installed = CacheState::restore(&installed.snapshot(), true)
+                        .unwrap()
+                        .bounded(bound);
+                }
+                _ => {}
+            }
+            for member in [&plain, &layered, &installed] {
+                assert_eq!(member.data(), recount(member), "run {run} index {index}");
+            }
+        }
+        drop(cut);
+        while layered.fold(2) {}
+        assert_eq!(plain.snapshot(), layered.snapshot(), "run {run}");
+        assert_eq!(plain.snapshot(), installed.snapshot(), "run {run}");
+    }
+}
