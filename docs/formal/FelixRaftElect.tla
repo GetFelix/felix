@@ -308,10 +308,9 @@ Serves(l) ==
     /\ open[l]
     /\ \A s \in Healthy : vote[s] = vote[l] /\ log[s] = log[l]
 
-\* TLC inlines the operators of a temporal property and evaluates a part whose
-\* body looks constant before it has a state, which breaks on Quorum(Healthy)
-\* and VoteGE. So the properties compare sets that are defined outside them.
-MajorityHealthy == 2 * Cardinality(Healthy) > Cardinality(Servers)
+\* SANY gives Cardinality of a state-level set level 0, and TLC then evaluates
+\* it before it has a state. So the majority is found by a subset instead.
+MajorityHealthy == \E Q \in SUBSET Servers : Quorum(Q) /\ Q \subseteq Healthy
 SettledLeaders == {l \in Servers : Settled(l)}
 ServingLeaders == {l \in Servers : Serves(l)}
 
