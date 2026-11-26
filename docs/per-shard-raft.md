@@ -5237,7 +5237,8 @@ older control plane added:
   operator moves the shard back to the old broker (step `raft_move_undone`).
   The store takes that write because the old broker is a reported voter.
   This is also how a drain of the old broker gets past a move that cannot
-  finish: the next pass starts the move again to another live broker. A draining destination that already votes is undone the same way,
+  finish: the next pass starts the move again to another live broker. A
+  draining destination that already votes is undone the same way,
   since it still serves and can vote for its own removal.
 - Once the destination votes, the group has two voters and either set of one
   needs both. If the destination is then down, placement waits and says why

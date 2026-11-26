@@ -2042,8 +2042,8 @@ and a pause holds it. With no live broker outside the set the shard waits
 dropped, and the next pass picks another. One that goes down after it
 votes stops the shard, since a group of two needs both votes, until that
 broker is back or the group is re-formed without it. If the draining
-broker goes down mid-move the shard stops too: its only full copy before
-the destination votes, and one of two needed voters after. A drain
+broker goes down mid-move the shard stops too: before the destination
+votes it holds the only full copy, and after, the group needs both votes. A drain
 cancelled mid-move lets the move finish.
 
 A leader-only write copies nothing, so it takes no move slot. One pass names
