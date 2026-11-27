@@ -274,7 +274,13 @@ writes each group's standing claims (one `Claim` per holder, as in
 stays up until `deposed` fires for the term, not until the transfer call
 returns: openraft can answer the call before the leader has stopped leading.
 If the term is not deposed within an election timeout, the leader unfences
-and goes on, and the extra claims in the table only delay redelivery. This makes leader-held claims cost nothing on the moves operators
+but serves every group of the shard as `durable` (a `Claim` per poll and
+extension) until `deposed` fires or the transfer is known to be cancelled.
+An unfence does not mean the move is off: the transfer can still complete,
+or openraft can step the leader down to campaign once the transfer times
+out. Every claim answered after the unfence is therefore in the table
+before the leader can change, so a planned change never loses a count and
+`C` can keep excluding it. This makes leader-held claims cost nothing on the moves operators
 make on purpose; only crashes and partitions redeliver. It is the last PR in
 the sequence, and it ships in 0.8.
 
@@ -291,16 +297,30 @@ term lasts**. Every place on `main` that drops a tracker or forgets it:
 |---|---|---|
 | `write_held`, `queue/raft.rs:744` | proposal refused | Unsafe today. A `!may_commit` refusal (`shards/raft/groups.rs:124`) can come while this member still leads. Keep the tracker; the failed operation unclaims only what it handed out. Drop only when the term is over. |
 | `write_held`, `queue/raft.rs:756` | fold dropped our entry | Safe: only after a seek or delete of the group, which voids its claims, or before the creation committed, when no claim was answered. |
-| `seek`, `queue/raft.rs:586` | any write error | Unsafe today, same as `write_held`. On a refusal keep the tracker. On an unsettled write keep it too: the next operation's `ready` waits for the seek's outcome in this term, and `locked` drops the tracker only if the seek applied, which voids the claims anyway. |
+| `seek`, `queue/raft.rs:586` | any write error | Unsafe today, same as `write_held`. On a refusal keep the tracker. On an unsettled write keep it too: the next operation's `ready` waits for the seek's outcome in this term, and `locked` drops the tracker if the seek applied, which voids the claims anyway. That needs the fold change below. |
 | `seek`, `queue/raft.rs:596` | a delete applied after the seek | Safe: the delete voids the claims. |
 | `delete`, `queue/raft.rs:636` | always, even when the write failed | Unsafe on failure. Forget only once the delete applied; on a refusal or an unsettled write, keep the tracker as for a seek. |
-| `locked`, `queue/raft.rs:828` | new term, or the table names another tracker | Safe: a new term, or the fold-dropped, seek or delete cases above. |
+| `locked`, `queue/raft.rs:828` | new term, or the registry names another tracker | Safe only with the fold change below: today it compares the registry alone (`queue/raft.rs:824`), and an applied seek or delete leaves the registry as it was. |
 | `ShardGroups::apply`, `queue/table.rs:446` | a dropped entry carried our token | Safe: the fold-dropped case, seen through `locked`. |
 | `ShardGroups::reset`, `raft/machine.rs:137`, `:551` | open, snapshot install | A leader must not reset its live table mid-term. Open precedes leading; a stream member refuses installs today. Assert it. |
 | `ShardGroups::end_term`, `queue/table.rs:475` | no caller outside tests | Keep it that way or call it only from `deposed`. |
 | `step_down` from `deposed`, `shards/raft.rs:2581` | term over | Safe. |
 | `saw_term`, `queue/raft.rs:944` | trackers of an older term | Safe. |
 | `evict_idle`, `queue/raft.rs:917` | idle | Safe: keeps any tracker with a standing claim. |
+
+**The fold untracks on seek and delete.** `locked` keeps a tracker while the
+registry holds its token, and the registry is cleared only when the fold
+drops an entry carrying that token (`queue/table.rs:446`). A seek or delete
+that applies after an unsettled answer leaves it alone, so a kept tracker
+would go on serving from the old cursor, and in `leader` mode nothing it
+writes would be checked by the fold. So `ShardGroups::apply` untracks the
+group whenever a `Seek` or `Delete` for it applies. The other fix, having
+`locked` also require `table.group(g).cre == held.cre`, would wrongly drop
+the tracker of a group not yet created, which has no table entry, and would
+have to be repeated at every place that trusts the registry. In the fold,
+the rule sits where the state changes and covers every reader of the
+registry. `seek` re-tracks its new incarnation after its own write applies,
+as it does today.
 
 `release` (`queue/raft.rs:968`) drops only a slot whose tracker is already
 gone. The snapshot-build fold at `raft/machine.rs:819` resets a private
@@ -395,6 +415,12 @@ New properties:
 New knobs, each expected to fail: `KeepTrackerInTerm = FALSE` (a refused or
 unsettled proposal from a poll, an extension, a seek or a delete drops the
 tracker while the term lasts; `OneHolderPerTerm` fails),
+`UntrackOnSeek = FALSE` with `KeepTrackerInTerm` (a seek or delete answered
+unsettled applies later in the term while the tracker is kept, and the fold
+leaves the registry alone; `NoSkip` or `OneHolderPerTerm` fails as the
+tracker serves from the old cursor), `DurableAfterUnfence = FALSE` (a
+transfer completes after the fence lapsed and its claims were held in
+memory; `DeliveriesBounded` fails),
 `SeedAttemptsFromClaims = FALSE` (a `leader` hydrate ignores table claims;
 `AttemptsKept` fails after a switch from `durable`),
 `ClaimBeforeAnswer = FALSE` with `ClaimsDurable` (`DurableExclusive` fails),
@@ -489,7 +515,7 @@ so group entries stop using up stream offsets. Three consequences here:
 - **Switching to `durable` under load.** The flush of standing claims is one
   entry per holder and is bounded by `FELIX_GROUP_MAX_IN_FLIGHT`.
 - **Hand-over fence.** A transfer that hangs holds polls for its duration.
-  Bound the fence by the election timeout and unfence on expiry.
+  Bound the fence by the election timeout, then serve the shard's groups as `durable` until `deposed` or a known cancel.
 - **Mixed builds.** New op codes stop a member that predates them. Fine for
   a fresh 0.8 fleet; a rolling upgrade across the commit that adds them is
   not supported, as for the rest of the baseline.
