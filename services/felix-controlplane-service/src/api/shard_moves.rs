@@ -86,6 +86,8 @@ pub(crate) async fn list_shard_moves(
 /// - 409 when the destination is not live, already leads the shard or is at
 ///   capacity, the shard is already moving, its leader is down, or a move
 ///   limit is reached; on a Raft shard, when the destination is not a member.
+///   `conflict` when the store refused the write as the shard stands; read
+///   it and retry.
 pub(crate) async fn start_shard_move(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -498,7 +500,7 @@ async fn set_paused(
         .store
         .set_moves_paused(paused)
         .await
-        .map_err(|ref err| api_internal("set whether placement is paused", err))?;
+        .map_err(|ref err| store_error("set whether placement is paused", err))?;
     tracing::info!(paused, "placement's moves paused or resumed by an operator");
     if !paused {
         state.placement_wakes.request_pass();
@@ -544,11 +546,21 @@ fn operator_error(err: OperatorError) -> ApiError {
             }
             other => api_conflict(other.code(), &other.to_string()),
         },
-        OperatorError::Store(err) => api_internal("change a shard move", &err),
+        OperatorError::Store(err) => store_error("change a shard move", &err),
         OperatorError::Contended => api_conflict(
             "contended",
             "the shard kept changing while this was decided; try again",
         ),
+    }
+}
+
+/// A store conflict is a 409 `conflict`: the store refused the write as the
+/// shard stands, such as a Raft set its reported voters do not yet keep a
+/// majority of, and the same request may succeed once the shard moves on.
+fn store_error(message: &str, err: &crate::store::StoreError) -> ApiError {
+    match err {
+        crate::store::StoreError::Conflict(why) => api_conflict("conflict", why),
+        other => api_internal(message, other),
     }
 }
 

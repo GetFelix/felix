@@ -222,3 +222,73 @@ fn an_abandoned_move_is_forgotten() {
     );
     assert_eq!(clock.written(&key(), &cut_over(), 3, false, t0), None);
 }
+
+fn voters_report(index: u64, epoch: u64, voters: &[&str]) -> crate::model::RaftFloorReport {
+    crate::model::RaftFloorReport {
+        key: shard_zero(),
+        incarnation: 0,
+        epoch,
+        index,
+        term: 1,
+        voters: Some(voters.iter().map(|node| (node.to_string(), 7)).collect()),
+    }
+}
+
+/// **A change of a Raft shard's reported voters wakes placement once
+/// (#3337).** A one-member move's shrink waits on exactly that report, and
+/// leaders report every second, so the repeats, an older report and one that
+/// does not name its sender wake nothing. A changed copy id makes the next
+/// report news again.
+#[test]
+fn only_a_change_of_reported_voters_wakes_placement() {
+    let wakes = PlacementWakes::default();
+    let report = |node: &str, r| wakes.raft_voters_reported(node, &[r]);
+    assert!(report("broker-a", voters_report(5, 0, &["broker-a"])));
+    assert!(!report("broker-a", voters_report(6, 0, &["broker-a"])));
+    assert!(report(
+        "broker-a",
+        voters_report(7, 0, &["broker-a", "broker-b"])
+    ));
+    for _ in 0..100 {
+        assert!(!report(
+            "broker-a",
+            voters_report(8, 0, &["broker-a", "broker-b"])
+        ));
+    }
+    assert!(
+        !report("broker-a", voters_report(4, 0, &["broker-a"])),
+        "older"
+    );
+    assert!(
+        !report("broker-c", voters_report(9, 0, &["broker-a"])),
+        "a sender outside its own voters leads no group"
+    );
+    assert!(
+        report("broker-b", voters_report(1, 1, &["broker-b"])),
+        "re-formed"
+    );
+    assert!(
+        !report("broker-a", voters_report(99, 0, &["broker-a"])),
+        "old epoch"
+    );
+    wakes.forget_raft_voters(&shard_zero());
+    assert!(report("broker-b", voters_report(2, 1, &["broker-b"])));
+}
+
+/// However many reports ask for a pass while none is taken, one pass runs.
+#[tokio::test]
+async fn requested_passes_coalesce() {
+    let wakes = PlacementWakes::default();
+    for _ in 0..1000 {
+        wakes.request_pass();
+    }
+    tokio::time::timeout(Duration::from_millis(100), wakes.pass_requested())
+        .await
+        .expect("one pass");
+    assert!(
+        tokio::time::timeout(Duration::from_millis(100), wakes.pass_requested())
+            .await
+            .is_err(),
+        "and no second"
+    );
+}
