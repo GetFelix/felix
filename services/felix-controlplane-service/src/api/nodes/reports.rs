@@ -295,6 +295,8 @@ pub(crate) async fn report_replica_status(
 /// writes the shard's target from them, and writes it again when a broker
 /// reports a new id. A change of the set does not rewrite the target yet.
 /// A broker reports only its own copy, from the process it registered.
+/// Placement records one for a down voter the same way, from the voters
+/// its group reported (`docs/per-shard-raft.md`, "Where a target comes from").
 ///
 /// # Errors
 /// - 404 when the shard has no assignment.

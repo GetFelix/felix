@@ -710,6 +710,41 @@ fn dead_seat(existing: &ShardAssignment, node: &str, is_serving: &dyn Fn(&str) -
     !is_serving(node) && existing.raft_target.is_none() && existing.reported_without(node)
 }
 
+/// The member and copy id placement reports on a down member's behalf, so
+/// the target for the current set can be stored (#3313).
+///
+/// A set change drops the copy ids, and a target waits for every member's.
+/// A voter that died before it reported again would hold the target, and
+/// with it every later swap, for good. The group's reported voters name it
+/// under a copy, and a down broker cannot have changed that copy, so the
+/// target names the member the group already has. Only when it is the one
+/// member missing and every other member serves, so the target is one the
+/// group can act on, and not when the store would hold the target anyway.
+pub(super) fn vouched_copy<'e>(
+    existing: &'e ShardAssignment,
+    is_serving: &dyn Fn(&str) -> bool,
+) -> Option<(&'e str, u64)> {
+    if existing.raft_target.is_some() {
+        return None;
+    }
+    let mut unreported = existing
+        .nodes()
+        .filter(|node| !existing.raft_copy_ids.contains_key(*node));
+    let node = unreported.next()?;
+    if unreported.next().is_some()
+        || is_serving(node)
+        || existing
+            .nodes()
+            .any(|other| other != node && !is_serving(other))
+    {
+        return None;
+    }
+    let copy = existing.voted_copy(node)?;
+    let mut copies = existing.raft_copy_ids.clone();
+    copies.insert(node.clone(), copy);
+    (!existing.holds_formed_target(&copies)).then_some((node.as_str(), copy))
+}
+
 /// The live node outside the set that joins it, `from` leaving: the one
 /// holding the fewest shards, in a zone the staying members lack first.
 fn newcomer<'a>(
