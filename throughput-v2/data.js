@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795775556375,
+  "lastUpdate": 1795775859778,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -73476,6 +73476,58 @@ window.BENCHMARK_DATA = {
             "range": "14404.70",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1198700.25\nmean: 1197774.22\nstdev: 14404.70\ncv: 1.20%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "7c5f53d15b5669e6924ae06cb7f6821258e00a53",
+          "message": "fix(raft): a cache watch from an old offset replays the log the member still holds (#3335) (#3350)\n\n* fix(raft): a cache watch resuming from an old offset is replayed from the log (#3335)\n\nA Raft member answered a resume from below its recorded changes with a\nresnapshot, so a watch from offset 0 on a shard nobody had watched never\nsaw the overwritten values. The hybrid replays its shard log there.\n\nWhen the recorded changes do not reach back, the member now folds the\nentries above its stored snapshot into a copy of the snapshot's state, up\nto the edge read under the state's lock after the watch registered, and\nhands out the changes from the resume offset on. Apply is deterministic,\nso the copy makes the same changes; only applied entries are read. A\nresume at or below the snapshot's entry is still resnapshotted.\n\nUn-skips the two routing::watches_follow cluster tests.\n\nSpec-Unaffected: a read-only fold of applied entries; apply, commit and compaction are unchanged\n\n* fix(raft): bound the cost of a cache watch replay from the log (#3335)\n\nA resume below the recorded changes read the whole snapshot file under the\nstore's install lock, even when the answer was a resnapshot, and any number\nof resumes could each restore their own copy at once. A replay slow enough\nto overflow the live queue ended the watch as lagged, and the client's\nresume started the same replay again.\n\nThe resnapshot decision now reads only the covered index. The snapshot is\nread through a reader that holds the install lock just to open the file. A\ngroup runs at most two replays at once; further resumes wait. A replay that\noverflowed the live queue is not handed out: the watch registers again and\nis resnapshotted, so a slow replay cannot loop.\n\nTests cover the covered-index decision with an unreadable snapshot file,\nresumes queueing behind the bound, the overflow fallback, and a\nresnapshotted resume on a follower passing the read barrier.\n\nSpec-Unaffected: read-side bound on a fold of applied entries; apply, commit and compaction are unchanged\n\n* fix(cache): check stopped_serving again after a lagged replay's re-register (#3335)\n\nAn ending between the old watch's moved check and the new registration\nwas missed by the new watch, which then ran on a member that no longer\nserves the shard.\n\nSpec-Unaffected: handler-side recheck of an existing serving guard\n\n* test(cluster): watches_follow checks delivery on the new owner, not a moved event\n\nOn Raft the drained broker can stay a voter, following the new leader,\nafter placement names the new owner, and a watch on it keeps serving\ncorrectly. Both tests now write fresh values on the new owner once it\nleads and require the watch to hold exactly what the new owner's log\nholds for them. A ShardMoved is required only once the old broker has\nleft the group, which on the hybrid is always.\n\nSpec-Unaffected: test-only change",
+          "timestamp": "2026-11-27T10:32:35Z",
+          "tree_id": "8cdfb05b0a3ee2462e183a7d4b32f863ca5cb910",
+          "url": "https://github.com/GetFelix/felix/commit/7c5f53d15b5669e6924ae06cb7f6821258e00a53"
+        },
+        "date": 1795775859150,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 741333.96,
+            "range": "106866.81",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 741333.96\nmean: 722734.25\nstdev: 106866.81\ncv: 14.79%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 741333.96,
+            "range": "106866.81",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 741333.96\nmean: 722734.25\nstdev: 106866.81\ncv: 14.79%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 161316.98,
+            "range": "1894.47",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 161316.98\nmean: 160481.14\nstdev: 1894.47\ncv: 1.18%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1613169.79,
+            "range": "18944.71",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1613169.79\nmean: 1604811.39\nstdev: 18944.71\ncv: 1.18%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
