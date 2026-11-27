@@ -64,6 +64,10 @@ pub(super) const REACHED_BEFORE: &str =
 const PURGE_SNAPSHOT_WITHIN: Duration = Duration::from_secs(30);
 /// How long a purge pass waits for openraft to drop the log it asked for.
 const PURGE_WITHIN: Duration = Duration::from_secs(2);
+/// Cache watch replays from the log one group runs at once. Each holds the
+/// snapshot's bytes and a restored state, up to two copies of a large
+/// cache, so a burst of resumes after a restart queues instead of piling up.
+pub(super) const LOG_REPLAYS: usize = 2;
 
 pub(crate) struct Group {
     pub(crate) id: GroupId,
@@ -124,6 +128,11 @@ pub(crate) struct Group {
     reached_before: AtomicBool,
     /// A cache shard's projection, as this member has applied it.
     cache: Option<Cache>,
+    /// The group's stored snapshot, which a resuming cache watch's replay
+    /// folds the log from.
+    snapshots: SnapshotStore,
+    /// Bounds the cache watch replays from the log running at once.
+    log_replays: Arc<tokio::sync::Semaphore>,
     /// Watch activity on this member, for the marks that keep every
     /// member of a watched cache shard recording.
     watch_signal: Arc<WatchSignal>,
@@ -848,7 +857,7 @@ impl Group {
             cache,
             groups,
         } = Machine::open(
-            snapshots,
+            snapshots.clone(),
             id.shard.kind,
             Some(log.disk_log()),
             cache_changes.map(|observer| {
@@ -955,6 +964,8 @@ impl Group {
             leadership,
             reached_before: AtomicBool::new(false),
             cache,
+            snapshots,
+            log_replays: Arc::new(tokio::sync::Semaphore::new(LOG_REPLAYS)),
             watch_signal,
             marked_at: AtomicU64::new(0),
             groups,
@@ -2793,6 +2804,76 @@ impl Group {
         let mut state = cache.write();
         state.watch_ended((self.clock)());
         Some((state.applied() + 1, state.recent_since(from, keep)))
+    }
+
+    /// Every change in `[from, tail)` that `keep` takes, folded from the
+    /// log above the stored snapshot, for a resume [`Self::cache_replay`]
+    /// kept no changes for. `tail` is the edge that call read. `None` when
+    /// the snapshot covers `from` or the read failed: the watch is then
+    /// resnapshotted.
+    pub(crate) async fn cache_replay_from_log(
+        &self,
+        from: u64,
+        tail: u64,
+        keep: &(dyn Fn(&str) -> bool + Sync),
+    ) -> Option<Vec<super::cache::Change>> {
+        self.cache.as_ref()?;
+        // Answered from the covered index alone, so a resnapshot neither
+        // reads the file nor waits behind a replay.
+        if self.snapshots.covers().is_some_and(|id| id.index >= from) {
+            return None;
+        }
+        // Waiting, not failing: a waiter that falls behind meanwhile ends
+        // as lagged and the handler resnapshots it instead.
+        let _permit = self.log_replays.acquire().await.ok()?;
+        match machine::replay_from_log(&self.snapshots, self.log.reader(), from, tail, keep).await {
+            Ok(changes) => changes,
+            Err(err) => {
+                tracing::warn!(group = %self.id, error = %err, "a cache watch's replay from the log failed");
+                None
+            }
+        }
+    }
+
+    /// [`machine::replay_from_log`] on this group's store and log, with its
+    /// error, for tests that tell a refusal from a failed read.
+    #[cfg(test)]
+    pub(super) async fn replay_from_log(
+        &self,
+        from: u64,
+        tail: u64,
+    ) -> std::io::Result<Option<Vec<super::cache::Change>>> {
+        machine::replay_from_log(&self.snapshots, self.log.reader(), from, tail, &|_| true).await
+    }
+
+    /// Every permit for a replay from the log, so a test can hold resumes
+    /// at the bound.
+    #[cfg(any(test, feature = "testing"))]
+    pub(crate) async fn hold_log_replays(&self) -> tokio::sync::OwnedSemaphorePermit {
+        Arc::clone(&self.log_replays)
+            .acquire_many_owned(LOG_REPLAYS as u32)
+            .await
+            .expect("never closed")
+    }
+
+    /// Take a snapshot of what this member has applied and return the entry
+    /// the stored one covers, or `None` if none covers it within 10 s.
+    #[cfg(any(test, feature = "testing"))]
+    pub(crate) async fn snapshot_applied(&self) -> Option<u64> {
+        use openraft::async_runtime::watch::WatchReceiver;
+        let applied = self.raft.metrics().borrow_watched().last_applied?.index;
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+        // Asked again: a build can be deferred while the last one folds back.
+        loop {
+            self.raft.trigger().snapshot().await.ok()?;
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            if let Some(covered) = self.snapshots.covers().filter(|id| id.index >= applied) {
+                return Some(covered.index);
+            }
+            if tokio::time::Instant::now() >= deadline {
+                return None;
+            }
+        }
     }
 
     /// A cache watch of this group's shard ended here: keep recording for a

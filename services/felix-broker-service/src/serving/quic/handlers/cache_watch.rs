@@ -236,14 +236,17 @@ pub(crate) async fn handle_cache_watch_message(
     // Register *before* reading the tail: this pins the live edge. Every
     // change applied from here on is queued (or reported as lag), so the
     // history below the tail is a closed range nothing can escape.
-    let watch = hub.register(
-        &request.tenant_id,
-        &request.namespace,
-        &request.cache,
-        shard,
-        filter.clone(),
-        WATCH_QUEUE_CAPACITY,
-    );
+    let register = || {
+        hub.register(
+            &request.tenant_id,
+            &request.namespace,
+            &request.cache,
+            shard,
+            filter.clone(),
+            WATCH_QUEUE_CAPACITY,
+        )
+    };
+    let mut watch = register();
 
     // Checked again now that it is registered: an ending that landed since
     // the first check would otherwise have missed it.
@@ -265,8 +268,8 @@ pub(crate) async fn handle_cache_watch_message(
 
     // A shard a Raft group runs here joins at the group's applied edge. Only
     // committed entries are applied, so no gate applies. A resume below the
-    // edge is replayed from the member's recent changes, and answered with a
-    // resnapshot when they no longer reach back to it.
+    // edge is replayed from the member's recent changes or its log above its
+    // snapshot, and answered with a resnapshot when the snapshot covers it.
     let refuse_unready = |why: &str| {
         ClientError::unavailable(
             &crate::shards::routing::Reason::NotReady,
@@ -288,8 +291,27 @@ pub(crate) async fn handle_cache_watch_message(
     if let (Some(join), false, Some(from)) = (raft.as_mut(), request.retained, request.from_offset)
         && from <= join.tail
     {
-        let replay = raft_replay(&publish_ctx.engine, &shard_key, &filter, from);
-        if let Some(replay) = replay
+        let replay = raft_replay(&publish_ctx.engine, &shard_key, &filter, from).await;
+        // A replay from the log that outlasted the live queue is not handed
+        // out: the client would resume below the recorded changes and start
+        // the same replay again. The watch registers afresh and is
+        // resnapshotted, which costs no fold.
+        let overflowed = watch.lagged().is_some() && watch.moved().is_none();
+        if overflowed {
+            watch = register();
+            // An ending that landed after the old watch's moved check is
+            // missed by the new one, as on the first registration.
+            if let Some(refusal) =
+                super::redirect::stopped_serving(publish_ctx.ingress.as_deref(), &shard_key)
+            {
+                drop(watch);
+                subscriptions.release();
+                responder.send(refusal).await?;
+                return Ok(true);
+            }
+        }
+        if !overflowed
+            && let Some(replay) = replay
             && let Some(changes) = replay.changes
         {
             join.tail = replay.tail;
@@ -658,7 +680,7 @@ async fn raft_join(
 
 /// The changes a watch resuming from `from` missed on `key`'s Raft member
 /// here, read after the watch registered. `None` when no group runs it.
-fn raft_replay(
+async fn raft_replay(
     engine: &crate::shards::routing::StreamEngine,
     key: &crate::shards::ShardKey,
     filter: &CacheWatchFilter,
@@ -668,7 +690,8 @@ fn raft_replay(
     {
         let replay = engine
             .raft(key)?
-            .cache_replay(key, from, &|name| filter.matches(name))?;
+            .cache_replay(key, from, &|name| filter.matches(name))
+            .await?;
         Some(RaftReplay {
             tail: replay.tail,
             changes: replay.changes,

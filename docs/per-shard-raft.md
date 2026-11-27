@@ -7202,19 +7202,25 @@ on the hybrid.
   change's key, value and slot (`raft/cache/recent.rs`). A member that is
   not recording keeps nothing and pays nothing extra per write; its tick
   frees what an idle shard kept. Where a member's recording starts is its
-  floor: every change from there on is kept, so a resume from below it,
-  for example from before the first watched entry, or on a member that
-  is not recording, is resnapshotted. A resume
+  floor: every change from there on is kept. A resume
   whose offset is still kept is replayed `[from_offset, edge)` from them,
   deletes included, exactly as the hybrid replays its log, then joins live
-  delivery. One from below the oldest kept change is answered with
+  delivery. A resume from below the floor, for example from before the
+  first watched entry, or on a member that is not recording, is replayed
+  from the member's Raft log instead: the member reads its stored
+  snapshot, folds the entries above it into a copy of that state up to
+  the edge, and keeps the changes from `from_offset` on. Apply is
+  deterministic, so the copy makes the same changes the live state made.
+  Only entries below the edge are read, and those are applied and so
+  committed (`raft/machine.rs`, `replay_from_log`). A resume from at or
+  before the snapshot's entry finds those changes compacted into the
+  snapshot, as a hybrid resume below retention does, and is answered with
   `resnapshot` and each key's current value, read after the member has
   applied every put acknowledged before the watch began. A snapshot
   install or a restart starts the kept changes empty, past the snapshot's
   entry: recording again at once if the snapshot is inside a watched
   entry's life, which the snapshot carries, and otherwise from the next
-  watched entry applied. A resume from at or before the snapshot's entry
-  resnapshots. A value
+  watched entry applied. A value
   bigger than the byte bound still reaches live watches, and moves the
   oldest kept change past it. A resume from past the
   edge, an offset a member further ahead gave out, waits for this one to
