@@ -1,10 +1,10 @@
 # Leader-held group claims on Raft shards: design
 
-Status: design, not built. Tracks
+Status: decided, not built. Tracks
 [#3360](https://github.com/GetFelix/felix/issues/3360). Lands in the same
 window as [#3359](https://github.com/GetFelix/felix/issues/3359) (a Raft entry
-is a record batch), before format v9 freezes. The choices that need a decision
-are listed at the end.
+is a record batch), before format v9 freezes. The design decisions are listed
+at the end.
 
 ## What is decided
 
@@ -171,10 +171,9 @@ per-group `attempts: BTreeMap<u64, u32>`, pruned like claims at every
 advance, dead letter and seek.
 
 The table moves to version 3: per group, `claims` (u8) and the `attempts`
-map after the claims. Version 2 decodes with `leader` and no attempts. No
-released build writes group entries (they are 0.8 only, and 0.8 starts fresh
-with no upgrade from 0.7), so version 1 and 2 decoding can be dropped in the
-same change if the reviewers prefer.
+map after the claims. No released build writes group entries (they are 0.8
+only, and 0.8 starts fresh with no upgrade from 0.7), so the change drops
+version 1 and 2 decoding along with it.
 
 `Claim` (op 7) stays, and is written only for `durable` groups and by the
 hand-over below.
@@ -256,7 +255,7 @@ leader restores them as it restores durable claims. If the transfer fails,
 the leader unfences and goes on, and the extra claims in the table only delay
 redelivery. This makes leader-held claims cost nothing on the moves operators
 make on purpose; only crashes and partitions redeliver. It is the last PR in
-the sequence and can slip without changing the guarantees.
+the sequence, and it ships in 0.8.
 
 ### No double delivery inside one leader term
 
@@ -307,7 +306,7 @@ For a `leader` group on a Raft shard, after a leader change:
 - `reclaim` returns nothing; extensions of old claims answer
   `group_claim_lapsed`.
 - Acknowledged advances, dead letters, redrives and seeks are kept.
-- A planned leadership transfer keeps claims (once the hand-over lands).
+- A planned leadership transfer keeps claims.
 
 A `durable` group behaves as every Raft group does today.
 
@@ -322,10 +321,10 @@ fsync per copy under `on_commit`, and the apply wait.
 A new request, `group_configure { stream, shard?, group, claims }`, answered
 with the setting now in force. `shard` omitted applies it to every shard of
 the stream, as `group_delete` does. It needs the same permission as
-`group_seek`. Brokers that serve it advertise a new feature bit,
-`FEATURE_GROUP_CONFIGURE`; a client refuses the call to a broker without it.
-`group_describe` answers `claims` too, as an optional field that defaults to
-`leader`, so an old client reads the answer it always did.
+`group_seek`. It is part of the 0.8 baseline feature set
+([#3362](https://github.com/GetFelix/felix/issues/3362)), so every 0.8 broker
+serves it and there is no feature bit to negotiate. `group_describe` answers
+`claims` too.
 
 `felixctl group configure --claims durable|leader`, and the call in the Rust
 client. The Python, TypeScript, C# and C clients follow in their own PRs.
@@ -334,10 +333,10 @@ The hybrid engine ignores the setting: its claims are leader memory already.
 It is answered there but has no effect, and `group_describe` says `leader`.
 
 New group ops are refused by a member that does not know them, which stops
-that member. No release has shipped Raft groups, so the new ops ride on the
-existing `raft_consumer_groups` fleet feature rather than a new one. If a
-main-to-main rolling upgrade has to keep working, they need their own fleet
-feature and the leader writes neither op until it is finalized.
+that member. No release has shipped Raft groups, so the new ops join the 0.8
+baseline feature set (#3362) and get no fleet bit of their own. A cluster
+mixing a 0.8 build with a `main` build from before these ops is not
+supported, as for the rest of the baseline.
 
 ## Spec, simulation and history checks
 
@@ -413,7 +412,14 @@ so group entries stop using up stream offsets. Three consequences here:
    `CreatedBy::Configure`, round-trip and fold tests. Every group still writes
    claims, so no behaviour changes. Docs: `storage-format.md` "Group records",
    `per-shard-raft.md` "Consumer groups".
-3. **Leader-held claims.** The poll and extend rules above, `Attempts` for
+3. **Wire and clients.** `group_configure` in the 0.8 baseline, `claims` on
+   `group_describe`, felixctl, the Rust client. Until PR 4 every group still
+   writes claims, so `durable` is what every group already gets and `leader`
+   is accepted and recorded. Docs: `protocol.md` request,
+   `reference/felixctl.md`, `clients/rust/groups-and-commits.md`. Then a KBL
+   issue to configure its group `durable`, and the `built-on-felix/agents.md`
+   line that says so. KBL's group is `durable` before the default flips.
+4. **Leader-held claims, the default.** The poll and extend rules above, `Attempts` for
    retries, hydrate restoring attempts, the tracker kept on a refused proposal
    while the term lasts, and the `reset` assertion. Unit tests in
    `queue/raft/tests.rs`: a leader-held claim is redelivered after a change of
@@ -422,20 +428,10 @@ so group entries stop using up stream offsets. Three consequences here:
    durable-claim unit and cluster tests run on a group configured `durable`.
    A new cluster test for leader-held redelivery. Docs: `protocol.md`,
    `features/queues.md`, `architecture/semantics.md`, changelog fragment.
-4. **Wire and clients.** `group_configure`, the feature bit, `claims` on
-   `group_describe`, felixctl, the Rust client. Docs: `protocol.md` request
-   and feature table, `reference/felixctl.md`,
-   `clients/rust/groups-and-commits.md`. Then a KBL issue to configure its
-   group `durable`, and the `built-on-felix/agents.md` line that says so.
 5. **History checker and sim.** The group workload and G1 to G4. Can run in
    parallel with 4.
 6. **Hand-over on planned transfer.** Fence, write claims, transfer. Cluster
-   test: a leadership transfer keeps a leader-held claim.
-
-PRs 3 and 4 can merge into one if the setting has to be reachable the day
-the default changes; otherwise KBL runs on `leader` claims between them.
-That is the strongest argument for landing 4 first, with the setting
-accepted but having no effect until 3.
+   test: a leadership transfer keeps a leader-held claim. In 0.8.
 
 ## Risks
 
@@ -454,7 +450,8 @@ accepted but having no effect until 3.
 - **Hand-over fence.** A transfer that hangs holds polls for its duration.
   Bound the fence by the election timeout and unfence on expiry.
 - **Mixed builds.** New op codes stop a member that predates them. Fine for
-  a fresh 0.8 fleet, a problem for main-to-main rolling upgrades.
+  a fresh 0.8 fleet; a rolling upgrade across the commit that adds them is
+  not supported, as for the rest of the baseline.
 
 ## Not in scope
 
@@ -466,16 +463,14 @@ accepted but having no effect until 3.
 - **The hybrid engine.** Its claims are leader memory already; it is being
   retired.
 
-## Decisions needed
+## Decisions
 
-1. Default `leader`, with `durable` per group. Proposed above.
-2. Write `Attempts` for retries (a commit on polls that carry retries), or
-   accept a per-term dead-letter bound and write nothing. Proposed: write
-   them.
-3. Ride on `raft_consumer_groups` or add a fleet feature for the new ops.
-   Proposed: ride on it, since 0.8 starts fresh.
-4. Land the wire setting (PR 4) before the default changes (PR 3), so KBL
-   never runs on leader-held claims. Proposed: yes.
-5. Include the planned-transfer hand-over in 0.8, or file it for 0.9.
-   Proposed: 0.8, last in the sequence; rolling restarts are when operators
-   would otherwise see redeliveries.
+1. Claims are leader-held by default, with a per-group `durable` setting.
+   KBL uses `durable`.
+2. `Attempts` entries are written on redelivery, so the dead-letter bound
+   holds across failover.
+3. The new group entries and `group_configure` join the 0.8 baseline feature
+   set (#3362). No new fleet bit.
+4. The `durable` setting (wire and felixctl, PR 3) lands before the default
+   flips (PR 4).
+5. The planned-transfer claim hand-over is in 0.8.
