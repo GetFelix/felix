@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795816586376,
+  "lastUpdate": 1795819777287,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -74360,6 +74360,58 @@ window.BENCHMARK_DATA = {
             "range": "6161.35",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1193405.10\nmean: 1193607.74\nstdev: 6161.35\ncv: 0.52%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "21a8b0e887e0efe66ed7114e346f4f0fb083f0de",
+          "message": "refactor(python): split the blocking and asyncio clients into modules (#3388) (#3392)\n\nEach client's pymethods are now grouped by domain (publish, stream, cache,\ncommit, queues, admin) in client/ submodules, with client.rs keeping the\nstruct, constructor and handles. Needs pyo3's multiple-pymethods feature to\nspread one pyclass's methods over files. The Python-visible surface is\nunchanged: dir(), text signatures and docstrings of every class diff clean.\n\nSpec-Unaffected: refactor, no behaviour change",
+          "timestamp": "2026-11-27T22:40:47Z",
+          "tree_id": "bf78dd85dba4a64f15f7c725d1a3520d41285824",
+          "url": "https://github.com/GetFelix/felix/commit/21a8b0e887e0efe66ed7114e346f4f0fb083f0de"
+        },
+        "date": 1795819776555,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 360852.96,
+            "range": "11341.73",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 360852.96\nmean: 354645.93\nstdev: 11341.73\ncv: 3.20%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 360852.96,
+            "range": "11341.73",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 360852.96\nmean: 354645.93\nstdev: 11341.73\ncv: 3.20%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 81709.69,
+            "range": "329.45",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 81709.69\nmean: 81718.18\nstdev: 329.45\ncv: 0.40%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 817096.9,
+            "range": "3294.50",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 817096.90\nmean: 817181.76\nstdev: 3294.50\ncv: 0.40%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
