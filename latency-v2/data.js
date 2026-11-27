@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795759133394,
+  "lastUpdate": 1795760094623,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -92862,6 +92862,72 @@ window.BENCHMARK_DATA = {
             "range": "205.02",
             "unit": "us",
             "extra": "trials: 5\nmedian: 287.00\nmean: 390.20\nstdev: 205.02\ncv: 52.54%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "3081a3d3a9f1899981be78cedd17a6c11d73b7c3",
+          "message": "fix(raft): a short set whose only member is a draining leader is moved (#3303) (#3332)\n\n* fix(raft): a drain moves a short set whose only member is its leader (#3303)\n\nA Raft shard with replication factor above 1 down to its draining leader\nhad no follower to swap and the top-up skipped a leaving leader, so the\nshard sat at NoDestination and the drain never finished.\n\nThe leaving-leader path now grows such a set by one live broker, the\nleader keeping its seat and lead. A draining leader is renamed only to a\nmember the reported voters may include, so the lead moves once the new\ncopy votes; the old copy is then swapped out as a follower and the\ntop-up refills the set. A grown copy that is down holds the shard as\nmember_down until it is back or lost.\n\nSpec-Unaffected: placement planner choice of the next set change; the store's formed-set and majority checks the model covers are unchanged\n\n* fix(raft): a crashed draining leader keeps its name over a learner (#3303)\n\nThe leaving-leader rename now skips members the reported voters leave\nout on the down path too. A learner cannot be elected, so naming it left\nthe shard on a dead name if it then died. Docs state the two-voter window\nan RF 3 drain on this path runs through and why that order was chosen.\nAdds a test where the voter report from before the grow is still held.\n\nSpec-Unaffected: placement planner choice of leader name; the store's formed-set and majority checks are unchanged",
+          "timestamp": "2026-11-27T06:06:58Z",
+          "tree_id": "34803a387cb501bdc5e1d0ec8d0cbd15b46028fe",
+          "url": "https://github.com/GetFelix/felix/commit/3081a3d3a9f1899981be78cedd17a6c11d73b7c3"
+        },
+        "date": 1795760064117,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 108,
+            "range": "3.83",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 108.00\nmean: 109.20\nstdev: 3.83\ncv: 3.51%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 165,
+            "range": "4.15",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 165.00\nmean: 163.20\nstdev: 4.15\ncv: 2.54%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 227,
+            "range": "795.45",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 227.00\nmean: 714.60\nstdev: 795.45\ncv: 111.31%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 129,
+            "range": "2.45",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 129.00\nmean: 129.00\nstdev: 2.45\ncv: 1.90%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 279,
+            "range": "44.37",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 279.00\nmean: 293.40\nstdev: 44.37\ncv: 15.12%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 570,
+            "range": "173.25",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 570.00\nmean: 591.20\nstdev: 173.25\ncv: 29.30%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
