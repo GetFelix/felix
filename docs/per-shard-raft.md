@@ -5820,7 +5820,7 @@ the control plane's identity names the cluster's engine, and a broker that
 runs another refuses to start and says so.
 
 > `crates/testing/felix-cluster/tests/raft_shards.rs`,
-> `a_broker_on_another_engine_is_refused_at_start`;
+> `a_broker_asked_for_the_hybrid_is_refused_at_start`;
 > `services/felix-broker-service/src/cluster/controlplane_group/tests.rs`,
 > `a_raft_broker_is_admitted_by_a_raft_cluster_only`.
 
