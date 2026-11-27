@@ -300,8 +300,8 @@ pub(super) struct RaftRoot<L> {
     /// Cancelled once the start's restore check has answered. A rotation
     /// that check makes removes the mark log, so the gate waits for it.
     pub(super) restore_checked: CancellationToken,
-    /// Set by a start from the control-plane view under the pin rule
-    /// (`FELIX_UNIFIED_FENCE=0`), to the token cancelled once the broker has
+    /// Set by a start from the control-plane view without the unified fence
+    /// (never, now that it is always on), to the token cancelled once the broker has
     /// registered. The gate then judges the root on the run witness without
     /// waiting for the restore check, and the members that open vote but do
     /// not lead until the broker has registered.

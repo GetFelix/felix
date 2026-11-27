@@ -359,7 +359,6 @@ pub const KNOWN_VARS: &[&str] = &[
     "FELIX_TOKEN",
     "FELIX_UDP_RECV_BUFFER",
     "FELIX_UDP_SEND_BUFFER",
-    "FELIX_UNIFIED_FENCE",
     "FELIX_WORKER_THREADS",
 ];
 
@@ -379,6 +378,7 @@ pub const RETIRED_VARS: &[&str] = &[
     "FELIX_SHARD_PENDING_SET_TIMEOUT_MS",
     "FELIX_SHARD_STUCK_LEADER_MS",
     "FELIX_SHARD_SUSPECT_AFTER_MS",
+    "FELIX_UNIFIED_FENCE",
 ];
 
 /// Known names worth suggesting for `name`, best first.

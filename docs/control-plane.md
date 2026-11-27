@@ -675,10 +675,8 @@ up, so it never counts as down.
 Peers learn a broker's address only from the control plane, so a broker
 started this way votes only if it comes back at its registered address.
 
-A broker started this way opens its Raft members, and votes, before the
-control plane answers only with `FELIX_UNIFIED_FENCE=0`. They do not lead
-until the broker has registered. With the unified fence, the default, they
-wait for the control plane. See
+A broker started this way waits for the control plane before it opens its Raft
+members or votes. (`FELIX_UNIFIED_FENCE=0` once let them open early; it is retired and ignored.) See
 `docs/per-shard-raft.md`, "Voting before the restore check", for what the
 run witness proves and what it does not.
 

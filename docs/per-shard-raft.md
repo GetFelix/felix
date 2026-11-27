@@ -262,14 +262,14 @@ start whose members vote before the restore check (below). If no answer
 comes within 10 s, the members open on what is known, the strict side of
 both, and the log says so. A broker that started from its saved
 control-plane view, with the control plane down, has not had its restore
-check answered yet. Under the unified fence, the default, its Raft
+check answered yet. The unified fence is always on, so its Raft
 members wait for the control plane too, even with a witness: a restarted broker counts for nothing until the
-control plane has checked it. With `FELIX_UNIFIED_FENCE=0` they open on
-the witness.
+control plane has checked it. (`FELIX_UNIFIED_FENCE=0`, which let them open on the
+witness, is retired and ignored.)
 
-**Voting before the restore check.** A broker with
+**Voting before the restore check.** Before `FELIX_UNIFIED_FENCE` was retired, a broker with
 `FELIX_START_WITHOUT_CONTROLPLANE` on and `FELIX_UNIFIED_FENCE=0` that
-starts from its view runs the gate at once, with no incarnation verdict
+started from its view ran the gate at once, with no incarnation verdict
 (issue #3102). With the leader also dead, the copies still up could not
 elect otherwise, and the shard would wait for the control plane. What
 stands in for the verdict is the run witness, twice:
@@ -317,16 +317,17 @@ What this gives up against a start that waits:
   Starting a copy of a live directory elsewhere needs
   `felix-broker rotate-storage-id` first, as a restored snapshot does.
 
-Both are why the default waits. The gain is the one the switch has on the
-hybrid engine: a shard with two live copies of three stays available while
+Both are why the switch was retired and a start from the view now waits. The
+gain it gave up: a shard with two live copies of three stays available while
 the control plane is down and a broker restarts.
 
 > Tests: `node::cluster::tests::a_view_start_under_the_pin_rule_opens_its_raft_root_before_the_restore_check`,
 > `raft::tests::a_member_of_an_unregistered_broker_votes_but_does_not_lead`,
 > `raft::tests::a_member_of_an_unregistered_broker_forms_no_group`,
-> `raft_copy::tests::gate::a_rotation_under_an_open_mark_log_stops_it_and_leaves_no_marks`,
-> and on a cluster
-> `failures::replica_election::a_broker_restarted_while_the_control_plane_is_down_votes`.
+> and `raft_copy::tests::gate::a_rotation_under_an_open_mark_log_stops_it_and_leaves_no_marks`
+> cover the path, which no start takes now. On a cluster,
+> `failures::replica_election::a_broker_restarted_while_the_control_plane_is_down_waits_for_it_under_the_unified_fence`
+> checks that a start from the view waits.
 
 **A hold that no evidence can end.** A held root reports nothing, so the
 control plane learns a root's sequence only from a broker whose root is

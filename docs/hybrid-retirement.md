@@ -119,15 +119,12 @@ reference page:
 | Variable | Read in |
 | --- | --- |
 | `FELIX_INTERNAL_ELECTION`, `FELIX_INTERNAL_FENCE` | `services/felix-broker-service/src/config/membership.rs`, `crates/server/felix-replication/src/peer/config.rs` |
+| `FELIX_UNIFIED_FENCE` | `crates/server/felix-replication/src/peer/config.rs` |
 | `FELIX_ELECTION_DEFER_FOR_MS`, `FELIX_LEADER_SUSPECT_AFTER_MS`, `FELIX_SHARD_SUSPECT_AFTER_MS` | `crates/server/felix-replication/src/suspicion.rs` |
 | `FELIX_SHARD_FENCE_TIMEOUT_MS`, `FELIX_SHARD_PENDING_SET_TIMEOUT_MS`, `FELIX_SHARD_ELECTION_HOLD_MS`, `FELIX_SHARD_STUCK_LEADER_MS`, `FELIX_SHARD_MOVE_FENCE_MAX_LAG_RECORDS` | `services/felix-controlplane-service/src/config/env.rs` |
 
 A removed variable that is still set is reported once at start as retired,
 by name, and has no effect. It does not stop the broker.
-
-`FELIX_UNIFIED_FENCE` stays. On Raft, `0` lets a broker started from its
-control-plane view vote before its restore check (#3102), so it is not a
-hybrid-only switch.
 
 `FELIX_PUBLISH_QUORUM_TIMEOUT_MS`, `FELIX_ACK_ON_COMMIT`,
 `FELIX_ACK_WAIT_TIMEOUT_MS`, `FELIX_QUORUM_READS`, the rebuild limits and the

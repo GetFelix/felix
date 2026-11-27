@@ -13,3 +13,6 @@
 - The history campaign has one mode: `FELIX_HISTORY_MODE` and the `lease` and
   `lease-free` modes are gone. The hybrid's cluster jobs, nightly simulator modes and
   `perf-raft-rf3.yml` are dropped.
+- `FELIX_UNIFIED_FENCE` is retired and the unified fence is always on: a broker restarted
+  while the control plane is down waits for it before voting, even when it starts from its
+  control-plane view with `FELIX_START_WITHOUT_CONTROLPLANE`.
