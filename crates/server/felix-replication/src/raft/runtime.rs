@@ -1571,6 +1571,15 @@ impl GroupRuntime {
         self.inner.registry.get(shard).map(|group| group.status())
     }
 
+    /// The re-form epoch this broker's member of `shard` was opened at, fixed
+    /// for the member's life. `None` when it has no member.
+    pub fn reform_epoch(&self, shard: &ShardKey) -> Option<u64> {
+        self.inner
+            .registry
+            .get(shard)
+            .map(|group| group.reform_epoch)
+    }
+
     /// Replication to every other member of `shard`'s group, while this
     /// broker's member leads it. `None` when it does not.
     pub fn followers(&self, shard: &ShardKey) -> Option<Vec<FollowerProgress>> {

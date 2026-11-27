@@ -1707,15 +1707,16 @@ impl EngineShards for RaftShards {
             // membership and would go on leading it. The open below refuses
             // it.
             let left: Vec<ShardKey> = {
-                let epochs = self.epochs.lock();
                 open.iter()
                     .filter(|(key, member)| {
                         fed.get(*key).is_some_and(|(assignment, _)| {
                             // The same test as the open, so a member the open
                             // would refuse is not kept.
                             member.incarnation == assignment.incarnation
-                                && epochs.get(*key).is_some_and(|epoch| {
-                                    left_behind(assignment.group_epoch(), epoch.unwrap_or(0))
+                                // The epoch the open group holds, not the cached
+                                // read, which can be missing.
+                                && self.runtime.reform_epoch(key).is_some_and(|epoch| {
+                                    left_behind(assignment.group_epoch(), epoch)
                                 })
                         })
                     })

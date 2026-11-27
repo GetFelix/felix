@@ -105,16 +105,18 @@ impl GroupRuntime {
         }
         let admission = self.admission(&request.group);
         match self.addressed(request) {
-            Some(member) if member.reform_epoch != request.reform_epoch => {
-                Err(other_epoch(&member, request))
+            Some(member) => {
+                if let Some(refused) = member
+                    .outsider(from, sender(&request.body), admission.as_deref())
+                    .await
+                {
+                    return Err(refused);
+                }
+                if member.reform_epoch != request.reform_epoch {
+                    return Err(other_epoch(&member, request));
+                }
+                Ok(Admitted::Member(member))
             }
-            Some(member) => match member
-                .outsider(from, sender(&request.body), admission.as_deref())
-                .await
-            {
-                Some(refused) => Err(refused),
-                None => Ok(Admitted::Member(member)),
-            },
             None => Ok(Admitted::Absent {
                 placed: admission.is_some_and(|admitted| admitted.blank.contains(from)),
             }),

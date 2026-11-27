@@ -450,6 +450,29 @@ async fn a_copy_the_records_epoch_has_left_is_closed() {
     shards.shutdown().await;
 }
 
+/// **A copy whose cached epoch is missing is still closed** once the
+/// record passes its epoch: the close reads the open group's epoch, not the
+/// cache, which a failed read leaves empty (#3289).
+#[tokio::test]
+async fn a_copy_with_no_cached_epoch_is_closed_when_the_record_leaves_it() {
+    let root = tempfile::tempdir().expect("tempdir");
+    let broker = broker(root.path()).await;
+    let shards = shards(&broker);
+    let orders = key("orders", 0);
+    lead_orders(&shards).await;
+    shards.epochs.lock().clear();
+
+    let mut reformed = assigned(orders.clone(), INCARNATION);
+    reformed.placed = Some(crate::shards::watch::PlacedEpoch {
+        epoch: 1,
+        ..Default::default()
+    });
+    reformed.raft_bases = Some(reformed_once());
+    shards.take(&mut assignments([reformed])).await;
+    assert!(shards.runtime.status(&orders).is_none(), "closed");
+    shards.shutdown().await;
+}
+
 /// **A copy ahead of the record stays open.** The record only moves on, so
 /// a view behind the copy is stale, and closing on it would shut out a
 /// member of the current epoch.
