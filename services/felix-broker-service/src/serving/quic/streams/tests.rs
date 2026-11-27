@@ -17,6 +17,7 @@
 //! individual test names.
 
 mod ack_durability;
+mod baseline;
 mod control_auth;
 mod control_cache;
 mod control_cache_keys;

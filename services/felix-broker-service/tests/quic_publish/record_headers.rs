@@ -137,25 +137,23 @@ impl Session {
         )?;
         let connection = client.connect(addr, "localhost").await?;
         let (mut send, mut recv) = connection.open_bi().await?;
-        let (client_flags, client_flags_ext) = if offer_headers {
-            felix_wire::offer_flags(KNOWN_FLAGS, EXT_RECORD_HEADERS)
-        } else {
-            // No times, which differ between two publishes, so frames compare.
-            (KNOWN_FLAGS & !felix_wire::FLAG_EVENT_BATCH_TIMESTAMPS, None)
-        };
         let auth = auth_fixture("t1", PERMS.iter().map(|perm| perm.to_string()).collect());
-        felix_broker_service::serving::quic::write_message(
-            &mut send,
-            Message::Auth {
-                tenant_id: "t1".to_string(),
-                token: auth.token,
-                client_flags: Some(client_flags),
-                client_features: None,
-                client_features_hi: None,
+        let mut offer = felix_wire::baseline_auth("t1", auth.token);
+        if offer_headers
+            && let Message::Auth {
+                client_flags,
                 client_flags_ext,
-            },
-        )
-        .await?;
+                ..
+            } = &mut offer
+        {
+            // Everything but the baseline too, so times and publishers show.
+            let (flags, ext) = felix_wire::offer_flags(KNOWN_FLAGS, EXT_RECORD_HEADERS);
+            *client_flags = Some(flags);
+            *client_flags_ext = ext;
+        }
+        // Without it the offer carries no times, which differ between two
+        // publishes, so frames compare.
+        felix_broker_service::serving::quic::write_message(&mut send, offer).await?;
         let mut scratch = felix_broker_service::serving::quic::FrameScratch::new();
         let answer = read_frame(&mut recv, &mut scratch).await?;
         Ok(Self {
@@ -522,11 +520,11 @@ async fn a_reserved_header_name_is_refused() -> Result<()> {
     Ok(())
 }
 
-/// **A client that offered nothing gets the `AuthOk` it always got**, whether
-/// or not the broker accepts headers.
+/// **A client that did not offer headers gets the same `AuthOk`**, whether or
+/// not the broker accepts them.
 #[tokio::test]
 #[serial]
-async fn auth_ok_for_a_client_that_offered_nothing_is_unchanged() -> Result<()> {
+async fn auth_ok_for_a_client_that_did_not_offer_headers_is_unchanged() -> Result<()> {
     let mut answers = Vec::new();
     for accepts in [true, false] {
         let dir = tempfile::tempdir()?;

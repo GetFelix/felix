@@ -189,12 +189,12 @@ started a resubscribe that took longer than the timeout over on every call.
 New languages are gated on this suite, not on review, because "looks correct"
 is the standard that produces divergence.
 
-### A broker without commits
+### A broker below the baseline
 
-Every real broker advertises `commit` and `state_get`, so the fixture also
-runs a stand-in that answers `auth` and advertises no features, and writes its
-address to `no_commit_addrs`. A client must refuse both requests against it
-without sending anything: `commit.negotiated`. The count of requests it
+Every real 0.8 broker advertises the whole broker baseline, so the fixture also
+runs a stand-in that answers `auth` and advertises none of it, and writes its
+address to `no_commit_addrs`. A client must refuse to connect to it and send
+nothing: `commit.negotiated`. The count of requests it
 received is at `GET <control_url>/no-commit/requests`. A fixture without the key
 has no such broker, and a suite skips the scenario rather than claiming it.
 
