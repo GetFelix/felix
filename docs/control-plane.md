@@ -2018,6 +2018,20 @@ that is down holds it too (`MemberDown`). A leader on a broker that must go is
 renamed to a live member first, and its copy is swapped out as a follower on
 a later pass.
 
+A seat whose broker dies before it opens a copy is the one exception to the
+stored target. No target is stored until every member of the set reports a
+copy, so a swap or top-up that seated such a broker never reaches the group,
+and without the exception the shard would wait on it for good
+([#3310](https://github.com/GetFelix/felix/issues/3310)). Once that broker
+is lost past `restore_after_millis`, its seat goes to another live broker
+when three things hold: no target is stored for the current set, the group
+has formed, and the voters its leader last reported at this incarnation and
+epoch do not name the broker. That write passes the same majority check on
+the reported voters as any other swap, under the same pause and budget. A
+down broker the voters do name may hold acknowledged records, and it keeps
+the usual rule: it is replaced only on a stored target, through the group's
+joint change. Without a voter report the seat waits.
+
 An operator move outside the set is refused with `set_unsettled` while the
 target is not stored for the current set or the group has not formed,
 `member_down` while a member is not serving, and `not_a_member` while the

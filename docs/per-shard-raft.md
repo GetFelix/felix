@@ -5866,7 +5866,12 @@ target counter (metadata level 36):
   counter the dropped target reached (`raft_target_counter`, metadata level
   50), so the next target is newer than the membership the group already
   made. A leader takes only a newer version, so a count started again would
-  leave the group on its old voters. A placement write that
+  leave the group on its old voters. A new broker that dies before it
+  reports would hold the target dropped for good, so placement gives its
+  seat to another live broker once it is lost, provided the group formed and
+  its reported voters do not name it (`docs/control-plane.md`, "Raft
+  shards"). The group never heard of the set that named it, and the next
+  set still needs a majority of the reported voters. A placement write that
   keeps the set, a leader report and a doomed-set write leave it alone. So
   within one incarnation a version names exactly one member set.
 - **It counts within one stream incarnation.** A stream deleted and
