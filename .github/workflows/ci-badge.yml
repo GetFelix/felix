@@ -1,0 +1,57 @@
+name: CI badge
+
+# The README badge shows the newest main CI run that finished, not the newest
+# run: CI's concurrency group drops queued older runs as cancelled (#906), and
+# Actions' own badge would show one of those. Published to its own branch;
+# coverage.yml force-orphans `badges`.
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-badge
+  cancel-in-progress: false
+
+jobs:
+  badge:
+    name: Publish CI badge
+    if: >-
+      github.event.workflow_run.event == 'push' &&
+      github.event.workflow_run.conclusion != 'cancelled' &&
+      github.event.workflow_run.conclusion != 'skipped'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      actions: read
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          sparse-checkout: scripts/ci
+
+      - name: Render badge if this is the newest finished run
+        id: render
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ github.event.workflow_run.id }}
+          SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          gh api "repos/${{ github.repository }}/actions/workflows/ci.yml/runs?branch=main&event=push&status=completed&per_page=100" > runs.json
+          python3 scripts/ci/ci_badge.py --runs runs.json --run-id "$RUN_ID" --sha "$SHA" --out publish
+
+      - name: Publish badge to badges-ci branch (orphan)
+        if: steps.render.outputs.publish == 'true'
+        uses: peaceiris/actions-gh-pages@84c30a85c19949d7eee79c4ff27748b70285e453 # v4.1.0
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_branch: badges-ci
+          publish_dir: ./publish
+          force_orphan: true
+          commit_message: "chore(ci): update CI badge"
+          enable_jekyll: false
