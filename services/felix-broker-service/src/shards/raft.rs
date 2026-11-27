@@ -31,7 +31,7 @@ use felix_replication::raft::{
 };
 use felix_storage::DiskLog;
 use felix_storage::log::{FsyncMode, LogConfig};
-use felix_storage::raft_copy::{CopyRoot, holds_log_without_copy};
+use felix_storage::raft_copy::{CopyRoot, EpochBase, holds_log_without_copy};
 use futures::StreamExt;
 
 use super::routing::{Dispatch, EngineShards, Reason, Taken};
@@ -198,6 +198,21 @@ pub(crate) struct RaftShards {
     alone_later: parking_lot::Mutex<HashMap<ShardKey, u64>>,
 }
 
+/// Whether a copy of `copy_epoch` is left behind by a record at `epoch`
+/// with `bases`: an epoch after it starts from an empty base, as an
+/// abandon's does, so the copy holds a log the group gave up. Bases that do
+/// not cover every epoch say nothing about how each started, so any later
+/// epoch counts.
+fn left_behind(epoch: u64, bases: Option<&[EpochBase]>, copy_epoch: u64) -> bool {
+    let after = usize::try_from(copy_epoch).unwrap_or(usize::MAX);
+    copy_epoch < epoch
+        && bases.is_none_or(|bases| {
+            bases
+                .get(after..)
+                .is_some_and(|later| later.iter().any(|base| base.base_last.is_none()))
+        })
+}
+
 /// A shard directory an earlier build wrote as a member with no copy id.
 /// Opening it as a copy would rotate it, and with it every member of its
 /// group, so the brokers would form the group again on empty logs.
@@ -209,6 +224,20 @@ pub(crate) struct RaftShards {
 )]
 pub(crate) struct CarriedOver {
     dir: String,
+}
+
+/// A copy of a group epoch an operator has since abandoned. Opened, it
+/// would elect itself in its old membership and serve a log the group
+/// gave up, so it stays closed. Its data is left for the operator.
+#[derive(Debug, thiserror::Error)]
+#[error(
+    "{dir} is a copy of group epoch {copy_epoch}, and the shard's record is at epoch {epoch}; \
+     it is not opened"
+)]
+pub(crate) struct LeftBehind {
+    dir: String,
+    copy_epoch: u64,
+    epoch: u64,
 }
 
 /// The fsync mode a member's Raft log opens with. A relaxed broker's own
@@ -246,6 +275,13 @@ struct Formable {
 
 /// How often a `none` broker's written-commit Raft logs flush.
 const NONE_RAFT_FLUSH: Duration = Duration::from_secs(1);
+
+/// This broker's part in an abandoned epoch, from the shard's record.
+struct AbandonedVoter {
+    bases: Vec<EpochBase>,
+    copy: u64,
+    voters: BTreeSet<MemberId>,
+}
 
 /// One open member: the log is this module's to close, because the storage
 /// provider never opened it.
@@ -483,6 +519,12 @@ impl RaftShards {
         };
         let epoch = bases.len() as u64;
         let incarnation = assignment.incarnation;
+        if self
+            .start_abandoned(key, assignment, root, dir, config)
+            .await?
+        {
+            return Ok(());
+        }
         // The record's start first: the survey's lives only on the metadata
         // leader, so a leader change before this broker polled loses it.
         let recorded = assignment
@@ -536,6 +578,75 @@ impl RaftShards {
         .await?;
         tracing::info!(shard = ?key, epoch, voter = wire.voter.is_some(), "started a stopped Raft copy in its re-formed epoch");
         Ok(())
+    }
+
+    /// This broker's copy id in the seed of the abandoned epoch `assignment`
+    /// is at: its last base is empty and the seed, which the copy's own
+    /// first report made, names this broker. `None` for any other epoch.
+    fn abandoned_voter(&self, assignment: &ShardAssignment) -> Option<AbandonedVoter> {
+        let bases = assignment.epoch_bases()?;
+        if bases.last()?.base_last.is_some() {
+            return None;
+        }
+        let epoch = bases.len() as u64;
+        let seed = assignment
+            .raft_seed
+            .as_ref()
+            .filter(|seed| seed.incarnation == assignment.incarnation && seed.epoch == epoch)?;
+        let copy = *seed.members.get(self.local.as_str())?;
+        let voters = seed
+            .members
+            .iter()
+            .map(|(broker, copy)| MemberId::new(broker.as_str(), *copy))
+            .collect();
+        Some(AbandonedVoter {
+            bases,
+            copy,
+            voters,
+        })
+    }
+
+    /// Start this broker's blank copy in `dir` as the one voter of the
+    /// abandoned epoch `assignment` records, at the epoch's first index.
+    /// Returns whether it did. The bases and the voter come from the record
+    /// alone, so a crash anywhere resumes from it on the next open.
+    async fn start_abandoned(
+        &self,
+        key: &ShardKey,
+        assignment: &ShardAssignment,
+        root: &CopyRoot,
+        dir: &std::path::Path,
+        config: &LogConfig,
+    ) -> anyhow::Result<bool> {
+        let Some(AbandonedVoter {
+            bases,
+            copy,
+            voters,
+        }) = self.abandoned_voter(assignment)
+        else {
+            return Ok(false);
+        };
+        let first_index = bases.last().map_or(0, |base| base.first_index);
+        let member = MemberId::new(self.local.as_str(), copy);
+        // The seed's voters, as a re-form's start takes them: never a set
+        // of this broker's own making.
+        let fold = felix_replication::raft::GapSnapshot::new(key.kind, voters);
+        let started = root
+            .start_abandoned(
+                &felix_replication::raft::mark_name(key),
+                dir,
+                assignment.incarnation,
+                bases,
+                copy,
+                &fold,
+                &member.to_string(),
+                config,
+            )
+            .await?;
+        if started {
+            tracing::warn!(shard = ?key, first_index, "started an abandoned Raft shard empty at its epoch's first index");
+        }
+        Ok(started)
     }
 
     async fn open_member(
@@ -658,6 +769,31 @@ impl RaftShards {
         self.start_reformed(key, assignment, root, &dir, &config)
             .await
             .context("start the re-formed copy")?;
+        // A stopped or half-started copy is refused by the open itself.
+        let epoch = assignment.group_epoch();
+        let behind = {
+            let dir = dir.clone();
+            let bases = assignment.epoch_bases();
+            tokio::task::spawn_blocking(move || -> std::io::Result<Option<u64>> {
+                if felix_storage::raft_copy::stopped(&dir)?.is_some()
+                    || felix_storage::raft_copy::start_due(&dir, epoch)?
+                {
+                    return Ok(None);
+                }
+                let copy_epoch = felix_storage::raft_copy::group_epoch(&dir)?.unwrap_or(0);
+                Ok(left_behind(epoch, bases.as_deref(), copy_epoch).then_some(copy_epoch))
+            })
+            .await
+            .context("epoch check task")??
+        };
+        if let Some(copy_epoch) = behind {
+            return Err(LeftBehind {
+                dir: dir.display().to_string(),
+                copy_epoch,
+                epoch,
+            }
+            .into());
+        }
         admit(&self.runtime, key, assignment);
         let opened = self
             .runtime
@@ -1521,6 +1657,86 @@ impl EngineShards for RaftShards {
                     .insert(key.clone(), StoppedCopy { term, error: why });
                 self.close_with_stream(&key, member).await;
             }
+            // A blank copy of an abandoned epoch opens before its report
+            // seeds the epoch, and a start needs it closed. It is opened
+            // again below, through the start.
+            let candidates: Vec<_> = open
+                .iter()
+                .filter_map(|(key, member)| {
+                    let (assignment, _) = fed.get(key)?;
+                    let blank = self
+                        .runtime
+                        .status(key)
+                        .is_some_and(|status| status.term == 0 && status.last_index.is_none());
+                    let voter = self.abandoned_voter(assignment).filter(|voter| {
+                        blank
+                            && voter.copy == member.copy
+                            && member.incarnation == assignment.incarnation
+                    })?;
+                    Some((
+                        key.clone(),
+                        voter,
+                        member.log.dir().to_path_buf(),
+                        member.incarnation,
+                        member.log.config().index_spacing_bytes,
+                    ))
+                })
+                .collect();
+            let mut abandoned = Vec::new();
+            for (key, voter, dir, incarnation, spacing) in candidates {
+                let due = tokio::task::spawn_blocking(move || {
+                    felix_storage::raft_copy::abandon_start_due(
+                        &dir,
+                        incarnation,
+                        &voter.bases,
+                        voter.copy,
+                        spacing,
+                    )
+                })
+                .await;
+                match due {
+                    Ok(Ok(true)) => abandoned.push(key),
+                    Ok(Ok(false)) => {}
+                    Ok(Err(err)) => {
+                        tracing::warn!(shard = ?key, error = %err, "could not check an abandoned Raft copy's start")
+                    }
+                    Err(err) => tracing::warn!(shard = ?key, error = %err, "abandon check task"),
+                }
+            }
+            for key in abandoned {
+                if let Some(member) = open.remove(&key) {
+                    self.close_with_stream(&key, member).await;
+                }
+            }
+            // A member open in an epoch the operator has since abandoned,
+            // as on a broker cut off meanwhile, keeps its old membership and
+            // would go on leading it. The open below refuses it.
+            let left: Vec<ShardKey> = {
+                let epochs = self.epochs.lock();
+                open.iter()
+                    .filter(|(key, member)| {
+                        fed.get(*key).is_some_and(|(assignment, _)| {
+                            // The same test as the open, short bases included,
+                            // so a member the open would refuse is not kept.
+                            member.incarnation == assignment.incarnation
+                                && epochs.get(*key).is_some_and(|epoch| {
+                                    left_behind(
+                                        assignment.group_epoch(),
+                                        assignment.epoch_bases().as_deref(),
+                                        epoch.unwrap_or(0),
+                                    )
+                                })
+                        })
+                    })
+                    .map(|(key, _)| key.clone())
+                    .collect()
+            };
+            for key in left {
+                if let Some(member) = open.remove(&key) {
+                    tracing::warn!(shard = ?key, "closing a Raft member of a group epoch the shard's record has left");
+                    self.close_with_stream(&key, member).await;
+                }
+            }
             // A held group of one whose re-form could not be decided at its
             // open is closed once it can be, and the open below re-forms it.
             // It never formed, so it served nothing.
@@ -1658,7 +1874,7 @@ impl EngineShards for RaftShards {
                             open.insert(key.clone(), member);
                         }
                         // Tried again on the next pass.
-                        Err(err) if err.is::<CarriedOver>() => {
+                        Err(err) if err.is::<CarriedOver>() || err.is::<LeftBehind>() => {
                             if self.carried_over.lock().insert(key.clone()) {
                                 tracing::error!(shard = ?key, error = %err, "not opening a Raft shard");
                             }
@@ -1723,7 +1939,14 @@ impl EngineShards for RaftShards {
                 if !*full && blank {
                     short.push(held());
                 }
-                if *full && blank && brokers.first() == Some(&self.local.as_str()) {
+                // Forming writes the group's first entries from index 0. Past
+                // epoch 0 an index below the epoch's first one may have been
+                // given out, so only a start at that index may begin it.
+                let past_zero = assignment.group_epoch() > 0;
+                if *full && blank && past_zero && self.held_warn.lock().due(key) {
+                    tracing::warn!(shard = ?key, epoch = assignment.group_epoch(), "not forming the shard's Raft group from index 0: it is past epoch 0");
+                }
+                if *full && blank && !past_zero && brokers.first() == Some(&self.local.as_str()) {
                     let brokers = brokers.iter().map(|broker| broker.to_string()).collect();
                     let target = stored_target(assignment);
                     self.form(key.clone(), brokers, assignment.incarnation, target);

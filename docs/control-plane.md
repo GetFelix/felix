@@ -1971,6 +1971,7 @@ copy has to move:
 | Follower on an internal node | Replaced | Replaced, the same way |
 | Follower lost past `restore_after_millis` | Replaced | Replaced, the same way |
 | Set short of the replication factor | Topped up (a restore) | One write adds a live node outside the set (`raft_top_up`), one member at a time |
+| Set placed short, group never formed | Topped up (a restore) | One write names the full set (`raft_fill`) once enough brokers are live |
 
 A set change is one write that swaps one member for a live node outside the
 set, so the set keeps its size. The write changes the stored target, and the
@@ -1982,8 +1983,8 @@ leadership to a voter the target keeps, and that voter shrinks the set
 ([per-shard-raft.md](per-shard-raft.md), "The driver").
 
 A set with fewer members than its replication factor is topped up instead
-(`raft_top_up`). An abandon leaves one, since it places the leader alone, and
-so does a shard placed while too few brokers were live. Each write adds one
+(`raft_top_up`). An abandon leaves one, since it places the leader alone.
+Each write adds one
 live broker from outside the set, under the same checks and budget as a swap.
 The next write waits until the group reports that copy voting, and this
 repeats until the set is back at the factor. Going from one copy to three passes through two
@@ -1994,6 +1995,22 @@ does, or when an operator re-forms the group without it
 ([per-shard-raft.md](per-shard-raft.md), "Re-forming a group"). Two voters
 are never less durable than one, which is why the top-up still goes one copy
 at a time.
+
+A shard placed while too few brokers were live is different: its group
+never formed. Brokers form nothing on a short set and the store takes no
+copy id for one, so it never gets the target a top-up waits for
+([#3331](https://github.com/GetFelix/felix/issues/3331)). Once enough
+brokers are live, placement writes the full set in one step (`raft_fill`),
+keeping every serving member that need not leave (a leader that is down,
+lost or draining is dropped too, and a kept or added broker leads), under
+the same pause and budget as a swap, and the brokers form the group on it
+as for a shard placed in full. It does so only while the epoch's record of
+placed brokers names fewer than the factor, at epoch 0, with no target, no
+counter kept from one, no formed mark, no reported voters or floor, no
+epoch seed or re-form base and no ordered target: any of those means a group may hold records, and the set
+then changes one member at a time. Until then the shard is under-replicated
+and placement logs, at info and about once a minute per shard, that it is
+held unformed and why (too few live brokers, a pause, the per-pass budget).
 
 The replication count (`felix_shards_under_replicated`, `GET
 /v1/placement/replication`) counts a Raft shard's copies its group reports
@@ -2041,12 +2058,15 @@ An RF 1 shard has no voter both sets keep, so its move takes two writes
 (#3012). The operator move grows the set to the leader and the destination,
 and the group adds the destination as a learner and then a voter. Once the
 leader reports the destination's copy voting, placement writes the
-destination alone as the set and its leader, and the group hands it
+destination alone as the set and its leader on the pass that report wakes, and the group hands it
 leadership and drops the old copy. A set of the destination alone any
 earlier would make its empty copy the whole group, so the store holds it
 until then. A second move is refused with `set_unsettled` while the set is
 over the factor. A move back to the old broker, or a destination that stops
-being live before it votes, undoes the move (`raft_move_undone`). A
+being live before it votes, undoes the move (`raft_move_undone`). A move back
+sent before both brokers have reported their copy ids for the grown set, and
+the leader its voters, is refused with `set_unsettled`: the store would refuse
+the old broker alone until then. Retry it once they arrive. A
 destination that votes and then goes down strands the shard, which
 placement reports, until it is back or the group is re-formed without it;
 `docs/per-shard-raft.md` has the steps. A removed copy keeps
@@ -2645,7 +2665,7 @@ after the fence.
 
 | Metric | Meaning |
 | --- | --- |
-| `felix_shard_move_steps_total{step}` | move steps written: `stage`, `fence`, `cut_over`, `abandon`, `halted` (the destination halted), `timed_out`, `stalled` (a restore's copy stopped moving), `reseat`, `restore`, `seat`, `take_pending_set` (a pending replica set taken on the leader's report), `pending_set_timed_out`, `pending_set_dropped`, `pending_set_cancelled`, `pending_set_member_replaced` (one dropped), `readmit` (a replaced copy named by its new storage id and held as a learner), `election_refused` (a leader named again above a generation promised to an elected broker), `set_unknown` (a leader named again above a generation whose set before it could not learn, or that a newer ballot holds), `raft_leader` (a Raft shard's leader named another member), `raft_leader_landed` and `raft_leader_timed_out` (an operator's move of a Raft shard's leader within its set landed, or was given up after two minutes), `raft_top_up` (a member added to a Raft shard's set short of its factor), `raft_move_dropped` (a hybrid move left on a Raft shard dropped), and an operator's `cancel`, `retake`, `discard` and `owner_replaced` (an in-memory shard given a new owner) |
+| `felix_shard_move_steps_total{step}` | move steps written: `stage`, `fence`, `cut_over`, `abandon`, `halted` (the destination halted), `timed_out`, `stalled` (a restore's copy stopped moving), `reseat`, `restore`, `seat`, `take_pending_set` (a pending replica set taken on the leader's report), `pending_set_timed_out`, `pending_set_dropped`, `pending_set_cancelled`, `pending_set_member_replaced` (one dropped), `readmit` (a replaced copy named by its new storage id and held as a learner), `election_refused` (a leader named again above a generation promised to an elected broker), `set_unknown` (a leader named again above a generation whose set before it could not learn, or that a newer ballot holds), `raft_leader` (a Raft shard's leader named another member), `raft_leader_landed` and `raft_leader_timed_out` (an operator's move of a Raft shard's leader within its set landed, or was given up after two minutes), `raft_top_up` (a member added to a Raft shard's set short of its factor), `raft_fill` (a Raft shard placed short, whose group never formed, written in full), `raft_move_dropped` (a hybrid move left on a Raft shard dropped), and an operator's `cancel`, `retake`, `discard` and `owner_replaced` (an in-memory shard given a new owner) |
 | `felix_shards_under_replicated` | shards with fewer copies on serving brokers than their replication factor (for a Raft shard, copies its group reports voting); non-zero for longer than the restore delay plus a copy means no broker can take the copy, or placement is paused |
 | `felix_shard_replicas_missing` | the copies those shards are missing between them |
 | `felix_shard_replicas_halted` | copies whose leader reports it has stopped shipping to them; counted as missing, kept out of placement, and replaced after the restore delay |

@@ -101,7 +101,7 @@ pub(super) async fn answer(
             notified.as_mut().enable();
         }
 
-        let pass = read(&slots, max_bytes).await;
+        let pass = read(&slots, max_bytes, waited).await;
         if pass.bytes >= min_bytes
             || pass.errored
             || woken.is_empty()
@@ -136,12 +136,14 @@ pub(super) async fn answer(
     super::encode(&response, version, error)
 }
 
-/// Read every partition once, within the request's byte limits.
+/// Read every partition once, within the request's byte limits. A pass after
+/// a wait (`parked`) asks each partition's placement again, since `resolve`
+/// only checked it when the fetch arrived.
 ///
 /// The first partition with records returns at least one even past the
 /// limits, as Kafka does, so a record larger than `max_bytes` cannot stall a
 /// consumer forever.
-async fn read(slots: &[Slot], max_bytes: usize) -> Pass {
+async fn read(slots: &[Slot], max_bytes: usize, parked: bool) -> Pass {
     let mut pass = Pass {
         partitions: Vec::with_capacity(slots.len()),
         bytes: 0,
@@ -160,7 +162,15 @@ async fn read(slots: &[Slot], max_bytes: usize) -> Pass {
                 } else {
                     budget
                 };
-                read_partition(readable, slot.fetch_offset, budget, &mut pass, answer).await
+                read_partition(
+                    readable,
+                    slot.fetch_offset,
+                    budget,
+                    parked,
+                    &mut pass,
+                    answer,
+                )
+                .await
             }
         };
         pass.errored |= answer.error_code != 0;
@@ -173,6 +183,7 @@ async fn read_partition(
     readable: &Readable,
     fetch_offset: i64,
     budget: usize,
+    parked: bool,
     pass: &mut Pass,
     answer: PartitionData,
 ) -> PartitionData {
@@ -192,7 +203,7 @@ async fn read_partition(
     // Consumers read to the high watermark, which on a `Quorum` shard is the
     // commit point rather than the log's end. An offset between the two is
     // not out of range, only not readable yet, so it is answered empty.
-    let high_watermark = match readable.high_watermark(tail) {
+    let high_watermark = match readable.high_watermark(tail, parked) {
         Ok(high_watermark) => high_watermark,
         // A new leader with no mark yet knows of nothing committed past the
         // log start, so the fetch is answered empty and the consumer polls on.

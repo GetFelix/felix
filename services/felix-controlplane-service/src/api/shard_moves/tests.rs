@@ -499,3 +499,19 @@ async fn a_switched_shard_refuses_every_operator_step() {
         .expect("get");
     assert_eq!(after, before);
 }
+
+/// **A store conflict from a move is a retryable 409, never a 500 (#3336).**
+/// The store refuses a Raft set change its reported voters do not yet keep a
+/// majority of; the same request goes through once the reports arrive.
+#[test]
+fn a_store_conflict_is_a_conflict() {
+    let refused = super::operator_error(crate::cluster::placement::OperatorError::Store(
+        crate::store::StoreError::Conflict("held".into()),
+    ));
+    assert_eq!(refused.status, StatusCode::CONFLICT);
+    assert_eq!(refused.body.code, "conflict");
+    let unexpected = super::operator_error(crate::cluster::placement::OperatorError::Store(
+        crate::store::StoreError::Unexpected(anyhow::anyhow!("disk")),
+    ));
+    assert_eq!(unexpected.status, StatusCode::INTERNAL_SERVER_ERROR);
+}

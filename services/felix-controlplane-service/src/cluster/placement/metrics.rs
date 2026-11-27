@@ -44,10 +44,15 @@ struct InProgress {
     generation: u64,
 }
 
+/// How often a shard that stays held is logged at info.
+const HELD_LOG_EVERY: Duration = Duration::from_secs(60);
+
 /// Moves this instance has started, keyed by shard.
 #[derive(Default)]
 pub(super) struct MoveClock {
     moves: HashMap<ShardKey, InProgress>,
+    /// When each held shard was last logged ([`Self::held_log_due`]).
+    held_logged: HashMap<ShardKey, Instant>,
 }
 
 impl MoveClock {
@@ -57,6 +62,20 @@ impl MoveClock {
     pub(super) fn forget_changed(&mut self, read: &HashMap<ShardKey, u64>) {
         self.moves
             .retain(|key, held| read.get(key) == Some(&held.generation));
+        self.held_logged.retain(|key, _| read.contains_key(key));
+    }
+
+    /// Whether a wait on `key` that holds it for good until something
+    /// changes should be logged now: the first time, then once every
+    /// [`HELD_LOG_EVERY`], since placement runs every few seconds.
+    pub(super) fn held_log_due(&mut self, key: &ShardKey, now: Instant) -> bool {
+        match self.held_logged.get(key) {
+            Some(last) if now.saturating_duration_since(*last) < HELD_LOG_EVERY => false,
+            _ => {
+                self.held_logged.insert(key.clone(), now);
+                true
+            }
+        }
     }
 
     /// Note a step this instance wrote at `generation`. `was_staged` is
@@ -141,7 +160,8 @@ impl MoveClock {
             | MoveStep::RaftLeaderLanded { .. }
             | MoveStep::RaftLeaderTimedOut { .. }
             | MoveStep::RaftReplace { .. }
-            | MoveStep::RaftTopUp { .. } => None,
+            | MoveStep::RaftTopUp { .. }
+            | MoveStep::RaftFill { .. } => None,
         }
     }
 }

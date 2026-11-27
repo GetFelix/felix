@@ -161,6 +161,11 @@ impl AcceptLoss {
         Ok(Self(needs))
     }
 
+    /// A start that lowers no commit: one with nothing to lose.
+    pub(super) const fn none() -> Self {
+        Self(false)
+    }
+
     #[cfg(test)]
     pub(crate) const fn assumed(accepts: bool) -> Self {
         Self(accepts)
