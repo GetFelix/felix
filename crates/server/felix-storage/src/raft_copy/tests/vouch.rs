@@ -194,6 +194,35 @@ fn a_lone_vote_counts_when_an_unknown_vote_can_make_the_majority() {
     assert!(plan.cut_by_vote);
 }
 
+/// The #3351 trace, but `a` also reads a membership naming only itself, as
+/// a copy with no `raft-epoch` adds every membership it holds. In that set
+/// `a`'s vote is a majority, so t2 counts and `a` is cut to its saved
+/// commit. Cautious: it costs the unsaved tail, never safety (#3357).
+#[test]
+fn a_one_voter_membership_makes_a_lone_vote_count() {
+    let rec = record(&["a", "b", "c"], &[], &[], None);
+    let cut = |name| {
+        kept(
+            copy(name, &[1], Some(0), Some(1)),
+            RotatedBy::PowerCut { to: 1 },
+        )
+    };
+    let mut a = report(copy("a", &[1, 1, 1], Some(0), Some(2)), vec![]);
+    a.memberships = Some(vec![set(&["a"])]);
+    let plan = plan(
+        &rec,
+        vec![
+            ("a", a),
+            ("b", report(blank(), vec![cut("b")])),
+            ("c", report(blank(), vec![cut("c")])),
+        ],
+    );
+    assert_eq!(plan.marked, None);
+    assert_eq!(plan.top, (0, 2));
+    assert_eq!(plan.base_end(), 1, "cut to the saved commit");
+    assert!(plan.needs_accept_loss());
+}
+
 /// The same with `b` and `c` restored from before t2: their votes say t1,
 /// so T alone would vouch for `a`'s Z. A restored copy of the epoch marks
 /// the group, and a marked group vouches only to the commit or the floor.

@@ -901,6 +901,7 @@ fi
 weights=(
   "FelixRaftReformKeptOldKept 12"
   "FelixRaftReformKeptOldKeptCap 6"
+  "FelixRaftReformKeptCampaign 5"
   "FelixShardMoveGiveUpKeep 22"
   "FelixShardMoveGiveUpKeepLive 22"
   "FelixShardMoveGiveUpFailoverLive 13"
