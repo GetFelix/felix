@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795808263826,
+  "lastUpdate": 1795808680761,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -73944,6 +73944,58 @@ window.BENCHMARK_DATA = {
             "range": "35249.78",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1161586.33\nmean: 1153300.43\nstdev: 35249.78\ncv: 3.06%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "7652f6ebcea5bf772f8ad39f6c10188c00a12369",
+          "message": "test(raft): a cache member behind the snapshot catches up by installing it (#2793) (#3380)\n\nFELIX_SHARD_RAFT_CACHE_SNAPSHOT_EVERY and FELIX_SHARD_RAFT_CACHE_LOG_KEEP\nset the runtime's cache_snapshot_every and cache_log_keep on a broker, so a\ncluster test can force a cache shard to snapshot and purge. A member that\ninstalls a snapshot sent by its leader counts\nfelix_broker_raft_snapshots_installed_total{kind}.\n\nThe new raft_shards test kills the placed leader of a Quorum cache, writes\n240 entries against a 32-entry snapshot interval and an 8-entry keep,\nrestarts it, waits for the install counter, waits for placement to hand it\nthe leadership back, and reads every value and the counter through it.\n\nSpec-Unaffected: configuration knobs and a counter; the snapshot install path is unchanged",
+          "timestamp": "2026-11-27T19:39:05Z",
+          "tree_id": "80993bed072118b2684344187ff561c72f78403c",
+          "url": "https://github.com/GetFelix/felix/commit/7652f6ebcea5bf772f8ad39f6c10188c00a12369"
+        },
+        "date": 1795808680240,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 481315.63,
+            "range": "26666.86",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 481315.63\nmean: 490104.09\nstdev: 26666.86\ncv: 5.44%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 481315.63,
+            "range": "26666.86",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 481315.63\nmean: 490104.09\nstdev: 26666.86\ncv: 5.44%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 118028.16,
+            "range": "6318.68",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 118028.16\nmean: 114729.44\nstdev: 6318.68\ncv: 5.51%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1180281.6,
+            "range": "63186.81",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1180281.60\nmean: 1147294.41\nstdev: 63186.81\ncv: 5.51%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
