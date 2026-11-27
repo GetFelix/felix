@@ -589,8 +589,8 @@ mark.
 ### Group records
 
 Bits 31, 30 and 29 mark a consumer group's write on a Raft stream shard: a
-cursor advance, a dead letter, a redrive or its finish, a discard, a seek or
-a delete. The record has no tag, so the step to the next record is still
+cursor advance, a dead letter, a redrive or its finish, a discard, a seek, a
+delete or a claim. The record has no tag, so the step to the next record is still
 `36 + payload_len`. The body is the broker's group entry (`GroupEntry` in
 `felix-broker`):
 

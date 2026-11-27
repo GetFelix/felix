@@ -5244,8 +5244,11 @@ log, stored as group records (`docs/storage-format.md`, "Group records").
 Every member folds them, in log order, into the same group table, so a
 new leader serves the group from exactly the state the old one committed.
 `docs/formal/FelixRaftGroups.tla` models the rules the fold follows; it
-leaves out discard, which only drops a dead letter, and `if_new`, which the
-leader decides before it proposes the seek.
+leaves out discard, which only drops a dead letter, `if_new`, which the
+leader decides before it proposes the seek, and claims: the model has no
+claim entries, visibility timeouts or attempt counts. That a new leader
+holds every claim a consumer was told about is checked by tests only
+(`queue/raft/tests.rs`, `a_claim_survives_a_change_of_leader`).
 
 The group table is the shard's consumer groups as one member has applied
 them: per group, its creation token, its cursor (everything below it is
