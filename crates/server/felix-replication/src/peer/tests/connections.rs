@@ -217,6 +217,53 @@ async fn shutdown_closes_connections_and_refuses_new_requests() {
     listener.stop().await;
 }
 
+/// A request the peer already holds when the pool shuts down may still be
+/// applied, so it must not come back as the "nothing was sent" shutdown.
+#[tokio::test]
+async fn shutdown_with_a_request_in_flight_says_it_may_have_been_sent() {
+    let handler = Arc::new(CountingHandler {
+        delay: Duration::from_secs(5),
+        ..Default::default()
+    });
+    let listener = Listener::start(PEER, handler.clone()).await;
+    // The token alone, not `PeerPool::shutdown`: closing the connections
+    // as well would race the cancel with a dropped connection.
+    let shutdown = CancellationToken::new();
+    let pool = PeerPool::new(
+        "broker-a".to_string(),
+        PeerTransportConfig {
+            forward_timeout: Duration::from_secs(10),
+            ..config()
+        },
+        shutdown.clone(),
+    )
+    .expect("pool");
+
+    let in_flight = tokio::spawn({
+        let pool = Arc::clone(&pool);
+        let addr = listener.addr;
+        async move { pool.request(PEER, addr, forward()).await }
+    });
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while handler.seen.load(Ordering::SeqCst) == 0 {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .expect("the peer never received the request");
+    shutdown.cancel();
+
+    let err = in_flight
+        .await
+        .expect("join")
+        .expect_err("the pool shut down before the answer");
+    assert!(matches!(err, PeerError::Abandoned { .. }), "{err:?}");
+    assert!(err.may_have_been_sent());
+
+    pool.shutdown().await;
+    listener.stop().await;
+}
+
 /// Backoff is jittered so that every broker noticing the same peer restart does
 /// not redial it in step.
 #[test]

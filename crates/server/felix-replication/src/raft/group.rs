@@ -2485,7 +2485,9 @@ impl Group {
     ) -> Result<(), CommitError> {
         self.cache_group()?;
         let queued = self.queue(propose::split_cache(writes)).await;
-        let written = queued.map_err(|unacked| unacked.error)?;
+        // `told` keeps a refusal made before the append distinct, so the
+        // caller can answer it as safe to send again.
+        let written = queued.map_err(propose::Unacknowledged::told)?;
         // The state machine folds an entry in before it publishes it.
         self.await_commit(written, timeout).await
     }
