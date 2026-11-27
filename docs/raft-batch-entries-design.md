@@ -284,7 +284,9 @@ batching land separately.
 
 ## The TLA models
 
-Each code PR changes its models in the same PR.
+Each code PR changes its models in the same PR. Step 1's changes to
+`FelixRaft`, `FelixRaftReform` and `FelixRaftRestoreRepeated` are described in
+`docs/formal/README.md` ("Batch entries: an offset apart from its index").
 
 | Model | Change |
 | --- | --- |
