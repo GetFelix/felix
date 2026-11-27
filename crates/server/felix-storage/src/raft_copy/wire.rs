@@ -290,11 +290,9 @@ fn refused_reason(refused: &Refused<String>) -> String {
         Refused::RestoreTooLate { planned_at_millis } => format!(
             "the restore's first index at plan time {planned_at_millis} ms is past the last index"
         ),
-        Refused::LineBehind { line, given } => format!(
-            "the restore's time line plus gap at the plan time ({line}) is not far enough above \
-             index {given}, which the floor or an earlier epoch reached, to clear what that epoch \
-             can have given out; plan again once about 4.5 minutes have passed since it began, \
-             with the default gap, and check the control-plane clocks if it is still refused"
+        Refused::LineBehind { line, given, gap } => format!(
+            "the restore is too soon: {}; plan again then",
+            super::vouch::line_behind_reason(*line, *gap, *given)
         ),
         Refused::NothingRead => "no copy was read".into(),
         Refused::NoVoters => "no broker with a copy id holds the base".into(),

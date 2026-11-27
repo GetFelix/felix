@@ -155,6 +155,7 @@ impl RaftShards {
                     fold: &fold,
                     member: &member,
                     record: &LocalRecord,
+                    floor: offset_floor(assignment),
                 },
                 may_stop,
             )
@@ -211,6 +212,14 @@ fn alone_here(local: &str, a: &ShardAssignment) -> bool {
         && a.target
             .as_ref()
             .is_none_or(|target| target.members.keys().all(|b| b == local))
+}
+
+/// The highest index the control plane holds as committed in any epoch of
+/// this incarnation, which a re-form after a restore must start well past.
+fn offset_floor(a: &ShardAssignment) -> Option<u64> {
+    a.raft_floor
+        .filter(|floor| floor.incarnation == a.incarnation)
+        .map(|floor| floor.offset_floor.max(floor.index))
 }
 
 /// The request body: the plan as the control plane's `ReformEpochStart`.
