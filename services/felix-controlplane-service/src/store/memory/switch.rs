@@ -490,6 +490,34 @@ pub(super) async fn start_alone_epoch(
     Ok(stored)
 }
 
+/// [`crate::store::ControlPlaneStore::abandon_raft_epoch`]. Decided from the
+/// store's records and the command alone, so every member writes the same
+/// epoch.
+pub(super) async fn abandon_raft_epoch(
+    store: &InMemoryStore,
+    key: &ShardKey,
+    start: &crate::model::AbandonEpochStart,
+) -> StoreResult<crate::model::ShardAssignment> {
+    // Nodes, then shards, as a node delete takes them. The dead set is read
+    // under the same locks as the write, so the check and the write are one
+    // step even if the operator's read is older.
+    let nodes = store.nodes.read().await;
+    let dead = nodes.dead_node_ids();
+    let mut state = store.shards.write().await;
+    let Some(existing) = state.records.get(key) else {
+        return Err(StoreError::NotFound("shard assignment".into()));
+    };
+    if existing.abandoned_by(start) {
+        return Ok(existing.clone());
+    }
+    let stored = existing
+        .abandon_epoch(start, &dead)
+        .map_err(|err| StoreError::Conflict(err.to_string()))?;
+    state.records.insert(key.clone(), stored.clone());
+    state.record(ShardAssignmentChangeOp::Updated, key, Some(stored.clone()));
+    Ok(stored)
+}
+
 /// Only the node a seal was ordered from reports it or gives it up.
 pub(super) fn not_sealer(node: &str) -> StoreError {
     StoreError::Conflict(format!("the seal was not ordered from {node}"))
@@ -513,6 +541,15 @@ impl InMemoryStore {
         start: &crate::model::ReformEpochStart,
     ) -> StoreResult<crate::model::ShardAssignment> {
         start_alone_epoch(self, key, node_id, start).await
+    }
+
+    /// `AbandonRaftEpoch`.
+    pub(crate) async fn apply_abandon_raft_epoch(
+        &self,
+        key: &ShardKey,
+        start: &crate::model::AbandonEpochStart,
+    ) -> StoreResult<crate::model::ShardAssignment> {
+        abandon_raft_epoch(self, key, start).await
     }
 
     pub(crate) async fn apply_seal_shard(

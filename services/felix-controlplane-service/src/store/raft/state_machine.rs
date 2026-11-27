@@ -581,6 +581,11 @@ impl MetadataStateMachine {
                 .await
                 .map(|assignment| MetaResponse::Assignment { assignment })
                 .map_err(Into::into),
+            MetaCommand::AbandonRaftEpoch { key, start } => store
+                .apply_abandon_raft_epoch(&key, &start)
+                .await
+                .map(|assignment| MetaResponse::Assignment { assignment })
+                .map_err(Into::into),
             MetaCommand::DeclareNodeDead { node_id } => store
                 .apply_declare_node_dead(&node_id)
                 .await

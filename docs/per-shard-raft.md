@@ -1686,6 +1686,105 @@ which can be one. The same holds for a switch that started with two voters.
 The control plane is on this path. It already is for placement, and a
 group that needs re-forming is not serving.
 
+### Abandoning a lost group
+
+A re-form starts from a surviving copy. When every copy is gone, for
+example an RF 1 shard whose only broker lost its disk, an operator can
+give the log up instead: `POST /v1/placement/abandon/{tenant}/{ns}/{stream}/{shard}`.
+Every record the group held is lost, acknowledged ones included.
+
+The call is refused until every broker placed in the group's epoch is
+declared dead (`not_declared_dead`). A broker that is only down may come
+back with acknowledged records, and then a re-form is the way. It is also
+refused until the fleet finalizes `raft_abandon` (`abandon_unsupported`),
+so no broker that would form the new epoch from index 0 can be its leader.
+
+The control plane writes the abandon as one compare and swap,
+`AbandonRaftEpoch` at metadata level 56. It checks the incarnation, epoch
+and generation, checks every placed broker against the store's own dead set
+at the write (not the set the operator read), places the shard on one live
+broker at the next generation and epoch, and appends an empty base whose
+first index is on the restore time line (`2^14 x` the planning time in
+milliseconds, plus the gap). The offset floor is kept, so offsets the lost
+group gave out stay given out.
+
+The floor alone is not enough: a leader reports it at most once a second,
+and not at all while it cannot reach the control plane, so the lost copy
+may have acknowledged offsets above it. The time line covers those, as for
+a restore, but only once it is well past the lost epoch's start. Being just
+above an earlier epoch's first index is not enough: if the clock that
+planned that epoch ran 10 s ahead and the abandon comes 10.001 s later on
+a correct clock, the line is 1 ms (16,384 offsets) above that first index,
+while at 100k records a second the epoch may have acknowledged a million.
+
+So the abandon is refused (`abandon_refused`) until the line is more than
+`MIN_OFFSET_GAP` (2^32) above the offset floor and every earlier epoch's
+first index. The line gains 2^14 offsets a millisecond, so that gap is
+2^18 ms, about 262 s, of line. Why it is enough: say the earlier epoch's
+clock ran `D` ahead and the abandon comes `E` after that epoch began. The
+line is then `2^14 (E - D)` above its first index, and the epoch can have
+acknowledged at most `rate x E` above it. Once `E - D` is at least 2^18 ms
+and `D` is at most 2^18 ms, `2^14 (E - D) >= rate x E` for any rate up to
+half the slope, 8,192 offsets a millisecond (about 8M a second), the same
+bound a restore assumes.
+
+That needs two things:
+
+- **The control-plane clocks agree within about four minutes** (2^18 ms).
+  A clock further ahead than that when it planned an epoch can leave the
+  line, a full gap later, below offsets that epoch acknowledged.
+- **The earlier epoch's gap is no larger than the abandon's.** An abandon
+  always uses `DEFAULT_OFFSET_GAP` (2^40). A restore planned with a larger
+  `offset_gap` starts further above the line, and a later abandon then
+  passes the check while sitting closer to that epoch's real start.
+
+In practice: an abandon asked within about four and a half minutes of the
+last epoch's start is refused, longer if the clock that started it ran
+ahead. Ask again once that has passed; if it is still refused, check the
+control-plane clocks.
+
+The new epoch is a group of one, whatever the stream's replication factor:
+the abandon places only the new leader. A Quorum publish is then
+acknowledged on that one copy. Placement does not yet add copies to a Raft
+group short of its factor, so the shard stays at one copy.
+
+A broker never forms a group past epoch 0 from index 0, since forming
+writes the group's first entries there. A blank copy of an abandoned epoch
+starts at the epoch's first index instead:
+
+1. The new leader opens a blank copy, takes the epoch's bases from the
+   record (`raft-epoch`) and reports its copy id. That report is the
+   epoch's first target, and the control plane writes it as the seed.
+2. Once the seed names its copy, the broker closes the blank member and
+   starts it as the seed's one voter: reserved through the first index
+   less one, with a snapshot naming the seed's voters, a purged id and a
+   saved commit there. Its first entry lands at the first index.
+3. The member opens again and leads a group of one.
+
+Only a copy that holds nothing but its copy id and the record's exact
+`raft-epoch` starts this way, so a copy that voted, took an entry or was
+stopped by a re-form is left alone. The start runs under the
+`reform-building` marker, like a re-form's, so a crash at any step leaves a
+copy that does not open, and the next pass redoes the start from the
+record.
+
+A broker of the lost epoch can come back, declared dead or not, with its
+copy and its old membership. Opened, that member would elect itself and
+serve a log the operator gave up. So a broker never opens a copy whose
+epoch is behind an epoch that started from an empty base, and closes such
+a member if it is open when the record moves on. The copy's data is left
+on disk, and it sends no copy id, so it never joins the new epoch either.
+
+> `crates/server/felix-storage/src/raft_copy/tests/fresh_epoch.rs`,
+> `an_abandoned_copy_starts_at_the_first_index`,
+> `an_abandon_start_refuses_a_copy_that_is_not_blank` and
+> `an_abandon_start_cut_at_any_step_finishes_when_run_again`.
+> `services/felix-broker-service/src/shards/raft/tests.rs`,
+> `a_blank_copy_of_an_abandoned_epoch_starts_at_its_first_index` and
+> `a_copy_of_an_abandoned_epoch_does_not_lead_when_it_returns`.
+> Model: `docs/formal/FelixRaftReform.tla` with `Abandon`
+> (`FelixRaftReformAbandon*.cfg`).
+
 ### Writing through openraft
 
 Decided (issue #2167): in 0.8 a write goes through openraft's
@@ -5157,10 +5256,10 @@ later by no report a Raft shard sends:
   acknowledge on its own, and the brokers placed later would form the full
   set again on empty logs, elect each other and overwrite what the first
   group acknowledged. On a short set every member waits and the shard
-  answers "not ready". Placement fills a short set only after the shard's
-  leader has reported to it, which a Raft shard does not do, so today a
-  shard placed short stays short: create a stream once as many brokers as
-  its replication factor are registered. The hold is not silent: the broker
+  answers "not ready". The control plane takes no copy id for a short set
+  either, so it never stores a target for one. Once enough brokers are
+  live, placement writes the full set in one step (`raft_fill`, below) and
+  the brokers form the group on it. The hold is not silent: the broker
   warns once per shard and placement generation, naming the shard, the
   replication factor and the brokers placed, and counts held shards in
   `felix_broker_raft_shards_short_placement`. The control plane's create
@@ -5290,9 +5389,29 @@ move from an older control plane added:
   set and every other member is serving, so the group's leader adds the new
   member as a learner and then changes the voters (see "Membership"). A lost
   member goes first. With no such node the set stays and the shard waits.
-- A set with fewer members than the replication factor is topped up
-  (`raft_top_up`). An abandon leaves a set like this, since it places the
-  leader alone, and so does a shard placed while too few brokers were live.
+- A set placed on fewer brokers than the replication factor, whose group
+  never formed, is placed in full in one write (`raft_fill`): it keeps the
+  leader and every serving follower that need not leave and adds live
+  brokers outside the set, under the same pause and budget as a swap. Its
+  group cannot have formed: a group forms only on a stored target, the
+  control plane stores one only from copy ids, and it takes a copy id only
+  while the set names as many brokers as the factor. Placement checks that
+  from the epoch's record of every broker placed (`placed`, "Re-forming a
+  group"): while it names fewer brokers than the factor, no set of the
+  epoch was full. It also requires epoch 0 and no other trace of a group: no
+  target, no counter kept from a dropped one, no formed mark, no reported
+  voters or floor, no epoch seed or re-form base, and no ordered target. A
+  shard with no `placed` record, such as a restored one, is not filled.
+  A leader that is down, lost, draining or internal is dropped like a
+  follower, and a kept follower, else a broker the write adds, leads: with
+  no target ever stored it holds no record, and if it comes back it is in
+  no set and forms nothing, as a broker forms only on a target naming its
+  copy. A dropped broker does not count toward the brokers the fill needs.
+  With too few live brokers the shard waits, counted as under-replicated,
+  and the control plane logs why at info about once a minute.
+- A set with fewer members than the replication factor whose group formed
+  is topped up (`raft_top_up`). An abandon leaves a set like this, since it
+  places the leader alone.
   Each write adds one live broker from outside the set, under the same
   checks as a follower replacement and from the same budget. The new member
   joins as a learner and votes once it has caught up, and the next is added
@@ -6220,7 +6339,8 @@ What placement does not do yet for a Raft shard:
   new copy caught up. A Raft leader reports nothing to placement yet, and
   a shard that switched to Raft is not placed at all.
 - **A short set forms nothing.** A group forms only once placement names
-  as many brokers as the stream's replica count ("Forming a group").
+  as many brokers as the stream's replica count ("Forming a group"); a set
+  placed short is written in full once enough brokers are live.
 - **Requests to a broker with no member go by placement.** A broker with
   a member routes by its group's leader hint. One without a member still
   sends to the leader placement names, which can be wrong mid-move.
