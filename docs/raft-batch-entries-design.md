@@ -40,8 +40,8 @@ The issue's four costs hold, with these corrections and additions:
 - **Sharing a group needs more than this.** Separating index and offset is
   needed for several streams to share a group (#3365), but not enough: the
   batch would also have to name its stream, and each stream keep its own
-  next offset. This design leaves room in the header and does not decide
-  #3365.
+  next offset. This design reserves the stream id in the frame header and
+  does not decide the rest of #3365.
 - **Two docs are stale.** `docs/storage-format.md` says nothing writes a
   conditional piece and the client read paths do not resolve one, and
   `RecordMark::Membership` says nothing writes one. `propose.rs` writes
@@ -85,7 +85,9 @@ batch lands or none of it does, so the publisher hears one answer.
 **A batch is at most one append.** The cap is `MAX_APPEND_BYTES`
 (32 MiB) less framing, as for one record now. A larger publish is refused
 with `TooLarge` before it takes an index. Splitting it into several entries
-would bring back the cuts this design removes.
+would bring back the cuts this design removes. The cap is decided for 0.8;
+seek cost inside a large frame and the replication delay a large entry puts
+on small ones are measured later and may lower it.
 
 ## On disk
 
@@ -99,10 +101,18 @@ on a Raft log; nothing else writes v9 once the hybrid is gone.
 | `generation` | 8 | term plus one |
 | `base_offset` | 8 | |
 | `count` | 4 | records in the frame |
+| `stream` | 4 | the stream the offsets belong to; reserved, see below |
 | `kind_tag` | 0 to 24 | producer id and first sequence, a trim floor, or a conditional's expected offset for the refused kind |
 | `header_crc` | 4 | over the fields above |
 | `checksum` | 4 | over the header and every record |
 | records | n | `count` records, each a short header (length, timestamp, the publisher and key/headers bits) and its body |
+
+**The stream id is reserved now** so a group shared by several streams
+(#3365) needs no second format change. In a group of one stream, which is
+every group in 0.8, it is always 0, and an entry with count 0 also carries
+0. A reader refuses a frame with any other value until shared groups exist,
+since it would otherwise read another stream's offsets as its own. The
+field is covered by `header_crc`.
 
 What this keeps and what it changes:
 
@@ -155,12 +165,23 @@ On the Raft path: `Piece`, `CondPiece` and the `Continues` refusal;
 `position`); gap segments; and the Kafka empty batch that moves a consumer
 past a trailing run of skipped offsets.
 
-**`skipped_before` stays, with a smaller job.** It no longer counts entries,
-because no entry that holds no record takes an offset. It still counts
-offsets the broker settled without delivering because retention or a trim
-removed them, which is what a group record's count already covers. On a Raft
-stream, a jump that `skipped_before` does not explain is a drop or a
-re-form loss, never an internal entry.
+**`skipped_before` stays, with a different job.** It no longer counts
+entries, because no entry that holds no record takes an offset. It counts
+offsets the broker settled without delivering, for one of two reasons:
+
+- **removed**: retention or a trim deleted them before the reader got
+  there, which is what a group record's count already covers.
+- **lost in re-form**: a re-form started its epoch past the base's next
+  offset because the offset floor was higher, so acknowledged records at
+  those offsets were lost (a documented loss, `docs/per-shard-raft.md`,
+  "Re-forming a group").
+
+A reader is never left to take a re-form loss for a drop it caused itself,
+nor for a hole that was always empty. The broker knows the reason from the
+log: a jump at the first entry of an epoch, where that entry's base offset is
+above the previous entry's end, is a re-form loss, and every other skipped
+run is a removal. How the reason reaches a client is under "Wire and client
+impact".
 
 ## Batch atomicity under a leader change
 
@@ -181,7 +202,7 @@ counting blanks.
 **Cache shards.** A cache proposal becomes one entry with one record per
 write, and a write's version is `base_offset + position`. Every write takes
 its offset whether it applies or is refused, because the offset is set at
-the append and apply decides later. A watch already treats its offsets as
+the append and apply decides later (decided). A watch already treats its offsets as
 sparse (`docs/protocol.md`, cache watches), so a refused write looks like any
 other change it does not match. Blanks and membership no longer take
 versions. The first step keeps one write per entry, so the switch and the
@@ -216,18 +237,44 @@ The invariants, restated:
   offset.
 - **BatchWhole** (new): no committed log and no read holds a proper prefix of
   a proposed batch. This replaces `WholeBatchesOnly` and `ReadsStable`.
-- **OffsetsDense**: within an epoch, a reader's next offset is the last one
-  plus one, plus what `skipped_before` says retention removed.
+- **OffsetsDense**: a reader's next offset is the last one plus one, plus
+  `skipped_before`. Within an epoch the count is only ever a removal; at an
+  epoch's first entry it may be a re-form loss, and the reason says which.
+- **LossReported** (new, `FelixRaftReform`): every offset a re-form skips
+  is delivered to a reader as a lost-in-re-form count, never as nothing.
 
 ## Wire and client impact
 
-No client frame changes and no new flag. Offsets are still `u64`. Within an
-epoch, consecutive records have consecutive offsets across batches, and a
-consumer never sees a gap left by an internal entry. A Kafka consumer sees
-dense offsets as Kafka itself gives. Publish answers keep their fields. Cache
-versions get denser, and clients already treat them as opaque.
-`docs/protocol.md` ("Event batch offsets") and the group record's
-`skipped_before` text change to the smaller job above.
+Offsets are still `u64`. Within an epoch, consecutive records have
+consecutive offsets across batches, and a consumer never sees a gap left by
+an internal entry. A Kafka consumer sees dense offsets as Kafka itself gives.
+Publish answers keep their fields. Cache versions get denser, and clients
+already treat them as opaque.
+
+The one wire addition is the skip reason, negotiated like every other
+feature, so an old peer and a new one still exchange identical frames:
+
+- **Event batches.** The 16 frame flag bits are all taken, so the reason is
+  an extended bit (`EXT_SKIP_REASON`, beside `EXT_RECORD_HEADERS`), a
+  modifier on `0x0800`. With it, a `u8 skip_reason` follows
+  `skipped_before`: 0 removed, 1 lost in re-form. A frame whose count holds
+  both kinds of run is split, so one batch carries one reason.
+- **Group records.** An optional `skipped_reason` field (`"removed"` or
+  `"lost_in_reform"`), sent only to a client that offered a new feature bit
+  beside `FEATURE_GROUP_SKIPPED`, left out when it is `removed`.
+- **Cache watches** get the same field on their change frames, under the
+  same feature bit.
+- **A client that did not negotiate the reason** is not sent a re-form loss
+  in `skipped_before` at all, since it would read the count as "nothing was
+  there". It sees the jump uncounted, which every client already treats as
+  loss. So no client can mistake a re-form loss for an empty hole.
+- **The clients** (Rust, and the others in `clients/`) surface the reason
+  on the delivered batch and in their gap handling, so an application can
+  tell "the broker lost these" from "retention removed these".
+
+`docs/protocol.md` ("Event batch offsets", the group record, cache watches)
+changes with the wire step. The reason is also logged and counted on the
+broker when a re-form loss is first delivered.
 
 The broker-to-broker messages in `felix-replication` (`raft/wire.rs`) change:
 an append carries batches. 0.8 starts fresh and does not upgrade from 0.7, so
@@ -251,6 +298,10 @@ no mixed-version group exists to negotiate with.
    `FelixRaftCond`.
 6. **Re-form in offsets.** The control plane floor as an offset, the epoch's
    next offset, gap segments removed. Needs a metadata level.
+   `LossReported` in `FelixRaftReform`.
+6a. **Skip reason on the wire.** `EXT_SKIP_REASON`, the group and cache
+   feature bit, the client changes and `docs/protocol.md`. Lands with or
+   right after step 6, and before any release that can re-form in offsets.
 7. **Groups, trims and retention** in offsets, with their models.
 8. **Cache shards**: switch to offsets, then batch writes per entry.
 9. **Docs and status**: `docs/protocol.md`, `docs/durable-storage.md`,
@@ -262,8 +313,9 @@ the change in openraft entries per record shows.
 
 ## Format v9 freeze
 
-Steps 2, 3 and 6 change bytes on disk: the frame, the snapshot's next
-offset, the `raft-epoch` file and the meaning of the control plane floor.
+Steps 2, 3 and 6 change bytes on disk: the frame (with the reserved stream
+id), the snapshot's next offset, the `raft-epoch` file and the meaning of
+the control plane floor.
 They must land before v9 freezes. Step 5 removes the piece codes, which
 should also land first so the frozen format does not carry dead codes. Steps
 4, 7 and 8 change behaviour inside a format that already allows them and
@@ -288,16 +340,15 @@ could follow the freeze, though landing them first is simpler.
   `scripts/perf/ipm-baseline.toml` will need a new baseline, justified by
   the RF 3 runs.
 
-## Open questions
+## Decisions
 
-1. **Cache writes refused at apply.** Should they keep their offsets (this
-   design) or should offsets be given only to applied writes, which would
-   move offset assignment from append to apply?
-2. **`skipped_before` on a re-form loss.** A jump to the new epoch's first
-   offset is real loss. This design does not count it in `skipped_before`,
-   so a consumer reads it as a drop. Confirm that is the wanted signal.
-3. **The batch cap.** 32 MiB per append, or lower to bound seek cost and
-   head-of-line delay.
-4. **#3365.** Whether to reserve a stream id in the frame header now, before
-   the freeze, so several streams can share a group later without another
-   format change.
+Decided on #3359:
+
+1. A cache write refused at apply keeps its offset ("Cache shards").
+2. An offset jump from a re-form loss is reported through `skipped_before`
+   with a lost-in-re-form reason, never left for a reader to take as a
+   silent drop ("What goes away", "Wire and client impact").
+3. The batch cap stays at 32 MiB, the append limit. Seek cost and
+   replication delay are measured later.
+4. The frame reserves a stream id before the v9 freeze, 0 in a group of
+   one stream ("On disk").
