@@ -571,16 +571,12 @@ async fn an_unreplicated_durable_shard_waits_for_its_owner() {
 }
 
 /// **Giving the log up is an operator's call.** Abandoning the stranded shard
-/// places it on the surviving broker, which then serves it.
+/// places it on the surviving broker, which then serves it. On Raft the
+/// owner's data directory must be declared dead first: a broker that is only
+/// down may come back with acknowledged records.
 #[serial]
 #[tokio::test]
 async fn an_operator_can_abandon_the_log_of_a_shard_whose_owner_is_gone() {
-    if felix_cluster::skip_on_raft_until(
-        3096,
-        "no Raft command opens an RF 1 shard empty on a survivor when its only copy is gone",
-    ) {
-        return;
-    }
     let mut cluster = Cluster::start(unreplicated_config())
         .await
         .expect("start cluster");
@@ -598,6 +594,19 @@ async fn an_operator_can_abandon_the_log_of_a_shard_whose_owner_is_gone() {
 
     cluster.stop_node(&owner).await.expect("stop the owner");
     stranded(&cluster).await;
+    if felix_cluster::suite_runs_on_raft() {
+        assert!(
+            cluster.abandon_log(STREAM, 0).await.is_err(),
+            "a Raft shard whose owner is not declared dead cannot be abandoned",
+        );
+        felix_cluster::wait::until(
+            Duration::from_secs(30),
+            "the owner's data directory to be declared dead",
+            || async { cluster.declare_dead(&owner).await.is_ok() },
+        )
+        .await
+        .expect("declare the owner dead");
+    }
     assert_eq!(
         cluster.abandon_log(STREAM, 0).await.expect("abandon"),
         "discard"

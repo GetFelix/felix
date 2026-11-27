@@ -292,6 +292,14 @@ impl Cluster {
         step_of(response)
     }
 
+    /// Declare `node`'s data directory dead through the operator API, as an
+    /// operator does before abandoning a Raft shard it held. Refused while
+    /// the broker is live.
+    pub async fn declare_dead(&self, node: &str) -> Result<serde_json::Value> {
+        let url = format!("{}/v1/nodes/{node}/declare-dead", self.control_plane_url());
+        self.operator_call(self.http.post(&url)).await
+    }
+
     /// The moves in progress, as `GET /v1/shard-moves` answers.
     pub async fn shard_moves(&self) -> Result<serde_json::Value> {
         let url = format!("{}/v1/shard-moves", self.control_plane_url());

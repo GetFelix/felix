@@ -487,7 +487,9 @@ way reading is.
 Each partition is served by its shard's leader, and Metadata tells the client
 which broker that is. When a shard moves to another broker, or its leader fails
 and a replica takes over, the old broker answers the next fetch with "not
-leader". librdkafka asks for Metadata again and continues at the new leader
+leader". A fetch already waiting there is answered the same way when it wakes,
+at the latest when its wait runs out, and returns nothing the broker read after
+it stopped leading. librdkafka asks for Metadata again and continues at the new leader
 from the same offset. The new leader holds the same log with the same offsets,
 so nothing is skipped or read twice. The consumer sees a short pause. A
 producer does the same: its next produce to the old broker gets "not leader",

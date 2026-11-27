@@ -925,7 +925,8 @@ async fn fence_log<R: PeerRequester>(
                         | PeerError::Handshake { .. }
                         | PeerError::Disconnected { .. }
                         | PeerError::Timeout { .. }
-                        | PeerError::ShuttingDown)
+                        | PeerError::ShuttingDown
+                        | PeerError::Abandoned { .. })
                 );
                 if !silent {
                     declined += 1;
@@ -1328,7 +1329,8 @@ async fn fence_groups<R: PeerRequester>(
                                 | PeerError::Handshake { .. }
                                 | PeerError::Disconnected { .. }
                                 | PeerError::Timeout { .. }
-                                | PeerError::ShuttingDown)
+                                | PeerError::ShuttingDown
+                                | PeerError::Abandoned { .. })
                     )
                 };
                 if other_copy {

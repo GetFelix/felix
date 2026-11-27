@@ -182,6 +182,10 @@ const REFORM_EPOCH_LEVEL: u16 = 51;
 /// broker's word (`MetaCommand::StartAloneEpoch`).
 const REFORM_ALONE_LEVEL: u16 = 55;
 
+/// The metadata level that lets an operator abandon a lost Raft group's log
+/// (`MetaCommand::AbandonRaftEpoch`).
+const ABANDON_EPOCH_LEVEL: u16 = 56;
+
 /// The metadata level whose members keep every Raft target ordered in a
 /// shard's epoch (`ShardAssignment::raft_ordered`).
 const RAFT_ORDERED_LEVEL: u16 = 39;
@@ -1020,6 +1024,33 @@ impl ControlPlaneStore for RaftStore {
             .propose(MetaCommand::StartAloneEpoch {
                 key: key.clone(),
                 node_id: node_id.to_string(),
+                start,
+            })
+            .await?
+        {
+            MetaResponse::Assignment { assignment } => Ok(assignment),
+            _ => Err(unexpected_shape("assignment")),
+        }
+    }
+
+    async fn abandon_raft_epoch(
+        &self,
+        key: &ShardKey,
+        start: crate::model::AbandonEpochStart,
+    ) -> StoreResult<ShardAssignment> {
+        if self
+            .handle
+            .cluster_version_if_known()
+            .await
+            .is_none_or(|level| level < ABANDON_EPOCH_LEVEL)
+        {
+            return Err(StoreError::Conflict(format!(
+                "a control-plane member is below metadata version {ABANDON_EPOCH_LEVEL}"
+            )));
+        }
+        match self
+            .propose(MetaCommand::AbandonRaftEpoch {
+                key: key.clone(),
                 start,
             })
             .await?

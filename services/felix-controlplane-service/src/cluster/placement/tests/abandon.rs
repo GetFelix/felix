@@ -204,3 +204,45 @@ async fn an_abandoned_shard_is_written_and_kept() {
         "placement undid the abandonment: {outcome:?}",
     );
 }
+
+/// On Raft the abandon is the store's epoch command, refused while any
+/// broker placed in the group's epoch is not declared dead: a copy that may
+/// come back must never be left out of the decision.
+#[test]
+fn a_raft_shard_is_abandoned_only_once_every_placed_broker_is_declared_dead() {
+    let streams = vec![stream("orders", 1)];
+    let nodes = vec![
+        node("broker-a", NodeLifecycle::Down, None),
+        node("broker-b", NodeLifecycle::Live, None),
+    ];
+    let mut owner = assigned("orders", "broker-a", &[]);
+    owner.placed = Some(crate::model::PlacedInEpoch {
+        epoch: 0,
+        brokers: BTreeSet::from(["broker-a".to_string(), "broker-c".to_string()]),
+    });
+    let existing = vec![owner];
+    let on_raft = Catalog {
+        policy: MovePolicy {
+            raft_streams: true,
+            ..MovePolicy::default()
+        },
+        ..catalog(&streams, &nodes, &existing, &NothingCaughtUp)
+    };
+    assert!(abandons_on_raft(&on_raft, &orders()));
+    let dead = |nodes: &[&str]| nodes.iter().map(|n| n.to_string()).collect();
+
+    assert_eq!(
+        abandon_raft_log(&on_raft, &orders(), &dead(&["broker-a"]), 1_800_000_000_000),
+        Err(Refused::NotDeclaredDead("broker-c".to_string()))
+    );
+    let start = abandon_raft_log(
+        &on_raft,
+        &orders(),
+        &dead(&["broker-a", "broker-c"]),
+        1_800_000_000_000,
+    )
+    .expect("abandoned");
+    assert_eq!(start.leader, "broker-b");
+    assert_eq!(start.expected_generation, existing[0].generation);
+    assert_eq!(start.expected_epoch, 0);
+}
