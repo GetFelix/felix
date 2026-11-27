@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795765006516,
+  "lastUpdate": 1795765655368,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -93126,6 +93126,72 @@ window.BENCHMARK_DATA = {
             "range": "224.04",
             "unit": "us",
             "extra": "trials: 5\nmedian: 591.00\nmean: 664.40\nstdev: 224.04\ncv: 33.72%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "4f48bf26849c02810db68608e863e6f600181bb5",
+          "message": "test(cluster): the cache failover and rejoin tests run on Raft (#3285, #3286) (#3327)\n\n* fix(raft): a cache watch on a Raft broker with no member open is refused retryably (#3030)\n\nOn a Raft broker with no member of the cache shard open, handle_cache_watch_message\nfell through to the hybrid branch and served the watch from the broker's own cache\nstore, which nothing writes on Raft. The watch joined an empty log: a retained\nwatch got retained_count 0, a resume got InFuture or a storage error.\n\nIt now answers retryable shard_unavailable, as a cache put does. Tests cover the\nrefusal for live, retained and resume opens, and a writer racing watch opens to\npin register-before-read. The cache failover and sharded watch cluster tests run\non Raft, with a Raft wait for every cache member in place of hybrid reports.\n\nSpec-Unaffected: the watch open path is not modelled; no apply-path change.\n\n* test(cluster): the three cache skips left on Raft name their own issues (#3285, #3286)\n\nSpec-Unaffected: test skip reasons and a doc line only.\n\n* test(cluster): a Raft cache failover test kills the elected leader, not a follower (#3030)\n\nSpec-Unaffected: test wait only.\n\n* fix(raft): a cache watch on a follower carries on when its leader dies (#3030)\n\nA Raft member left without a leader ended its cache watches as lagged,\nwhich ends a cluster client's watch, so a watch on a healthy follower ended\nwhenever the shard's leader died. It now ends them at the same edge as\nshard_moved with no owner named, for a client that follows moves, and the\nwatch reopens wherever the shard is served. Clients that do not follow\nmoves still get cache_watch_lagged.\n\nThe sharded state-phase test killed the Raft leader, while a follower\nserved the watch, so the kill never cut the state phase. On Raft it now\nkills the follower the watch entered through.\n\nSpec-Unaffected: client-facing watch ending signal only; no replicated state, commit or apply change\n\n* fix(client): a move that names no owner is followed past a not-ready entry broker (#3030)\n\nA Raft member that lost its leader ends cache watches with shard_moved and\nno owner. The client then asked only its entry broker, which can be that\nmember, and one cut off in the minority answers shard_unavailable until the\nfollow deadline. A refusal of that kind, or no answer, now moves the next\nattempt to the next known broker, with the same backoff and deadline.\n\nprotocol.md describes the move with no owner.\n\nSpec-Unaffected: client reader routing and docs only; no replicated state change\n\n* test(cluster): the short-placed and rejoin cache tests run on Raft (#3285, #3286)\n\nThe two short-placement tests create their shards after a start with fewer\nbrokers than the factor, and wait for the group to grow to three voters\nand form before they kill or write. The rejoin test waits for every member\nof the Raft group to hold the log through its leader instead of reading a\nhybrid report and metric.\n\nSpec-Unaffected: test only",
+          "timestamp": "2026-11-27T07:42:34Z",
+          "tree_id": "55369044f440f10dbbc013c750786144509bc55d",
+          "url": "https://github.com/GetFelix/felix/commit/4f48bf26849c02810db68608e863e6f600181bb5"
+        },
+        "date": 1795765633805,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 68,
+            "range": "0.00",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 68.00\nmean: 68.00\nstdev: 0.00\ncv: 0.00%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 91,
+            "range": "2.49",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 91.00\nmean: 91.80\nstdev: 2.49\ncv: 2.71%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 113,
+            "range": "12.58",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 113.00\nmean: 119.40\nstdev: 12.58\ncv: 10.54%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 85,
+            "range": "1.30",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 85.00\nmean: 84.80\nstdev: 1.30\ncv: 1.54%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 185,
+            "range": "16.89",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 185.00\nmean: 191.20\nstdev: 16.89\ncv: 8.83%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 278,
+            "range": "607.20",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 278.00\nmean: 583.60\nstdev: 607.20\ncv: 104.04%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
