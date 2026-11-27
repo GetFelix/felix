@@ -429,6 +429,13 @@ Sent only to a client that offered `FEATURE_SHARD_MOVED`: any other client sees
 the stream end after its last event, byte for byte as before. See
 [Shard moves](#shard-moves).
 
+`node_id` and `addr` are absent when the broker does not know who serves the
+shard now. A Raft member that lost its leader ends its cache watches this way,
+with `resume_from` set to the first change it did not offer; a client that did
+not offer the feature gets `cache_watch_lagged` at the same offset instead.
+The client then reopens the watch at `resume_from` on any member that serves
+the shard.
+
 ### StreamDeleted (server -> client)
 ```
 { "type": "stream_deleted", "subscription_id": <u64> }
@@ -2547,6 +2554,15 @@ reset are a prefix of the history, never all of it: a clean end would read as
 the whole history and the reader would skip the rest. The client then resumes
 after the last record it received, or where it asked to start if it received
 none.
+
+A cache watch on a Raft member that loses its leader is ended rather than
+left to go quiet, with `shard_moved` naming no owner and `resume_from` at the
+first change the member did not offer, or `cache_watch_lagged` at that change
+for a client without `FEATURE_SHARD_MOVED`. Changes are applied only once
+committed, so nothing below `resume_from` is missing on another member. The
+Rust `Client` asks its entry broker and then each other broker it knows until
+one serves the shard, so a member cut off in the minority does not hold the
+watch until the deadline.
 
 > `services/felix-broker-service/src/serving/quic/handlers/subscribe/tests/handle_subscribe.rs`,
 > `a_replay_that_loses_its_shard_part_way_is_reset_not_finished`.

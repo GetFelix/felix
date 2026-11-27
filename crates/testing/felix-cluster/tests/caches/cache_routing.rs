@@ -267,10 +267,6 @@ async fn next_item(watch: &mut ShardedCacheWatch) -> ShardedCacheWatchItem {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[serial]
 async fn a_sharded_prefix_watch_sees_writes_to_every_shard() {
-    if felix_cluster::skip_on_raft_until(3030, "cache shard watches refused while the shard opens")
-    {
-        return;
-    }
     let cluster = Cluster::start(with_cache()).await.expect("start cluster");
     let owners = cluster
         .cache_shard_owners(CACHE)
@@ -350,10 +346,6 @@ async fn a_sharded_prefix_watch_sees_writes_to_every_shard() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[serial]
 async fn a_sharded_retained_watch_marks_when_every_shard_holds_its_state() {
-    if felix_cluster::skip_on_raft_until(3030, "cache shard watches refused while the shard opens")
-    {
-        return;
-    }
     let cluster = Cluster::start(with_cache()).await.expect("start cluster");
     let via = cluster.node_ids()[0].clone();
     let keys: Vec<String> = (0..20).map(|n| format!("user:{n}")).collect();
@@ -398,10 +390,6 @@ async fn a_sharded_retained_watch_marks_when_every_shard_holds_its_state() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[serial]
 async fn a_sharded_retained_watch_on_an_empty_prefix_is_complete_at_once() {
-    if felix_cluster::skip_on_raft_until(3030, "cache shard watches refused while the shard opens")
-    {
-        return;
-    }
     let cluster = Cluster::start(with_cache()).await.expect("start cluster");
     let client = cluster_client(&cluster).await;
     let mut watch = client

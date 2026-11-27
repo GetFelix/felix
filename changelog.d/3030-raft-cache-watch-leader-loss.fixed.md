@@ -1,0 +1,1 @@
+- A cluster client's cache watch on a Raft follower now carries on when the shard's leader dies. The follower, left without a leader until the election, ended the watch as lagged, which ends a cluster client's watch; it now ends it as moved for a client that follows moves, at the same resume point, and the watch reopens wherever the shard is served (#3030).

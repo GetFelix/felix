@@ -51,15 +51,28 @@ impl RaftCache {
         Self::open(false).await
     }
 
+    /// A broker that runs its caches on Raft with no member of the shard
+    /// open yet: at startup, or before placement reaches it after a
+    /// failover.
+    async fn unopened() -> Self {
+        Self::opened(None).await
+    }
+
     async fn open(formed: bool) -> Self {
+        Self::opened(Some(formed)).await
+    }
+
+    async fn opened(formed: Option<bool>) -> Self {
         let root = tempfile::tempdir().expect("tempdir");
         let broker = fixture::cache_broker(root.path(), ORDERS).await;
         let shards = fixture::shards(&broker);
         let assignment = fixture::assigned(cache_key(), fixture::INCARNATION);
-        if formed {
-            fixture::take_formed(&shards, assignment).await;
-        } else {
-            shards.take(&mut fixture::assignments([assignment])).await;
+        match formed {
+            Some(true) => fixture::take_formed(&shards, assignment).await,
+            Some(false) => {
+                shards.take(&mut fixture::assignments([assignment])).await;
+            }
+            None => {}
         }
         let engine = Arc::new(fixture::engine(&shards));
         Self {
@@ -111,6 +124,16 @@ impl RaftCache {
         retained: bool,
         from_offset: Option<u64>,
     ) -> Result<(Message, Option<Events>)> {
+        self.watch_offering(retained, from_offset, 0).await
+    }
+
+    /// [`Self::watch`] from a client that offered `peer_features`.
+    async fn watch_offering(
+        &self,
+        retained: bool,
+        from_offset: Option<u64>,
+        peer_features: u32,
+    ) -> Result<(Message, Option<Events>)> {
         let (client, client_conn, connection) = connection().await?;
         let publish_ctx = build_publish_context(
             Arc::clone(&self.broker),
@@ -152,7 +175,7 @@ impl RaftCache {
                 retained,
                 subscription_id: Some(7),
             },
-            0,
+            peer_features,
             None,
         )
         .await?;
@@ -478,6 +501,35 @@ async fn an_ended_raft_cache_watch_names_where_to_resume() -> Result<()> {
     Ok(())
 }
 
+/// **A client that follows moves is told the shard moved, not that it
+/// lagged**, when its member can no longer say its state is current. A lag
+/// ends a cluster client's watch, and a member losing its leader is a
+/// failover the watch has to carry on through, at the same edge.
+#[tokio::test]
+async fn an_ended_raft_cache_watch_is_followed_by_a_client_that_follows_moves() -> Result<()> {
+    let cache = RaftCache::start().await;
+    let (_, events) = cache
+        .watch_offering(false, None, felix_wire::FEATURE_SHARD_MOVED)
+        .await?;
+    let mut events = events.expect("events");
+    let put = cache.write(RaftCache::put("k", b"one")).await;
+    assert_eq!(events.change().await?, (Some(b"one".to_vec()), put));
+
+    let hub = Arc::clone(cache.broker.cache_watches().expect("a hub"));
+    let edge = cache.edge();
+    cache.raft().end_cache_watches(&cache_key(), hub.as_ref());
+    let ended = events.next().await?;
+    assert!(
+        matches!(
+            ended,
+            Message::ShardMoved { subscription_id: 7, resume_from: Some(from), node_id: None, .. }
+                if from == edge
+        ),
+        "{ended:?}"
+    );
+    Ok(())
+}
+
 /// **A watcher whose queue fills on a Raft shard ends as lagged at the
 /// first change it could not hold**, as on the hybrid: the changes come
 /// from the group's apply, and the hub bounds them the same way.
@@ -565,5 +617,95 @@ async fn a_raft_cache_resume_is_replayed_from_the_kept_changes() -> Result<()> {
         events.expect("events").change().await?,
         (Some(b"four".to_vec()), four)
     );
+    Ok(())
+}
+
+/// **A Raft broker with no member of the shard open refuses a watch
+/// retryably**, a fresh one and a resume alike, rather than serving it from
+/// the hybrid store, which nothing writes on Raft: there the watch would
+/// join an empty log, a retained one would be told the key holds nothing,
+/// and a resume handed out after a failover would be refused as in the
+/// future. Nothing stays registered.
+#[tokio::test]
+async fn a_watch_on_a_raft_broker_with_no_member_open_is_refused_retryably() -> Result<()> {
+    let cache = RaftCache::unopened().await;
+    assert!(cache.engine.runs_raft());
+    assert!(cache.engine.raft(&cache_key()).is_none());
+    for (retained, from_offset) in [(false, None), (true, None), (false, Some(5))] {
+        let (refused, events) = cache.watch(retained, from_offset).await?;
+        assert!(
+            events.is_none(),
+            "retained {retained}, from {from_offset:?}"
+        );
+        match &refused {
+            Message::Error {
+                code: Some(felix_wire::ErrorCode::ShardUnavailable),
+                retry: Some(felix_wire::RetryClass::Retry),
+                message,
+                ..
+            } => assert!(message.contains("not open on this broker"), "{message}"),
+            other => panic!("retained {retained}, from {from_offset:?}: {other:?}"),
+        }
+    }
+    let hub = cache.broker.cache_watches().expect("a hub");
+    assert_eq!(hub.registered_watchers("t1", "ns", ORDERS, 0), 0);
+    Ok(())
+}
+
+/// **A watch registers before it reads the member's edge**, so a write
+/// applied while it opens is either below the edge it is told or delivered
+/// live. Read the other way round, a write landing in between is in
+/// neither, and the first change delivered skips it. Writers run
+/// throughout; every watch's first change must be the first write at or
+/// past its `resume_offset`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_raft_cache_watch_misses_no_write_that_lands_while_it_opens() -> Result<()> {
+    const WRITERS: usize = 4;
+    let cache = Arc::new(RaftCache::start().await);
+    // Each writer's acknowledged versions, in the order it wrote them.
+    let written: Arc<Vec<parking_lot::Mutex<Vec<u64>>>> = Arc::new(
+        (0..WRITERS)
+            .map(|_| parking_lot::Mutex::default())
+            .collect(),
+    );
+    let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let mut writers = tokio::task::JoinSet::new();
+    for writer in 0..WRITERS {
+        let (cache, written, stop) = (Arc::clone(&cache), Arc::clone(&written), Arc::clone(&stop));
+        writers.spawn(async move {
+            while !stop.load(std::sync::atomic::Ordering::Relaxed) {
+                let version = cache.write(RaftCache::put("k", b"v")).await;
+                written[writer].lock().push(version);
+            }
+        });
+    }
+    for round in 0..300 {
+        let (started, events) = cache.watch(false, None).await?;
+        let Message::CacheWatchStarted { resume_offset, .. } = started else {
+            panic!("round {round}: {started:?}");
+        };
+        let (_, first) = events.expect("events").change().await?;
+        // A writer that has recorded a version at or past `first` has
+        // recorded every one of its writes below it.
+        fixture::until("every writer to pass the first change", || {
+            written
+                .iter()
+                .all(|versions| versions.lock().last().is_some_and(|last| *last >= first))
+        })
+        .await;
+        let skipped: Vec<u64> = written
+            .iter()
+            .flat_map(|versions| versions.lock().clone())
+            .filter(|version| (resume_offset..first).contains(version))
+            .collect();
+        assert!(
+            skipped.is_empty(),
+            "round {round}: joined at {resume_offset}, first change {first}, missed {skipped:?}"
+        );
+    }
+    stop.store(true, std::sync::atomic::Ordering::Relaxed);
+    while let Some(writer) = writers.join_next().await {
+        writer?;
+    }
     Ok(())
 }
