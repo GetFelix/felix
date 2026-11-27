@@ -235,8 +235,10 @@ impl Leading for Watched {
                 |leads: Option<u64>| leads.is_some() && term.is_none_or(|term| leads == Some(term));
             // The watcher hears of an election a moment after openraft
             // does, so a new leader is not "lost" on the watcher's word
-            // alone. A transfer is the watcher's to say.
-            let elected = leading_term(&self.server).filter(|term| lead.void != Some(*term));
+            // alone. A term closed for a transfer still counts while
+            // openraft leads it: what was written in it can still commit,
+            // and its waiters are answered by that commit.
+            let elected = leading_term(&self.server);
             if !held(lead.term) && !held(elected) {
                 return match self.server.borrow_watched().state {
                     _ if lead.gone => Lost::Stopped,
