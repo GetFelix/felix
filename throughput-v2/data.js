@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795809376283,
+  "lastUpdate": 1795810526208,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -74048,6 +74048,58 @@ window.BENCHMARK_DATA = {
             "range": "6629.37",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1243468.68\nmean: 1242522.63\nstdev: 6629.37\ncv: 0.53%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1018-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "d3bc6dec65cb20950551e837e761fead462456b4",
+          "message": "test(cluster): the recreated-stream test dumps every member's state when its replay is short (#3378) (#3382)\n\nRecords each publish's offset and entry broker, and on failure prints every\nmember's shard state and own replay beside the serving leader's, so a replay\nrace and a lost ack can be told apart. The failure message now says which\nrecord is missing.\n\nSpec-Unaffected: test-only",
+          "timestamp": "2026-11-27T20:09:58Z",
+          "tree_id": "0e600c31e87ce409263b3990ee9911481483b5e4",
+          "url": "https://github.com/GetFelix/felix/commit/d3bc6dec65cb20950551e837e761fead462456b4"
+        },
+        "date": 1795810525251,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 698276.93,
+            "range": "67802.54",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 698276.93\nmean: 689755.20\nstdev: 67802.54\ncv: 9.83%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 698276.93,
+            "range": "67802.54",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 698276.93\nmean: 689755.20\nstdev: 67802.54\ncv: 9.83%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 170662.66,
+            "range": "2777.93",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 170662.66\nmean: 171030.65\nstdev: 2777.93\ncv: 1.62%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1706626.65,
+            "range": "27779.32",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1706626.65\nmean: 1710306.46\nstdev: 27779.32\ncv: 1.62%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
