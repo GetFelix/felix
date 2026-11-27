@@ -1072,3 +1072,75 @@ async fn a_resume_from_the_log_joins_live_with_no_gap_or_duplicate() {
     assert_eq!(delivered, wanted, "a gap or a duplicate at the join");
     cluster.stop().await;
 }
+
+/// **A resume the snapshot covers is resnapshotted without reading the
+/// snapshot file**, and without waiting behind replays at the bound: the
+/// covered index is kept in memory. With the file made unreadable, a
+/// resume above the snapshot fails its read, and one it covers is still
+/// answered.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_resume_the_snapshot_covers_reads_no_snapshot_file() {
+    let (mut cluster, _recorders) = unwatched_cluster().await;
+    let now = wall_clock();
+    let first = write(&cluster, now, put("k", b"one", 1)).await;
+    let mid = write(&cluster, now + 1, put("k", b"two", 2)).await;
+    cluster.committed_everywhere(N, mid).await;
+    let broker = BROKERS[0];
+    cluster.snapshot(broker, N, mid).await;
+    let group = cluster.runtime(broker).group(&shard(N)).expect("group");
+    let (tail, _) = group.cache_replay(first, &|_| true).expect("a cache group");
+
+    let file = cluster.dir(broker, N).join("raft-snapshot");
+    let stored = std::fs::read(&file).expect("the snapshot file");
+    std::fs::write(&file, b"not a snapshot").expect("damage the file");
+    assert!(
+        group.replay_from_log(mid + 1, tail).await.is_err(),
+        "a resume above the snapshot reads the file"
+    );
+    let covered = group.replay_from_log(first, tail).await;
+    assert!(matches!(covered, Ok(None)), "{covered:?}");
+    let held = group.hold_log_replays().await;
+    let decided = tokio::time::timeout(
+        Duration::from_secs(1),
+        group.cache_replay_from_log(first, tail, &|_| true),
+    )
+    .await;
+    assert!(matches!(decided, Ok(None)), "{decided:?}");
+    drop(held);
+    std::fs::write(&file, stored).expect("restore the file");
+    cluster.stop().await;
+}
+
+/// **Concurrent resumes from the log queue behind the bound** rather than
+/// each restoring its own copy of the snapshot at once, and none of them
+/// fails for waiting: once the bound frees, each is replayed in full.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn replays_from_the_log_queue_behind_the_bound() {
+    let (mut cluster, _recorders) = unwatched_cluster().await;
+    let now = wall_clock();
+    let first = write(&cluster, now, put("k", b"one", 1)).await;
+    cluster.committed_everywhere(N, first).await;
+    let group = cluster.runtime(BROKERS[0]).group(&shard(N)).expect("group");
+    let (tail, _) = group.cache_replay(first, &|_| true).expect("a cache group");
+
+    let held = group.hold_log_replays().await;
+    let replays = futures::future::join_all(
+        (0..=super::super::super::group::LOG_REPLAYS)
+            .map(|_| group.cache_replay_from_log(first, tail, &|_| true)),
+    );
+    tokio::pin!(replays);
+    assert!(
+        tokio::time::timeout(Duration::from_millis(300), &mut replays)
+            .await
+            .is_err(),
+        "a replay ran with the bound taken"
+    );
+    drop(held);
+    let replayed = tokio::time::timeout(PATIENCE, replays)
+        .await
+        .expect("the queued replays ran once the bound freed");
+    for changes in replayed {
+        assert_eq!(changes.as_deref().map(offsets_of), Some(vec![first]));
+    }
+    cluster.stop().await;
+}

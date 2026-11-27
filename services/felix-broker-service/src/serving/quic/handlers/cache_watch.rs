@@ -236,14 +236,17 @@ pub(crate) async fn handle_cache_watch_message(
     // Register *before* reading the tail: this pins the live edge. Every
     // change applied from here on is queued (or reported as lag), so the
     // history below the tail is a closed range nothing can escape.
-    let watch = hub.register(
-        &request.tenant_id,
-        &request.namespace,
-        &request.cache,
-        shard,
-        filter.clone(),
-        WATCH_QUEUE_CAPACITY,
-    );
+    let register = || {
+        hub.register(
+            &request.tenant_id,
+            &request.namespace,
+            &request.cache,
+            shard,
+            filter.clone(),
+            WATCH_QUEUE_CAPACITY,
+        )
+    };
+    let mut watch = register();
 
     // Checked again now that it is registered: an ending that landed since
     // the first check would otherwise have missed it.
@@ -289,7 +292,16 @@ pub(crate) async fn handle_cache_watch_message(
         && from <= join.tail
     {
         let replay = raft_replay(&publish_ctx.engine, &shard_key, &filter, from).await;
-        if let Some(replay) = replay
+        // A replay from the log that outlasted the live queue is not handed
+        // out: the client would resume below the recorded changes and start
+        // the same replay again. The watch registers afresh and is
+        // resnapshotted, which costs no fold.
+        let overflowed = watch.lagged().is_some() && watch.moved().is_none();
+        if overflowed {
+            watch = register();
+        }
+        if !overflowed
+            && let Some(replay) = replay
             && let Some(changes) = replay.changes
         {
             join.tail = replay.tail;

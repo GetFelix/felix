@@ -104,6 +104,24 @@ impl RaftEngine {
         self.runtime.lookups()
     }
 
+    /// Have this broker's member of `shard` snapshot what it has applied,
+    /// and return the entry the stored snapshot covers. Not an API: tests
+    /// compact a member's log with it.
+    #[cfg(any(test, feature = "testing"))]
+    pub async fn snapshot_applied(&self, shard: &ShardKey) -> Option<u64> {
+        self.runtime.group(shard)?.snapshot_applied().await
+    }
+
+    /// Every permit for a cache watch replay from the log on this broker's
+    /// member of `shard`, so resumes queue until it is dropped. Not an API.
+    #[cfg(any(test, feature = "testing"))]
+    pub async fn hold_cache_log_replays(
+        &self,
+        shard: &ShardKey,
+    ) -> Option<tokio::sync::OwnedSemaphorePermit> {
+        Some(self.runtime.group(shard)?.hold_log_replays().await)
+    }
+
     /// How many stream batches `shard`'s group on this broker was handed.
     /// Not an API: tests count proposals with it.
     #[cfg(any(test, feature = "testing"))]

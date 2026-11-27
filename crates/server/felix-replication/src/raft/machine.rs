@@ -21,7 +21,9 @@ use felix_broker::{GroupEntry, GroupTable, ShardGroups};
 use felix_storage::DiskLog;
 use felix_storage::disk_log::CarriedFloor;
 use felix_storage::log::FsyncMode;
-use felix_storage::raft_log::{LogPoint, LogReader, SnapshotId, SnapshotStore, StoredSnapshot};
+use felix_storage::raft_log::{
+    LogPoint, LogReader, SnapshotId, SnapshotStore, StoredReader, StoredSnapshot,
+};
 use felix_storage::waiters::{Queue, Waiters};
 use futures::{Stream, StreamExt};
 use openraft::storage::{EntryResponder, RaftLogReader, RaftSnapshotBuilder, RaftStateMachine};
@@ -625,13 +627,22 @@ pub(crate) async fn replay_from_log(
     // A purge after the snapshot was read leaves the log short of it, and
     // the snapshot that let the purge happen is read on the next try.
     'fold: for _ in 0..3 {
-        let stored = snapshots.current().await?;
-        let start = match stored.as_ref().and_then(|stored| stored.last) {
-            Some(id) if id.index >= from => return Ok(None),
-            Some(id) => id.index + 1,
-            None => 0,
+        // The covered index is kept in memory: a resume the snapshot covers
+        // is answered without reading the file.
+        if snapshots.covers().is_some_and(|id| id.index >= from) {
+            return Ok(None);
+        }
+        let (start, data) = match snapshots.open_current().await? {
+            Some(reader) => {
+                let start = match reader.last() {
+                    Some(id) if id.index >= from => return Ok(None),
+                    Some(id) => id.index + 1,
+                    None => 0,
+                };
+                (start, read_snapshot_data(reader).await?)
+            }
+            None => (0, Bytes::new()),
         };
-        let data = stored.map(|stored| stored.data).unwrap_or_default();
         let mut state = restore(data, start > 0).await?;
         if let Some(index) = start.checked_sub(1) {
             state.restored_through(index);
@@ -677,6 +688,18 @@ pub(crate) async fn replay_from_log(
         return Ok(Some(changes.into_inner()));
     }
     Ok(None)
+}
+
+/// The data of the snapshot `reader` opened, checked against its crc. The
+/// store's install lock is held only to open the file, so a large read
+/// does not hold up an install.
+async fn read_snapshot_data(mut reader: StoredReader) -> io::Result<Bytes> {
+    const CHUNK: usize = 4 << 20;
+    let mut data = bytes::BytesMut::with_capacity(usize::try_from(reader.data_len()).unwrap_or(0));
+    while let Some(chunk) = reader.next_chunk(CHUNK).await? {
+        data.extend_from_slice(&chunk);
+    }
+    Ok(data.freeze())
 }
 
 fn meta(state: &State) -> SnapshotMetaOf<ShardTypes> {

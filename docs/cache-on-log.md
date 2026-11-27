@@ -318,6 +318,12 @@ entries above its snapshot into a copy of the snapshot's state and hands
 out the changes from the resume offset to its applied edge. Only a resume
 from at or below the snapshot's entry is resnapshotted, because those
 changes are compacted into it, the same contract as the hybrid's retention.
+That decision reads only the snapshot's covered index, not the file. A
+replay holds the snapshot and a restored copy of the cache in memory, so a
+group runs at most two at once and further resumes wait their turn. A
+replay that takes long enough to overflow the watch's live queue is not
+handed out, because the client would resume below the recorded changes and
+start it again: the watch registers afresh and is resnapshotted.
 A join that hands out state, a retained watch or a resnapshotted resume,
 passes the group's read barrier first, the same one a
 history read uses: the follower applies the leader's read index before it

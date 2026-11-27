@@ -134,72 +134,93 @@ impl RaftCache {
         from_offset: Option<u64>,
         peer_features: u32,
     ) -> Result<(Message, Option<Events>)> {
-        let (client, client_conn, connection) = connection().await?;
-        let publish_ctx = build_publish_context(
-            Arc::clone(&self.broker),
-            &BrokerConfig {
-                publish_quorum_timeout_ms: 300,
-                ..BrokerConfig::default()
-            },
-            ClusterContext {
-                engine: Arc::clone(&self.engine),
-                ..ClusterContext::default()
-            },
-        );
-        let (out_ack_tx, mut out_ack_rx) = mpsc::channel(4);
-        let out_ack_depth = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-        let (ack_throttle_tx, _ack_throttle_rx) = tokio::sync::watch::channel(false);
-        let ack_timeout_state = Arc::new(parking_lot::Mutex::new(AckTimeoutState::new(
-            std::time::Instant::now(),
-        )));
-        let (cancel_tx, _cancel_rx) = tokio::sync::watch::channel(false);
-        handle_cache_watch_message(
-            Arc::clone(&self.broker),
-            connection.clone(),
-            &publish_ctx,
-            WatchResponder {
-                out_ack_tx: &out_ack_tx,
-                out_ack_depth: &out_ack_depth,
-                ack_throttle_tx: &ack_throttle_tx,
-                ack_timeout_state: &ack_timeout_state,
-                cancel_tx: &cancel_tx,
-            },
-            WatchRequest {
-                tenant_id: "t1".to_string(),
-                namespace: "ns".to_string(),
-                cache: ORDERS.to_string(),
-                key: Some("k".to_string()),
-                prefix: None,
-                shard: None,
-                from_offset,
-                retained,
-                subscription_id: Some(7),
-            },
+        open_watch(
+            &self.broker,
+            &self.engine,
+            ORDERS,
+            retained,
+            from_offset,
             peer_features,
-            None,
         )
-        .await?;
-        let Outgoing::Message(answer) = out_ack_rx.recv().await.context("ack missing")? else {
-            panic!("expected a control message");
-        };
-        if !matches!(answer, Message::CacheWatchStarted { .. }) {
-            return Ok((answer, None));
-        }
-        let stream = tokio::time::timeout(Duration::from_secs(2), client_conn.accept_uni())
-            .await
-            .context("accept uni timeout")??;
-        let mut events = Events {
-            _held: (client, client_conn, connection),
-            stream,
-            scratch: crate::serving::quic::FrameScratch::new(),
-        };
-        let hello = events.next().await?;
-        assert!(
-            matches!(hello, Message::EventStreamHello { .. }),
-            "{hello:?}"
-        );
-        Ok((answer, Some(events)))
+        .await
     }
+}
+
+/// Open a watch of key `k` in `cache` on `broker` and return its
+/// confirmation and event stream.
+async fn open_watch(
+    broker: &Arc<felix_broker::Broker>,
+    engine: &Arc<crate::shards::routing::StreamEngine>,
+    cache: &str,
+    retained: bool,
+    from_offset: Option<u64>,
+    peer_features: u32,
+) -> Result<(Message, Option<Events>)> {
+    let (client, client_conn, connection) = connection().await?;
+    let publish_ctx = build_publish_context(
+        Arc::clone(broker),
+        &BrokerConfig {
+            publish_quorum_timeout_ms: 300,
+            ..BrokerConfig::default()
+        },
+        ClusterContext {
+            engine: Arc::clone(engine),
+            ..ClusterContext::default()
+        },
+    );
+    let (out_ack_tx, mut out_ack_rx) = mpsc::channel(4);
+    let out_ack_depth = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let (ack_throttle_tx, _ack_throttle_rx) = tokio::sync::watch::channel(false);
+    let ack_timeout_state = Arc::new(parking_lot::Mutex::new(AckTimeoutState::new(
+        std::time::Instant::now(),
+    )));
+    let (cancel_tx, _cancel_rx) = tokio::sync::watch::channel(false);
+    handle_cache_watch_message(
+        Arc::clone(broker),
+        connection.clone(),
+        &publish_ctx,
+        WatchResponder {
+            out_ack_tx: &out_ack_tx,
+            out_ack_depth: &out_ack_depth,
+            ack_throttle_tx: &ack_throttle_tx,
+            ack_timeout_state: &ack_timeout_state,
+            cancel_tx: &cancel_tx,
+        },
+        WatchRequest {
+            tenant_id: "t1".to_string(),
+            namespace: "ns".to_string(),
+            cache: cache.to_string(),
+            key: Some("k".to_string()),
+            prefix: None,
+            shard: None,
+            from_offset,
+            retained,
+            subscription_id: Some(7),
+        },
+        peer_features,
+        None,
+    )
+    .await?;
+    let Outgoing::Message(answer) = out_ack_rx.recv().await.context("ack missing")? else {
+        panic!("expected a control message");
+    };
+    if !matches!(answer, Message::CacheWatchStarted { .. }) {
+        return Ok((answer, None));
+    }
+    let stream = tokio::time::timeout(Duration::from_secs(2), client_conn.accept_uni())
+        .await
+        .context("accept uni timeout")??;
+    let mut events = Events {
+        _held: (client, client_conn, connection),
+        stream,
+        scratch: crate::serving::quic::FrameScratch::new(),
+    };
+    let hello = events.next().await?;
+    assert!(
+        matches!(hello, Message::EventStreamHello { .. }),
+        "{hello:?}"
+    );
+    Ok((answer, Some(events)))
 }
 
 /// A watch's event stream, with the connection it runs on held open.
@@ -725,5 +746,165 @@ async fn a_raft_cache_watch_misses_no_write_that_lands_while_it_opens() -> Resul
     while let Some(writer) = writers.join_next().await {
         writer?;
     }
+    Ok(())
+}
+
+/// **A replay from the log that outlasts the live queue is resnapshotted,
+/// not handed out.** Ended as lagged, the watch would have the client
+/// resume below the recorded changes and run the same replay again, a loop
+/// a slow replay never leaves. Here the replay waits at the bound while
+/// more changes than the queue holds arrive.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_replay_that_outlasts_the_live_queue_is_resnapshotted() -> Result<()> {
+    let cache = RaftCache::start().await;
+    let one = cache.write(RaftCache::put("k", b"one")).await;
+    let held = cache
+        .raft()
+        .hold_cache_log_replays(&cache_key())
+        .await
+        .expect("a cache group");
+    let hub = Arc::clone(cache.broker.cache_watches().expect("a hub"));
+    let writes = async {
+        fixture::until("the watch registered", || {
+            hub.registered_watchers("t1", "ns", ORDERS, 0) > 0
+        })
+        .await;
+        let mut last = 0;
+        for _ in 0..=WATCH_QUEUE_CAPACITY {
+            last = cache.write(RaftCache::put("k", b"more")).await;
+        }
+        drop(held);
+        last
+    };
+    let (watched, last) = tokio::join!(cache.watch(false, Some(one)), writes);
+    let (started, events) = watched?;
+    assert!(
+        matches!(
+            started,
+            Message::CacheWatchStarted {
+                resnapshot: true,
+                ..
+            }
+        ),
+        "{started:?}"
+    );
+    let (value, at) = events.expect("events").change().await?;
+    assert_eq!(value, Some(b"more".to_vec()));
+    assert!(at <= last, "{at} past {last}");
+    Ok(())
+}
+
+/// **A resume the snapshot covers is resnapshotted, and passes the read
+/// barrier first**, as a retained join does: a follower's applied edge can
+/// trail a put its leader acknowledged. A follower that took a snapshot
+/// past the resume offset answers it with `resnapshot`, and once it cannot
+/// reach its leader, with a retryable refusal rather than a stale snapshot.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_resnapshotted_raft_resume_needs_the_read_barrier() -> Result<()> {
+    use crate::shards::raft::tests::{BROKERS, Loopback, Member};
+    let net = Arc::new(Loopback::default());
+    let sessions = ShardKey {
+        stream: "sessions".to_string(),
+        ..cache_key()
+    };
+    let mut placed = fixture::assigned(sessions.clone(), fixture::INCARNATION);
+    placed.replicas = BROKERS.iter().map(|name| name.to_string()).collect();
+    let mut members = Vec::new();
+    for name in BROKERS {
+        members.push(Member::start_cache(&net, name).await);
+    }
+    let all: Vec<_> = members.iter().map(|member| &member.shards).collect();
+    fixture::form_on(&all, placed).await;
+    let mut leader = 0;
+    fixture::until("a member serves its term", || {
+        members
+            .iter()
+            .position(|member| member.shards.leading(&sessions).is_some())
+            .map(|at| leader = at)
+            .is_some()
+    })
+    .await;
+    let raft = |member: &Member| {
+        member
+            .engine
+            .raft(&sessions)
+            .expect("a member here")
+            .clone()
+    };
+    let write = |value: &'static [u8]| {
+        let raft = raft(&members[leader]);
+        let sessions = sessions.clone();
+        async move {
+            match raft
+                .write_cache(&sessions, RaftCache::put("k", value), None, TIMEOUT)
+                .await
+            {
+                Ok(felix_replication::raft::CacheReply::Written { version, .. }) => version,
+                other => panic!("write: {other:?}"),
+            }
+        }
+    };
+    let one = write(b"one").await;
+    let two = write(b"two").await;
+    let follower = &members[(leader + 1) % members.len()];
+    let edge = || {
+        raft(follower)
+            .cache_watch_point(&sessions, &|_| false)
+            .expect("a cache group")
+            .tail
+    };
+    fixture::until("the follower applied the writes", || edge() > two).await;
+    let covered = raft(follower)
+        .snapshot_applied(&sessions)
+        .await
+        .expect("a snapshot");
+    assert!(covered >= two);
+
+    let (started, events) = open_watch(
+        &follower.broker,
+        &follower.engine,
+        "sessions",
+        false,
+        Some(one),
+        0,
+    )
+    .await?;
+    assert!(
+        matches!(
+            started,
+            Message::CacheWatchStarted {
+                resnapshot: true,
+                ..
+            }
+        ),
+        "{started:?}"
+    );
+    assert_eq!(
+        events.expect("events").change().await?,
+        (Some(b"two".to_vec()), two)
+    );
+
+    crate::shards::raft::tests::isolate(&net, follower.name);
+    let (refused, _) = open_watch(
+        &follower.broker,
+        &follower.engine,
+        "sessions",
+        false,
+        Some(one),
+        0,
+    )
+    .await?;
+    assert!(
+        matches!(
+            refused,
+            Message::Error {
+                code: Some(felix_wire::ErrorCode::ShardUnavailable),
+                retry: Some(felix_wire::RetryClass::Retry),
+                ..
+            }
+        ),
+        "{refused:?}"
+    );
+    crate::shards::raft::tests::stop(&members).await;
     Ok(())
 }
