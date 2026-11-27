@@ -265,8 +265,8 @@ pub(crate) async fn handle_cache_watch_message(
 
     // A shard a Raft group runs here joins at the group's applied edge. Only
     // committed entries are applied, so no gate applies. A resume below the
-    // edge is replayed from the member's recent changes, and answered with a
-    // resnapshot when they no longer reach back to it.
+    // edge is replayed from the member's recent changes or its log above its
+    // snapshot, and answered with a resnapshot when the snapshot covers it.
     let refuse_unready = |why: &str| {
         ClientError::unavailable(
             &crate::shards::routing::Reason::NotReady,
@@ -288,7 +288,7 @@ pub(crate) async fn handle_cache_watch_message(
     if let (Some(join), false, Some(from)) = (raft.as_mut(), request.retained, request.from_offset)
         && from <= join.tail
     {
-        let replay = raft_replay(&publish_ctx.engine, &shard_key, &filter, from);
+        let replay = raft_replay(&publish_ctx.engine, &shard_key, &filter, from).await;
         if let Some(replay) = replay
             && let Some(changes) = replay.changes
         {
@@ -658,7 +658,7 @@ async fn raft_join(
 
 /// The changes a watch resuming from `from` missed on `key`'s Raft member
 /// here, read after the watch registered. `None` when no group runs it.
-fn raft_replay(
+async fn raft_replay(
     engine: &crate::shards::routing::StreamEngine,
     key: &crate::shards::ShardKey,
     filter: &CacheWatchFilter,
@@ -668,7 +668,8 @@ fn raft_replay(
     {
         let replay = engine
             .raft(key)?
-            .cache_replay(key, from, &|name| filter.matches(name))?;
+            .cache_replay(key, from, &|name| filter.matches(name))
+            .await?;
         Some(RaftReplay {
             tail: replay.tail,
             changes: replay.changes,

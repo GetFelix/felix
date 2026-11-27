@@ -121,6 +121,9 @@ pub(crate) struct Group {
     reached_before: AtomicBool,
     /// A cache shard's projection, as this member has applied it.
     cache: Option<Cache>,
+    /// The group's stored snapshot, which a resuming cache watch's replay
+    /// folds the log from.
+    snapshots: SnapshotStore,
     /// Watch activity on this member, for the marks that keep every
     /// member of a watched cache shard recording.
     watch_signal: Arc<WatchSignal>,
@@ -838,7 +841,7 @@ impl Group {
             cache,
             groups,
         } = Machine::open(
-            snapshots,
+            snapshots.clone(),
             id.shard.kind,
             Some(log.disk_log()),
             cache_changes.map(|observer| {
@@ -943,6 +946,7 @@ impl Group {
             leadership,
             reached_before: AtomicBool::new(false),
             cache,
+            snapshots,
             watch_signal,
             marked_at: AtomicU64::new(0),
             groups,
@@ -2582,6 +2586,27 @@ impl Group {
         let mut state = cache.write();
         state.watch_ended((self.clock)());
         Some((state.applied() + 1, state.recent_since(from, keep)))
+    }
+
+    /// Every change in `[from, tail)` that `keep` takes, folded from the
+    /// log above the stored snapshot, for a resume [`Self::cache_replay`]
+    /// kept no changes for. `tail` is the edge that call read. `None` when
+    /// the snapshot covers `from` or the read failed: the watch is then
+    /// resnapshotted.
+    pub(crate) async fn cache_replay_from_log(
+        &self,
+        from: u64,
+        tail: u64,
+        keep: &(dyn Fn(&str) -> bool + Sync),
+    ) -> Option<Vec<super::cache::Change>> {
+        self.cache.as_ref()?;
+        match machine::replay_from_log(&self.snapshots, self.log.reader(), from, tail, keep).await {
+            Ok(changes) => changes,
+            Err(err) => {
+                tracing::warn!(group = %self.id, error = %err, "a cache watch's replay from the log failed");
+                None
+            }
+        }
     }
 
     /// A cache watch of this group's shard ended here: keep recording for a

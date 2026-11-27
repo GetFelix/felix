@@ -535,6 +535,7 @@ async fn a_resume_replays_from_its_offset_and_joins_live_with_no_gap_or_duplicat
         eventually(|| (recorder.changes().len() >= 5).then_some(())).await;
         engine
             .cache_replay(&shard(N), first, &|_| true)
+            .await
             .expect("a cache group")
     };
     let (written, replay) = tokio::join!(writes, replay);
@@ -691,8 +692,8 @@ fn replayed_offsets(replay: &crate::raft::CacheReplay) -> Option<Vec<u64>> {
 /// **A watch of the leader that resumes on the new leader after a failover
 /// is replayed**, exactly the changes from its offset on, because the
 /// leader appended a mark when its watch took a change and the follower
-/// that took over recorded from it. A resume from before the mark
-/// resnapshots.
+/// that took over recorded from it. A resume from before the mark is
+/// replayed from the log.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_resume_on_a_new_leader_after_a_failover_is_replayed() {
     let (mut cluster, recorders) = unwatched_cluster().await;
@@ -703,7 +704,7 @@ async fn a_resume_on_a_new_leader_after_a_failover_is_replayed() {
     recorders[&*old.broker]
         .watching
         .store(true, Ordering::Release);
-    write(&cluster, now + 1, put("k", b"one", 2)).await;
+    let one = write(&cluster, now + 1, put("k", b"one", 2)).await;
     every_member_records(&cluster).await;
     let written = writes_after_the_mark(&cluster, now).await;
 
@@ -712,18 +713,23 @@ async fn a_resume_on_a_new_leader_after_a_failover_is_replayed() {
     assert_ne!(second.member, old);
     let resumed = engine
         .cache_replay(&shard(N), written[0], &|_| true)
+        .await
         .expect("a cache group");
     assert_eq!(
         replayed_offsets(&resumed),
-        Some(written),
+        Some(written.clone()),
         "the new leader kept no changes for the resume"
     );
     let early = engine
         .cache_replay(&shard(N), before, &|_| true)
+        .await
         .expect("a cache group");
-    assert!(
-        early.changes.is_none(),
-        "below the floor, not resnapshotted"
+    let mut all = vec![before, one];
+    all.extend(&written);
+    assert_eq!(
+        replayed_offsets(&early),
+        Some(all),
+        "below what it recorded, the resume is replayed from the log"
     );
     cluster.stop().await;
 }
@@ -748,6 +754,7 @@ async fn a_watch_on_a_follower_makes_every_member_record() {
     let engine = RaftEngine::new(cluster.runtime(other));
     let resumed = engine
         .cache_replay(&shard(N), written[0], &|_| true)
+        .await
         .expect("a cache group");
     assert_eq!(replayed_offsets(&resumed), Some(written));
     cluster.stop().await;
@@ -884,6 +891,7 @@ async fn a_resume_at_the_edge_is_replayed_though_entries_land_after_it() {
     let (engine, _) = leading(&cluster).await;
     let edge = engine
         .cache_replay(&shard(N), first + 1, &|_| true)
+        .await
         .expect("a cache group");
     assert_eq!(edge.tail, first + 1);
     assert_eq!(
@@ -895,15 +903,172 @@ async fn a_resume_at_the_edge_is_replayed_though_entries_land_after_it() {
     cluster.committed_everywhere(N, next).await;
     let again = engine
         .cache_replay(&shard(N), first + 1, &|_| true)
+        .await
         .expect("a cache group");
     assert_eq!(replayed_offsets(&again), Some(vec![next]));
-    assert!(
+    let below = engine
+        .cache_replay(&shard(N), first, &|_| true)
+        .await
+        .expect("a cache group");
+    assert_eq!(
+        replayed_offsets(&below),
+        Some(vec![first, next]),
+        "below where it began recording, replayed from the log"
+    );
+    cluster.stop().await;
+}
+
+/// What `replay` hands a resuming watch, as (offset, key, value).
+fn replayed_changes(
+    replay: &crate::raft::CacheReplay,
+) -> Option<Vec<(u64, String, Option<Bytes>)>> {
+    let changes = replay.changes.as_ref()?;
+    Some(
+        changes
+            .iter()
+            .map(|change| (change.offset, change.key.clone(), change.value.clone()))
+            .collect(),
+    )
+}
+
+/// **A resume on a shard no watch ever took a change of is replayed from
+/// the log, as the hybrid replays its shard log**, on the leader and on
+/// each follower alike: exactly the changes from its offset on, in order,
+/// with the refused write, the counter add and the retry making none.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_resume_on_a_shard_nobody_watched_is_replayed_from_the_log() {
+    let (mut cluster, _recorders) = unwatched_cluster().await;
+    let now = wall_clock();
+    let one = write(&cluster, now, put("k", b"one", 1)).await;
+    write(&cluster, now + 1, put_if_absent("k", b"refused", 2)).await;
+    write(&cluster, now + 2, add("n", 5, 3)).await;
+    let jay = write(&cluster, now + 3, put("j", b"jay", 4)).await;
+    let gone = write(&cluster, now + 4, delete("k", None, 5)).await;
+    let two = write(&cluster, now + 5, put("k", b"two", 6)).await;
+    let retry = write(&cluster, now + 6, put("k", b"one", 1)).await;
+    cluster.committed_everywhere(N, retry).await;
+
+    let value = |bytes: &'static [u8]| Some(Bytes::from_static(bytes));
+    let all = vec![
+        (one, "k".to_string(), value(b"one")),
+        (jay, "j".to_string(), value(b"jay")),
+        (gone, "k".to_string(), None),
+        (two, "k".to_string(), value(b"two")),
+    ];
+    for broker in BROKERS {
+        let engine = RaftEngine::new(cluster.runtime(broker));
+        let from_start = engine
+            .cache_replay(&shard(N), 0, &|_| true)
+            .await
+            .expect("a cache group");
+        assert!(
+            from_start.tail > retry,
+            "{broker}: the edge is past the writes"
+        );
+        assert_eq!(replayed_changes(&from_start), Some(all.clone()), "{broker}");
+        let from_jay = engine
+            .cache_replay(&shard(N), jay, &|_| true)
+            .await
+            .expect("a cache group");
+        assert_eq!(
+            replayed_changes(&from_jay),
+            Some(all[1..].to_vec()),
+            "{broker}"
+        );
+        let only_j = engine
+            .cache_replay(&shard(N), 0, &|key| key == "j")
+            .await
+            .expect("a cache group");
+        assert_eq!(
+            replayed_changes(&only_j),
+            Some(vec![all[1].clone()]),
+            "{broker}"
+        );
+    }
+    cluster.stop().await;
+}
+
+/// **A resume from an offset the snapshot covers is resnapshotted**, as a
+/// hybrid resume below retention is, while one from above the snapshot is
+/// still replayed from the log.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_resume_from_below_the_snapshot_is_resnapshotted() {
+    let (mut cluster, _recorders) = unwatched_cluster().await;
+    let now = wall_clock();
+    let first = write(&cluster, now, put("k", b"one", 1)).await;
+    let mid = write(&cluster, now + 1, put("k", b"two", 2)).await;
+    cluster.committed_everywhere(N, mid).await;
+    for broker in BROKERS {
+        cluster.snapshot(broker, N, mid).await;
+    }
+    let last = write(&cluster, now + 2, put("k", b"three", 3)).await;
+    cluster.committed_everywhere(N, last).await;
+    for broker in BROKERS {
+        let engine = RaftEngine::new(cluster.runtime(broker));
+        let below = engine
+            .cache_replay(&shard(N), first, &|_| true)
+            .await
+            .expect("a cache group");
+        assert!(
+            below.changes.is_none(),
+            "{broker}: compacted into the snapshot"
+        );
+        let above = engine
+            .cache_replay(&shard(N), last, &|_| true)
+            .await
+            .expect("a cache group");
+        assert_eq!(replayed_offsets(&above), Some(vec![last]), "{broker}");
+    }
+    cluster.stop().await;
+}
+
+/// **A resume replayed from the log joins live delivery with no gap or
+/// duplicate while writes land during the replay.** The watch registers
+/// first, so it records from a later change than the resume offset and
+/// the replay has to come from the log. What the replay returns is below
+/// its edge, and the live half is what arrives at or past it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_resume_from_the_log_joins_live_with_no_gap_or_duplicate() {
+    let (mut cluster, recorders) = unwatched_cluster().await;
+    let now = wall_clock();
+    let first = write(&cluster, now, put("k", b"one", 1)).await;
+    cluster.committed_everywhere(N, first).await;
+    let (engine, leader) = leading(&cluster).await;
+    let recorder = &recorders[&*leader.member.broker];
+    recorder.watching.store(true, Ordering::Release);
+
+    let writes = async {
+        let mut written = Vec::new();
+        for n in 0..20 {
+            written.push(write(&cluster, now + 1 + n, put("k", b"more", 2 + n)).await);
+        }
+        written
+    };
+    let replay = async {
+        eventually(|| (recorder.changes().len() >= 5).then_some(())).await;
         engine
             .cache_replay(&shard(N), first, &|_| true)
+            .await
             .expect("a cache group")
-            .changes
-            .is_none(),
-        "below where it began"
+    };
+    let (written, replay) = tokio::join!(writes, replay);
+    let last = *written.last().expect("writes");
+    eventually(|| recorder.offsets().contains(&last).then_some(())).await;
+
+    let mut delivered = replayed_offsets(&replay).expect("the log still holds the resume offset");
+    assert!(delivered.iter().all(|at| *at < replay.tail));
+    assert!(
+        recorder.offsets().first().is_some_and(|at| *at > first),
+        "the watch recorded nothing as far back as the resume"
     );
+    delivered.extend(
+        recorder
+            .offsets()
+            .into_iter()
+            .filter(|at| *at >= replay.tail),
+    );
+    let mut wanted = vec![first];
+    wanted.extend(written);
+    assert_eq!(delivered, wanted, "a gap or a duplicate at the join");
     cluster.stop().await;
 }

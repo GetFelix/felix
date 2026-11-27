@@ -454,17 +454,25 @@ impl RaftEngine {
     }
 
     /// Where a watch resuming from `from` joins `shard` on this member, and
-    /// the changes it missed, if this member still keeps them all. Register
-    /// the watch before calling this. `None` when no cache group of `shard`
-    /// runs here.
-    pub fn cache_replay(
+    /// the changes it missed: the ones it recorded, or else the ones its
+    /// log above its snapshot makes. Register the watch before calling
+    /// this. `None` when no cache group of `shard` runs here.
+    pub async fn cache_replay(
         &self,
         shard: &ShardKey,
         from: u64,
-        keep: &dyn Fn(&str) -> bool,
+        keep: &(dyn Fn(&str) -> bool + Sync),
     ) -> Option<CacheReplay> {
         let group = self.runtime.group(shard)?;
-        let (tail, changes) = group.cache_replay(from, keep)?;
+        let (tail, recorded) = group.cache_replay(from, keep)?;
+        // The edge was read under the state's lock, after the watch
+        // registered, so every change from `tail` on is on its queue and
+        // the fold stops short of it.
+        let changes = match recorded {
+            Some(changes) => Some(changes),
+            None if from <= tail => group.cache_replay_from_log(from, tail, keep).await,
+            None => None,
+        };
         let changes = changes.map(|changes| {
             changes
                 .into_iter()
