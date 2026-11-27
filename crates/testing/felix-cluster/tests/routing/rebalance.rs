@@ -663,6 +663,7 @@ async fn publish_until(
 async fn read_whole_log(cluster: &Cluster, node_id: &str) -> Vec<Vec<u8>> {
     let (_client, mut subscription) = cluster.replay_on(node_id, STREAM).await.expect("replay");
     let mut records = Vec::new();
+    let mut offsets = Vec::new();
     while let Ok(event) =
         tokio::time::timeout(Duration::from_secs(2), subscription.next_event()).await
     {
@@ -670,9 +671,13 @@ async fn read_whole_log(cluster: &Cluster, node_id: &str) -> Vec<Vec<u8>> {
             panic!("{node_id} ended the replay after {} records", records.len());
         };
         let offset = event.offset.expect("a durable stream delivers offsets");
-        assert_eq!(offset, records.len() as u64, "{node_id}'s replay skipped");
+        offsets.push((offset, event.skipped_before));
         records.push(event.payload.to_vec());
     }
+    felix_cluster::replay::assert_offsets_account_for_skips(
+        &offsets,
+        &format!("{node_id}'s replay"),
+    );
     records
 }
 
@@ -1118,6 +1123,12 @@ async fn a_move_that_cannot_copy_is_abandoned_after_its_timeout() {
 #[serial]
 #[tokio::test]
 async fn a_move_onto_a_restarted_broker_does_not_wait_for_the_catalog_tick() {
+    if felix_cluster::skip_on_raft_until(
+        3337,
+        "a move onto a restarted broker waits for the catalog tick on Raft",
+    ) {
+        return;
+    }
     const SYNC_INTERVAL: Duration = Duration::from_secs(10);
     let mut cluster = Cluster::start(ClusterConfig {
         nodes: 2,

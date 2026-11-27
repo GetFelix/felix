@@ -82,14 +82,20 @@ async fn read_all(cluster: &Cluster) -> BTreeMap<u32, Vec<(u64, String)>> {
             .shard_owner_of("stream", STREAM, shard)
             .await
             .expect("owner");
-        let (_client, mut sub) = cluster
-            .replay_shard(&owner, STREAM, shard)
+        // A broker still opening the shard refuses the subscribe; the replay
+        // is started again until one runs through.
+        let events = cluster
+            .whole_replay_of_shard(
+                &owner,
+                STREAM,
+                shard,
+                Duration::from_secs(3),
+                Duration::from_secs(60),
+            )
             .await
             .expect("replay");
         let mut rows = Vec::new();
-        while let Ok(Ok(Some(event))) =
-            tokio::time::timeout(Duration::from_secs(3), sub.next_event()).await
-        {
+        for event in events {
             if event.payload.as_ref() == HARNESS_PROBE {
                 continue;
             }
