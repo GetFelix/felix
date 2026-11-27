@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795808680761,
+  "lastUpdate": 1795809376283,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -73996,6 +73996,58 @@ window.BENCHMARK_DATA = {
             "range": "63186.81",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1180281.60\nmean: 1147294.41\nstdev: 63186.81\ncv: 5.51%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "bfcdf59d030235b6d6800ad8bef2e508f9870764",
+          "message": "test(cluster): planned-move tests run on Raft (#3301) (#3329)\n\n* test(cluster): move tests run on the Raft engine, and the harness waits out set_unsettled (#3301)\n\nUn-skip the planned-move tests that can run on Raft, asserting the Raft\nresults there (raft_replace, the old member leaves the set, an undo is a\nmove back) and keeping the hybrid assertions on hybrid. start_move waits\nfor a Raft set to settle instead of failing on 409 set_unsettled. The\ntests that exercise a hybrid-only mechanism are skipped with that reason.\n\nSpec-Unaffected: test only\n\n* test(cluster): move tests account for Raft skips and retry what Raft makes retryable (#3301)\n\nOffsets on Raft include no-op and membership entries, so the move tests check\neach gap against the event's skip count. The replay retries a shard still\nopening, the idempotent re-send retries until the new leader answers, and\nthree tests that fail on Raft for product reasons skip there until their\nissues land (#3335, #3336, #3337).\n\nSpec-Unaffected: test only\n\n* test(cluster): a move-back test retries an ack the broker refuses with retry\n\nSpec-Unaffected: test-only\n\n* test(cluster): move tests read a whole replay after a reset, not a prefix\n\nThe replay after a Raft move can reach the destination while it is still\ntaking leadership. The broker resets the event stream with NOT_SERVING_HERE\n(code 1), which asks the client to subscribe again. read_whole_log panicked\non it, and replay_from / replay_shard_from returned the prefix read before\nthe reset. All three now use Cluster::whole_replay_on / whole_replay_of_shard,\nwhich start the replay again from offset 0; read_whole_log still checks\noffset continuity on the replay it keeps.\n\nSpec-Unaffected: test harness only; no broker behaviour changes",
+          "timestamp": "2026-11-27T19:50:20Z",
+          "tree_id": "004f11517b9ae6ecc768e7a0cb7ef990766c6bbb",
+          "url": "https://github.com/GetFelix/felix/commit/bfcdf59d030235b6d6800ad8bef2e508f9870764"
+        },
+        "date": 1795809375507,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 500328.98,
+            "range": "29714.93",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 500328.98\nmean: 508398.14\nstdev: 29714.93\ncv: 5.84%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1018-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 500328.98,
+            "range": "29714.93",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 500328.98\nmean: 508398.14\nstdev: 29714.93\ncv: 5.84%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1018-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 124346.87,
+            "range": "662.94",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 124346.87\nmean: 124252.26\nstdev: 662.94\ncv: 0.53%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1018-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1243468.68,
+            "range": "6629.37",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1243468.68\nmean: 1242522.63\nstdev: 6629.37\ncv: 0.53%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1018-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
