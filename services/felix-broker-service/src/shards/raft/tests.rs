@@ -3474,6 +3474,7 @@ mod fleet_wait;
 mod groups;
 mod purge;
 mod reform;
+mod removed_member;
 mod restore;
 mod retarget;
 mod retention;
