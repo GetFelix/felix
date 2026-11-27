@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795738888973,
+  "lastUpdate": 1795740216449,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -92136,6 +92136,72 @@ window.BENCHMARK_DATA = {
             "range": "228.98",
             "unit": "us",
             "extra": "trials: 5\nmedian: 562.00\nmean: 628.20\nstdev: 228.98\ncv: 36.45%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "78fd56868b441f3af36cc1f7f5f8e5d01db289a2",
+          "message": "fix(raft): a one-replica shard opened before its re-form could be decided re-forms later (#3312) (#3317)\n\n* fix(raft): a held one-replica shard re-forms once its open could not decide it (#3312)\n\nA cluster RF 1 shard rotated by a relaxed crash re-forms only inside its\nopen. When the open ran before registration's answer enabled the fleet\nfeatures, before the writer was set, or on an assignment that did not yet\nname this broker alone, the re-form returned without a word and the member\nopened held, with nothing to open it again. The open now records that\ncase, and the feed pass closes the never-formed member once the reason\nclears, so the next open re-forms it through the same checks.\n\nSpec-Unaffected: the re-form's checks and its single write are unchanged; only when the open runs moves\n\n* docs(raft): a held one-replica shard re-forms once its open can decide it (#3312)\n\nSpec-Unaffected: docs and changelog only\n\n* box the recorded assignment in the re-form outcome\n\nSpec-Unaffected: type layout only",
+          "timestamp": "2026-11-27T00:36:30Z",
+          "tree_id": "0b5eb479eca1e1f7641e205986d91598d8b6adc8",
+          "url": "https://github.com/GetFelix/felix/commit/78fd56868b441f3af36cc1f7f5f8e5d01db289a2"
+        },
+        "date": 1795740202584,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 68,
+            "range": "0.84",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 68.00\nmean: 68.20\nstdev: 0.84\ncv: 1.23%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1018-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 118,
+            "range": "3.71",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 118.00\nmean: 118.60\nstdev: 3.71\ncv: 3.13%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1018-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 143,
+            "range": "188.64",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 143.00\nmean: 226.60\nstdev: 188.64\ncv: 83.25%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1018-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 85,
+            "range": "1.10",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 85.00\nmean: 85.80\nstdev: 1.10\ncv: 1.28%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1018-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 181,
+            "range": "3.67",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 181.00\nmean: 183.00\nstdev: 3.67\ncv: 2.01%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1018-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 343,
+            "range": "43.57",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 343.00\nmean: 325.60\nstdev: 43.57\ncv: 13.38%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1018-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
