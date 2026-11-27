@@ -4,7 +4,8 @@ use std::time::Duration;
 
 use crate::config::env::{
     RaftPrerequisites, ShardEngine, parse_raft_group_threads, parse_shard_engine,
-    parse_shard_raft_elections_at_once, parse_shard_raft_lease,
+    parse_shard_raft_cache_snapshot_every, parse_shard_raft_elections_at_once,
+    parse_shard_raft_lease,
 };
 
 const ALL: RaftPrerequisites = RaftPrerequisites {
@@ -212,6 +213,26 @@ fn the_raft_election_bound_is_the_default_unless_set() {
         let err = parse_shard_raft_elections_at_once(Some(bad)).expect_err("not a number");
         let err = format!("{err}");
         assert!(err.contains("FELIX_SHARD_RAFT_ELECTIONS_AT_ONCE"), "{err}");
+    }
+}
+
+/// Unset keeps the runtime's interval. `0`, which the runtime reads as
+/// never snapshotting, and anything not a whole number are refused.
+#[test]
+fn the_raft_cache_snapshot_interval_is_the_default_unless_set() {
+    for unset in [None, Some(""), Some("  ")] {
+        let parsed = parse_shard_raft_cache_snapshot_every(unset).expect("unset");
+        assert_eq!(parsed, None);
+    }
+    let set = parse_shard_raft_cache_snapshot_every(Some(" 32 ")).expect("set");
+    assert_eq!(set, Some(32));
+    for bad in ["0", "off", "1.5", "-1"] {
+        let err = parse_shard_raft_cache_snapshot_every(Some(bad)).expect_err("refused");
+        let err = format!("{err}");
+        assert!(
+            err.contains("FELIX_SHARD_RAFT_CACHE_SNAPSHOT_EVERY"),
+            "{err}"
+        );
     }
 }
 

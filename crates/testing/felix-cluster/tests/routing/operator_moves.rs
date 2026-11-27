@@ -73,12 +73,6 @@ async fn stored_on(cluster: &Cluster, node: &str, owed: &[Vec<u8>]) -> Vec<Vec<u
 #[serial]
 #[tokio::test]
 async fn an_operator_moves_a_shard_and_the_move_completes() {
-    if felix_cluster::skip_on_raft_until(
-        3004,
-        "a planned move or leader change in this test does not complete on Raft yet",
-    ) {
-        return;
-    }
     let (cluster, owner, other) = two_brokers().await;
     let sent = publish_before(&cluster, &owner, 20).await;
 
@@ -86,10 +80,16 @@ async fn an_operator_moves_a_shard_and_the_move_completes() {
         .start_move(STREAM, 0, &other)
         .await
         .expect("start the move");
-    assert_eq!(step, "stage");
-    let moves = cluster.shard_moves().await.expect("list moves");
-    assert_eq!(moves["items"][0]["reason"], "operator", "{moves}");
-    assert_eq!(moves["items"][0]["destination"], other.as_str(), "{moves}");
+    if cluster.raft() {
+        // The shard grows onto the destination, which the group seats as a
+        // voter before placement shrinks the set to it.
+        assert_eq!(step, "raft_replace");
+    } else {
+        assert_eq!(step, "stage");
+        let moves = cluster.shard_moves().await.expect("list moves");
+        assert_eq!(moves["items"][0]["reason"], "operator", "{moves}");
+        assert_eq!(moves["items"][0]["destination"], other.as_str(), "{moves}");
+    }
 
     felix_cluster::wait::until(Duration::from_secs(60), "the move to cut over", || async {
         cluster.place_shards().await;
@@ -97,6 +97,31 @@ async fn an_operator_moves_a_shard_and_the_move_completes() {
     })
     .await
     .expect("move");
+    if cluster.raft() {
+        felix_cluster::wait::until(
+            Duration::from_secs(60),
+            "the old leader to leave the group",
+            || async {
+                cluster.place_shards().await;
+                cluster
+                    .raft_target(STREAM, 0)
+                    .await
+                    .ok()
+                    .flatten()
+                    .is_some_and(|members| members.keys().map(String::as_str).eq([other.as_str()]))
+            },
+        )
+        .await
+        .expect("the set to shrink to the destination");
+    }
+    felix_cluster::wait::until(Duration::from_secs(30), "the move to end", || async {
+        cluster
+            .shard_moves()
+            .await
+            .is_ok_and(|moves| moves["items"] == serde_json::json!([]))
+    })
+    .await
+    .expect("the moves listing to empty");
     assert_eq!(
         cluster.shard_moves().await.expect("list moves")["items"],
         serde_json::json!([])
@@ -110,23 +135,43 @@ async fn an_operator_moves_a_shard_and_the_move_completes() {
 #[serial]
 #[tokio::test]
 async fn cancelling_a_staged_move_leaves_the_shard_where_it_was() {
-    if felix_cluster::skip_on_raft_until(
-        3004,
-        "a planned move or leader change in this test does not complete on Raft yet",
-    ) {
-        return;
-    }
     let (cluster, owner, other) = two_brokers().await;
     let sent = publish_before(&cluster, &owner, 10).await;
 
-    assert_eq!(
-        cluster.start_move(STREAM, 0, &other).await.expect("start"),
-        "stage"
-    );
-    assert_eq!(
-        cluster.cancel_move(STREAM, 0).await.expect("cancel"),
-        "cancel"
-    );
+    let started = cluster.start_move(STREAM, 0, &other).await.expect("start");
+    if cluster.raft() {
+        // Raft stages nothing to cancel: the undo is a move back to the
+        // leader, which takes the destination out of the set again.
+        assert_eq!(started, "raft_replace");
+        assert_eq!(
+            cluster
+                .start_move(STREAM, 0, &owner)
+                .await
+                .expect("move back"),
+            "raft_move_undone"
+        );
+        felix_cluster::wait::until(
+            Duration::from_secs(60),
+            "the destination to leave the group again",
+            || async {
+                cluster.place_shards().await;
+                cluster
+                    .raft_target(STREAM, 0)
+                    .await
+                    .ok()
+                    .flatten()
+                    .is_some_and(|members| members.keys().map(String::as_str).eq([owner.as_str()]))
+            },
+        )
+        .await
+        .expect("the set to return to the owner");
+    } else {
+        assert_eq!(started, "stage");
+        assert_eq!(
+            cluster.cancel_move(STREAM, 0).await.expect("cancel"),
+            "cancel"
+        );
+    }
     assert_eq!(
         cluster.shard_moves().await.expect("list moves")["items"],
         serde_json::json!([])
@@ -174,9 +219,8 @@ async fn cancelling_a_staged_move_leaves_the_shard_where_it_was() {
 #[serial]
 #[tokio::test]
 async fn cancelling_a_fenced_move_loses_no_acknowledged_write() {
-    if felix_cluster::skip_on_raft_until(
-        3004,
-        "a planned move or leader change in this test does not complete on Raft yet",
+    if felix_cluster::skip_on_raft_retire_with_hybrid(
+        "hybrid-only: the fence and the retake after it, which Raft has no counterpart of; on Raft the move is a membership change, covered by raft_shards::an_operator_move_outside_the_set_hands_the_leaders_seat_over",
     ) {
         return;
     }
@@ -330,12 +374,6 @@ async fn cancelling_a_fenced_move_loses_no_acknowledged_write() {
 #[serial]
 #[tokio::test]
 async fn a_paused_placement_does_not_move_a_draining_nodes_shard() {
-    if felix_cluster::skip_on_raft_until(
-        3004,
-        "a planned move or leader change in this test does not complete on Raft yet",
-    ) {
-        return;
-    }
     let (cluster, owner, other) = two_brokers().await;
     cluster.pause_placement().await.expect("pause");
     assert_eq!(
@@ -524,9 +562,8 @@ async fn cut_short_move(
 #[serial]
 #[tokio::test]
 async fn a_move_cut_short_by_kills_promotes_no_follower_short_of_the_log() {
-    if felix_cluster::skip_on_raft_until(
-        3004,
-        "a planned move or leader change in this test does not complete on Raft yet",
+    if felix_cluster::skip_on_raft_retire_with_hybrid(
+        "hybrid-only: the move is cut short at the cut-over by kills and judged by replica reports and the lease, which a Raft group does not have; on Raft the move is a membership change, covered by raft_shards::an_operator_move_outside_the_set_hands_the_leaders_seat_over",
     ) {
         return;
     }
@@ -562,9 +599,8 @@ async fn a_move_cut_short_by_kills_promotes_no_follower_short_of_the_log() {
 #[serial]
 #[tokio::test]
 async fn a_move_cut_short_by_kills_leaves_no_replica_halted() {
-    if felix_cluster::skip_on_raft_until(
-        3004,
-        "a planned move or leader change in this test does not complete on Raft yet",
+    if felix_cluster::skip_on_raft_retire_with_hybrid(
+        "hybrid-only: the move is cut short at the cut-over by kills and judged by the majority-ack feature switch and replica reports, which a Raft group does not have; on Raft the move is a membership change, covered by raft_shards::an_operator_move_outside_the_set_hands_the_leaders_seat_over",
     ) {
         return;
     }

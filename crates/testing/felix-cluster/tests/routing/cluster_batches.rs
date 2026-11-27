@@ -82,14 +82,20 @@ async fn read_all(cluster: &Cluster) -> BTreeMap<u32, Vec<(u64, String)>> {
             .shard_owner_of("stream", STREAM, shard)
             .await
             .expect("owner");
-        let (_client, mut sub) = cluster
-            .replay_shard(&owner, STREAM, shard)
+        // A broker still opening the shard refuses the subscribe; the replay
+        // is started again until one runs through.
+        let events = cluster
+            .whole_replay_of_shard(
+                &owner,
+                STREAM,
+                shard,
+                Duration::from_secs(3),
+                Duration::from_secs(60),
+            )
             .await
             .expect("replay");
         let mut rows = Vec::new();
-        while let Ok(Ok(Some(event))) =
-            tokio::time::timeout(Duration::from_secs(3), sub.next_event()).await
-        {
+        for event in events {
             if event.payload.as_ref() == HARNESS_PROBE {
                 continue;
             }
@@ -219,12 +225,6 @@ where
 #[serial]
 #[tokio::test]
 async fn a_leader_change_mid_run_duplicates_nothing() {
-    if felix_cluster::skip_on_raft_until(
-        3004,
-        "a planned move or leader change in this test does not complete on Raft yet",
-    ) {
-        return;
-    }
     let cluster = Cluster::start(config()).await.expect("start cluster");
     cluster
         .await_every_shard_serving(STREAM, SHARDS)
@@ -267,12 +267,6 @@ async fn a_leader_change_mid_run_duplicates_nothing() {
 #[serial]
 #[tokio::test]
 async fn at_least_once_loses_nothing_across_a_leader_change() {
-    if felix_cluster::skip_on_raft_until(
-        3004,
-        "a planned move or leader change in this test does not complete on Raft yet",
-    ) {
-        return;
-    }
     let cluster = Cluster::start(config()).await.expect("start cluster");
     cluster
         .await_every_shard_serving(STREAM, SHARDS)

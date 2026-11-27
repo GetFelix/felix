@@ -18,41 +18,24 @@ const STREAM: &str = "orders";
 /// Everything `node_id` replays from the start of the stream, retried until
 /// it yields something: a promoted broker learns of its own promotion through
 /// the same watch as everything else and has to open the shard first.
+///
+/// A replay the broker resets part way (it stopped serving the shard, or its
+/// leadership is not open yet) is read again from the start, never taken as
+/// the log: see [`Cluster::whole_replay_on`].
 async fn replay_from(cluster: &Cluster, node_id: &str, budget: Duration) -> Vec<Vec<u8>> {
     let deadline = std::time::Instant::now() + felix_cluster::wait::budget(budget);
-    let mut last;
     loop {
-        match cluster.replay_on(node_id, STREAM).await {
-            Ok((_client, mut subscription)) => {
-                let mut payloads = Vec::new();
-                loop {
-                    match tokio::time::timeout(Duration::from_secs(2), subscription.next_event())
-                        .await
-                    {
-                        Ok(Ok(Some(event))) => payloads.push(event.payload.to_vec()),
-                        Ok(Ok(None)) => {
-                            last = "the broker ended the subscription".into();
-                            break;
-                        }
-                        Ok(Err(err)) => {
-                            last = format!("delivery error: {err}");
-                            break;
-                        }
-                        Err(_) => {
-                            last = "no event within 2s".into();
-                            break;
-                        }
-                    }
-                }
-                if !payloads.is_empty() {
-                    return payloads;
-                }
-            }
-            Err(err) => last = format!("subscribe refused: {err}"),
+        let events = cluster
+            .whole_replay_on(node_id, STREAM, Duration::from_secs(2), budget)
+            .await
+            .unwrap_or_else(|err| panic!("no whole replay from {node_id}: {err:#}"));
+        if !events.is_empty() {
+            return events.iter().map(|e| e.payload.to_vec()).collect();
         }
-        if std::time::Instant::now() >= deadline {
-            panic!("nothing replayed from {node_id}; last: {last}");
-        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "nothing replayed from {node_id}"
+        );
         tokio::time::sleep(Duration::from_millis(250)).await;
     }
 }
@@ -61,29 +44,26 @@ async fn replay_from(cluster: &Cluster, node_id: &str, budget: Duration) -> Vec<
 ///
 /// The leader is asked by the control plane's assignment and retried: the
 /// broker learns of its own assignment through its watch, so for a moment it
-/// redirects rather than serves.
+/// redirects rather than serves. A reset part way is retried as in
+/// [`replay_from`].
 async fn replay_shard_from(cluster: &Cluster, shard: u32) -> Vec<Vec<u8>> {
-    let deadline = std::time::Instant::now() + felix_cluster::wait::budget(Duration::from_secs(30));
+    let budget = Duration::from_secs(30);
+    let deadline = std::time::Instant::now() + felix_cluster::wait::budget(budget);
     let mut last;
     loop {
         let leader = cluster
             .shard_owner_of("stream", STREAM, shard)
             .await
             .expect("owner");
-        match cluster.replay_shard(&leader, STREAM, shard).await {
-            Ok((_client, mut subscription)) => {
-                let mut payloads = Vec::new();
-                while let Ok(Ok(Some(event))) =
-                    tokio::time::timeout(Duration::from_secs(2), subscription.next_event()).await
-                {
-                    payloads.push(event.payload.to_vec());
-                }
-                if !payloads.is_empty() {
-                    return payloads;
-                }
-                last = format!("{leader} replayed nothing for shard {shard}");
+        match cluster
+            .whole_replay_of_shard(&leader, STREAM, shard, Duration::from_secs(2), budget)
+            .await
+        {
+            Ok(events) if !events.is_empty() => {
+                return events.iter().map(|e| e.payload.to_vec()).collect();
             }
-            Err(err) => last = format!("replay shard {shard} on {leader}: {err}"),
+            Ok(_) => last = format!("{leader} replayed nothing for shard {shard}"),
+            Err(err) => last = format!("replay shard {shard} on {leader}: {err:#}"),
         }
         if std::time::Instant::now() >= deadline {
             panic!("shard {shard} never replayed; last: {last}");
@@ -150,12 +130,6 @@ fn missing(sent: &[Vec<u8>], got: &[Vec<u8>]) -> Vec<String> {
 #[serial]
 #[tokio::test]
 async fn a_drained_broker_hands_its_shard_over_with_every_record() {
-    if felix_cluster::skip_on_raft_until(
-        3004,
-        "a planned move or leader change in this test does not complete on Raft yet",
-    ) {
-        return;
-    }
     let cluster = Cluster::start(ClusterConfig {
         nodes: 2,
         streams: vec![StreamSpec::new(STREAM, 1)],
@@ -195,12 +169,6 @@ async fn a_drained_broker_hands_its_shard_over_with_every_record() {
 #[serial]
 #[tokio::test]
 async fn records_acknowledged_during_a_move_survive_it() {
-    if felix_cluster::skip_on_raft_until(
-        3004,
-        "a planned move or leader change in this test does not complete on Raft yet",
-    ) {
-        return;
-    }
     let cluster = Cluster::start(ClusterConfig {
         nodes: 2,
         streams: vec![StreamSpec::new(STREAM, 1)],
@@ -250,6 +218,13 @@ async fn records_acknowledged_during_a_move_survive_it() {
         );
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
+    // Placement names a Raft shard's new leader before the group hands
+    // leadership over, so wait for the hand-over before checking the old
+    // owner stopped writing.
+    cluster
+        .await_raft_leaders_placed(Duration::from_secs(60))
+        .await
+        .expect("the group to elect the new leader");
     // The fence itself: the old owner was told to stop and stopped before
     // the new owner was named, so nothing it is sent now is written locally.
     // It is refused until the owner's watch catches up, then forwarded.
@@ -383,9 +358,8 @@ async fn a_broker_that_joins_takes_shards_from_an_overloaded_one() {
 #[serial]
 #[tokio::test]
 async fn a_destination_that_dies_mid_transfer_does_not_take_the_shard() {
-    if felix_cluster::skip_on_raft_until(
-        3004,
-        "a planned move or leader change in this test does not complete on Raft yet",
+    if felix_cluster::skip_on_raft_retire_with_hybrid(
+        "hybrid-only: stages a successor replica and kills it before the cut-over; a Raft add has no staged successor to lose, and a dead joiner leaves the grown set without a majority",
     ) {
         return;
     }
@@ -451,12 +425,6 @@ async fn a_destination_that_dies_mid_transfer_does_not_take_the_shard() {
 #[serial]
 #[tokio::test]
 async fn a_drain_and_a_join_at_the_same_time_converge() {
-    if felix_cluster::skip_on_raft_until(
-        3004,
-        "a planned move or leader change in this test does not complete on Raft yet",
-    ) {
-        return;
-    }
     let mut cluster = Cluster::start(ClusterConfig {
         nodes: 2,
         streams: vec![StreamSpec::new(STREAM, 4)],
@@ -524,9 +492,8 @@ async fn a_drain_and_a_join_at_the_same_time_converge() {
 #[serial]
 #[tokio::test]
 async fn a_move_switches_over_in_well_under_a_second() {
-    if felix_cluster::skip_on_raft_until(
-        3004,
-        "a planned move or leader change in this test does not complete on Raft yet",
+    if felix_cluster::skip_on_raft_retire_with_hybrid(
+        "hybrid-only: times the fence-to-serve switch-over, which a Raft move does not have; it hands over by election",
     ) {
         return;
     }
@@ -670,23 +637,34 @@ async fn publish_until(
 
 /// Every record `node_id` holds for the stream, replayed from the start.
 ///
-/// The client queues history with backpressure, so one replay reads the
-/// whole log; the offsets are checked so that a hole fails here rather than
-/// showing up as a lost record.
+/// The replay starts right after a move, while the new leader may still be
+/// opening its term, and a broker that cannot serve the history yet resets
+/// the event stream (`NOT_SERVING_HERE`). That reset asks for a fresh
+/// subscribe, so the whole replay is read again from offset 0 rather than
+/// resumed, and the offsets of the replay that is kept are checked so that a
+/// hole fails here rather than showing up as a lost record.
 async fn read_whole_log(cluster: &Cluster, node_id: &str) -> Vec<Vec<u8>> {
-    let (_client, mut subscription) = cluster.replay_on(node_id, STREAM).await.expect("replay");
-    let mut records = Vec::new();
-    while let Ok(event) =
-        tokio::time::timeout(Duration::from_secs(2), subscription.next_event()).await
-    {
-        let Some(event) = event.expect("replay") else {
-            panic!("{node_id} ended the replay after {} records", records.len());
-        };
-        let offset = event.offset.expect("a durable stream delivers offsets");
-        assert_eq!(offset, records.len() as u64, "{node_id}'s replay skipped");
-        records.push(event.payload.to_vec());
-    }
-    records
+    let events = cluster
+        .whole_replay_on(
+            node_id,
+            STREAM,
+            Duration::from_secs(2),
+            Duration::from_secs(60),
+        )
+        .await
+        .unwrap_or_else(|err| panic!("no whole replay from {node_id}: {err:#}"));
+    let offsets: Vec<(u64, u64)> = events
+        .iter()
+        .map(|event| {
+            let offset = event.offset.expect("a durable stream delivers offsets");
+            (offset, event.skipped_before)
+        })
+        .collect();
+    felix_cluster::replay::assert_offsets_account_for_skips(
+        &offsets,
+        &format!("{node_id}'s replay"),
+    );
+    events.iter().map(|e| e.payload.to_vec()).collect()
 }
 
 /// Four publishers through `via` at once, so some are always in flight.
@@ -716,23 +694,31 @@ async fn publish_through(
 /// Between the fence and the cut-over nobody serves the shard, and a publish
 /// that lands then is held and sent on to the new owner rather than refused.
 /// Every acknowledged record is on the new owner exactly once.
+///
+/// On Raft a hand-over closes the shard until the next term opens, so a
+/// publish may be refused there, but only as retryable; the Raft contract is
+/// checked by [`publishing_through_raft_moves`].
 #[serial]
 #[tokio::test]
 async fn continuous_publishing_through_a_move_is_never_refused() {
-    if felix_cluster::skip_on_raft_until(
-        3004,
-        "a planned move or leader change in this test does not complete on Raft yet",
-    ) {
-        return;
-    }
-    let cluster = Cluster::start(ClusterConfig {
+    let config = ClusterConfig {
         nodes: 2,
         streams: vec![StreamSpec::new(STREAM, 1)],
         sync_interval_ms: 2_000,
         ..Default::default()
-    })
-    .await
-    .expect("start cluster");
+    };
+    if felix_cluster::suite_runs_on_raft() {
+        publishing_through_raft_moves(ClusterConfig {
+            broker_env: vec![(
+                "FELIX_DURABLE_FSYNC_MODE".to_string(),
+                "periodic".to_string(),
+            )],
+            ..config
+        })
+        .await;
+        return;
+    }
+    let cluster = Cluster::start(config).await.expect("start cluster");
     let owner = cluster.owner(STREAM).await.expect("owner");
     let destination = cluster
         .node_ids()
@@ -827,6 +813,361 @@ async fn continuous_publishing_through_a_move_is_never_refused() {
     cluster.shutdown().await;
 }
 
+/// [`continuous_publishing_through_a_move_is_never_refused`] for a `Quorum`
+/// stream fsynced on commit, at RF 3 on four brokers: the leader's seat
+/// moves to the fourth broker and back, so each hand-over meets a real
+/// majority. RF 1 adds nothing here the `Leader` case does not cover: its
+/// grown set is two voters either way.
+#[serial]
+#[tokio::test]
+async fn continuous_quorum_publishing_through_a_raft_move_is_never_refused() {
+    if !felix_cluster::suite_runs_on_raft() {
+        return;
+    }
+    publishing_through_raft_moves(ClusterConfig {
+        nodes: 4,
+        streams: vec![StreamSpec::quorum(STREAM, 1, 3)],
+        sync_interval_ms: 2_000,
+        broker_env: vec![(
+            "FELIX_DURABLE_FSYNC_MODE".to_string(),
+            "on_commit".to_string(),
+        )],
+        ..Default::default()
+    })
+    .await;
+}
+
+/// **A planned Raft move never answers a publish with a final refusal and
+/// loses or doubles nothing.** Eight cluster clients publish through the
+/// leader and a broker outside the set while the leader's seat moves to that
+/// broker and back, each move a membership change and a leadership hand-over.
+///
+/// The contract (#3330): a refusal the client is meant to retry is retried
+/// and lands; an outcome-unknown answer is allowed and its record is in the
+/// log at most once; no refusal is final. Every acknowledged record is in
+/// the final leader's whole replay exactly once, and the offsets there
+/// account for every entry Raft skipped.
+async fn publishing_through_raft_moves(config: ClusterConfig) {
+    let cluster = Cluster::start(config).await.expect("start cluster");
+    let owner = cluster.owner(STREAM).await.expect("owner");
+    let assignment = cluster
+        .shard_assignments()
+        .await
+        .expect("assignments")
+        .into_values()
+        .find(|a| a.leader == owner)
+        .expect("the shard's assignment");
+    // `replicas` never holds the leader.
+    let set = assignment.replicas.len() + 1;
+    let destination = cluster
+        .node_ids()
+        .into_iter()
+        .find(|id| *id != owner && !assignment.replicas.contains(id))
+        .expect("a broker outside the set");
+    let stop = std::sync::atomic::AtomicBool::new(false);
+
+    let mover = async {
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        // The leader's seat moves out of the set and back.
+        for (to, leaving) in [(&destination, &owner), (&owner, &destination)] {
+            raft_move_to(&cluster, to, leaving, set).await;
+            // Keep publishing past the hand-over, while routes catch up.
+            tokio::time::sleep(Duration::from_millis(500)).await;
+        }
+        stop.store(true, std::sync::atomic::Ordering::Release);
+    };
+    let (_, through_owner, through_destination) = tokio::join!(
+        mover,
+        publish_through_on_raft(&cluster, &owner, &stop),
+        publish_through_on_raft(&cluster, &destination, &stop),
+    );
+    let tally = through_owner.merge(through_destination);
+    println!(
+        "{} acknowledged, {} retryable refusals retried, {} outcome unknown, {} refused",
+        tally.acknowledged.len(),
+        tally.retried,
+        tally.unknown.len(),
+        tally.refused.len(),
+    );
+
+    // The shard is back on `owner`, so its whole log is there.
+    let got = read_whole_log(&cluster, &owner).await;
+    let mut copies = std::collections::BTreeMap::<&[u8], usize>::new();
+    for payload in &got {
+        *copies.entry(payload.as_slice()).or_default() += 1;
+    }
+    let count = |payload: &[u8]| copies.get(payload).copied().unwrap_or(0);
+    let lost: Vec<String> = tally
+        .acknowledged
+        .iter()
+        .filter(|payload| count(payload) == 0)
+        .map(|payload| String::from_utf8_lossy(payload).into_owned())
+        .collect();
+    assert!(
+        lost.is_empty(),
+        "{} acknowledged records lost, first {:?}",
+        lost.len(),
+        lost.iter().take(5).collect::<Vec<_>>(),
+    );
+    let duplicated: Vec<String> = copies
+        .iter()
+        .filter(|(_, n)| **n > 1)
+        .map(|(payload, n)| format!("{} x{n}", String::from_utf8_lossy(payload)))
+        .collect();
+    assert!(
+        duplicated.is_empty(),
+        "records stored twice (acknowledged, retried or outcome unknown): {duplicated:?}"
+    );
+    let unknown_landed = tally.unknown.iter().filter(|p| count(p) == 1).count();
+    println!(
+        "{unknown_landed} of {} outcome-unknown records are in the log",
+        tally.unknown.len()
+    );
+    assert!(
+        tally.refused.is_empty(),
+        "{} publishes were refused for good during a planned move: {:?}",
+        tally.refused.len(),
+        tally.refused.iter().take(5).collect::<Vec<_>>(),
+    );
+    cluster.shutdown().await;
+}
+
+/// Move the leader's seat of the stream's one shard from `leaving` to `to`
+/// through the operator API, and wait until `to` leads, the set is back to
+/// `set` members without `leaving`, and the move has ended.
+async fn raft_move_to(cluster: &Cluster, to: &str, leaving: &str, set: usize) {
+    let step = cluster
+        .start_move(STREAM, 0, to)
+        .await
+        .unwrap_or_else(|err| panic!("start the move to {to}: {err:#}"));
+    assert_eq!(step, "raft_replace", "the move to {to}");
+    felix_cluster::wait::until(
+        Duration::from_secs(60),
+        &format!("{to} to lead a set without {leaving}"),
+        || async {
+            cluster.place_shards().await;
+            cluster.owner(STREAM).await.is_ok_and(|now| now == to)
+                && cluster
+                    .raft_target(STREAM, 0)
+                    .await
+                    .ok()
+                    .flatten()
+                    .is_some_and(|members| {
+                        members.len() == set
+                            && members.contains_key(to)
+                            && !members.contains_key(leaving)
+                    })
+        },
+    )
+    .await
+    .expect("the move to hand over");
+    cluster
+        .await_raft_leaders_placed(Duration::from_secs(60))
+        .await
+        .expect("the group to elect the new leader");
+    felix_cluster::wait::until(Duration::from_secs(30), "the move to end", || async {
+        cluster.place_shards().await;
+        cluster
+            .shard_moves()
+            .await
+            .is_ok_and(|moves| moves["items"] == serde_json::json!([]))
+    })
+    .await
+    .expect("the moves listing to empty");
+}
+
+/// What publishers saw during Raft moves.
+#[derive(Default)]
+struct Tally {
+    acknowledged: Vec<Vec<u8>>,
+    /// Answered as possibly applied; never sent again.
+    unknown: Vec<Vec<u8>>,
+    /// Final refusals, and retryable ones that never landed, described.
+    refused: Vec<String>,
+    /// Retryable refusals that were sent again.
+    retried: usize,
+}
+
+impl Tally {
+    fn merge(mut self, other: Tally) -> Tally {
+        self.acknowledged.extend(other.acknowledged);
+        self.unknown.extend(other.unknown);
+        self.refused.extend(other.refused);
+        self.retried += other.retried;
+        self
+    }
+}
+
+/// What a failed publish means for its record, as the client classifies it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Answer {
+    /// Nothing was applied, and the client is meant to send it again.
+    Retryable,
+    /// It may have been applied, so sending it again could store it twice.
+    OutcomeUnknown,
+    /// The client is told sending it again fails the same way.
+    Final,
+}
+
+/// The refusals a Raft hand-over answers with reach the client classed as
+/// the contract needs, with the class a broker sends by default.
+#[test]
+fn hand_over_refusals_are_retryable_and_lost_terms_outcome_unknown() {
+    use felix_wire::ErrorCode;
+    let refusal = |code: ErrorCode| {
+        let retry = code.default_retry();
+        anyhow::Error::from(felix_client::BrokerError::new(code, retry, "refused"))
+    };
+    for code in [
+        ErrorCode::ShardUnavailable,
+        ErrorCode::NotLeader,
+        ErrorCode::Draining,
+        ErrorCode::StaleWidth,
+        ErrorCode::NotFound,
+        ErrorCode::Overloaded,
+    ] {
+        assert_eq!(answer(&refusal(code.clone())), Answer::Retryable, "{code}");
+    }
+    for code in [
+        ErrorCode::LeadershipLost,
+        ErrorCode::Unacknowledged,
+        ErrorCode::QuorumTimeout,
+    ] {
+        assert_eq!(
+            answer(&refusal(code.clone())),
+            Answer::OutcomeUnknown,
+            "{code}"
+        );
+    }
+    assert_eq!(answer(&refusal(ErrorCode::Forbidden)), Answer::Final);
+    let lost = anyhow::Error::from(felix_client::AckLost {
+        reason: "connection closed".to_string(),
+    });
+    assert_eq!(answer(&lost), Answer::OutcomeUnknown);
+    let uncoded = anyhow::anyhow!("publisher closed").context("publish");
+    assert_eq!(answer(&uncoded), Answer::Final);
+}
+
+fn answer(err: &anyhow::Error) -> Answer {
+    if felix_client::outcome_unknown(err) {
+        return Answer::OutcomeUnknown;
+    }
+    match err
+        .chain()
+        .find_map(|cause| cause.downcast_ref::<felix_client::BrokerError>())
+    {
+        Some(broker) => match broker.retry {
+            felix_wire::RetryClass::Retry
+            | felix_wire::RetryClass::RetryAfter
+            | felix_wire::RetryClass::Redirect => Answer::Retryable,
+            felix_wire::RetryClass::OutcomeUnknown => Answer::OutcomeUnknown,
+            felix_wire::RetryClass::Fatal => Answer::Final,
+        },
+        // A write lost after the send is an `AckLost`, caught above; the
+        // client documents no uncoded error as safe to send again.
+        None => Answer::Final,
+    }
+}
+
+fn describe(err: &anyhow::Error) -> String {
+    match err
+        .chain()
+        .find_map(|cause| cause.downcast_ref::<felix_client::BrokerError>())
+    {
+        Some(broker) => format!(
+            "{} ({}, reason {:?}): {err:#}",
+            broker.code,
+            broker.retry.as_str(),
+            broker.reason(),
+        ),
+        None => format!("{err:#}"),
+    }
+}
+
+/// Publish through a cluster client whose entry broker is `via` until `stop`
+/// is set. A retryable refusal is sent again, past `stop` if need be, until
+/// it lands or a minute has passed.
+async fn publish_on_raft_until(
+    cluster: &Cluster,
+    via: &str,
+    prefix: &str,
+    stop: &std::sync::atomic::AtomicBool,
+) -> Tally {
+    let node = cluster.node(via).expect("node");
+    let client = felix_cluster::client::connect_cluster(
+        &[node.client_addr],
+        &cluster.tenant_id,
+        &cluster.client_token(),
+    )
+    .await
+    .expect("connect");
+    let mut tally = Tally::default();
+    let mut i = 0usize;
+    while !stop.load(std::sync::atomic::Ordering::Acquire) {
+        let payload = format!("{prefix}-{i}").into_bytes();
+        i += 1;
+        let gives_up =
+            std::time::Instant::now() + felix_cluster::wait::budget(Duration::from_secs(60));
+        loop {
+            let err = match client
+                .publish(
+                    &cluster.tenant_id,
+                    &cluster.namespace,
+                    STREAM,
+                    payload.clone(),
+                    felix_wire::AckMode::PerMessage,
+                )
+                .await
+            {
+                Ok(_) => {
+                    tally.acknowledged.push(payload);
+                    break;
+                }
+                Err(err) => err,
+            };
+            match answer(&err) {
+                Answer::Retryable if std::time::Instant::now() < gives_up => {
+                    tally.retried += 1;
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                }
+                Answer::Retryable => {
+                    tally.refused.push(format!(
+                        "retried for a minute, never landed: {}",
+                        describe(&err)
+                    ));
+                    break;
+                }
+                Answer::OutcomeUnknown => {
+                    tally.unknown.push(payload);
+                    break;
+                }
+                Answer::Final => {
+                    tally.refused.push(describe(&err));
+                    break;
+                }
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(2)).await;
+    }
+    tally
+}
+
+/// Four Raft publishers through `via` at once, so some are always in flight.
+async fn publish_through_on_raft(
+    cluster: &Cluster,
+    via: &str,
+    stop: &std::sync::atomic::AtomicBool,
+) -> Tally {
+    let prefixes: Vec<String> = (0..4).map(|n| format!("via-{via}-{n}")).collect();
+    let (a, b, c, d) = tokio::join!(
+        publish_on_raft_until(cluster, via, &prefixes[0], stop),
+        publish_on_raft_until(cluster, via, &prefixes[1], stop),
+        publish_on_raft_until(cluster, via, &prefixes[2], stop),
+        publish_on_raft_until(cluster, via, &prefixes[3], stop),
+    );
+    a.merge(b).merge(c).merge(d)
+}
+
 /// **A `Quorum` publish is not held by the destination's copy.** A stream with
 /// one replica asked for is moving, and its destination has stopped answering
 /// mid-copy. The destination is not part of the replica set the stream asked
@@ -835,9 +1176,8 @@ async fn continuous_publishing_through_a_move_is_never_refused() {
 #[serial]
 #[tokio::test]
 async fn a_quorum_publish_during_a_copy_is_not_held_by_it() {
-    if felix_cluster::skip_on_raft_until(
-        3004,
-        "a planned move or leader change in this test does not complete on Raft yet",
+    if felix_cluster::skip_on_raft_retire_with_hybrid(
+        "hybrid-only: a staged copy that stalls while a Quorum publish is acknowledged by the leader alone; a Raft add votes in the group",
     ) {
         return;
     }
@@ -911,12 +1251,6 @@ async fn a_quorum_publish_during_a_copy_is_not_held_by_it() {
 #[serial]
 #[tokio::test]
 async fn a_move_completes_while_a_publisher_keeps_writing() {
-    if felix_cluster::skip_on_raft_until(
-        3004,
-        "a planned move or leader change in this test does not complete on Raft yet",
-    ) {
-        return;
-    }
     use std::sync::atomic::{AtomicBool, Ordering};
 
     use felix_controlplane_service::cluster::placement::MovePolicy;
@@ -1040,9 +1374,8 @@ async fn a_move_completes_while_a_publisher_keeps_writing() {
 #[serial]
 #[tokio::test]
 async fn a_move_that_cannot_copy_is_abandoned_after_its_timeout() {
-    if felix_cluster::skip_on_raft_until(
-        3004,
-        "a planned move or leader change in this test does not complete on Raft yet",
+    if felix_cluster::skip_on_raft_retire_with_hybrid(
+        "hybrid-only: abandons a staged move after its timeout; a Raft move has no staging to undo by timeout",
     ) {
         return;
     }
@@ -1140,12 +1473,6 @@ async fn a_move_that_cannot_copy_is_abandoned_after_its_timeout() {
 #[serial]
 #[tokio::test]
 async fn a_move_onto_a_restarted_broker_does_not_wait_for_the_catalog_tick() {
-    if felix_cluster::skip_on_raft_until(
-        3004,
-        "a planned move or leader change in this test does not complete on Raft yet",
-    ) {
-        return;
-    }
     const SYNC_INTERVAL: Duration = Duration::from_secs(10);
     let mut cluster = Cluster::start(ClusterConfig {
         nodes: 2,
