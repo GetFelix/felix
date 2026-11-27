@@ -135,12 +135,6 @@ async fn an_operator_moves_a_shard_and_the_move_completes() {
 #[serial]
 #[tokio::test]
 async fn cancelling_a_staged_move_leaves_the_shard_where_it_was() {
-    if felix_cluster::skip_on_raft_until(
-        3336,
-        "cancelling a staged move does not leave the shard where it was on Raft",
-    ) {
-        return;
-    }
     let (cluster, owner, other) = two_brokers().await;
     let sent = publish_before(&cluster, &owner, 10).await;
 
