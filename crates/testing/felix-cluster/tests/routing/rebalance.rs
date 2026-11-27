@@ -18,41 +18,24 @@ const STREAM: &str = "orders";
 /// Everything `node_id` replays from the start of the stream, retried until
 /// it yields something: a promoted broker learns of its own promotion through
 /// the same watch as everything else and has to open the shard first.
+///
+/// A replay the broker resets part way (it stopped serving the shard, or its
+/// leadership is not open yet) is read again from the start, never taken as
+/// the log: see [`Cluster::whole_replay_on`].
 async fn replay_from(cluster: &Cluster, node_id: &str, budget: Duration) -> Vec<Vec<u8>> {
     let deadline = std::time::Instant::now() + felix_cluster::wait::budget(budget);
-    let mut last;
     loop {
-        match cluster.replay_on(node_id, STREAM).await {
-            Ok((_client, mut subscription)) => {
-                let mut payloads = Vec::new();
-                loop {
-                    match tokio::time::timeout(Duration::from_secs(2), subscription.next_event())
-                        .await
-                    {
-                        Ok(Ok(Some(event))) => payloads.push(event.payload.to_vec()),
-                        Ok(Ok(None)) => {
-                            last = "the broker ended the subscription".into();
-                            break;
-                        }
-                        Ok(Err(err)) => {
-                            last = format!("delivery error: {err}");
-                            break;
-                        }
-                        Err(_) => {
-                            last = "no event within 2s".into();
-                            break;
-                        }
-                    }
-                }
-                if !payloads.is_empty() {
-                    return payloads;
-                }
-            }
-            Err(err) => last = format!("subscribe refused: {err}"),
+        let events = cluster
+            .whole_replay_on(node_id, STREAM, Duration::from_secs(2), budget)
+            .await
+            .unwrap_or_else(|err| panic!("no whole replay from {node_id}: {err:#}"));
+        if !events.is_empty() {
+            return events.iter().map(|e| e.payload.to_vec()).collect();
         }
-        if std::time::Instant::now() >= deadline {
-            panic!("nothing replayed from {node_id}; last: {last}");
-        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "nothing replayed from {node_id}"
+        );
         tokio::time::sleep(Duration::from_millis(250)).await;
     }
 }
@@ -61,29 +44,26 @@ async fn replay_from(cluster: &Cluster, node_id: &str, budget: Duration) -> Vec<
 ///
 /// The leader is asked by the control plane's assignment and retried: the
 /// broker learns of its own assignment through its watch, so for a moment it
-/// redirects rather than serves.
+/// redirects rather than serves. A reset part way is retried as in
+/// [`replay_from`].
 async fn replay_shard_from(cluster: &Cluster, shard: u32) -> Vec<Vec<u8>> {
-    let deadline = std::time::Instant::now() + felix_cluster::wait::budget(Duration::from_secs(30));
+    let budget = Duration::from_secs(30);
+    let deadline = std::time::Instant::now() + felix_cluster::wait::budget(budget);
     let mut last;
     loop {
         let leader = cluster
             .shard_owner_of("stream", STREAM, shard)
             .await
             .expect("owner");
-        match cluster.replay_shard(&leader, STREAM, shard).await {
-            Ok((_client, mut subscription)) => {
-                let mut payloads = Vec::new();
-                while let Ok(Ok(Some(event))) =
-                    tokio::time::timeout(Duration::from_secs(2), subscription.next_event()).await
-                {
-                    payloads.push(event.payload.to_vec());
-                }
-                if !payloads.is_empty() {
-                    return payloads;
-                }
-                last = format!("{leader} replayed nothing for shard {shard}");
+        match cluster
+            .whole_replay_of_shard(&leader, STREAM, shard, Duration::from_secs(2), budget)
+            .await
+        {
+            Ok(events) if !events.is_empty() => {
+                return events.iter().map(|e| e.payload.to_vec()).collect();
             }
-            Err(err) => last = format!("replay shard {shard} on {leader}: {err}"),
+            Ok(_) => last = format!("{leader} replayed nothing for shard {shard}"),
+            Err(err) => last = format!("replay shard {shard} on {leader}: {err:#}"),
         }
         if std::time::Instant::now() >= deadline {
             panic!("shard {shard} never replayed; last: {last}");
@@ -657,28 +637,34 @@ async fn publish_until(
 
 /// Every record `node_id` holds for the stream, replayed from the start.
 ///
-/// The client queues history with backpressure, so one replay reads the
-/// whole log; the offsets are checked so that a hole fails here rather than
-/// showing up as a lost record.
+/// The replay starts right after a move, while the new leader may still be
+/// opening its term, and a broker that cannot serve the history yet resets
+/// the event stream (`NOT_SERVING_HERE`). That reset asks for a fresh
+/// subscribe, so the whole replay is read again from offset 0 rather than
+/// resumed, and the offsets of the replay that is kept are checked so that a
+/// hole fails here rather than showing up as a lost record.
 async fn read_whole_log(cluster: &Cluster, node_id: &str) -> Vec<Vec<u8>> {
-    let (_client, mut subscription) = cluster.replay_on(node_id, STREAM).await.expect("replay");
-    let mut records = Vec::new();
-    let mut offsets = Vec::new();
-    while let Ok(event) =
-        tokio::time::timeout(Duration::from_secs(2), subscription.next_event()).await
-    {
-        let Some(event) = event.expect("replay") else {
-            panic!("{node_id} ended the replay after {} records", records.len());
-        };
-        let offset = event.offset.expect("a durable stream delivers offsets");
-        offsets.push((offset, event.skipped_before));
-        records.push(event.payload.to_vec());
-    }
+    let events = cluster
+        .whole_replay_on(
+            node_id,
+            STREAM,
+            Duration::from_secs(2),
+            Duration::from_secs(60),
+        )
+        .await
+        .unwrap_or_else(|err| panic!("no whole replay from {node_id}: {err:#}"));
+    let offsets: Vec<(u64, u64)> = events
+        .iter()
+        .map(|event| {
+            let offset = event.offset.expect("a durable stream delivers offsets");
+            (offset, event.skipped_before)
+        })
+        .collect();
     felix_cluster::replay::assert_offsets_account_for_skips(
         &offsets,
         &format!("{node_id}'s replay"),
     );
-    records
+    events.iter().map(|e| e.payload.to_vec()).collect()
 }
 
 /// Four publishers through `via` at once, so some are always in flight.
