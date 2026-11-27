@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795741806271,
+  "lastUpdate": 1795744998253,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -72644,6 +72644,58 @@ window.BENCHMARK_DATA = {
             "range": "23356.12",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1722116.01\nmean: 1716386.48\nstdev: 23356.12\ncv: 1.36%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "49ccb51a059aca6c5ab67e0460ea0e58ad52b809",
+          "message": "test(cluster): Raft versions of the three majority_ack replacement tests (#3302) (#3307)\n\nA replacement member on Raft keeps what the old set acknowledged: a\nfailover onto a spare, a lost follower whose first replacement dies, and\na seat taken while the joiner is cut off. They wait on the stored voters\nand the elected leader, not the hybrid follower level report. The hybrid\ntwins are marked hybrid-only.\n\nSpec-Unaffected: test only",
+          "timestamp": "2026-11-27T01:53:05Z",
+          "tree_id": "28d7d1d6c1dae9154f77a1e5b56a0c170a1c17a9",
+          "url": "https://github.com/GetFelix/felix/commit/49ccb51a059aca6c5ab67e0460ea0e58ad52b809"
+        },
+        "date": 1795744997500,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 340611.3,
+            "range": "20880.54",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 340611.30\nmean: 335563.02\nstdev: 20880.54\ncv: 6.22%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 340611.3,
+            "range": "20880.54",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 340611.30\nmean: 335563.02\nstdev: 20880.54\ncv: 6.22%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 80506.76,
+            "range": "269.89",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 80506.76\nmean: 80648.17\nstdev: 269.89\ncv: 0.33%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 805067.61,
+            "range": "2698.87",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 805067.61\nmean: 806481.74\nstdev: 2698.87\ncv: 0.33%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
