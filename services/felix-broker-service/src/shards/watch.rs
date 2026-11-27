@@ -461,9 +461,15 @@ impl ShardOwnership {
                     && (next.incarnation, next.generation)
                         <= (current.incarnation, current.generation)
                 {
-                    if let Some((target, withheld)) = target_view(current, &next) {
+                    let target = target_view(current, &next);
+                    let retargeted = target.is_some();
+                    if let Some((target, withheld)) = target {
                         current.target = target;
                         current.targets_withheld = withheld;
+                    }
+                    let reformed = take_reformed_epoch(current, &next);
+                    let raised = take_raised_floor(current, &next);
+                    if retargeted || reformed || raised {
                         self.changed();
                         return true;
                     }
@@ -700,6 +706,47 @@ fn same_set(current: &ShardAssignment, next: &ShardAssignment) -> bool {
         &current.leader,
         &current.replicas,
     )
+}
+
+/// Take the Raft record of `next`, a change at or below `current`'s
+/// incarnation and generation, when it is at a later group epoch. A
+/// re-form's epoch write lands in place, at the generation the shard
+/// already has; dropped, the broker never learns the epoch and its stopped
+/// copies never start. The epoch only grows within an incarnation, so a
+/// later one is never a late copy. The set is not taken from it.
+fn take_reformed_epoch(current: &mut ShardAssignment, next: &ShardAssignment) -> bool {
+    if next.incarnation != current.incarnation || next.group_epoch() <= current.group_epoch() {
+        return false;
+    }
+    current.placed.clone_from(&next.placed);
+    current.raft_bases.clone_from(&next.raft_bases);
+    current.raft_seed.clone_from(&next.raft_seed);
+    current.raft_formed = next.raft_formed;
+    current.raft_voters.clone_from(&next.raft_voters);
+    true
+}
+
+/// Take `next`'s Raft floor when it is past the held one at the same
+/// incarnation. A leader's floor report is stored in place, within an
+/// epoch as well as across one, so this is apart from the epoch check: a
+/// floor held stale makes a re-form plan from it refused as `FloorRaised`.
+/// The control plane only raises a floor, by epoch then index, so a lower
+/// one is a late copy.
+fn take_raised_floor(current: &mut ShardAssignment, next: &ShardAssignment) -> bool {
+    let Some(floor) = next
+        .raft_floor
+        .filter(|floor| floor.incarnation == current.incarnation)
+    else {
+        return false;
+    };
+    let raised = current
+        .raft_floor
+        .filter(|held| held.incarnation == current.incarnation)
+        .is_none_or(|held| (floor.epoch, floor.index) > (held.epoch, held.index));
+    if raised {
+        current.raft_floor = Some(floor);
+    }
+    raised
 }
 
 /// The target fields to hold after `next`, a change at `current`'s

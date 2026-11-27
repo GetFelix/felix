@@ -1,0 +1,1 @@
+- A Raft re-form now starts on the brokers. The epoch write lands at the generation the shard already had, and the broker dropped it as a stale change, so its stopped copies waited for good and the apply never left `starting`.
