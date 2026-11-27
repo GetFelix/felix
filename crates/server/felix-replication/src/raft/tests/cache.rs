@@ -4,6 +4,7 @@
 
 use super::super::cache::{Answer, CacheCommand, Condition, Request};
 use super::*;
+use crate::engine::CommitError;
 
 const N: u32 = CACHE;
 
@@ -392,6 +393,68 @@ async fn a_write_stamped_before_a_deposal_is_not_written_after_a_re_election() {
         assert_eq!(cache.answer(7, 1), None);
         assert!(cache.time() >= 10_000);
     }
+    cluster.stop().await;
+}
+
+/// **A cache write a leader with a lapsed lease refuses is told as not
+/// appended**, so the client may send it again. Nothing reaches anybody, so
+/// no member is elected meanwhile and only the lease refuses it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_cache_write_refused_on_a_lapsed_lease_is_not_appended() {
+    let mut cluster = Cluster::new(true);
+    cluster.form(N).await;
+    let (engine, leader) = leading(&cluster).await;
+    let last_index = || {
+        let runtime = cluster.runtime(&leader.member.broker);
+        runtime.status(&shard(N)).expect("status").last_index
+    };
+    let last = last_index();
+    cluster.net.cut.lock().extend(BROKERS.map(String::from));
+    tokio::time::sleep(timers().election_max + Duration::from_millis(100)).await;
+
+    let refused = engine
+        .cache_write(&shard(N), add("n", 1, 1), 0, PATIENCE)
+        .await;
+    assert!(
+        matches!(refused, Err(CommitError::NotAppended { .. })),
+        "{refused:?}"
+    );
+    assert_eq!(last_index(), last);
+    cluster.net.cut.lock().clear();
+    cluster.stop().await;
+}
+
+/// **A cache write its leader appended and then lost the shard over is not
+/// told as not appended**: the entry was in a log, and a re-send could apply
+/// it twice.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_cache_write_appended_then_lost_is_not_told_as_not_appended() {
+    let mut cluster = Cluster::new(true);
+    cluster.form(N).await;
+    let (_, first) = leading(&cluster).await;
+    let last_index = |cluster: &Cluster| {
+        let runtime = cluster.runtime(&first.member.broker);
+        runtime.status(&shard(N)).expect("status").last_index
+    };
+    let last = last_index(&cluster);
+
+    // Cut off while its lease still holds, so openraft appends the write.
+    cut_off(&cluster, &first.member.broker);
+    let held = RaftEngine::new(cluster.runtime(&first.member.broker));
+    let held = tokio::spawn(async move {
+        held.cache_write(&shard(N), add("n", 1, 1), 0, PATIENCE)
+            .await
+    });
+    eventually(|| (last_index(&cluster) > last).then_some(())).await;
+
+    let (_, second) = leading(&cluster).await;
+    assert_ne!(second.member, first.member);
+    joined(&cluster, &first.member.broker);
+    let lost = held.await.expect("task");
+    assert!(
+        matches!(lost, Err(CommitError::LeadershipLost { .. })),
+        "{lost:?}"
+    );
     cluster.stop().await;
 }
 

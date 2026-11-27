@@ -337,6 +337,10 @@ async fn a_lost_answer_is_reported_as_indeterminate_rather_than_retried() {
             node_id: "broker-b".to_string(),
             timeout: Duration::from_secs(5),
         },
+        // This broker shut down after the batch was sent.
+        PeerError::Abandoned {
+            node_id: "broker-b".to_string(),
+        },
     ] {
         let owner = ScriptedOwner::new([Err(lost)]);
 
@@ -394,10 +398,11 @@ async fn retries_are_bounded_rather_than_chasing_ownership() {
     assert!(err.to_string().contains("orders"), "{err}");
 }
 
-/// An answer that is not part of this exchange is refused rather than read as
-/// success. Nothing else in the protocol answers a forwarded publish.
+/// An answer that is not part of this exchange is read neither as success
+/// nor as a refusal: nothing else in the protocol answers a forwarded publish,
+/// so it says nothing about whether the batch was written.
 #[tokio::test]
-async fn an_unexpected_answer_is_refused() {
+async fn an_unexpected_answer_is_indeterminate() {
     let owner = ScriptedOwner::new([Ok(InternalMessage::HelloOk(HelloOk {
         correlation_id: 0,
         node_id: "broker-b".to_string(),
@@ -407,9 +412,171 @@ async fn an_unexpected_answer_is_refused() {
         raft_layouts: None,
     }))]);
 
-    let err = forward(&owner).await.expect_err("should be refused");
-    assert!(matches!(err, ForwardError::Refused { .. }), "{err}");
+    let err = forward(&owner).await.expect_err("not served");
+    assert!(matches!(err, ForwardError::Indeterminate { .. }), "{err}");
     assert_eq!(owner.attempts(), 1);
+}
+
+/// The retry class a client is told for a forwarded cache error.
+fn told(err: ForwardError) -> felix_wire::RetryClass {
+    crate::serving::quic::client_error::ClientError::from_anyhow(&err.into()).retry()
+}
+
+fn cache_writes() -> [CacheRequest; 3] {
+    [
+        CacheRequest::CounterAdd { delta: 1 },
+        CacheRequest::PutIf {
+            value: Bytes::from_static(b"v"),
+            ttl_ms: 0,
+            condition: felix_storage::CacheCondition::Version(3),
+        },
+        CacheRequest::Delete,
+    ]
+}
+
+/// **A cache write the owner answered in a shape it does not answer a cache
+/// op with, or did not answer, is reported as unknown and never sent
+/// again.** The owner may have written it, so a client told to retry would
+/// count an add twice or be refused by its own conditional write.
+#[tokio::test]
+async fn an_unreadable_or_lost_answer_to_a_cache_write_is_not_retryable() {
+    let answers = || -> [std::result::Result<InternalMessage, PeerError>; 5] {
+        [
+            Ok(refused(ErrorCode::StorageFailed)),
+            Ok(refused(ErrorCode::LeadershipLost)),
+            Ok(accepted(0, 0)),
+            Err(PeerError::Disconnected {
+                node_id: "broker-b".to_string(),
+            }),
+            // This broker shut down after the write was sent.
+            Err(PeerError::Abandoned {
+                node_id: "broker-b".to_string(),
+            }),
+        ]
+    };
+    for request in cache_writes() {
+        for answer in answers() {
+            let shown = format!("{request:?} answered {answer:?}");
+            let owner = ScriptedOwner::new([answer]);
+            let err = forward_cache_request(&owner, &target(), &key(), "k", "token", &request)
+                .await
+                .expect_err("not served");
+            assert_eq!(owner.attempts(), 1, "{shown} was sent again");
+            assert_eq!(told(err), felix_wire::RetryClass::OutcomeUnknown, "{shown}");
+        }
+    }
+}
+
+/// **A forwarded write too large for the owner's log is answered as the same
+/// write sent to the owner directly**: invalid, and not sent again.
+#[tokio::test]
+async fn a_forwarded_cache_write_too_large_is_answered_as_a_direct_one() {
+    use crate::serving::quic::client_error::ClientError;
+    use felix_wire::internal::ForwardCacheError;
+    let too_large = felix_replication::quorum::QuorumError::TooLarge { bytes: 2, max: 1 };
+    let direct = ClientError::from_anyhow(&too_large.into());
+    for request in cache_writes() {
+        let owner =
+            ScriptedOwner::new([Ok(InternalMessage::ForwardCacheError(ForwardCacheError {
+                correlation_id: 0,
+                code: ErrorCode::TooLarge,
+                detail: "d".to_string(),
+            }))]);
+        let err = forward_cache_request(&owner, &target(), &key(), "k", "token", &request)
+            .await
+            .expect_err("refused");
+        assert_eq!(owner.attempts(), 1, "{request:?} was sent again");
+        let forwarded = ClientError::from_anyhow(&err.into());
+        assert_eq!(
+            (forwarded.code(), forwarded.retry()),
+            (direct.code(), direct.retry()),
+            "{request:?}"
+        );
+    }
+}
+
+/// A pool error returned before the frame left this broker leaves the write
+/// unapplied, so it is sent again.
+#[tokio::test]
+async fn a_cache_write_the_pool_never_sent_is_sent_again() {
+    use felix_wire::internal::ForwardCacheOk;
+    let not_sent = || -> [PeerError; 3] {
+        [
+            PeerError::ShuttingDown,
+            PeerError::Unavailable {
+                node_id: "broker-b".to_string(),
+                detail: "in backoff".to_string(),
+            },
+            PeerError::Handshake {
+                node_id: "broker-b".to_string(),
+                detail: "refused".to_string(),
+            },
+        ]
+    };
+    for request in cache_writes() {
+        for err in not_sent() {
+            let shown = format!("{request:?} failed with {err:?}");
+            let owner = ScriptedOwner::new([
+                Err(err),
+                Ok(InternalMessage::ForwardCacheOk(ForwardCacheOk {
+                    correlation_id: 0,
+                    value: None,
+                    outcome: None,
+                })),
+            ]);
+            forward_cache_request(&owner, &target(), &key(), "k", "token", &request)
+                .await
+                .unwrap_or_else(|err| panic!("{shown}: {err}"));
+            assert_eq!(owner.attempts(), 2, "{shown}");
+        }
+    }
+}
+
+/// **An owner's in-doubt answer to a cache write reaches the client as
+/// unknown**, and one it refused before writing as retryable, so the fix
+/// for the first costs no availability.
+#[tokio::test]
+async fn a_cache_write_is_retryable_only_when_refused_before_it_was_written() {
+    use felix_wire::internal::{ForwardCacheError, ForwardCacheOk};
+    let cache_error = |code| {
+        Ok(InternalMessage::ForwardCacheError(ForwardCacheError {
+            correlation_id: 0,
+            code,
+            detail: "d".to_string(),
+        }))
+    };
+    for request in cache_writes() {
+        for code in [ErrorCode::StorageFailed, ErrorCode::LeadershipLost] {
+            let owner = ScriptedOwner::new([cache_error(code)]);
+            let err = forward_cache_request(&owner, &target(), &key(), "k", "token", &request)
+                .await
+                .expect_err("not served");
+            assert_eq!(owner.attempts(), 1, "{request:?} {code:?} was sent again");
+            assert_eq!(told(err), felix_wire::RetryClass::OutcomeUnknown);
+        }
+
+        let owner = ScriptedOwner::new([
+            cache_error(ErrorCode::Unavailable),
+            Ok(InternalMessage::ForwardCacheOk(ForwardCacheOk {
+                correlation_id: 0,
+                value: None,
+                outcome: None,
+            })),
+        ]);
+        forward_cache_request(&owner, &target(), &key(), "k", "token", &request)
+            .await
+            .expect("a refusal before the write is sent again");
+        assert_eq!(owner.attempts(), 2);
+
+        let owner = ScriptedOwner::new(
+            std::iter::repeat_with(|| cache_error(ErrorCode::Unavailable))
+                .take(MAX_ATTEMPTS as usize),
+        );
+        let err = forward_cache_request(&owner, &target(), &key(), "k", "token", &request)
+            .await
+            .expect_err("never served");
+        assert_eq!(told(err), felix_wire::RetryClass::Retry, "{request:?}");
+    }
 }
 
 /// The pause between attempts grows, and stays small: the client is waiting,

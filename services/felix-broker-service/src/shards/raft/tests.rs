@@ -421,11 +421,13 @@ async fn a_copy_without_an_epoch_file_counts_only_at_epoch_zero() {
     .await;
     assert_eq!(shards.held_copies().len(), 1);
 
+    // Bases that kept the log, so the member is not left behind.
     let mut reformed = assigned(orders.clone(), INCARNATION);
     reformed.placed = Some(crate::shards::watch::PlacedEpoch {
         epoch: 1,
         ..Default::default()
     });
+    reformed.raft_bases = Some(reformed_once());
     shards.take(&mut assignments([reformed])).await;
     assert!(shards.runtime.status(&orders).is_some(), "still open");
     assert!(
@@ -487,6 +489,198 @@ async fn a_fresh_copy_past_epoch_zero_takes_the_records_epoch() {
     assert_eq!(held.len(), 1, "the copy id is reported");
     assert_eq!(held[0].epoch, 1);
     shards.shutdown().await;
+}
+
+/// **A blank copy of a group past epoch 0 never forms it from index 0.**
+/// An abandoned epoch has an empty base, so its only copy is blank and its
+/// set is full; forming would give out offsets the lost epoch may have
+/// acknowledged.
+#[tokio::test]
+async fn a_blank_copy_past_epoch_zero_does_not_form_the_group() {
+    blank_copy_past_epoch_zero(1).await;
+}
+
+/// The same with a record whose bases do not cover its epoch: they say
+/// nothing of the epoch's first index, so the copy still does not form.
+#[tokio::test]
+async fn a_blank_copy_does_not_form_the_group_when_the_bases_are_short() {
+    blank_copy_past_epoch_zero(2).await;
+}
+
+async fn blank_copy_past_epoch_zero(epoch: u64) {
+    use crate::shards::watch::{RaftBases, RaftEpochBase};
+    let root = tempfile::tempdir().expect("tempdir");
+    let broker = broker(root.path()).await;
+    let shards = shards(&broker);
+    let orders = key("orders", 0);
+    let mut placed = assigned(orders.clone(), INCARNATION);
+    placed.placed = Some(crate::shards::watch::PlacedEpoch {
+        epoch,
+        ..Default::default()
+    });
+    placed.raft_bases = Some(RaftBases {
+        incarnation: INCARNATION,
+        bases: vec![RaftEpochBase {
+            base_last: None,
+            first_index: 1 << 30,
+        }],
+    });
+    shards.take(&mut assignments([placed.clone()])).await;
+    // Bases short of the epoch keep the blank copy closed from the start.
+    let stored = if shards.runtime.status(&orders).is_some() {
+        stored(placed, &[&shards])
+    } else {
+        placed
+    };
+    for _ in 0..10 {
+        shards.take(&mut assignments([stored.clone()])).await;
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    let status = shards.runtime.status(&orders);
+    assert!(
+        status
+            .as_ref()
+            .is_none_or(|status| (status.term, status.last_index) == (0, None)),
+        "formed a group past epoch 0 from index 0: {status:?}"
+    );
+    shards.shutdown().await;
+}
+
+/// **A blank copy of an abandoned epoch starts at the epoch's first index
+/// once its report seeds the epoch.** It leads a group of one there, with
+/// nothing below the first index, under the copy id the seed names.
+#[tokio::test]
+async fn a_blank_copy_of_an_abandoned_epoch_starts_at_its_first_index() {
+    use crate::shards::watch::{RaftBases, RaftEpochBase, RaftVoters};
+    const FIRST: u64 = 1 << 30;
+    let root = tempfile::tempdir().expect("tempdir");
+    let broker = broker(root.path()).await;
+    let shards = shards(&broker);
+    let orders = key("orders", 0);
+    let mut placed = assigned(orders.clone(), INCARNATION);
+    placed.placed = Some(crate::shards::watch::PlacedEpoch {
+        epoch: 1,
+        ..Default::default()
+    });
+    placed.raft_bases = Some(RaftBases {
+        incarnation: INCARNATION,
+        bases: vec![RaftEpochBase {
+            base_last: None,
+            first_index: FIRST,
+        }],
+    });
+    shards.take(&mut assignments([placed.clone()])).await;
+    let copy = shards.runtime.status(&orders).expect("open").member.copy;
+    let mut seeded = stored(placed, &[&shards]);
+    seeded.raft_seed = Some(RaftVoters {
+        incarnation: INCARNATION,
+        epoch: 1,
+        members: std::collections::BTreeMap::from([("broker-a".to_string(), copy)]),
+        starts: Default::default(),
+    });
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
+    while shards.leading(&orders).is_none() {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "timed out: the abandoned epoch to start"
+        );
+        shards.take(&mut assignments([seeded.clone()])).await;
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    let status = shards.runtime.status(&orders).expect("open");
+    assert_eq!(status.member.copy, copy, "the copy id the seed names");
+    assert!(
+        status.last_index >= Some(FIRST),
+        "the group's first entry is below the epoch's first index: {:?}",
+        status.last_index
+    );
+    let log = shards.log_of(&orders).await.expect("open member");
+    assert!(
+        felix_storage::log::AppendOnlyLog::tail_offset(&log)
+            .await
+            .expect("tail")
+            > FIRST
+    );
+    shards.shutdown().await;
+}
+
+/// **A broker of an abandoned epoch that comes back never leads its old
+/// group.** The record has moved the shard to another broker's empty epoch;
+/// an old member that elected itself would serve, and take writes for, a
+/// group the operator gave up.
+#[tokio::test]
+async fn a_copy_of_an_abandoned_epoch_does_not_lead_when_it_returns() {
+    abandoned_copy_returns(1).await;
+}
+
+/// The same with a record whose bases do not cover its epoch: they cannot
+/// say the later epochs kept the copy's log, so an open member is closed
+/// and a restarted one is not opened.
+#[tokio::test]
+async fn a_copy_behind_a_record_with_short_bases_does_not_lead() {
+    abandoned_copy_returns(2).await;
+}
+
+async fn abandoned_copy_returns(epoch: u64) {
+    use crate::shards::watch::{RaftBases, RaftEpochBase, RaftVoters};
+    let root = tempfile::tempdir().expect("tempdir");
+    let broker = broker(root.path()).await;
+    let shards = shards(&broker);
+    let orders = key("orders", 0);
+    take_formed(&shards, assigned(orders.clone(), INCARNATION)).await;
+    until("the old epoch to be led", || {
+        shards.leading(&orders).is_some()
+    })
+    .await;
+
+    let mut abandoned = assigned(orders.clone(), INCARNATION);
+    abandoned.leader = "broker-b".to_string();
+    abandoned.replicas = vec!["broker-b".to_string()];
+    abandoned.generation = 2;
+    abandoned.placed = Some(crate::shards::watch::PlacedEpoch {
+        epoch,
+        ..Default::default()
+    });
+    abandoned.raft_bases = Some(RaftBases {
+        incarnation: INCARNATION,
+        bases: vec![RaftEpochBase {
+            base_last: None,
+            first_index: 1 << 30,
+        }],
+    });
+    abandoned.raft_seed = Some(RaftVoters {
+        incarnation: INCARNATION,
+        epoch,
+        members: std::collections::BTreeMap::from([("broker-b".to_string(), 7)]),
+        starts: Default::default(),
+    });
+    // Still open when the record moves on, as on a broker cut off while
+    // the operator abandoned the group.
+    shards.take(&mut assignments([abandoned.clone()])).await;
+    assert!(
+        shards.runtime.status(&orders).is_none(),
+        "the old epoch's member stayed open"
+    );
+    shards.shutdown().await;
+    drop(shards);
+    drop(broker);
+
+    // Restarted.
+    let broker = self::broker(root.path()).await;
+    let back = self::shards(&broker);
+    for _ in 0..40 {
+        back.take(&mut assignments([abandoned.clone()])).await;
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(
+            back.leading(&orders).is_none(),
+            "the old epoch's copy leads a group the operator abandoned"
+        );
+        assert!(
+            !matches!(route(&back, &orders), Some(Dispatch::Local { .. })),
+            "the old epoch's copy serves a group the operator abandoned"
+        );
+    }
+    back.shutdown().await;
 }
 
 /// **A shard restored from an export has no placed record, but its bases
@@ -1545,6 +1739,7 @@ async fn a_member_the_copy_id_report_leaves_out_is_still_in_a_backup_point() {
         epoch: 1,
         ..Default::default()
     });
+    reformed.raft_bases = Some(reformed_once());
     shards.take(&mut assignments([reformed])).await;
     assert!(shards.held_copies().is_empty(), "an unproven epoch");
     let [read] = shards.backup_members().try_into().expect("listed");
@@ -2385,7 +2580,7 @@ impl Member {
 
     /// A broker on `net` holding `sessions`, a `Quorum` cache on three
     /// brokers.
-    async fn start_cache(net: &Arc<Loopback>, name: &'static str) -> Self {
+    pub(crate) async fn start_cache(net: &Arc<Loopback>, name: &'static str) -> Self {
         Self::start_cache_on(net, name, tempfile::tempdir().expect("tempdir")).await
     }
 

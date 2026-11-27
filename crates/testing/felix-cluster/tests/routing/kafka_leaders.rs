@@ -330,7 +330,9 @@ fn kafka_addr(cluster: &Cluster, node: &str) -> String {
 }
 
 /// Move one shard with the operator API and step placement until it has
-/// cut over.
+/// cut over. On Raft placement names the new leader before the group hands
+/// leadership over, so this also waits for the group to elect it; a record
+/// published before then can commit on the old leader.
 async fn move_shard(cluster: &Cluster, shard: u32, destination: &str) {
     cluster
         .start_move(STREAM, shard, destination)
@@ -345,6 +347,10 @@ async fn move_shard(cluster: &Cluster, shard: u32, destination: &str) {
     })
     .await
     .expect("move");
+    cluster
+        .await_raft_leaders_placed(Duration::from_secs(60))
+        .await
+        .expect("the group to elect the moved shard's new leader");
 }
 
 /// A routing key the broker hashes to `shard`.

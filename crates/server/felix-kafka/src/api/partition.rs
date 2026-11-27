@@ -20,7 +20,8 @@ pub(super) struct Readable {
     /// Woken when a publish to the shard commits.
     pub(super) appended: Arc<tokio::sync::Notify>,
     /// Asked on every read, because the mark moves while a fetch waits.
-    committed: Arc<dyn Fn() -> Result<Option<u64>, Unreadable> + Send + Sync>,
+    /// With `true` it also asks placement again; see [`Self::high_watermark`].
+    committed: Arc<dyn Fn(bool) -> Result<Option<u64>, Unreadable> + Send + Sync>,
     /// Asked before a fetch below the tail. See
     /// [`felix_broker::Broker::before_history_read`].
     confirm: Arc<dyn Fn(u64) -> BoxFuture<Result<(), BrokerError>> + Send + Sync>,
@@ -30,11 +31,13 @@ type BoxFuture<T> = std::pin::Pin<Box<dyn std::future::Future<Output = T> + Send
 
 impl Readable {
     /// Where readers stop: `tail`, or the shard's commit point if that is
-    /// lower. See [`crate::cluster::Cluster::committed_until`]. Placement is
-    /// checked once, at [`resolve`]; a shard that stopped serving here since
-    /// is refused rather than answered from this broker's log.
-    pub(super) fn high_watermark(&self, tail: u64) -> Result<u64, Unreadable> {
-        let committed = (self.committed)()?;
+    /// lower. See [`crate::cluster::Cluster::committed_until`]. A shard that
+    /// stopped serving here since [`resolve`] is refused rather than answered
+    /// from this broker's log. With `recheck`, placement is asked again after
+    /// the mark: a fetch that waited can outlive this broker's lead, and on
+    /// Raft a follower still has a commit point to give.
+    pub(super) fn high_watermark(&self, tail: u64, recheck: bool) -> Result<u64, Unreadable> {
+        let committed = (self.committed)(recheck)?;
         let floor = self.floor(tail);
         let committed = match (committed, self.log.poisoned_read_end()) {
             (Some(committed), Some(end)) => Some(committed.min(end)),
@@ -91,7 +94,20 @@ pub(super) async fn resolve(
     Ok(Readable {
         log,
         appended,
-        committed: Arc::new(move || cluster.committed_until(&located.shard_ref(), &handle)),
+        committed: Arc::new(move |recheck| {
+            let committed = cluster.committed_until(&located.shard_ref(), &handle);
+            // Asked after the mark, so every record below it committed while
+            // this broker still led.
+            if recheck
+                && !matches!(
+                    cluster.placement(&located.shard_ref()),
+                    Placement::Local { .. }
+                )
+            {
+                return Err(Unreadable::NotServed);
+            }
+            committed
+        }),
         confirm: Arc::new(move |from| {
             let broker = Arc::clone(&broker);
             let at = Arc::clone(&at);
