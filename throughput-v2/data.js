@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795807832865,
+  "lastUpdate": 1795808263826,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -73892,6 +73892,58 @@ window.BENCHMARK_DATA = {
             "range": "41714.50",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 817891.23\nmean: 801045.47\nstdev: 41714.50\ncv: 5.21%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "a287ffdc937dfb92371670762d785f4216587d06",
+          "message": "design: a Raft entry is a record batch, and the offset is no longer the Raft index (#3359) (#3374)\n\n* docs: design for Raft entries as record batches (#3359)\n\nA Raft entry becomes one record batch with its base offset and count in\nthe header, so index and offset separate, internal entries take no\noffsets and a batch commits or is cut whole. Covers the frame, the offset\nmap for reads, trims, snapshots and re-form, what replaces pieces and\nskipped_before, groups and cache shards, the TLA changes, the PR sequence\nand what must land before format v9 freezes.\n\nSpec-Unaffected: design doc only\n\n* docs: fold the #3359 decisions into the batch entries design\n\nRefused cache writes keep their offsets, a re-form loss is reported\nthrough skipped_before with a reason (negotiated on the wire, withheld\nfrom clients that cannot read it), the 32 MiB cap stays and a stream id\nis reserved in the frame header.\n\nSpec-Unaffected: design doc only\n\n* docs(storage): conditional pieces and membership records are written\n\nstorage-format.md said nothing writes a conditional piece and that client\nreads do not resolve one, and RecordMark::Membership said nothing writes\none. A Raft shard writes both, and the read paths resolve pieces.\n\nSpec-Unaffected: doc and comment fixes only\n\n* docs: the #3359 skip reason is 0.8 baseline wire, not negotiated\n\nPer #3362 every 0.8 client gets the reason; drop the extended bit, the\nfeature bit and the path for a client that did not negotiate it.\n\nSpec-Unaffected: design doc only\n\n* docs: #3359 design review fixes: re-form and restore bounds in offsets\n\nEvery re-form and restore start bound gets an offset form, with\nraft-reserved, the time line and the folded bounds in alone_cluster.rs\nand abandon.rs restated; offset bounds land before any entry holds more\nthan one record; the re-form jump splits into lost and skipped reasons;\nthe Kafka empty batch stays; each member decides a conditional from its\nown base; step 3's reader-visible changes move into step 3; everything\nlands before the v9 freeze.\n\nSpec-Unaffected: design doc only\n\n* docs: #3359 design: offsets leave indexes in one step; rate cap at propose\n\nCount-0 entries keep taking an offset until the step that moves the read\nbound, publish answer, conditional comparison, cache versions and floors\nto offsets, with a per-step table of which number each uses. The rate cap\nis a token bucket at propose that lets one entry run into debt, with the\nburst in the restore gap. Names raft_floor.rs and the broker's RaftFloor.\n\nSpec-Unaffected: design doc only\n\n* docs: #3359 design: last review fixes\n\nStep 4 starts a new epoch's offset at its first index and keeps gap\npadding until step 5, is one unsplittable PR after step 3 moves every\nconsumer to offset-typed calls, and takes the per-member conditional\ndecision. A new leader's token bucket starts empty, and the restore gap\nmust cover the burst, which the 2^32 MIN_OFFSET_GAP does.\n\nSpec-Unaffected: design doc only",
+          "timestamp": "2026-11-27T19:31:24Z",
+          "tree_id": "4513b1ea3b40af852267b565ceb5a169f1eb9e4f",
+          "url": "https://github.com/GetFelix/felix/commit/a287ffdc937dfb92371670762d785f4216587d06"
+        },
+        "date": 1795808263219,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 485937.27,
+            "range": "28449.05",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 485937.27\nmean: 488474.39\nstdev: 28449.05\ncv: 5.82%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 485937.27,
+            "range": "28449.05",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 485937.27\nmean: 488474.39\nstdev: 28449.05\ncv: 5.82%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 116158.63,
+            "range": "3524.98",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 116158.63\nmean: 115330.04\nstdev: 3524.98\ncv: 3.06%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1161586.33,
+            "range": "35249.78",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1161586.33\nmean: 1153300.43\nstdev: 35249.78\ncv: 3.06%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
