@@ -1255,8 +1255,9 @@ fn heartbeats_read_back_as_written_in_order() {
     assert_eq!(crate::peer::raft_deadline(&bytes), written[0].deadline);
     assert_eq!(&bytes[6..10], &1_500u32.to_be_bytes());
     assert_eq!(&bytes[10..12], &5u16.to_be_bytes());
-    let (read, read_wait) = decode_beats(bytes.clone()).expect("decode");
+    let (read, read_wait, read_deadline) = decode_beats(bytes.clone()).expect("decode");
     assert_eq!(read_wait, wait);
+    assert_eq!(read_deadline, written[0].deadline);
     assert_eq!(read.len(), written.len());
     for (read, written) in read.iter().zip(&written) {
         assert_eq!(read.group, written.group);

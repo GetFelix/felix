@@ -706,7 +706,7 @@ hundreds of shards still serves a small, latency-critical one on time. It
 guards against the failure behind #1760: at felixd's scale, a lease cache's
 renewals waited longer than the lease TTL while every broker stayed up, no
 leader changed and nothing was logged at ERROR. (felixd is a workload runner
-built on Felix that keeps its leases in a Felix cache.) Three causes were found:
+built on Felix that keeps its leases in a Felix cache.) Four causes were found:
 
 - Each broker's replication driver ships at most 16 shards at a time (its
   pass slots), and it kept giving those slots to the same busy shards (#1794).
@@ -714,6 +714,10 @@ built on Felix that keeps its leases in a Felix cache.) Three causes were found:
   held up every other request on the same broker-to-broker connection (#1791).
 - The fences a leader sends to confirm a read waited behind the fences of newly
   promoted shards on that connection (#1796).
+- On Raft, opening each new shard's copy synced its directory, copy file and
+  log on a runtime worker, one shard after another. Every task queued on that
+  worker, the peer transport's included, waited out the fsyncs, and the
+  canary's reads, a heartbeat round each, took 2 to 2.8 s (#3032).
 
 The test starts three brokers with the fleet features felixd finalizes and a
 one-shard `Quorum` cache with three replicas, `leases`. A canary renews four
@@ -768,7 +772,8 @@ because the entry has expired, whatever the timings were.
 Reads stay under 0.4 s on a saturated runner. Starvation looks different: the
 canary's renewals and reads time out at 5 to 6 s, several rounds in a row.
 Without the #1799 and #1800 fixes, reads queued behind other shards' fences
-took 2.5 to 2.7 s. Without the #1801 fix they took 5 to 6 s.
+took 2.5 to 2.7 s. Without the #1801 fix they took 5 to 6 s. On Raft, with
+copies opened on a runtime worker, a few reads in each run took 2 to 2.8 s.
 
 The idle samples are printed next to the loaded ones for comparison but are
 not judged, because one slow idle sample on a busy runner says nothing about

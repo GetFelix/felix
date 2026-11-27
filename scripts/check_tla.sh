@@ -284,6 +284,7 @@ expectations=(
   "FelixRaftWrittenCommitsReformTermsFloorHolder violates OffsetNeverReused"
   "FelixRaftWrittenCommitsReformTermsHappens violates NeverCutsAcrossTerms"
   "FelixRaftWrittenCommitsReformTermsVoteOnly violates LossNeedsLostDisk"
+  "FelixRaftWrittenCommitsReformJointDeadOneSetDirected violates BaseAgrees"
   "FelixRaftWrittenReformVouchDead pass"
   "FelixRaftWrittenReformGate pass"
   "FelixRaftWrittenReformGateOpen violates BaseAgrees"
@@ -620,6 +621,7 @@ expectations=(
   "FelixRaftReformDeadReforms violates NeverReformsWithoutDead"
   "FelixRaftReformDeadLoses violates NothingLost"
   "FelixRaftReformAbandon pass"
+  "FelixRaftReformAloneAbandon pass"
   "FelixRaftReformAbandonHappens violates NeverAbandonCommits"
   "FelixRaftReformAbandonOutside violates AbandonedNotLed"
   "FelixRaftReformAbandonAtFloor violates OffsetNeverReused"
@@ -807,7 +809,6 @@ expectations=(
 # exhaustively, sampled. A pass means nothing was found; a twin must still
 # reach its violation within the budget.
 walks=(
-  "FelixRaftWrittenCommitsReformJointDeadOneSet violates BaseAgrees"
   "FelixCrossShardCommit pass"
   "FelixCrossShardCommitLive pass"
   "FelixCrossShardCommitNoFirstWins violates Atomicity"
@@ -862,7 +863,9 @@ fi
 # FelixRaftWrittenCommitsReformJoint{Dead,DeadOneSet,CutDead} are not
 # registered: under their scopes none finished in six hours on a CI runner
 # (run 45097934400; 335M, 242M and 169M distinct states). JointCutDead runs
-# nightly and JointDeadOneSet is walked there (tla-walk.yml, #2729).
+# nightly. JointDead and JointDeadOneSet run there as well, reported only
+# (tla-walk.yml, #2729); FelixRaftWrittenCommitsReformJointDeadOneSetDirected
+# reaches JointDeadOneSet's violation in seconds and is registered.
 # FelixRaftReformKeptTerms passes in 56 minutes and
 # FelixRaftReformTwoReformsOldRestore in 4 h 16 min on a CI runner, past a
 # pull request's hour, so they are not registered and run nightly

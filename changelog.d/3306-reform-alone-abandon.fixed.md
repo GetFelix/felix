@@ -1,0 +1,1 @@
+- The Raft re-form model checks a standalone group's self re-form together with the operator's abandon (#3306).

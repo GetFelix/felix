@@ -60,13 +60,6 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # A re-form twin with no violation in 242M distinct states
-          # exhaustively (#2729). A walk reaches a violation fast if one is
-          # reachable. Not finding one is reported, not a failure, until the
-          # twin is shown to violate or dropped.
-          - family: reform-gate-twins
-            configs: FelixRaftWrittenCommitsReformJointDeadOneSet
-            report-only: true
           # The cross-shard commit design (docs/cross-shard-commit.md), not
           # built yet. Each twin drops one rule and must find its violation.
           - family: cross-shard
@@ -114,6 +107,50 @@ jobs:
           name: tla-walk-${{ matrix.family }}
           path: target/tla/walk/
           retention-days: 14
+
+  # The two re-form configurations that ran six hours on a runner with no
+  # violation (run 45097934400, #2729). The directed twin
+  # (FelixRaftWrittenCommitsReformJointDeadOneSetDirected) is what shows the
+  # gate is needed; these only widen the search, so they are reported, not
+  # required, and never run on a pull request.
+  exhaustive-open:
+    name: Check ${{ matrix.config }}
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    continue-on-error: true
+    strategy:
+      fail-fast: false
+      matrix:
+        config:
+          - FelixRaftWrittenCommitsReformJointDead
+          - FelixRaftWrittenCommitsReformJointDeadOneSet
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Java
+        uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - name: Free disk
+        run: sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/lib/android /opt/hostedtoolcache/CodeQL
+
+      - name: Scratch disk for TLC
+        run: |
+          mkdir -p "$RUNNER_TEMP/tlc"
+          echo "TLC_SCRATCH_DIR=$RUNNER_TEMP/tlc" >> "$GITHUB_ENV"
+
+      # Not registered in check_tla.sh, so each is held to a pass. A red
+      # JointDeadOneSet is a trace it found, the one the directed twin pins.
+      - name: Model-check
+        env:
+          CONFIG: ${{ matrix.config }}
+        run: scripts/check_tla.sh "$CONFIG"
 
   # Exhaustive checks of the configurations the per-push job cannot fit, each
   # in its own job: the longest take hours on a four-core runner.
