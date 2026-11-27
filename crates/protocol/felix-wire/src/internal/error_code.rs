@@ -50,9 +50,10 @@ pub enum ErrorCode {
     /// The owner wrote a sequenced forward and stopped leading the shard
     /// before a majority held it. The batch may be in the log; sent again
     /// under the same sequence, it is answered from whoever leads now. Sent
-    /// only in answer to a sequenced forward (`SequencedForwardPublish` or
-    /// `PlainSequencedForwardPublish`). Not retryable as a
-    /// refusal.
+    /// in answer to a sequenced forward (`SequencedForwardPublish` or
+    /// `PlainSequencedForwardPublish`), and to a cache write on a Raft shard,
+    /// which has no sequence and whose outcome is simply unknown. Not
+    /// retryable as a refusal.
     LeadershipLost = 13,
     /// The owner refused a cache put or counter add because the shard's
     /// Raft group is at its state bound. Nothing was written. Sent only in

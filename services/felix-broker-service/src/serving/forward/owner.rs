@@ -823,7 +823,7 @@ impl ForwardingHandler {
             Ok(request) => request,
             Err(detail) => {
                 metrics::record_served(metrics::OUTCOME_ERROR);
-                return error(correlation_id, ErrorCode::Malformed, detail);
+                return cache_error(correlation_id, ErrorCode::Malformed, detail);
             }
         };
         let writes = !matches!(
@@ -833,7 +833,7 @@ impl ForwardingHandler {
         let Some(term) = self.engine.raft_term(key) else {
             metrics::record_served(metrics::OUTCOME_REFUSED);
             let detail = "this broker stopped leading the shard's Raft group";
-            return error(correlation_id, ErrorCode::Unavailable, detail.to_string());
+            return cache_error(correlation_id, ErrorCode::Unavailable, detail.to_string());
         };
         let applied = raft::apply(
             &self.engine,
@@ -847,25 +847,14 @@ impl ForwardingHandler {
         .unwrap_or(Err(NotServed::Refused(RaftRefusal::NotLeading { term })));
         let answered = match applied {
             Ok(answered) => answered,
-            Err(NotServed::Refused(refused)) => {
-                metrics::record_served(metrics::OUTCOME_REFUSED);
-                return error(correlation_id, ErrorCode::Unavailable, refused.to_string());
-            }
-            #[cfg(feature = "raft")]
-            Err(full @ NotServed::Full(_)) => {
-                metrics::record_served(metrics::OUTCOME_REFUSED);
-                return error(correlation_id, ErrorCode::CacheFull, full.to_string());
-            }
-            // A write may still commit, so this is not a refusal; a read
-            // changed nothing and is only not available here.
-            Err(err) => {
-                metrics::record_served(metrics::OUTCOME_ERROR);
-                let code = if writes {
-                    ErrorCode::StorageFailed
+            Err(not_served) => {
+                let code = raft_cache_code(&not_served, writes);
+                metrics::record_served(if code.is_retryable() || code == ErrorCode::CacheFull {
+                    metrics::OUTCOME_REFUSED
                 } else {
-                    ErrorCode::Unavailable
-                };
-                return error(correlation_id, code, err.to_string());
+                    metrics::OUTCOME_ERROR
+                });
+                return cache_error(correlation_id, code, not_served.to_string());
             }
         };
         metrics::record_served(metrics::OUTCOME_OK);
@@ -1321,6 +1310,37 @@ fn error(correlation_id: u64, code: ErrorCode, detail: String) -> InternalMessag
         code,
         detail,
     })
+}
+
+fn cache_error(correlation_id: u64, code: ErrorCode, detail: String) -> InternalMessage {
+    InternalMessage::ForwardCacheError(ForwardCacheError {
+        correlation_id,
+        code,
+        detail,
+    })
+}
+
+/// The code a Raft cache op that was not served is answered with.
+///
+/// A requester sends a retryable code again, so only a refusal made before
+/// the log took the entry may carry one. A write handed to the log may still
+/// commit: answered retryable, the re-send would apply it twice.
+fn raft_cache_code(
+    not_served: &crate::serving::cache_routing::raft::NotServed,
+    writes: bool,
+) -> ErrorCode {
+    use crate::serving::cache_routing::raft::NotServed;
+    match not_served {
+        NotServed::Refused(_) | NotServed::Commit(CommitError::NotAppended { .. }) => {
+            ErrorCode::Unavailable
+        }
+        #[cfg(feature = "raft")]
+        NotServed::Full(_) => ErrorCode::CacheFull,
+        // A read changed nothing and is only not available here.
+        _ if !writes => ErrorCode::Unavailable,
+        NotServed::Commit(CommitError::LeadershipLost { .. }) => ErrorCode::LeadershipLost,
+        _ => ErrorCode::StorageFailed,
+    }
 }
 
 /// A forwarded op as the request the requester built it from.

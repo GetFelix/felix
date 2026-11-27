@@ -1716,6 +1716,134 @@ mod on_raft {
         );
     }
 
+    /// **A cache op its Raft group did not serve is answered retryable only
+    /// when nothing reached the log.** A write the log took may still
+    /// commit, and a requester sends a retryable answer again.
+    #[test]
+    fn a_raft_cache_write_is_retryable_only_before_the_log_took_it() {
+        use crate::serving::cache_routing::raft::NotServed;
+        let lost = || {
+            NotServed::Commit(CommitError::LeadershipLost {
+                what: "write",
+                detail: "a newer leader",
+            })
+        };
+        let timed_out = || {
+            NotServed::Commit(CommitError::TimedOut {
+                what: "write",
+                timeout: Duration::from_secs(1),
+            })
+        };
+        let not_appended = || {
+            NotServed::Commit(CommitError::NotAppended {
+                what: "write",
+                detail: "lease",
+            })
+        };
+        let not_leading = || NotServed::Refused(RaftRefusal::NotLeading { term: 2 });
+        let unexpected = || NotServed::Unexpected("Sum(3)".to_string());
+        let full = || NotServed::Full("sessions".to_string());
+
+        assert_eq!(raft_cache_code(&lost(), true), ErrorCode::LeadershipLost);
+        assert_eq!(
+            raft_cache_code(&timed_out(), true),
+            ErrorCode::StorageFailed
+        );
+        assert_eq!(
+            raft_cache_code(&unexpected(), true),
+            ErrorCode::StorageFailed
+        );
+        assert_eq!(
+            raft_cache_code(&not_appended(), true),
+            ErrorCode::Unavailable
+        );
+        assert_eq!(
+            raft_cache_code(&not_leading(), true),
+            ErrorCode::Unavailable
+        );
+        assert_eq!(raft_cache_code(&full(), true), ErrorCode::CacheFull);
+        for read in [lost(), timed_out(), unexpected(), not_leading()] {
+            assert_eq!(raft_cache_code(&read, false), ErrorCode::Unavailable);
+        }
+    }
+
+    /// **A forwarded cache write its Raft leader appended and could not
+    /// commit is answered in the cache's shape, as unknown.** The followers
+    /// hear the leader's heartbeats, so it keeps leading, but never its
+    /// entries. The entry may still commit, so the answer must not be one
+    /// the requester sends again.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_forwarded_cache_write_its_leader_cannot_commit_is_in_doubt() {
+        let net = Arc::new(fixture::Loopback::default());
+        let sessions = crate::shards::ShardKey {
+            kind: crate::shards::ShardKind::Cache,
+            ..fixture::key(CACHE, 0)
+        };
+        let mut placed = fixture::assigned(sessions.clone(), fixture::INCARNATION);
+        placed.replicas = fixture::BROKERS
+            .iter()
+            .map(|name| name.to_string())
+            .collect();
+        let mut members = Vec::new();
+        for name in fixture::BROKERS {
+            members.push(fixture::Member::start_cache(&net, name).await);
+        }
+        for member in &members {
+            member
+                .shards
+                .take(&mut fixture::assignments([placed.clone()]))
+                .await;
+        }
+        let all: Vec<_> = members.iter().map(|member| &member.shards).collect();
+        fixture::form_on(&all, placed).await;
+        let mut leader = None;
+        fixture::until("a member serves its term", || {
+            leader = members
+                .iter()
+                .position(|member| member.shards.leading(&sessions).is_some());
+            leader.is_some()
+        })
+        .await;
+        let leader = &members[leader.expect("a leader")];
+        let (router, ingress) = fixture::routes(&leader.shards);
+        let engine = Arc::new(StreamEngine::new(None, Some(ingress)));
+        engine.set_raft(Arc::clone(&leader.shards));
+        let credentials = Credentials::new();
+        let handler = ForwardingHandler::new(
+            Arc::clone(&leader.broker),
+            engine,
+            router,
+            "10.0.0.1:7001".to_string(),
+            Duration::from_millis(500),
+            Arc::clone(&credentials.auth),
+        );
+        let cache = format!("cache:{TENANT}/{NAMESPACE}/{CACHE}");
+        let token = credentials.token(&[&format!("cache.write:{cache}")]);
+        for member in &members {
+            if member.name != leader.name {
+                net.starved.lock().insert(member.name.to_string());
+            }
+        }
+
+        let add = ForwardCacheOp {
+            value: felix_storage::counter_log::encode_sum(1),
+            ..forwarded_cache_op(CacheOpKind::CounterAdd, token)
+        };
+        match handler.apply_cache_op(add).await {
+            InternalMessage::ForwardCacheError(err) => assert!(
+                matches!(
+                    err.code,
+                    ErrorCode::StorageFailed | ErrorCode::LeadershipLost
+                ),
+                "{:?}: {}",
+                err.code,
+                err.detail
+            ),
+            other => panic!("expected an in-doubt cache error, got {other:?}"),
+        }
+        fixture::stop(&members).await;
+    }
+
     /// **A forward to a Raft shard's leader is proposed to its group and
     /// answered with its offsets at the commit**, whatever generation the
     /// requester saw. The hybrid here has no route for the shard and its
