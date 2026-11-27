@@ -716,8 +716,8 @@ fn dead_seat(existing: &ShardAssignment, node: &str, is_serving: &dyn Fn(&str) -
 /// A set change drops the copy ids, and a target waits for every member's.
 /// A voter that died before it reported again would hold the target, and
 /// with it every later swap, for good. The group's reported voters name it
-/// under a copy, and a down broker cannot have changed that copy, so the
-/// target names the member the group already has. Only when it is the one
+/// under a copy. If the broker returns with another, it reports that
+/// itself, so the target names the member the group already has until then. Only when it is the one
 /// member missing and every other member serves, so the target is one the
 /// group can act on, and not when the store would hold the target anyway.
 pub(super) fn vouched_copy<'e>(

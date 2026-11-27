@@ -5874,9 +5874,12 @@ target counter (metadata level 36):
   set still needs a majority of the reported voters. A member that was a
   voter and dies before it reports again would hold the target the same
   way, so placement reports its copy for it, the copy id the voters its
-  group reported at this incarnation and epoch name it under (#3313). A
-  down broker cannot have changed that copy, so the target names the member
-  the group already has. A placement write that
+  group reported at this incarnation and epoch name it under (#3313). The
+  vouched id is the one the group's voters name, so the target names the
+  member the group already has. If the broker comes back with another copy,
+  it reports that itself and keeps reporting until the target names it. A
+  copy answers only for its own member id, so a target naming a stale copy
+  forms nothing. A placement write that
   keeps the set, a leader report and a doomed-set write leave it alone. So
   within one incarnation a version names exactly one member set.
 - **It counts within one stream incarnation.** A stream deleted and

@@ -281,3 +281,31 @@ fn a_dead_member_the_voters_do_not_name_is_not_reported_for() {
     let nodes = cluster(&["broker-2", "broker-5", "broker-6"], &["broker-4"]);
     assert!(pass(&existing, &nodes, 3).vouched.is_empty());
 }
+
+/// Without a voter report there is no evidence of the copy, so nothing is
+/// reported, however long the member has been down.
+#[test]
+fn no_voter_report_at_this_epoch_vouches_nothing() {
+    let mut existing = after_drain();
+    existing.raft_voters = None;
+    let nodes = cluster(&["broker-2", "broker-5", "broker-6"], &["broker-4"]);
+    assert!(pass(&existing, &nodes, 3).vouched.is_empty());
+}
+
+/// A re-form starts a new group at a new epoch. The voters its predecessor
+/// reported name copies that group may not hold, so they vouch for nothing,
+/// even once the new group is marked formed.
+#[test]
+fn voters_of_an_earlier_epoch_do_not_vouch() {
+    let mut existing = after_drain();
+    existing.placed = Some(crate::model::PlacedInEpoch {
+        epoch: 1,
+        brokers: existing.nodes().cloned().collect(),
+    });
+    existing.raft_formed = Some(RaftFormed {
+        incarnation: existing.incarnation,
+        epoch: 1,
+    });
+    let nodes = cluster(&["broker-2", "broker-5", "broker-6"], &["broker-4"]);
+    assert!(pass(&existing, &nodes, 3).vouched.is_empty());
+}

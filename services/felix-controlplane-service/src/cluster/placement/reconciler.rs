@@ -168,6 +168,19 @@ impl PlannedPass {
         self.no_nodes
     }
 
+    /// This pass with `vouched` as the copy ids placement reports, and
+    /// `shards` as what it decided.
+    #[cfg(test)]
+    pub(super) fn with_plan(
+        mut self,
+        shards: Vec<super::ShardPlan>,
+        vouched: Vec<super::plan::VouchedCopy>,
+    ) -> Self {
+        self.plan.shards = shards;
+        self.plan.vouched = vouched;
+        self
+    }
+
     /// This pass as if planned at `fence`, for a test of the generation
     /// check alone.
     #[cfg(test)]

@@ -2039,7 +2039,11 @@ reports its copy for it, the copy id the reported voters name it under,
 when it is the one member that has not reported and every other member
 serves. The target for the set is stored, the group's leader makes the
 joint change to it, and once the group reports voting on the new set the
-dead voter is swapped out like any other. With a second member down nothing
+dead voter is swapped out like any other. The id reported is the one the
+group's voters name. If the broker comes back with another copy, it reports
+that itself and keeps reporting until the target names it, and a copy
+answers only for its own member id, so a target naming a stale copy forms
+nothing. With a second member down nothing
 is reported, since the joint change would need its vote too.
 
 An operator move outside the set is refused with `set_unsettled` while the

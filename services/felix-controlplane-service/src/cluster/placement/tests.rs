@@ -23,6 +23,7 @@ mod raft_dead_voter;
 mod raft_elected;
 mod raft_leaders;
 mod raft_top_up;
+mod raft_vouched_write;
 mod readmit;
 mod reconciler;
 mod recovering;
