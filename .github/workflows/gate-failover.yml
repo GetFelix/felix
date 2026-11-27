@@ -12,7 +12,7 @@ name: Gate - failover and control plane down
 #    restart a leader while the control plane is stopped or paused and need the
 #    shard to keep serving. Run on this commit only; the criterion is absolute.
 #
-# `engine: raft` ends in a skip until the Raft engine exists.
+# The hybrid was removed, so `raft` is the only engine and it always runs.
 
 on:
   workflow_dispatch:
@@ -68,9 +68,7 @@ jobs:
         run: |
           set -euo pipefail
           case "$ENGINE" in
-            raft)
-              echo "run=false" >> "$GITHUB_OUTPUT"
-              echo "The Raft engine is not available yet; no failover runs." >> "$GITHUB_STEP_SUMMARY" ;;
+            raft) echo "run=true" >> "$GITHUB_OUTPUT" ;;
             *) echo "engine must be raft: the hybrid engine was removed"; exit 1 ;;
           esac
           [[ "$BASELINE" =~ ^[A-Za-z0-9][A-Za-z0-9._/-]{0,99}$ ]] || { echo "bad baseline ref"; exit 1; }
@@ -247,11 +245,6 @@ jobs:
           set -euo pipefail
           out=gate-failover
           mkdir -p "$out"
-          if [ "$RUN" != true ]; then
-            jq -cn --arg e "$ENGINE" '{part: "failover", engine: $e, status: "unavailable", summary: "engine not available yet"}' > "$out/result.json"
-            echo "### 4, 5. Failover and control plane down: not run, the $ENGINE engine is not available yet." > "$out/section.md"
-            exit 0
-          fi
           status=pass; summary=""
           if [ -f outputs/failover-verdict.json ]; then
             [ "$(jq -r .status outputs/failover-verdict.json)" = pass ] || status=fail

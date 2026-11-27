@@ -5789,7 +5789,7 @@ Brokers now all run Raft, so this refusal needs a peer from an older release;
 the fix is to upgrade or restart the odd one. The refusal ends on its own at the first routing pass after
 the restarted broker answers with the matching engine. Durable cache
 shards are checked the same way. Streams and caches in memory are not: they
-run on the hybrid engine everywhere.
+run on `shards::memory`, one owner and no group (#3065).
 
 A broker asks without waiting for the answer, and asks again on every
 routing pass until the peer answers, and after that only while the peer's

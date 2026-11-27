@@ -2,11 +2,9 @@ name: Gate - history and simulator sweeps
 
 # Criterion 1 of the no-regression gate (docs/replication-engine.md, "The
 # no-regression gate"): no history-checker violation, and no simulator stall the
-# hybrid does not also have on the same seed. Run by hand, or as part of
-# gate.yml. The hybrid was removed, so only `raft` is accepted, and its run is
-# not built yet: the nightly history and simulator sweeps run on Raft.
-#
-# `engine: raft` ends in a skip until the Raft engine exists.
+# baseline does not also have on the same seed. Run by hand, or as part of
+# gate.yml. The hybrid was removed, so only `raft` is accepted. The simulator
+# part runs the Raft group modes of tests/raft_seeds.rs.
 
 on:
   workflow_dispatch:
@@ -29,7 +27,7 @@ on:
         type: string
         default: "50"
       modes:
-        description: "Simulator nemeses: off, clocks, placement, power-loss (comma separated), or all"
+        description: "Simulator nemeses: raft, raft-clocks, raft-wipe, raft-restore, raft-power-loss, raft-relaxed-power-loss, raft-majority-cut, raft-majority-cut-relaxed (comma separated), or all (the first four)"
         type: string
         default: "all"
       parallel:
@@ -94,10 +92,7 @@ jobs:
         run: |
           set -euo pipefail
           case "$ENGINE" in
-            raft)
-              echo "run=false" >> "$GITHUB_OUTPUT"
-              echo "The Raft engine is not available yet; nothing to sweep." >> "$GITHUB_STEP_SUMMARY"
-              exit 0 ;;
+            raft) echo "run=true" >> "$GITHUB_OUTPUT" ;;
             *) echo "engine must be raft: the hybrid engine was removed"; exit 1 ;;
           esac
           for value in "$FIRST" "$SEEDS" "$SHARDS" "$DURATION"; do
@@ -109,12 +104,12 @@ jobs:
           if [ $(( (SEEDS + SHARDS - 1) / SHARDS )) -gt 50 ]; then
             echo "at most 50 seeds per job: raise shards or lower seeds"; exit 1
           fi
-          [ "$MODES" = all ] && MODES="off,clocks,placement,power-loss"
+          [ "$MODES" = all ] && MODES="raft,raft-clocks,raft-wipe,raft-restore"
           plan=$(jq -cn --arg modes "$MODES" --argjson first "$FIRST" \
             --argjson seeds "$SEEDS" --argjson shards "$SHARDS" '
             [($modes | split(",") | unique[]) | {mode: ., first: $first, seeds: $seeds, shards: $shards}]')
-          if [ "$(jq 'map(select(.mode | IN("off","clocks","placement","power-loss") | not)) | length' <<<"$plan")" != 0 ]; then
-            echo "modes must be from off, clocks, placement, power-loss, or all"; exit 1
+          if [ "$(jq 'map(select(.mode | IN("raft","raft-clocks","raft-wipe","raft-restore","raft-power-loss","raft-relaxed-power-loss","raft-majority-cut","raft-majority-cut-relaxed") | not)) | length' <<<"$plan")" != 0 ]; then
+            echo "modes must be from raft, raft-clocks, raft-wipe, raft-restore, raft-power-loss, raft-relaxed-power-loss, raft-majority-cut, raft-majority-cut-relaxed, or all (the first four)"; exit 1
           fi
           if [ "$(jq 'map(.shards) | add' <<<"$plan")" -gt 256 ]; then
             echo "at most 256 jobs in all (modes times shards)"; exit 1
@@ -167,20 +162,20 @@ jobs:
 
       # The same build as dst-nightly.yml and `task sim:replay`, so a failing
       # seed replays the run the sweep saw.
-      - name: Build the seeds test
+      - name: Build the Raft seeds test
         env:
           RUSTFLAGS: "--cfg tokio_unstable"
         run: |
-          bin=$(cargo test -p felix-sim --release --test seeds --no-run --message-format=json |
-            jq -r 'select(.profile.test == true and .target.name == "seeds") | .executable' |
+          bin=$(cargo test -p felix-sim --release --test raft_seeds --no-run --message-format=json |
+            jq -r 'select(.profile.test == true and .target.name == "raft_seeds") | .executable' |
             tail -1)
           mkdir -p sim-bin
-          cp "$bin" sim-bin/seeds
+          cp "$bin" sim-bin/raft_seeds
 
       - uses: actions/upload-artifact@v7
         with:
           name: gate-sim-bin
-          path: sim-bin/seeds
+          path: sim-bin/raft_seeds
           retention-days: 2
 
   sweep:
@@ -206,7 +201,7 @@ jobs:
 
       - name: Run the seeds
         env:
-          FELIX_SIM_BIN: ${{ github.workspace }}/sim-bin/seeds
+          FELIX_SIM_BIN: ${{ github.workspace }}/sim-bin/raft_seeds
           FELIX_SIM_JOBS: "2"
           FELIX_SIM_MODE: ${{ matrix.shard.mode }}
           FIRST: ${{ matrix.shard.first }}
@@ -352,11 +347,6 @@ jobs:
           set -euo pipefail
           out=gate-history
           mkdir -p "$out"
-          if [ "$RUN" != true ]; then
-            jq -cn --arg e "$ENGINE" '{part: "history", engine: $e, status: "unavailable", summary: "engine not available yet"}' > "$out/result.json"
-            echo "### 1. Correctness: not run, the $ENGINE engine is not available yet." > "$out/section.md"
-            exit 0
-          fi
           shard_count=$(cat shards/*/ran.txt 2>/dev/null | grep -c . || true)
           bugs=$(cat shards/*/failed.txt 2>/dev/null | sort -k3,3n || true)
           stalls=$(cat shards/*/stalls.txt 2>/dev/null | sort -k3,3n || true)

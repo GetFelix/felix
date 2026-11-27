@@ -229,7 +229,7 @@ shards in `.github/workflows/ci.yml`, and the 36 Rust files that cite a
 
 | What | Where | Fate |
 | --- | --- | --- |
-| Modes `off`, `clocks`, `placement`, `power-loss` | `crates/testing/felix-sim`, `.github/workflows/dst-nightly.yml` | Kept, on Raft clusters. `sleep` is added by #2239 |
+| Modes `off`, `clocks`, `placement`, `power-loss` | `crates/testing/felix-sim`, `.github/workflows/dst-nightly.yml` | Not kept as such: they simulated the hybrid's cluster. The `raft-*` group modes (`raft-clocks`, `raft-power-loss` and the rest) cover clock skew and power loss per group. Placement faults are covered by the history faults `MoveShard`, `Drain` and `InterruptedMove` on Raft. A whole-cluster Raft simulation mode is the gap (#3394). `sleep` is added by #2239 |
 | Checkers | `crates/testing/felix-sim/src/check.rs` and `check/` | See "Coverage hand-off" |
 | Pinned seeds named after the driver, fences, promotion or seats | `crates/testing/felix-sim/tests/seeds.rs` | Replayed on Raft. A seed stays if it still runs a distinct schedule, renamed for what it checks |
 | History modes `lease` and `lease-free` | `crates/testing/felix-cluster/src/history/campaign.rs`, `.github/workflows/history.yml` | Both removed. There is one mode |
@@ -484,7 +484,7 @@ is closed or kept.
 | #2135 staged move sticks when the successor's storage id rotates | Resolved by #2235 and #2250: a rotated copy is a new member, swapped in by the membership loop |
 | #2133 interim routing publish copies the map under the lifecycle lock | Resolved in PR 5, which rewrites how the lifecycle publishes routes |
 | #2131 sim: assert a restarted broker reopens its torn segment | Added with the `power-loss` mode on Raft (#2250) |
-| #2067 moves never complete under placement faults (seed 3) | Re-tested by #2235, `placement` mode |
+| #2067 moves never complete under placement faults (seed 3) | The `placement` mode is gone. Raft moves are exercised by the history faults `MoveShard`, `Drain` and `InterruptedMove`; a whole-cluster Raft simulation mode is #3394 |
 | #2066 placement abandon refused on a held shard | Retires with the hybrid: no shard switches, so abandon is no longer the way out. Under Raft, #2250 restates the rule against re-forming |
 | #1998 fsync error must poison the log | Own storage fix, before #2233. A group stops on a storage error, so the error must be sticky |
 | #1931 crash between purge and snapshot install | Track 2 (#2221, pull request #2255) |

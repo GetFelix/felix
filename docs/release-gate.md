@@ -355,12 +355,17 @@ upgrade test (#2257) and the groups-per-broker run (#2243).
 
 | Workflow | Covers | Does not cover yet |
 | --- | --- | --- |
-| `gate-history.yml` | Matrix 1, 2, 10, 12. Section 2 rules 1 to 21 | Matrix 3 to 9, 11, 13 to 15, 19, 20, 22, 23. The Raft rules |
+| `gate-history.yml` | Matrix 1, 2, 10, 12 on Raft: the `raft`, `raft-clocks`, `raft-wipe` and `raft-restore` simulator modes (`all`, or any `raft-*` mode by name) from the `raft_seeds` test, and the history campaign. Section 2 rules 1 to 21 | Matrix 3 to 9, 11, 13 to 15, 19, 20, 22, 23. The Raft rules |
 | `gate-perf.yml` | Cells 1 and 2 as a release A/B: the paired rule with the A/A check, batch 1 for p50 and p99, batch 64 for throughput, one broker for RF 1 | Cells 3 to 6 and 11 to 14. The engine A/B in the workflow (`gate_perf.py --mode engine` has the rule) |
 | `perf-raft-pr.yml` | Not a gate and not required. Part of cell 3 on Raft: a branch against main on three brokers, RF 3 Quorum, run by hand. The hybrid side-by-side went with the hybrid | The one-runner noise: use the box matrix (`docs/perf-raft-parity.md`) for the verdict |
 | `gate-failover.yml` | Cell 7 under the paired rule at 0.95, six rounds. Control plane down as pass or fail | The A/A check. Adding rounds when undecided. Cell 8 as a time. Cell 9 |
 | `gate-groups.yml` | A stub | Cell 10 |
-| `gate.yml` | The report | Matrix 16 to 18 and 21. The stall comparison between engines |
+| `gate.yml` | The report. It calls the four parts with `engine: raft`, the only engine, and each part runs | Matrix 16 to 18 and 21. The stall comparison between engines |
+
+`gate-perf.yml` and `gate-failover.yml` measure the head commit, which runs
+Raft, against the baseline tag (`v0.7.1` by default, the hybrid's last
+release). The hybrid was removed from the head, so the baseline is the only
+build that still runs it.
 
 Changes the workflows need, in the order the gate needs them:
 
