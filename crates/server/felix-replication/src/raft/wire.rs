@@ -619,15 +619,15 @@ pub(crate) fn encode_beats(beats: &[RaftRequest], wait: Duration) -> io::Result<
     Ok(buf.freeze())
 }
 
-/// The heartbeats in a `BEATS` body, and how long to wait for a member
-/// once the others have answered. Anything but a heartbeat inside refuses
-/// the whole body.
-pub(crate) fn decode_beats(mut buf: Bytes) -> io::Result<(Vec<RaftRequest>, Duration)> {
+/// The heartbeats in a `BEATS` body, how long to wait for the rest once
+/// the first has answered, and the longest of their deadlines (zero where
+/// one names none). Anything but a heartbeat inside refuses the whole body.
+pub(crate) fn decode_beats(mut buf: Bytes) -> io::Result<(Vec<RaftRequest>, Duration, Duration)> {
     expect_layout(&mut buf)?;
     if take_u8(&mut buf)? != BEATS {
         return Err(invalid("not a heartbeats body".into()));
     }
-    let _deadline = take_u32(&mut buf)?;
+    let deadline = Duration::from_millis(u64::from(take_u32(&mut buf)?));
     let wait = Duration::from_micros(u64::from(take_u32(&mut buf)?));
     let count = usize::from(take_u16(&mut buf)?);
     if count == 0 || count > MAX_BEATS {
@@ -646,7 +646,7 @@ pub(crate) fn decode_beats(mut buf: Bytes) -> io::Result<(Vec<RaftRequest>, Dura
         beats.push(beat);
     }
     expect_empty(&buf)?;
-    Ok((beats, wait))
+    Ok((beats, wait, deadline))
 }
 
 /// One answer body for each heartbeat of a `BEATS` body, in its order.
