@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795788702642,
+  "lastUpdate": 1795791906526,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -73580,6 +73580,58 @@ window.BENCHMARK_DATA = {
             "range": "8196.76",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1168945.13\nmean: 1170425.79\nstdev: 8196.76\ncv: 0.70%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "80c48acdfb95d631a96b94bc3d5d7c97ca62be8e",
+          "message": "formal(reform): a config checks the standalone re-form and the abandon together (#3306) (#3356)\n\n* formal(reform): check the standalone re-form and the abandon together (#3306)\n\nSpec-Unaffected: adds a configuration only, the spec is unchanged\n\n* formal(reform): register the alone-and-abandon configuration (#3306)\n\nSpec-Unaffected: registers a configuration only\n\n* formal(reform): the alone-and-abandon configuration allows three epochs (#3306)\n\nSpec-Unaffected: configuration bound only",
+          "timestamp": "2026-11-27T14:57:44Z",
+          "tree_id": "78a03c30394ee921b6aa5c2d281c52514e5480ba",
+          "url": "https://github.com/GetFelix/felix/commit/80c48acdfb95d631a96b94bc3d5d7c97ca62be8e"
+        },
+        "date": 1795791905685,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 516702.74,
+            "range": "21186.36",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 516702.74\nmean: 512805.84\nstdev: 21186.36\ncv: 4.13%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 516702.74,
+            "range": "21186.36",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 516702.74\nmean: 512805.84\nstdev: 21186.36\ncv: 4.13%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 121266.84,
+            "range": "9712.12",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 121266.84\nmean: 117244.83\nstdev: 9712.12\ncv: 8.28%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1212668.36,
+            "range": "97121.19",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1212668.36\nmean: 1172448.34\nstdev: 97121.19\ncv: 8.28%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
