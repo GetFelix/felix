@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795761909066,
+  "lastUpdate": 1795762307000,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -73216,6 +73216,58 @@ window.BENCHMARK_DATA = {
             "range": "76909.23",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1179536.30\nmean: 1148523.01\nstdev: 76909.23\ncv: 6.70%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "bf9a6b4023dd4dd4bb94d4ce713a8d5dc04767cb",
+          "message": "fix(storage): startup checks a crashed copy before rotating it, so a power-cut copy is not treated as a restore (#3309) (#3348)\n\n* fix(raft): a relaxed crash keeps the marks it can vouch for, so a re-form counts power-cut votes (#3309)\n\nA machine crash of a relaxed run rotated the storage id and removed the\nroot's mark log before any copy was judged, so every copy rotated as\nStorageId and was kept as a restore. With the followers' votes unknown\nthe re-form cut to the saved commit and dropped acknowledged records the\ndisks still held.\n\nBefore rotating, begin_with now runs the gate's check against the old id:\nthe mark log's root sequence is at or above the run witness's copy and\nthe control plane's copy for that id, with at least one present. When it\npasses, raft-marks is renamed to raft-marks-before-<old id> instead of\nremoved. A copy minted under that id is judged against those marks when\nit opens, and one whose copy id and vote meet them is kept as power-cut.\nAny other rotation removes the kept marks. A directory older than its\nregistration keeps no marks and its relaxed-crash record is tagged as a\nrestore.\n\nThe strict cluster test is un-skipped and the test of the old contract\nis folded into it.\n\nSpec-Unaffected: FelixRaftReform.tla already models a cluster member's relaxed power cut as a power-cut kept copy with its newest vote (PowerCutRotate); this makes the code match it.\n\n* test(raft): the witness and a restored root are covered when a relaxed crash keeps marks (#3309)\n\nSpec-Unaffected: tests and doc comment only\n\n* test(cluster): the strict relaxed re-form test waits on #3351; today's cut is checked on Raft\n\nThe restarted leader stands for election alone and votes in term 3 with\nno entry there, so the vouch rule cuts every tail even with every vote\nknown. The strict test is skipped until #3351 with its assertion intact,\nand the saved-commit test comes back, now asserting the plan is unmarked.\n\nSpec-Unaffected: test, docs and changelog only; no modelled behaviour changes",
+          "timestamp": "2026-11-27T06:44:24Z",
+          "tree_id": "1a4ec5939a1f22ef7b62e2c0849ff9df6b1517c6",
+          "url": "https://github.com/GetFelix/felix/commit/bf9a6b4023dd4dd4bb94d4ce713a8d5dc04767cb"
+        },
+        "date": 1795762306152,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 354096.5,
+            "range": "32573.73",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 354096.50\nmean: 344518.27\nstdev: 32573.73\ncv: 9.45%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 354096.5,
+            "range": "32573.73",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 354096.50\nmean: 344518.27\nstdev: 32573.73\ncv: 9.45%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 82107.18,
+            "range": "533.91",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 82107.18\nmean: 82209.55\nstdev: 533.91\ncv: 0.65%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 821071.83,
+            "range": "5339.08",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 821071.83\nmean: 822095.49\nstdev: 5339.08\ncv: 0.65%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
