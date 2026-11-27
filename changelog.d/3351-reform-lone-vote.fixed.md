@@ -1,0 +1,1 @@
+- A Raft re-form no longer cuts every copy to its saved commit because one voter stood for election alone and lost (#3351). A vote's term now counts toward the re-form's top term only when a majority of some voter set voted at or above it; a term no majority reached elected nobody and holds no entry. An unknown vote still counts as reaching it.
