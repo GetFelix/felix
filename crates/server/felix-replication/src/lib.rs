@@ -1,5 +1,5 @@
 //! Broker-to-broker replication. The default engine is a Raft group per shard
-//! ([`raft`], built with the `raft` feature, which the broker service enables
+//! (`raft`, built with the `raft` feature, which the broker service enables
 //! by default); its messages travel over the broker-internal transport in
 //! [`peer`].
 //!
