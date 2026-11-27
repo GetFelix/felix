@@ -175,24 +175,11 @@ fn reported_features() -> std::collections::BTreeSet<String> {
             .map(str::to_string)
             .collect();
     }
-    let fences = !matches!(
-        std::env::var("FELIX_INTERNAL_FENCE")
-            .ok()
-            .map(|value| value.trim().to_ascii_lowercase())
-            .as_deref(),
-        Some("0" | "false" | "no")
-    );
+    // `FELIX_INTERNAL_FENCE` and `FELIX_INTERNAL_ELECTION` are retired
+    // with the hybrid: a broker reports what their defaults reported.
+    let (fences, election) = (true, false);
     // Unreadable reads as the lease, the side that reports less.
     let reads_by_lease = crate::config::quorum_reads_by_lease().unwrap_or(true);
-    // As the peer config reads it: `ELECTION` is offered only with the fence.
-    let election = fences
-        && matches!(
-            std::env::var("FELIX_INTERNAL_ELECTION")
-                .ok()
-                .map(|value| value.trim().to_ascii_lowercase())
-                .as_deref(),
-            Some("1" | "true" | "yes")
-        );
     cluster_features(fences, reads_by_lease, election)
 }
 

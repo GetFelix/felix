@@ -1,5 +1,10 @@
 # Raft vs hybrid parity matrix
 
+> The hybrid is retired: a current broker refuses `FELIX_SHARD_ENGINE=hybrid`, so the
+> hybrid side of this matrix cannot run on a current build and `perf-raft-rf3.yml` is gone.
+> The page records how the parity gate was run. Compare with the v0.7.2 baseline side to
+> measure against the hybrid now.
+
 Raft becomes the default shard engine only if it is at least as fast as the hybrid on every
 cell below, measured the same way on the same machines ([#2646](https://github.com/GetFelix/felix/issues/2646)).
 This page covers how to run the matrix and how to read what it writes. The harness lives in
@@ -147,7 +152,7 @@ What it does:
 
 1. `build.sh` builds `felix-broker` (with the `raft` feature), `felix-controlplane` and
    `felix-loadgen` once, installs them on all three boxes, and checks the broker really contains
-   the Raft engine. One binary serves both sides: `FELIX_SHARD_ENGINE` picks the engine.
+   the Raft engine. The hybrid side needed `FELIX_SHARD_ENGINE=hybrid`, which a current broker refuses.
 2. `run.sh` runs every cell on both engines for `ROUNDS` rounds. Each cell on each side gets a
    fresh cluster (control plane in memory on box 1, a data directory per broker), one stream,
    one measurement, then everything is stopped and wiped. Odd rounds run hybrid first, even
@@ -231,7 +236,7 @@ three brokers on one runner, in one job: `rf3-oncommit-1k` (batch 64) and `rf3-o
 (batch 1), six rounds of 15 s by default, about 15 minutes after the build. It is a report and
 not a gate; a shared runner is too noisy for that. Use it to see whether a Raft-side change like
 [#2532](https://github.com/GetFelix/felix/pull/2532) moved the numbers before spending Azure
-time. `perf-raft-rf3.yml` is the same cells with the engine, not the revision, as the variable.
+time.
 
 ## Against the last release
 
@@ -249,7 +254,7 @@ SIDES="baseline hybrid raft" ROUNDS=6 task perf:raft-parity
   `raft` feature. It installs them in `/mnt/build/raft-parity/bin-baseline`, so the current
   `bin` stays as it was. The build refuses a baseline broker that contains the Raft engine.
 - The baseline side starts the release's own control plane and broker, with the same settings
-  as the other sides except `FELIX_SHARD_ENGINE`, which v0.7.2 does not read (it has the hybrid
+  as the other sides except the engine variable, which v0.7.2 does not read (it has the hybrid
   engine only). The harness checks that the broker has no engine variable and no Raft marker.
 - Every side uses the current `felix-loadgen`. The v0.7.2 loadgen has no `mqtt-publish`,
   `mqtt-subscribe`, `resume` or failover kill-file scenario, and one client for all sides is the

@@ -103,9 +103,6 @@ pub(crate) fn spawn_broker(
         .env("FELIX_INTERNAL_BIND", internal_addr.to_string())
         .env("FELIX_BROKER_METRICS_BIND", metrics_addr.to_string())
         .env("FELIX_DURABLE_STORAGE_DIR", &storage)
-        // The suite's engine; a test that names one in `broker_env` or
-        // `node_env` overrides it, those come later.
-        .env("FELIX_SHARD_ENGINE", crate::config::default_engine())
         .env(
             "FELIX_CONTROLPLANE_SYNC_INTERVAL_MS",
             config.sync_interval_ms.to_string(),

@@ -1683,16 +1683,16 @@ async fn metric(cluster: &Cluster, node: &str, series: &str) -> f64 {
         .sum()
 }
 
-/// **A broker on another engine is refused at start.** One of three Raft
-/// brokers comes back on the hybrid engine with an empty disk, as a
-/// replaced broker would. The control plane's identity names Raft, so the
-/// broker exits before it opens anything and says why, and the Raft pair
-/// keeps serving the shard. (Brokers that got past that check, under a
-/// control plane with no identity route, refuse each other instead:
+/// **A broker asked for the hybrid is refused at start.** One of three Raft
+/// brokers comes back with `FELIX_SHARD_ENGINE=hybrid` and an empty disk, as
+/// an old manifest would start a replaced broker. The hybrid was removed, so
+/// the broker exits before it opens anything and says why, and the Raft pair
+/// keeps serving the shard. (Brokers of an older build, under a control plane
+/// with no identity route, refuse each other instead:
 /// `shards/engine_match.rs`.)
 #[tokio::test]
 #[serial]
-async fn a_broker_on_another_engine_is_refused_at_start() {
+async fn a_broker_asked_for_the_hybrid_is_refused_at_start() {
     if !opted_in() {
         return;
     }
@@ -1715,10 +1715,10 @@ async fn a_broker_on_another_engine_is_refused_at_start() {
     cluster
         .restart_node(&hybrid)
         .await
-        .expect_err("a hybrid broker started under a Raft control plane");
+        .expect_err("a broker started on the hybrid");
     let said = std::fs::read_to_string(&log).unwrap_or_default();
     assert!(
-        said.contains("runs shard engine hybrid but the cluster was formed with raft"),
+        said.contains("FELIX_SHARD_ENGINE=hybrid is refused"),
         "the refused broker does not say why: {said}"
     );
 

@@ -21,8 +21,8 @@ on:
       engine:
         description: "Replication engine under test"
         type: choice
-        options: [hybrid, raft]
-        default: hybrid
+        options: [raft]
+        default: raft
       baseline_ref:
         description: "Baseline tag or commit (the last v0.7.x release)"
         type: string
@@ -33,7 +33,7 @@ on:
         default: "30"
   workflow_call:
     inputs:
-      engine: { type: string, default: hybrid }
+      engine: { type: string, default: raft }
       baseline_ref: { type: string, default: "v0.7.1" }
       seconds: { type: string, default: "30" }
 
@@ -61,11 +61,10 @@ jobs:
         run: |
           set -euo pipefail
           case "$ENGINE" in
-            hybrid) echo "run=true" >> "$GITHUB_OUTPUT" ;;
             raft)
               echo "run=false" >> "$GITHUB_OUTPUT"
               echo "The Raft engine is not available yet; no perf cells to run." >> "$GITHUB_STEP_SUMMARY" ;;
-            *) echo "engine must be hybrid or raft"; exit 1 ;;
+            *) echo "engine must be raft: the hybrid engine was removed"; exit 1 ;;
           esac
           [[ "$BASELINE" =~ ^[A-Za-z0-9][A-Za-z0-9._/-]{0,99}$ ]] || { echo "bad baseline ref"; exit 1; }
           [[ "$SECONDS_PER_TRIAL" =~ ^[1-9][0-9]{0,3}$ ]] || { echo "seconds must be a number"; exit 1; }

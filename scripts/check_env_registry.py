@@ -69,10 +69,20 @@ def read_by_code() -> set[str]:
     return {line.strip('"') for line in out.splitlines()}
 
 
-def registered() -> set[str]:
+def listing(name: str) -> set[str]:
     body = REGISTRY.read_text()
-    listing = body[body.index("KNOWN_VARS: &[&str] = &[") : body.index("];")]
-    return set(re.findall(r'"(FELIX_[A-Z0-9_]+)"', listing))
+    start = body.index(f"{name}: &[&str] = &[")
+    return set(re.findall(r'"(FELIX_[A-Z0-9_]+)"', body[start : body.index("];", start)]))
+
+
+def registered() -> set[str]:
+    return listing("KNOWN_VARS")
+
+
+def retired() -> set[str]:
+    """Names retired with the hybrid. A literal in the code, so read by it, and
+    reported at start as retired rather than as unknown."""
+    return listing("RETIRED_VARS")
 
 
 def states_a_count() -> bool:
@@ -90,8 +100,11 @@ def main() -> int:
     # `read_by_code` finds them too. That is what makes the two sets directly
     # comparable: a name in the registry is "read by the code" by construction,
     # and anything else in that set is read by something real.
-    expected = read_by_code() - NOT_VARIABLES
+    gone = retired()
+    expected = read_by_code() - NOT_VARIABLES - gone
     listed = registered()
+    for name in sorted(gone & listed):
+        print(f"in both KNOWN_VARS and RETIRED_VARS: {name}")
 
     missing = sorted(expected - listed)
     stale = sorted(listed - expected)
@@ -109,7 +122,7 @@ def main() -> int:
         f"{len(expected)} variable(s) checked, "
         f"{len(missing)} missing, {len(stale)} stale"
     )
-    return 1 if missing or stale or counted else 0
+    return 1 if missing or stale or counted or (gone & listed) else 0
 
 
 if __name__ == "__main__":

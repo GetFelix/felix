@@ -354,17 +354,28 @@ fn api_ui_path_must_not_shadow_the_api() {
 
 #[serial]
 #[test]
-fn the_shard_engine_defaults_to_raft_and_refuses_unknown_values() {
+fn the_shard_engine_is_raft_and_the_hybrid_is_refused() {
     let _env = clear_felix_env();
     let config = ControlPlaneConfig::from_env().expect("from_env");
     assert_eq!(config.shard_engine, ShardEngine::Raft);
     assert_eq!(config.shard_engine.as_str(), "raft");
 
     unsafe {
+        env::set_var("FELIX_SHARD_ENGINE", " Raft ");
+    }
+    let config = ControlPlaneConfig::from_env().expect("raft is accepted");
+    assert_eq!(config.shard_engine, ShardEngine::Raft);
+
+    // The hybrid is gone: asked for, the control plane does not start.
+    unsafe {
         env::set_var("FELIX_SHARD_ENGINE", "hybrid");
     }
-    let config = ControlPlaneConfig::from_env().expect("hybrid");
-    assert_eq!(config.shard_engine, ShardEngine::Hybrid);
+    let err = ControlPlaneConfig::from_env().expect_err("hybrid");
+    assert!(
+        err.to_string()
+            .contains("FELIX_SHARD_ENGINE=hybrid is refused"),
+        "{err}"
+    );
 
     unsafe {
         env::set_var("FELIX_SHARD_ENGINE", "paxos");
@@ -591,12 +602,8 @@ fn shard_move_pacing_comes_from_the_environment() {
     unsafe {
         env::set_var("FELIX_SHARD_MOVES_MAX_CONCURRENT", "0");
         env::set_var("FELIX_SHARD_MOVES_MAX_PER_NODE", "2");
-        env::set_var("FELIX_SHARD_MOVE_FENCE_MAX_LAG_RECORDS", "0");
         env::set_var("FELIX_SHARD_MOVE_TIMEOUT_MS", "0");
         env::set_var("FELIX_SHARD_RESTORE_STALL_MS", "0");
-        env::set_var("FELIX_SHARD_STUCK_LEADER_MS", "0");
-        env::set_var("FELIX_SHARD_PENDING_SET_TIMEOUT_MS", "0");
-        env::set_var("FELIX_SHARD_ELECTION_HOLD_MS", "0");
         env::set_var("FELIX_PLACEMENT_SETTLE_MS", "0");
     }
     let config = ControlPlaneConfig::from_env()
@@ -605,12 +612,8 @@ fn shard_move_pacing_comes_from_the_environment() {
     assert_eq!(config.settle_millis, None);
     assert_eq!(config.max_concurrent, 0);
     assert_eq!(config.max_per_node, Some(2));
-    assert_eq!(config.fence_max_lag_records, 0);
     assert_eq!(config.timeout_millis, None);
     assert_eq!(config.restore_stall_millis, None);
-    assert_eq!(config.stuck_leader_millis, None);
-    assert_eq!(config.pending_set_timeout_millis, None);
-    assert_eq!(config.election_hold_millis, None);
 
     unsafe {
         env::set_var("FELIX_SHARD_MOVES_MAX_PER_NODE", "0");

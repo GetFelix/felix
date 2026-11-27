@@ -1,9 +1,9 @@
 name: Perf - Raft RF 3, a branch against main
 
-# Part of #2646. gate-perf.yml skips the Raft engine and perf-raft-rf3.yml compares
-# engines, so neither answers "did this change slow Raft down?". This runs the same
-# RF 3 cells as perf-raft-rf3.yml with FELIX_SHARD_ENGINE=raft on both sides, three
-# brokers on one runner, the branch (head) against main (baseline) in one job.
+# Part of #2646. gate-perf.yml skips the Raft engine, so it does not answer "did
+# this change slow Raft down?". This runs RF 3 Quorum cells with
+# FELIX_SHARD_ENGINE=raft on both sides, three brokers on one runner, the branch
+# (head) against main (baseline) in one job.
 # Trials alternate sides and the side that goes first flips each round, so runner
 # drift lands on both.
 #

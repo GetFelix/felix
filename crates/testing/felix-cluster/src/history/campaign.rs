@@ -27,15 +27,14 @@ pub const SEED_VAR: &str = "FELIX_HISTORY_SEED";
 /// How long the nemesis runs, in seconds.
 pub const DURATION_VAR: &str = "FELIX_HISTORY_DURATION_SECS";
 
-/// Which replication path the brokers take: `lease` or `lease-free`.
-pub const MODE_VAR: &str = "FELIX_HISTORY_MODE";
-
 /// Which faults a long run injects: `all` for every single fault kind (the
 /// default), or `adversarial` for the compound ones on four brokers.
 pub const NEMESIS_VAR: &str = "FELIX_HISTORY_NEMESIS";
 
-/// The fleet features the lease-free mode finalizes.
-pub const LEASE_FREE_FEATURES: &[&str] = &[
+/// The fleet features a campaign finalizes once the cluster is up. There is
+/// one mode: the hybrid's lease and lease-free paths went with it, and a Raft
+/// group has one way to acknowledge and read.
+pub const FEATURES: &[&str] = &[
     "generation_start",
     "majority_ack",
     "lease_free_reads",
@@ -43,18 +42,12 @@ pub const LEASE_FREE_FEATURES: &[&str] = &[
     ATOMIC_COMMIT,
 ];
 
-/// Finalized in every mode, so the workload can commit. It changes no
-/// acknowledgement or read path, only whether a commit is accepted.
+/// Finalized so the workload can commit. It changes no acknowledgement or
+/// read path, only whether a commit is accepted.
 pub const ATOMIC_COMMIT: &str = "atomic_commit";
 
-/// What a nemesis that needs elections finalizes on top of
-/// [`LEASE_FREE_FEATURES`].
+/// What a nemesis that needs elections finalizes on top of [`FEATURES`].
 const ELECTION_FEATURES: &[fleet::FleetFeature] = &[fleet::JOINT_FENCE, fleet::REPLICA_ELECTION];
-
-/// How long a follower takes to suspect a silent leader when brokers elect.
-/// Short, so a campaign spends its time on elections rather than on the
-/// detector.
-const SUSPECT_AFTER_MS: &str = "1000";
 
 /// How long every broker has to turn the finalized features on.
 const FEATURES_TIMEOUT: Duration = Duration::from_secs(30);
@@ -66,53 +59,10 @@ const PLACEMENT_INTERVAL: Duration = Duration::from_millis(500);
 /// How long taking a list's base or final read may take, faults healed.
 const SETTLE_TIMEOUT: Duration = Duration::from_secs(60);
 
-/// Which path `Quorum` writes and reads take.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Mode {
-    /// Only [`ATOMIC_COMMIT`] finalized: acknowledgements and reads rest on
-    /// the leader's lease.
-    Lease,
-    /// [`LEASE_FREE_FEATURES`] finalized once the cluster is up: writes are
-    /// acknowledged by a majority at the leader's generation and cache reads
-    /// confirm leadership by a majority round.
-    LeaseFree,
-}
-
-impl Mode {
-    /// `FELIX_HISTORY_MODE`, or `default` when it is unset.
-    pub fn from_env(default: Mode) -> Result<Self> {
-        match std::env::var(MODE_VAR) {
-            Err(_) => Ok(default),
-            Ok(value) => match value.as_str() {
-                "lease" => Ok(Mode::Lease),
-                "lease-free" => Ok(Mode::LeaseFree),
-                _ => bail!("{MODE_VAR}={value:?} is not `lease` or `lease-free`"),
-            },
-        }
-    }
-
-    pub fn features(self) -> &'static [&'static str] {
-        match self {
-            Mode::Lease => &[ATOMIC_COMMIT],
-            Mode::LeaseFree => LEASE_FREE_FEATURES,
-        }
-    }
-}
-
-impl std::fmt::Display for Mode {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(match self {
-            Mode::Lease => "lease",
-            Mode::LeaseFree => "lease-free",
-        })
-    }
-}
-
 /// What to run.
 #[derive(Debug, Clone)]
 pub struct Campaign {
     pub seed: u64,
-    pub mode: Mode,
     /// How long the nemesis runs. The clients start before it and stop after.
     pub duration: Duration,
     /// How many brokers. Every list and the cache have three replicas, so a
@@ -144,13 +94,8 @@ pub struct Campaign {
 
 impl Campaign {
     /// A campaign with the given defaults, overridden by
-    /// `FELIX_HISTORY_SEED`, `FELIX_HISTORY_DURATION_SECS` and
-    /// `FELIX_HISTORY_MODE`.
-    pub fn from_env(
-        default_seed: u64,
-        default_duration: Duration,
-        default_mode: Mode,
-    ) -> Result<Self> {
+    /// `FELIX_HISTORY_SEED` and `FELIX_HISTORY_DURATION_SECS`.
+    pub fn from_env(default_seed: u64, default_duration: Duration) -> Result<Self> {
         let seed = match std::env::var(SEED_VAR) {
             Err(_) => default_seed,
             Ok(value) if value == "random" => random_seed(),
@@ -168,7 +113,6 @@ impl Campaign {
         };
         Ok(Self {
             seed,
-            mode: Mode::from_env(default_mode)?,
             duration,
             nodes: 3,
             clients: 6,
@@ -221,8 +165,7 @@ impl Campaign {
             }
         }
         if nemesis.needs_election() {
-            // The brokers report the election features only when told to,
-            // and offer ELECTION only with the internal switch on.
+            // The brokers report the election features only when told to.
             let reported = fleet::IMPLEMENTED
                 .iter()
                 .chain(&[
@@ -235,12 +178,7 @@ impl Campaign {
                 .collect::<Vec<_>>()
                 .join(",");
             for (name, value) in [
-                ("FELIX_INTERNAL_ELECTION", "true".to_string()),
                 ("FELIX_TEST_FLEET_FEATURES", reported),
-                (
-                    "FELIX_LEADER_SUSPECT_AFTER_MS",
-                    SUSPECT_AFTER_MS.to_string(),
-                ),
                 // A publish waiting on the dead leader's quorum gives up soon
                 // enough for the client to try the elected one.
                 ("FELIX_PUBLISH_QUORUM_TIMEOUT_MS", "2000".to_string()),
@@ -270,23 +208,20 @@ impl Campaign {
         }
     }
 
-    /// Start the cluster for `nemesis` and finalize the mode's fleet
-    /// features, returning once every broker has turned them on. A nemesis
-    /// that needs elections also gets `replica_election`, lease-free only.
+    /// Start the cluster for `nemesis` and finalize [`FEATURES`], returning
+    /// once every broker has turned them on. A nemesis that needs elections
+    /// also gets `replica_election`.
     pub async fn start(&self, nemesis: &impl Nemesis) -> Result<Cluster> {
         let election = nemesis.needs_election();
-        if election && self.mode == Mode::Lease {
-            bail!("electing among replicas needs the lease-free mode");
-        }
         let cluster = Cluster::start(self.cluster_config(nemesis)).await?;
-        let mut features = self.mode.features().to_vec();
+        let mut features = FEATURES.to_vec();
         if election {
             features.extend(ELECTION_FEATURES.iter().map(|feature| feature.name()));
         }
         cluster
             .finalize_fleet_features(&features, FEATURES_TIMEOUT)
             .await
-            .with_context(|| format!("mode {}: the fleet features did not turn on", self.mode))?;
+            .context("the fleet features did not turn on")?;
         if election {
             self.keep_sets(&cluster).await?;
         }

@@ -665,39 +665,50 @@ pub(crate) fn quorum_reads_by_lease() -> Result<bool> {
     }
 }
 
-/// Which engine replicates this broker's durable stream shards.
+/// What runs this broker's durable stream and cache shards. Raft is the only
+/// engine; the hybrid is gone (`docs/hybrid-retirement.md`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ShardEngine {
-    Hybrid,
+    /// A standalone broker without durable storage: every stream and cache
+    /// is in memory, and no engine runs any of them.
+    InMemory,
     Raft,
 }
 
 impl ShardEngine {
-    /// The name `FELIX_SHARD_ENGINE` and the control plane's identity use.
+    /// The name the control plane's identity records. Only a broker that
+    /// registers sends it, and a registering broker always runs Raft.
     pub(crate) fn as_str(self) -> &'static str {
         match self {
-            Self::Hybrid => "hybrid",
+            Self::InMemory => "in-memory",
             Self::Raft => "raft",
         }
     }
 }
 
-/// `FELIX_SHARD_ENGINE` as set: `raft`, `hybrid` (deprecated), or `None`
-/// when unset, which [`RaftPrerequisites::resolve`] turns into an engine.
-/// Every broker of a cluster must run the same; see `docs/per-shard-raft.md`.
-pub(crate) fn shard_engine() -> Result<Option<ShardEngine>> {
-    parse_shard_engine(std::env::var("FELIX_SHARD_ENGINE").ok().as_deref())
+/// Refuse `FELIX_SHARD_ENGINE=hybrid`. The variable is retired: `raft` or
+/// unset start the broker and the start reports it as retired, but a broker
+/// asked for an engine it no longer has does not start, so nobody believes
+/// they still run the hybrid.
+pub(crate) fn refuse_retired_shard_engine() -> Result<()> {
+    check_shard_engine(std::env::var("FELIX_SHARD_ENGINE").ok().as_deref())
 }
 
-pub(crate) fn parse_shard_engine(value: Option<&str>) -> Result<Option<ShardEngine>> {
+pub(crate) fn check_shard_engine(value: Option<&str>) -> Result<()> {
     match value
         .map(|value| value.trim().to_ascii_lowercase())
         .as_deref()
     {
-        None | Some("") => Ok(None),
-        Some("hybrid") => Ok(Some(ShardEngine::Hybrid)),
-        Some("raft") => Ok(Some(ShardEngine::Raft)),
-        Some(other) => anyhow::bail!("FELIX_SHARD_ENGINE must be hybrid or raft, not {other:?}"),
+        None | Some("" | "raft") => Ok(()),
+        Some("hybrid") => anyhow::bail!(
+            "FELIX_SHARD_ENGINE=hybrid is refused: the hybrid shard engine was removed and \
+             shards run only on Raft; leave FELIX_SHARD_ENGINE unset. Data the hybrid wrote is \
+             not served: start on an empty FELIX_DURABLE_STORAGE_DIR"
+        ),
+        Some(other) => anyhow::bail!(
+            "FELIX_SHARD_ENGINE={other:?} is refused: the variable is retired and shards run only \
+             on Raft; leave it unset"
+        ),
     }
 }
 
@@ -825,42 +836,36 @@ pub(crate) struct RaftPrerequisites {
 }
 
 impl RaftPrerequisites {
-    /// Why this broker cannot run Raft shards, if it cannot. Starting as a
-    /// hybrid broker instead would put two engines on one shard. A cluster
-    /// member without durable storage runs no Raft group and is given only
-    /// in-memory stream shards, so it needs no disk.
+    /// Why this broker cannot run Raft shards, if it cannot. A cluster member
+    /// without durable storage runs no Raft group and is given only
+    /// in-memory stream shards, so it needs no disk. A standalone broker
+    /// without durable storage needs nothing.
     pub(crate) fn missing(&self) -> Option<&'static str> {
-        if !self.compiled {
+        if !self.compiled && (self.membership || self.durable_storage) {
             Some("this build has no Raft engine (cargo feature `raft`)")
         } else if self.membership && !self.peer_transport {
             Some("it needs the broker-internal listener (FELIX_INTERNAL_BIND)")
-        } else if !self.membership && !self.durable_storage {
-            Some("it needs durable storage (FELIX_DURABLE_STORAGE_DIR)")
         } else {
             None
         }
     }
 
-    /// The engine this broker runs for `setting`. Unset is Raft wherever
-    /// Raft can run, standalone included: there each durable shard is a
-    /// Raft group of one. A broker with a cluster identity that cannot run
-    /// Raft is refused rather than run the hybrid engine: the control plane
-    /// would place shards on it beside Raft peers. A standalone broker
-    /// without durable storage has no durable shard to run, and one built
-    /// without Raft has only the hybrid. Asking for Raft where it cannot
-    /// run is refused too.
-    pub(crate) fn resolve(&self, setting: Option<ShardEngine>) -> Result<ShardEngine> {
-        match (setting, self.missing()) {
-            (Some(ShardEngine::Raft), Some(missing)) => {
-                anyhow::bail!("FELIX_SHARD_ENGINE=raft is refused: {missing}")
-            }
-            (Some(engine), _) => Ok(engine),
-            (None, None) => Ok(ShardEngine::Raft),
-            (None, Some(missing)) if self.membership => anyhow::bail!(
+    /// What runs this broker's durable shards. Raft wherever Raft can run,
+    /// standalone included: there each durable shard is a Raft group of one.
+    /// A standalone broker without durable storage has none, so nothing does.
+    /// Any other broker that cannot run Raft is refused: there is no other
+    /// engine to fall back on.
+    pub(crate) fn resolve(&self) -> Result<ShardEngine> {
+        match self.missing() {
+            None if !self.membership && !self.durable_storage => Ok(ShardEngine::InMemory),
+            None => Ok(ShardEngine::Raft),
+            Some(missing) if self.membership => anyhow::bail!(
                 "this broker has a cluster identity (FELIX_NODE_ID), so its durable stream \
                  shards run on Raft, but {missing}"
             ),
-            (None, Some(_)) => Ok(ShardEngine::Hybrid),
+            Some(missing) => {
+                anyhow::bail!("this broker's durable shards run on Raft, but {missing}")
+            }
         }
     }
 }

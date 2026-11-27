@@ -3,8 +3,8 @@ name: Gate - history and simulator sweeps
 # Criterion 1 of the no-regression gate (docs/replication-engine.md, "The
 # no-regression gate"): no history-checker violation, and no simulator stall the
 # hybrid does not also have on the same seed. Run by hand, or as part of
-# gate.yml. The report lists violations and stalls for the chosen engine so two
-# runs (hybrid, raft) can be compared seed by seed.
+# gate.yml. The hybrid was removed, so only `raft` is accepted, and its run is
+# not built yet: the nightly history and simulator sweeps run on Raft.
 #
 # `engine: raft` ends in a skip until the Raft engine exists.
 
@@ -14,8 +14,8 @@ on:
       engine:
         description: "Replication engine under test"
         type: choice
-        options: [hybrid, raft]
-        default: hybrid
+        options: [raft]
+        default: raft
       seeds:
         description: "Simulator seeds per mode (2000 for the gate)"
         type: string
@@ -50,7 +50,7 @@ on:
         default: "1200"
   workflow_call:
     inputs:
-      engine: { type: string, default: hybrid }
+      engine: { type: string, default: raft }
       seeds: { type: string, default: "2000" }
       first: { type: string, default: "1" }
       shards: { type: string, default: "50" }
@@ -94,12 +94,11 @@ jobs:
         run: |
           set -euo pipefail
           case "$ENGINE" in
-            hybrid) echo "run=true" >> "$GITHUB_OUTPUT" ;;
             raft)
               echo "run=false" >> "$GITHUB_OUTPUT"
               echo "The Raft engine is not available yet; nothing to sweep." >> "$GITHUB_STEP_SUMMARY"
               exit 0 ;;
-            *) echo "engine must be hybrid or raft"; exit 1 ;;
+            *) echo "engine must be raft: the hybrid engine was removed"; exit 1 ;;
           esac
           for value in "$FIRST" "$SEEDS" "$SHARDS" "$DURATION"; do
             [[ "$value" =~ ^[1-9][0-9]{0,6}$ ]] || { echo "not a positive number: $value"; exit 1; }
@@ -285,7 +284,6 @@ jobs:
       - name: Run the campaign
         env:
           FELIX_HISTORY_SEED: ${{ needs.plan.outputs.seed }}
-          FELIX_HISTORY_MODE: lease-free
           FELIX_HISTORY_NEMESIS: ${{ matrix.nemesis }}
           FELIX_HISTORY_DURATION_SECS: ${{ inputs.duration_secs }}
           FELIX_TEST_CLUSTER_LOG_DIR: ${{ runner.temp }}/cluster-logs

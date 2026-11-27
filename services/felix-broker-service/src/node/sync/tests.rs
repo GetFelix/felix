@@ -12,8 +12,8 @@ use tokio::net::TcpListener;
 use super::*;
 use crate::test_support::{spawn_axum_with_shutdown, wait_for_listen};
 
-/// A registered broker on the hybrid engine, as these control planes are.
-const HYBRID: Option<ShardEngine> = Some(ShardEngine::Hybrid);
+/// A registered broker, on Raft as every one is.
+const RAFT: Option<ShardEngine> = Some(ShardEngine::Raft);
 
 /// A control plane that knows one tenant, `t1`, and serves its JWKS.
 fn control_plane() -> Router {
@@ -238,22 +238,15 @@ fn a_start_from_the_view_judges_its_group_after_the_restore_check() {
     let dir = marked_directory();
     let client = reqwest::Client::new();
     let refused = CancellationToken::new();
-    let check = GroupCheck::for_start(Some(dir.path()), true, None, HYBRID, &client, &refused);
+    let check = GroupCheck::for_start(Some(dir.path()), true, None, RAFT, &client, &refused);
     assert!(matches!(check, GroupCheck::Deferred { .. }), "{check:?}");
-    let check = GroupCheck::for_start(Some(dir.path()), false, None, HYBRID, &client, &refused);
+    let check = GroupCheck::for_start(Some(dir.path()), false, None, RAFT, &client, &refused);
     assert!(
         matches!(&check, GroupCheck::Decided(Some(guard)) if guard.stored.is_none()),
         "a marked directory expects no group: {check:?}"
     );
     let unmarked = tempfile::tempdir().expect("dir");
-    let check = GroupCheck::for_start(
-        Some(unmarked.path()),
-        false,
-        None,
-        HYBRID,
-        &client,
-        &refused,
-    );
+    let check = GroupCheck::for_start(Some(unmarked.path()), false, None, RAFT, &client, &refused);
     assert!(matches!(check, GroupCheck::Decided(None)), "{check:?}");
 }
 
@@ -326,7 +319,7 @@ async fn sync_from_view(
             Some(dir),
             true,
             None,
-            HYBRID,
+            RAFT,
             &reqwest::Client::new(),
             &refused,
         ),
@@ -347,7 +340,7 @@ async fn a_start_from_the_view_applies_nothing_from_a_new_group() -> Result<()> 
     let pending = Arc::new(std::sync::atomic::AtomicBool::new(true));
     let router = identified_control_plane(
         Arc::clone(&pending),
-        json!({ "group_id": "g-1", "shard_engine": "hybrid" }),
+        json!({ "group_id": "g-1", "shard_engine": "raft" }),
     );
     let (broker, refused, sync_shutdown, _stop) = sync_from_view(dir.path(), router).await?;
     tokio::time::sleep(Duration::from_millis(300)).await;
@@ -375,7 +368,7 @@ async fn a_start_from_the_view_under_a_control_plane_without_a_group_syncs() -> 
     let dir = marked_directory();
     let router = identified_control_plane(
         Arc::new(std::sync::atomic::AtomicBool::new(false)),
-        json!({ "shard_engine": "hybrid" }),
+        json!({ "shard_engine": "raft" }),
     );
     let (broker, refused, sync_shutdown, _stop) = sync_from_view(dir.path(), router).await?;
     tokio::time::timeout(Duration::from_secs(10), async {

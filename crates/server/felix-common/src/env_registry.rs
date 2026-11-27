@@ -136,7 +136,6 @@ pub const KNOWN_VARS: &[&str] = &[
     "FELIX_DURABLE_SEGMENT_BYTES",
     "FELIX_DURABLE_STORAGE_DIR",
     "FELIX_DURABLE_VERIFY_ALL_ON_OPEN",
-    "FELIX_ELECTION_DEFER_FOR_MS",
     "FELIX_EVENT_BATCH_MAX_BYTES",
     "FELIX_EVENT_BATCH_MAX_DELAY_US",
     "FELIX_EVENT_BATCH_MAX_EVENTS",
@@ -154,7 +153,6 @@ pub const KNOWN_VARS: &[&str] = &[
     "FELIX_GROUP_MAX_WAIT_MS",
     "FELIX_GROUP_VISIBILITY_TIMEOUT_MS",
     "FELIX_HISTORY_DURATION_SECS",
-    "FELIX_HISTORY_MODE",
     "FELIX_HISTORY_NEMESIS",
     "FELIX_HISTORY_SEED",
     "FELIX_HOP_TRACE",
@@ -163,8 +161,6 @@ pub const KNOWN_VARS: &[&str] = &[
     "FELIX_INTERNAL_ALLOW_UNAUTHENTICATED",
     "FELIX_INTERNAL_BIND",
     "FELIX_INTERNAL_CONNS_PER_PEER",
-    "FELIX_INTERNAL_ELECTION",
-    "FELIX_INTERNAL_FENCE",
     "FELIX_INTERNAL_HANDSHAKE_TIMEOUT_MS",
     "FELIX_INTERNAL_IDLE_TIMEOUT_MS",
     "FELIX_INTERNAL_MAX_INBOUND_CONNECTIONS",
@@ -190,7 +186,6 @@ pub const KNOWN_VARS: &[&str] = &[
     "FELIX_KAFKA_TLS",
     "FELIX_KEEPALIVE_MS",
     "FELIX_LATENCY_DEMO_FAST",
-    "FELIX_LEADER_SUSPECT_AFTER_MS",
     "FELIX_LEASE_TOKEN_KEY_FILE",
     "FELIX_LEASE_TOKEN_MAX_TTL_SECONDS",
     "FELIX_MAX_CLIENT_CONNECTIONS",
@@ -292,17 +287,12 @@ pub const KNOWN_VARS: &[&str] = &[
     "FELIX_REPLICATION_REBUILD_MAX_CONCURRENT",
     "FELIX_SERVER_NAME",
     "FELIX_SERVICE_INSTANCE_ID",
-    "FELIX_SHARD_ELECTION_HOLD_MS",
-    "FELIX_SHARD_ENGINE",
-    "FELIX_SHARD_FENCE_TIMEOUT_MS",
     "FELIX_SHARD_MOVES_MAX_CONCURRENT",
     "FELIX_SHARD_MOVES_MAX_PER_NODE",
     "FELIX_SHARD_MOVE_BYTES_PER_SEC",
-    "FELIX_SHARD_MOVE_FENCE_MAX_LAG_RECORDS",
     "FELIX_SHARD_MOVE_HOLD_MAX",
     "FELIX_SHARD_MOVE_HOLD_MS",
     "FELIX_SHARD_MOVE_TIMEOUT_MS",
-    "FELIX_SHARD_PENDING_SET_TIMEOUT_MS",
     "FELIX_SHARD_RAFT_CACHE_LOG_KEEP",
     "FELIX_SHARD_RAFT_CACHE_SNAPSHOT_EVERY",
     "FELIX_SHARD_RAFT_ELECTIONS_AT_ONCE",
@@ -310,8 +300,6 @@ pub const KNOWN_VARS: &[&str] = &[
     "FELIX_SHARD_RECONCILE_INTERVAL_MS",
     "FELIX_SHARD_RESTORE_AFTER_MS",
     "FELIX_SHARD_RESTORE_STALL_MS",
-    "FELIX_SHARD_STUCK_LEADER_MS",
-    "FELIX_SHARD_SUSPECT_AFTER_MS",
     "FELIX_SHUTDOWN_DRAIN_TIMEOUT_MS",
     "FELIX_SHUTDOWN_HANDOFF_TIMEOUT_MS",
     "FELIX_SHUTDOWN_PREDRAIN_MS",
@@ -371,8 +359,26 @@ pub const KNOWN_VARS: &[&str] = &[
     "FELIX_TOKEN",
     "FELIX_UDP_RECV_BUFFER",
     "FELIX_UDP_SEND_BUFFER",
-    "FELIX_UNIFIED_FENCE",
     "FELIX_WORKER_THREADS",
+];
+
+/// Variables the hybrid shard engine read, retired with it
+/// (`docs/hybrid-retirement.md`). Set, each is reported at start by name and
+/// changes nothing, so an old manifest still starts. The one exception is
+/// `FELIX_SHARD_ENGINE=hybrid`, which brokers and control planes refuse.
+pub const RETIRED_VARS: &[&str] = &[
+    "FELIX_ELECTION_DEFER_FOR_MS",
+    "FELIX_INTERNAL_ELECTION",
+    "FELIX_INTERNAL_FENCE",
+    "FELIX_LEADER_SUSPECT_AFTER_MS",
+    "FELIX_SHARD_ELECTION_HOLD_MS",
+    "FELIX_SHARD_ENGINE",
+    "FELIX_SHARD_FENCE_TIMEOUT_MS",
+    "FELIX_SHARD_MOVE_FENCE_MAX_LAG_RECORDS",
+    "FELIX_SHARD_PENDING_SET_TIMEOUT_MS",
+    "FELIX_SHARD_STUCK_LEADER_MS",
+    "FELIX_SHARD_SUSPECT_AFTER_MS",
+    "FELIX_UNIFIED_FENCE",
 ];
 
 /// Known names worth suggesting for `name`, best first.
@@ -422,6 +428,7 @@ pub fn unrecognised() -> Vec<(String, Vec<&'static str>)> {
         .map(|(name, _)| name)
         .filter(|name| name.starts_with("FELIX_"))
         .filter(|name| !KNOWN_VARS.contains(&name.as_str()))
+        .filter(|name| !RETIRED_VARS.contains(&name.as_str()))
         .map(|name| {
             let suggestions = suggestions(&name);
             (name, suggestions)
@@ -437,9 +444,16 @@ pub fn unrecognised() -> Vec<(String, Vec<&'static str>)> {
 /// dependency so a library consumer that never runs a process does not pull
 /// one in, the same reason `lifecycle` is feature-gated. The binaries log.
 pub fn unrecognised_warnings() -> Vec<String> {
-    unrecognised()
-        .into_iter()
-        .map(|(name, suggestions)| match suggestions.as_slice() {
+    let retired = std::env::vars()
+        .map(|(name, _)| name)
+        .filter(|name| RETIRED_VARS.contains(&name.as_str()))
+        .map(|name| {
+            format!("{name} is retired with the hybrid shard engine and has no effect; unset it")
+        });
+    let mut found: Vec<String> = retired.collect();
+    found.sort();
+    found.extend(unrecognised().into_iter().map(
+        |(name, suggestions)| match suggestions.as_slice() {
             [] => format!("{name} is set and nothing reads it"),
             [known] => format!(
                 "{name} is set and nothing reads it — did you mean {known}? \
@@ -450,8 +464,9 @@ pub fn unrecognised_warnings() -> Vec<String> {
                  Those settings are using their defaults",
                 many.join(", "),
             ),
-        })
-        .collect()
+        },
+    ));
+    found
 }
 
 /// Levenshtein distance, bounded — only used to suggest a name for a typo.
