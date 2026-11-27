@@ -1762,6 +1762,8 @@ mod on_raft {
             ErrorCode::Unavailable
         );
         assert_eq!(raft_cache_code(&full(), true), ErrorCode::CacheFull);
+        let too_large = NotServed::Commit(CommitError::TooLarge { bytes: 2, max: 1 });
+        assert_eq!(raft_cache_code(&too_large, true), ErrorCode::TooLarge);
         for read in [lost(), timed_out(), unexpected(), not_leading()] {
             assert_eq!(raft_cache_code(&read, false), ErrorCode::Unavailable);
         }

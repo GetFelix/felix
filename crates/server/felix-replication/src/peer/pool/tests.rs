@@ -37,6 +37,48 @@ mod errors {
         }
     }
 
+    /// A forwarded write may be re-sent only after an error that is returned
+    /// before the frame left this broker.
+    #[test]
+    fn only_errors_after_the_send_say_it_may_have_been_sent() {
+        let node_id = || "broker-b".to_string();
+        for (error, sent) in [
+            (
+                PeerError::Unavailable {
+                    node_id: node_id(),
+                    detail: String::new(),
+                },
+                false,
+            ),
+            (
+                PeerError::Handshake {
+                    node_id: node_id(),
+                    detail: String::new(),
+                },
+                false,
+            ),
+            (PeerError::ShuttingDown, false),
+            (
+                PeerError::Unsupported {
+                    node_id: node_id(),
+                    kind: felix_wire::internal::Kind::ForwardCacheOp,
+                },
+                false,
+            ),
+            (PeerError::Disconnected { node_id: node_id() }, true),
+            (
+                PeerError::Timeout {
+                    node_id: node_id(),
+                    timeout: Duration::ZERO,
+                },
+                true,
+            ),
+            (PeerError::Abandoned { node_id: node_id() }, true),
+        ] {
+            assert_eq!(error.may_have_been_sent(), sent, "{error:?}");
+        }
+    }
+
     /// The labels separate the failures an operator responds to differently:
     /// nothing was sent, the handshake was refused, the connection dropped
     /// mid-request, or no answer came. `ShuttingDown` shares "nothing was sent"

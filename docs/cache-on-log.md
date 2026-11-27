@@ -176,10 +176,12 @@ Three details are load-bearing:
 - **A forwarded write whose outcome is unknown is answered as unknown.** The
   owner may have taken the write and lost leadership, or timed out, before it
   committed; the answer to it may be lost on the way back. The client is told
-  `leadership_lost`, `storage` or `unacknowledged` (all `outcome_unknown`),
-  never a retryable code, because the write may still land and a re-send
-  would apply it a second time. A write refused before it was written (the
-  owner did not lead, or the shard was not open) stays retryable.
+  `unacknowledged` when the owner lost leadership or the answer never came,
+  and `storage` when the owner's commit wait ran out. Both are
+  `outcome_unknown`, never a retryable code, because the write may still land
+  and a re-send would apply it a second time. A write refused before it was
+  written (the owner did not lead, its lease had lapsed, or the shard was not
+  open) stays retryable as `shard_unavailable`.
 - **A failed read is an error, not a miss.** Reporting a miss would let a client
   conclude a key does not exist when it does, on the owner.
 - **A failed write is an error, never an acknowledgement.** A put or delete the

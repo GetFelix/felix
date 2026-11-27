@@ -337,6 +337,10 @@ async fn a_lost_answer_is_reported_as_indeterminate_rather_than_retried() {
             node_id: "broker-b".to_string(),
             timeout: Duration::from_secs(5),
         },
+        // This broker shut down after the batch was sent.
+        PeerError::Abandoned {
+            node_id: "broker-b".to_string(),
+        },
     ] {
         let owner = ScriptedOwner::new([Err(lost)]);
 
@@ -436,12 +440,16 @@ fn cache_writes() -> [CacheRequest; 3] {
 /// count an add twice or be refused by its own conditional write.
 #[tokio::test]
 async fn an_unreadable_or_lost_answer_to_a_cache_write_is_not_retryable() {
-    let answers = || -> [std::result::Result<InternalMessage, PeerError>; 4] {
+    let answers = || -> [std::result::Result<InternalMessage, PeerError>; 5] {
         [
             Ok(refused(ErrorCode::StorageFailed)),
             Ok(refused(ErrorCode::LeadershipLost)),
             Ok(accepted(0, 0)),
             Err(PeerError::Disconnected {
+                node_id: "broker-b".to_string(),
+            }),
+            // This broker shut down after the write was sent.
+            Err(PeerError::Abandoned {
                 node_id: "broker-b".to_string(),
             }),
         ]
@@ -455,6 +463,71 @@ async fn an_unreadable_or_lost_answer_to_a_cache_write_is_not_retryable() {
                 .expect_err("not served");
             assert_eq!(owner.attempts(), 1, "{shown} was sent again");
             assert_eq!(told(err), felix_wire::RetryClass::OutcomeUnknown, "{shown}");
+        }
+    }
+}
+
+/// **A forwarded write too large for the owner's log is answered as the same
+/// write sent to the owner directly**: invalid, and not sent again.
+#[tokio::test]
+async fn a_forwarded_cache_write_too_large_is_answered_as_a_direct_one() {
+    use crate::serving::quic::client_error::ClientError;
+    use felix_wire::internal::ForwardCacheError;
+    let too_large = felix_replication::quorum::QuorumError::TooLarge { bytes: 2, max: 1 };
+    let direct = ClientError::from_anyhow(&too_large.into());
+    for request in cache_writes() {
+        let owner =
+            ScriptedOwner::new([Ok(InternalMessage::ForwardCacheError(ForwardCacheError {
+                correlation_id: 0,
+                code: ErrorCode::TooLarge,
+                detail: "d".to_string(),
+            }))]);
+        let err = forward_cache_request(&owner, &target(), &key(), "k", "token", &request)
+            .await
+            .expect_err("refused");
+        assert_eq!(owner.attempts(), 1, "{request:?} was sent again");
+        let forwarded = ClientError::from_anyhow(&err.into());
+        assert_eq!(
+            (forwarded.code(), forwarded.retry()),
+            (direct.code(), direct.retry()),
+            "{request:?}"
+        );
+    }
+}
+
+/// A pool error returned before the frame left this broker leaves the write
+/// unapplied, so it is sent again.
+#[tokio::test]
+async fn a_cache_write_the_pool_never_sent_is_sent_again() {
+    use felix_wire::internal::ForwardCacheOk;
+    let not_sent = || -> [PeerError; 3] {
+        [
+            PeerError::ShuttingDown,
+            PeerError::Unavailable {
+                node_id: "broker-b".to_string(),
+                detail: "in backoff".to_string(),
+            },
+            PeerError::Handshake {
+                node_id: "broker-b".to_string(),
+                detail: "refused".to_string(),
+            },
+        ]
+    };
+    for request in cache_writes() {
+        for err in not_sent() {
+            let shown = format!("{request:?} failed with {err:?}");
+            let owner = ScriptedOwner::new([
+                Err(err),
+                Ok(InternalMessage::ForwardCacheOk(ForwardCacheOk {
+                    correlation_id: 0,
+                    value: None,
+                    outcome: None,
+                })),
+            ]);
+            forward_cache_request(&owner, &target(), &key(), "k", "token", &request)
+                .await
+                .unwrap_or_else(|err| panic!("{shown}: {err}"));
+            assert_eq!(owner.attempts(), 2, "{shown}");
         }
     }
 }

@@ -849,7 +849,8 @@ impl ForwardingHandler {
             Ok(answered) => answered,
             Err(not_served) => {
                 let code = raft_cache_code(&not_served, writes);
-                metrics::record_served(if code.is_retryable() || code == ErrorCode::CacheFull {
+                let refused = matches!(code, ErrorCode::CacheFull | ErrorCode::TooLarge);
+                metrics::record_served(if code.is_retryable() || refused {
                     metrics::OUTCOME_REFUSED
                 } else {
                     metrics::OUTCOME_ERROR
@@ -1334,6 +1335,8 @@ fn raft_cache_code(
         NotServed::Refused(_) | NotServed::Commit(CommitError::NotAppended { .. }) => {
             ErrorCode::Unavailable
         }
+        // Refused before the append, and answered as a direct write is.
+        NotServed::Commit(CommitError::TooLarge { .. }) => ErrorCode::TooLarge,
         #[cfg(feature = "raft")]
         NotServed::Full(_) => ErrorCode::CacheFull,
         // A read changed nothing and is only not available here.

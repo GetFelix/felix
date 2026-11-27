@@ -61,6 +61,11 @@ pub enum ErrorCode {
     /// deletes or expiries of values free room; counters are never freed
     /// (#3243).
     CacheFull = 14,
+    /// The owner refused a forwarded cache write whose record is larger
+    /// than its Raft group's appends carry. Nothing was written. Sent only
+    /// in answer to a forwarded cache op on a Raft shard. Not retryable: it
+    /// cannot fit later.
+    TooLarge = 15,
 }
 
 impl ErrorCode {
@@ -81,6 +86,7 @@ impl ErrorCode {
             12 => Ok(ErrorCode::StaleSet),
             13 => Ok(ErrorCode::LeadershipLost),
             14 => Ok(ErrorCode::CacheFull),
+            15 => Ok(ErrorCode::TooLarge),
             other => Err(Error::UnknownInternalErrorCode(other)),
         }
     }

@@ -384,7 +384,7 @@ pub async fn forward_publish(
                 last_code = None;
                 sleep_within(retry_delay(attempt), deadline).await;
             }
-            Err(err @ (PeerError::Disconnected { .. } | PeerError::Timeout { .. })) => {
+            Err(err) if err.may_have_been_sent() => {
                 // The batch is out there. Retrying would duplicate it, and this
                 // broker cannot tell whether it landed.
                 metrics::record_forward(metrics::OUTCOME_INDETERMINATE);
@@ -849,9 +849,7 @@ async fn forward_cache(
                 last_code = None;
                 tokio::time::sleep(retry_delay(attempt)).await;
             }
-            Err(err @ (PeerError::Disconnected { .. } | PeerError::Timeout { .. }))
-                if !request.is_idempotent() =>
-            {
+            Err(err) if err.may_have_been_sent() && !request.is_idempotent() => {
                 metrics::record_forward(metrics::OUTCOME_INDETERMINATE);
                 return Err(ForwardError::Indeterminate {
                     node_id: target.node_id,
