@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795747499024,
+  "lastUpdate": 1795749147710,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -72800,6 +72800,58 @@ window.BENCHMARK_DATA = {
             "range": "26848.92",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1227710.51\nmean: 1218420.88\nstdev: 26848.92\ncv: 2.20%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "04e313850a9cae414ca094b9f7c2a15a8abbbaa4",
+          "message": "fix(raft): a planned leadership transfer answers the writes in flight before it hands over (#3324) (#3328)\n\n* fix(raft): a placed transfer waits until its term's writes are answered (#3324)\n\nA placed leadership transfer closed the shard, waited only for the target\nto match the leader's last index, then asked openraft. Two things lost the\nanswer of a write already in flight:\n\n- Closing the term for a transfer made the role watcher report the term\n  lost to every waiter at once, so a commit wait for an entry already in\n  the log returned LeadershipLost the moment the shard closed.\n- The leader stepped down before it applied the tail, so a waiter that\n  survived the close was still deposed before its commit was seen.\n\nA term closed for a transfer now counts as held for waiters while openraft\nstill leads it, and the transfer (placed, and a membership step's move off\nthe leader) waits within the same bound until the target has matched and\nthis leader has applied its last entry, read from the core each look.\nAsked anyway when the bound passes, as before: the term cannot reopen.\n\nSpec-Unaffected: the transfer is asked later in the same closed term and a waiter is answered only by its commit, which the placement and lease models already allow.\n\n* test(raft): a closed term's write that does not commit is never acked (#3324)\n\nTwo tests for the unsafe direction of a planned hand-over: a write of the\nclosed term the new leader truncates is refused, never acked, and a\ndeposed leader's waiter is told at once with its apply held. The docs,\nthe hand-over comment and the changelog now say when a publish can still\nget leadership_lost during a hand-over.\n\nSpec-Unaffected: tests and docs only",
+          "timestamp": "2026-11-27T03:05:17Z",
+          "tree_id": "45f820bd0e937a107d0da9837a068838df176164",
+          "url": "https://github.com/GetFelix/felix/commit/04e313850a9cae414ca094b9f7c2a15a8abbbaa4"
+        },
+        "date": 1795749146946,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 348115.29,
+            "range": "12288.54",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 348115.29\nmean: 347311.70\nstdev: 12288.54\ncv: 3.54%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 348115.29,
+            "range": "12288.54",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 348115.29\nmean: 347311.70\nstdev: 12288.54\ncv: 3.54%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 82046.66,
+            "range": "278.67",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 82046.66\nmean: 82103.44\nstdev: 278.67\ncv: 0.34%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 820466.57,
+            "range": "2786.74",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 820466.57\nmean: 821034.40\nstdev: 2786.74\ncv: 0.34%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
