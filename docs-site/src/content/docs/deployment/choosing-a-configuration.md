@@ -77,7 +77,7 @@ FELIX_DURABLE_RETENTION_BYTES=10737418240 # per shard; unset keeps everything
 ```
 
 Run at least three brokers in at least three zones. Leave
-`FELIX_INTERNAL_FENCE` and `FELIX_QUORUM_READS` unset, and leave
+`FELIX_QUORUM_READS` unset, and leave
 `FELIX_ACK_ON_COMMIT` unset so a publish is answered after it is written.
 
 ```bash
@@ -345,11 +345,8 @@ Run the control plane highly available, with three or five Raft members
 ([Control-plane HA](/deployment/control-plane-ha/)). That is the main
 defence.
 
-With the production default, brokers keep serving `Quorum` streams and caches
-while the control plane is down. What they cannot do on 0.7.0 by default is
-replace a leader that dies during the outage: that shard waits until the
-control plane is back. Replica elections close that gap. They are off by
-default in 0.7.0 and need `FELIX_INTERNAL_ELECTION=true` on every broker and
-the `joint_fence` and `replica_election` fleet features finalized; see
-[Failover without the control plane](/deployment/failover-without-control-plane/)
-before turning them on.
+Brokers keep serving streams and caches while the control plane is down. Every
+shard is a Raft group, so a leader that dies during the outage is replaced by
+its members without the control plane. Nothing needs turning on. The opt-in
+replica election that 0.7.0 offered was the hybrid's and is retired; see
+[Failover without the control plane](/deployment/failover-without-control-plane/).

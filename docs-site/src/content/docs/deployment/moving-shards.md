@@ -85,7 +85,7 @@ same write. If the broker being copied to fails, the copy is dropped and
 another broker is picked. If the lost broker comes back first, its copy is
 kept and the new one dropped. Restores take move slots after drains and before
 rebalancing, and `pause` stops new ones. A top-up of a shard whose leader
-holds at most `FELIX_SHARD_MOVE_FENCE_MAX_LAG_RECORDS` records takes no slot,
+holds only a few records takes no slot,
 since there is next to nothing to copy, so a cluster whose new shards went on
 too few brokers fills them all at once.
 

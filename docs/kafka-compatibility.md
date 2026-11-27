@@ -395,7 +395,7 @@ interceptors, for one) keep working. Dropped ones are counted in
 `felix_kafka_produce_dropped_total{field}`; a `felix.` name is not looked at
 while they are dropped.
 
-A partition on per-shard Raft (`FELIX_SHARD_ENGINE=raft`) stores them once the
+A partition on per-shard Raft (the only engine) stores them once the
 fleet has also finalized `raft_record_headers`. Until then, with the listener
 opted in and the broker accepting headers, a produce whose records carry a key
 or headers is refused with `INVALID_RECORD`, nothing written and no quota

@@ -153,8 +153,7 @@ later share a group without changing a caller.
 ### Group and member identity
 
 A group id is the `ShardKey` plus a group epoch, which starts at 0 and rises
-only when the group is re-formed (below). A stream shard's group under
-`FELIX_SHARD_ENGINE=raft` uses the stream's incarnation as its epoch, so
+only when the group is re-formed (below). A stream shard's group uses the stream's incarnation as its epoch, so
 members of a deleted stream never hear the group of the stream recreated
 under its name. A member id is the pair of broker id and copy id.
 
@@ -247,8 +246,7 @@ is the restarted broker's own vote.
 > back from a copy, beside a follower that lacks the same records, elects
 > nothing until the leader returns.
 
-**The broker runs the gate after its start.** A broker started with
-`FELIX_SHARD_ENGINE=raft` opens every Raft member through the gate. The
+**The broker runs the gate after its start.** A broker opens every Raft member through the gate. The
 gate runs in the background once the start's own restore check has
 answered, so a held root does not keep the broker from serving its other
 shards. Until the root passes, no Raft member opens, a request for a Raft
@@ -266,12 +264,12 @@ both, and the log says so. A broker that started from its saved
 control-plane view, with the control plane down, has not had its restore
 check answered yet. Under the unified fence, the default, its Raft
 members wait for the control plane too, even with a witness: a restarted broker counts for nothing until the
-control plane has checked it, as on the hybrid engine. With
-`FELIX_UNIFIED_FENCE=0` they open on the witness.
+control plane has checked it. (`FELIX_UNIFIED_FENCE=0`, which let them open on the
+witness, is retired and ignored.)
 
-**Voting before the restore check.** A broker with
+**Voting before the restore check.** Before `FELIX_UNIFIED_FENCE` was retired, a broker with
 `FELIX_START_WITHOUT_CONTROLPLANE` on and `FELIX_UNIFIED_FENCE=0` that
-starts from its view runs the gate at once, with no incarnation verdict
+started from its view ran the gate at once, with no incarnation verdict
 (issue #3102). With the leader also dead, the copies still up could not
 elect otherwise, and the shard would wait for the control plane. What
 stands in for the verdict is the run witness, twice:
@@ -2856,8 +2854,7 @@ flight.
 
 The runtime is built, in `crates/server/felix-replication/src/raft.rs`,
 behind the `raft` cargo feature of `felix-replication`, which the broker
-service turns on by default. A broker with a node id runs it unless
-`FELIX_SHARD_ENGINE` is `hybrid` (deprecated), and refuses to start without
+service turns on by default. A broker with a node id runs it, and refuses to start without
 the internal listener. Without durable storage it runs no group, and the
 control plane gives it only in-memory stream shards (`docs/control-plane.md`,
 "Nodes without durable storage"). A standalone broker, with no node
@@ -2875,13 +2872,11 @@ when the data directory's run is one a crash rotates
 synced offset reservation: the log fsyncs on the broker's `Periodic`
 schedule, and once a second under `None`. Otherwise it fsyncs on every
 commit ("Proposal: commit on a written majority on relaxed brokers"). A standalone broker with no durable storage keeps every
-stream in memory and runs no group. `FELIX_SHARD_ENGINE=hybrid` still
-selects the hybrid, deprecated. After a machine crash under `Periodic` or
+stream in memory and runs no group. `FELIX_SHARD_ENGINE=hybrid` is refused at start. After a machine crash under `Periodic` or
 `None` fsync each group re-forms itself from its own copy ("A standalone
-broker re-forms itself"). A standalone data directory the hybrid wrote is refused at startup
-with an error naming `FELIX_SHARD_ENGINE=hybrid`, which keeps serving it; 0.8 does not migrate it.
+broker re-forms itself"). A standalone data directory the hybrid wrote is refused at startup; 0.8 does not migrate it.
 The cluster
-test suites run on Raft by default too; the hybrid runs report only (see
+test suites run on Raft only (see
 `docs/hybrid-retirement.md`).
 
 A `GroupRuntime` holds one broker's member of every group it is told to
@@ -5383,12 +5378,10 @@ publishers are delivered as two batches, as the leader delivers them.
 > `crates/testing/felix-cluster/tests/raft_shards.rs`,
 > `record_headers_on_a_raft_shard_replay_from_every_member`.
 
-A broker started with `FELIX_SHARD_ENGINE=raft` runs its durable stream
-shards this way. Use it on a fresh cluster only, with the variable set on
-every broker and on the control plane: a shard that already holds data
-cannot change engines yet, a broker refuses to start under a control plane
-whose identity names the other engine, and only a Raft control plane stores
-the target a group forms on.
+A broker runs its durable stream shards this way. Use it on a fresh cluster only:
+a shard that already holds data cannot change engines, a broker refuses to start
+under a control plane whose identity names the hybrid, and only a Raft control
+plane stores the target a group forms on.
 Publishes, routes, subscribes and a leader stopping are tested across three
 brokers in one process and across three broker processes. Both failover
 tests read every acknowledged payload back from the new leader, and the one
@@ -5792,8 +5785,8 @@ connection to it, and the broker keeps asking it on every routing pass.
   `felix_broker_shard_engine_refused_total{engine}`, where `engine` is the
   refusing broker's own.
 
-The fix is to set `FELIX_SHARD_ENGINE` the same on every broker and restart
-the odd one. The refusal ends on its own at the first routing pass after
+Brokers now all run Raft, so this refusal needs a peer from an older release;
+the fix is to upgrade or restart the odd one. The refusal ends on its own at the first routing pass after
 the restarted broker answers with the matching engine. Durable cache
 shards are checked the same way. Streams and caches in memory are not: they
 run on the hybrid engine everywhere.
@@ -6348,8 +6341,7 @@ backoff.
 The control plane takes ids for a shard that switched from the hybrid, and
 from metadata level 41 for a shard that started on Raft: a durable stream's
 shard or a cache's shard on a cluster whose engine is Raft
-(`FELIX_SHARD_ENGINE=raft` on the control plane, or the group identity it
-recorded), with no switch record. Cache groups, which hold the cache's
+(the group identity the control plane recorded), with no switch record. Cache groups, which hold the cache's
 counters too, form only on a stored target like stream groups, so they take
 the same reports and checks. The control plane keeps no durability for a
 cache: a broker runs a cache on Raft only when its cache is a log, and only
@@ -7161,7 +7153,7 @@ version 2.
 
 ### Serving a cache shard from its group
 
-A broker that runs Raft shards (`FELIX_SHARD_ENGINE=raft`) also runs every
+A broker that runs Raft shards also runs every
 cache shard it is placed on as a Raft group, when it has durable storage
 and the cache is registered here. The group's replica count is the cache's
 `replication_factor` from the control plane; a cache whose control plane

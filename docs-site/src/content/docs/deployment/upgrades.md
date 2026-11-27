@@ -189,10 +189,9 @@ release, and to `publisher_principal` and `record_generations`.
 
 #### A new cluster: the first broker's configuration wins
 
-Two broker settings drop features from what a broker reports:
-`FELIX_QUORUM_READS=lease` drops `lease_free_reads`, and
-`FELIX_INTERNAL_FENCE=false` drops `majority_ack`, `lease_free_reads` and
-`fenced_caches`. The first broker to register decides what a new cluster
+`FELIX_QUORUM_READS=lease` drops `lease_free_reads` from what a broker
+reports. (`FELIX_INTERNAL_FENCE=false` used to drop more; it is retired and
+ignored.) The first broker to register decides what a new cluster
 finalizes, and finalizing is one-way, so give every broker the same values
 before any of them starts.
 
@@ -207,11 +206,7 @@ lease_free_reads: unset FELIX_QUORUM_READS (the default reads by a round) and
 restart the broker
 ```
 
-With `FELIX_INTERNAL_FENCE=false` the message lists every finalized feature the
-broker lacks (`majority_ack`, `lease_free_reads` and `fenced_caches`) and
-carries both hints: unset `FELIX_QUORUM_READS` and unset
-`FELIX_INTERNAL_FENCE`. If only the fence is off, the reads hint still shows,
-because `lease_free_reads` is among the missing features. To recover, remove the setting from
+To recover, remove the setting from
 that broker and restart it; it registers normally. If you meant the whole
 cluster to run with the setting, the features cannot be turned off again:
 create the cluster afresh (a new control-plane store and empty broker data
@@ -305,10 +300,6 @@ finalized.
   dead leader for a spare broker, and the promoted leader's fence can then
   open without a write the old set acknowledged: when the cluster has more
   brokers than the replication factor, or when a majority of the set is down.
-- **Every broker must fence on promotion.** A broker running with
-  `FELIX_INTERNAL_FENCE=false` does not report `majority_ack`, so the dry run
-  names it and the finalize is refused until it runs with the fence. After
-  the finalize, such a broker is refused at registration.
 - **Nothing changes on the wire or on disk.** Rolling a broker back to a build
   that has the feature is safe. Rolling it back to one without it is refused,
   as for any finalized feature.
@@ -357,11 +348,9 @@ by the same round before it is acknowledged.
   by the member that serves the `finalize` call. During a rolling
   control-plane upgrade an older member does not check it, so finish the
   control-plane upgrade first, or finalize in order yourself.
-- **Every broker must fence on promotion and read by round.** As for
-  `majority_ack`, a broker running with `FELIX_INTERNAL_FENCE=false` does not
-  report the feature, and neither does one running with
-  `FELIX_QUORUM_READS=lease`. The dry run names it and the finalize is
-  refused until it runs without either.
+- **Every broker must read by round.** A broker running with
+  `FELIX_QUORUM_READS=lease` does not report the feature. The dry run names it
+  and the finalize is refused until it runs without it.
 - **Nothing changes on the wire or on disk.** The round is the existing
   `Fence`, sent at a generation the replica already accepted, which writes
   nothing.
@@ -369,16 +358,10 @@ by the same round before it is acknowledged.
   subscribers, watches and group consumers. A group operation on a broker
   whose replicas no longer answer it fails with `leadership_lost` instead of
   `shard_unavailable`, and each group write waits for one round.
-- **Before the finalize reaches a broker.** A broker that stands for election
-  (`FELIX_INTERNAL_ELECTION=true`) confirms each `Quorum` read with both the
-  lease and the round until it hears the feature was finalized. Cut off from
-  the control plane when you finalize, it never hears, and its replicas may
-  elect a successor without waiting out its lease. Other brokers stay on the
-  lease until they hear: no election can pass them while they hold it. A
-  replica running with `FELIX_INTERNAL_FENCE=false` never answers the round,
-  so if most of a shard's replicas run that way, reads on an election broker
-  fail with `leadership_lost` until the finalize. Turn election on across the
-  whole fleet rather than mixing it with the fence off.
+- **Before the finalize reaches a broker.** On 0.7.0 a broker that stood for
+  election confirmed each `Quorum` read with both the lease and the round until
+  it heard the feature was finalized. The election is retired, so a current
+  broker stays on the lease until it hears.
 - **What clients see.** A read costs a round trip to the nearest majority
   (concurrent reads of a shard share rounds). A leader that loses the control
   plane keeps serving reads its replicas confirm. One cut off from its
@@ -467,9 +450,6 @@ fences caches.
   rebuilds a failed-over `Quorum` cache's replica set instead of keeping it,
   so the promoted leader's fence could open without a write the old set
   acknowledged, as for `majority_ack` and streams.
-- **Every broker must fence on promotion.** A broker running with
-  `FELIX_INTERNAL_FENCE=false` does not report `fenced_caches`, so the dry run
-  names it and the finalize is refused until it runs with the fence.
 - **Nothing changes on the wire or on disk.** A cache shard's logs already
   get their generation-start records once `generation_start` is finalized.
 - **What clients see.** A cache write to a leader that has been replaced but
@@ -931,17 +911,12 @@ keeps retrying in each case and never starts without the check.
 ### The cluster's shard engine
 
 The same record holds the cluster's **shard engine**, the engine that
-replicates durable stream shards: `raft` (the default) or the deprecated
-`hybrid`. The
-control plane takes it from its own `FELIX_SHARD_ENGINE` when the group
-forms and never changes it. Changing `FELIX_SHARD_ENGINE` on the control
-plane later only logs a warning.
-
-A broker running a different engine from the record refuses to start and
-names both. Set the broker's engine to the recorded one. A cluster that should
-run the other engine is created afresh: a new control-plane store and empty
-broker data directories, with `FELIX_SHARD_ENGINE` set on the control plane
-from its first start.
+replicates durable stream shards: `raft`. It is the only engine
+a broker or control plane runs. `FELIX_SHARD_ENGINE` is retired: unset or
+`raft` start, and `hybrid` is refused with "FELIX_SHARD_ENGINE=hybrid is
+refused". A group formed by an older control plane that recorded `hybrid` is not
+migrated; there is no upgrade from the hybrid, so start a new cluster with a
+new control-plane store and empty broker data directories.
 
 ## Upgrade order
 

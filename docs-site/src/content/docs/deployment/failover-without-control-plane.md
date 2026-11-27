@@ -3,6 +3,15 @@ title: "Failover without the control plane"
 description: "How a shard's replicas elect a new leader themselves when its leader dies while the control plane is down, what you see when it happens, its limits, and how to turn it on."
 ---
 
+:::caution
+This page describes the replica election of the hybrid engine in 0.7.0. The
+hybrid is retired: Raft is the only shard engine, a Raft group elects its own
+leader, and the settings below (`FELIX_INTERNAL_ELECTION`, `FELIX_INTERNAL_FENCE`,
+`FELIX_UNIFIED_FENCE`, the suspicion and election timers) are ignored and
+reported at start. See [Retired variables](/reference/environment-variables/#retired-variables).
+Nothing on this page needs doing on a current broker.
+:::
+
 Normally the control plane decides every failover. When a shard's leader dies,
 the control plane picks a follower and names it the new leader. If the control
 plane is down at that moment, nobody can name one, and the shard stops taking

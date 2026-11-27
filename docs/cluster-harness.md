@@ -535,8 +535,8 @@ their pre-votes out together. A release build ignores it.
 > finalized and every gate opens; after that the old build is refused, and
 > the upgraded one rejoins with the gate open.
 
-`ClusterConfig::joint_fence` turns joint fences on. A broker reports
-`joint_fence` once `FELIX_INTERNAL_ELECTION` is on, so every broker offers
+`ClusterConfig::joint_fence` turns joint fences on. A broker used to report
+`joint_fence` once `FELIX_INTERNAL_ELECTION` was on, so every broker offered
 `ELECTION`, and `Cluster::start` finalizes the feature with the rest, after
 `generation_start` and `majority_ack`, before it returns. It needs a debug-build broker, since a
 release build ignores `FELIX_TEST_FLEET_FEATURES`.
@@ -621,24 +621,17 @@ being discarded, so that reason exists to be quoted.
 ### Raft shards
 
 `tests/raft_shards.rs` runs durable stream shards on per-shard Raft
-(`FELIX_SHARD_ENGINE=raft`), and so do the Kafka and MQTT failover tests in
+(the only engine), and so do the Kafka and MQTT failover tests in
 `tests/failures` whose names end in `on_a_raft_shard...`. They return at once unless
 `FELIX_TEST_RAFT_SHARDS=1` is set; CI runs them in their own job. The default
 broker build includes the Raft engine.
 
-Raft is the default shard engine, and the harness starts every broker and the
-control plane on it. A test that wants another engine sets
-`FELIX_SHARD_ENGINE` in `broker_env` or `node_env`, which override the
-default.
-
-`FELIX_TEST_SHARD_ENGINE=hybrid` runs a whole suite on the hybrid engine,
-which stays until the hybrid is deleted (`docs/hybrid-retirement.md`). Unset
-or `raft` runs Raft, and the tests that need hybrid behaviour or unbuilt Raft
-work skip with a reason. A Raft cluster starts new, so the control plane
-finalizes the new-cluster fleet features at the first registration. A hybrid
-cluster with seeded streams or caches starts as an upgraded one, with nothing
-finalized, because its tests predate that rule; `ClusterConfig::upgraded_fleet`
-picks either explicitly. On Raft, `Cluster::wait_for_replication` waits for
+Raft is the only shard engine, and the harness starts every broker and the
+control plane on it. `FELIX_TEST_SHARD_ENGINE=hybrid` panics: the hybrid
+cannot start (`docs/hybrid-retirement.md`). Unset or `raft` runs Raft, and the
+tests that need unbuilt Raft work skip with a reason. A cluster starts new,
+so the control plane finalizes the new-cluster fleet features at the first
+registration; `ClusterConfig::upgraded_fleet` picks otherwise explicitly. On Raft, `Cluster::wait_for_replication` waits for
 the member that leads the stream's shard 0 (each broker's `shard_inspect`
 answer carries its member's role, leader and log index) and for a majority of
 the group to hold the log through the leader's last entry. A test that skips
@@ -646,8 +639,7 @@ on Raft prints its reason to stderr without `--nocapture` and to the job
 summary when `GITHUB_STEP_SUMMARY` is set, so a green Raft run can be told
 from a skipped one. A test that fails on Raft for work not built yet skips
 with `skip_on_raft_until(issue, reason)`, naming the issue that tracks it.
-CI runs every suite on Raft, which gates a merge, and on
-the hybrid, which reports without failing the build.
+CI runs every suite on Raft, which gates a merge. It no longer runs any on the hybrid.
 
 ```bash
 cargo build -p felix-broker-service --bin felix-broker
@@ -840,7 +832,7 @@ the open one, with the summary line; the next green run closes it. Its
 ## Fault campaigns
 
 `felix_cluster::history` runs clients against `Quorum` streams and a `Quorum`
-cache, on the lease or lease-free path, while a nemesis
+cache while a nemesis
 kills, pauses and partitions brokers at random, and with
 `RandomNemesis::all_faults` also injects the link, clock and disk faults
 above through `Cluster::inject`. It then checks the recorded history for lost,
