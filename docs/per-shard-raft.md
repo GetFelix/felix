@@ -5104,10 +5104,10 @@ later by no report a Raft shard sends:
   acknowledge on its own, and the brokers placed later would form the full
   set again on empty logs, elect each other and overwrite what the first
   group acknowledged. On a short set every member waits and the shard
-  answers "not ready". Placement fills a short set only after the shard's
-  leader has reported to it, which a Raft shard does not do, so today a
-  shard placed short stays short: create a stream once as many brokers as
-  its replication factor are registered. The hold is not silent: the broker
+  answers "not ready". The control plane takes no copy id for a short set
+  either, so it never stores a target for one. Once enough brokers are
+  live, placement writes the full set in one step (`raft_fill`, below) and
+  the brokers form the group on it. The hold is not silent: the broker
   warns once per shard and placement generation, naming the shard, the
   replication factor and the brokers placed, and counts held shards in
   `felix_broker_raft_shards_short_placement`. The control plane's create
@@ -5237,9 +5237,29 @@ move from an older control plane added:
   set and every other member is serving, so the group's leader adds the new
   member as a learner and then changes the voters (see "Membership"). A lost
   member goes first. With no such node the set stays and the shard waits.
-- A set with fewer members than the replication factor is topped up
-  (`raft_top_up`). An abandon leaves a set like this, since it places the
-  leader alone, and so does a shard placed while too few brokers were live.
+- A set placed on fewer brokers than the replication factor, whose group
+  never formed, is placed in full in one write (`raft_fill`): it keeps the
+  leader and every serving follower that need not leave and adds live
+  brokers outside the set, under the same pause and budget as a swap. Its
+  group cannot have formed: a group forms only on a stored target, the
+  control plane stores one only from copy ids, and it takes a copy id only
+  while the set names as many brokers as the factor. Placement checks that
+  from the epoch's record of every broker placed (`placed`, "Re-forming a
+  group"): while it names fewer brokers than the factor, no set of the
+  epoch was full. It also requires epoch 0 and no other trace of a group: no
+  target, no counter kept from a dropped one, no formed mark, no reported
+  voters or floor, no epoch seed or re-form base, and no ordered target. A
+  shard with no `placed` record, such as a restored one, is not filled.
+  A leader that is down, lost, draining or internal is dropped like a
+  follower, and a kept follower, else a broker the write adds, leads: with
+  no target ever stored it holds no record, and if it comes back it is in
+  no set and forms nothing, as a broker forms only on a target naming its
+  copy. A dropped broker does not count toward the brokers the fill needs.
+  With too few live brokers the shard waits, counted as under-replicated,
+  and the control plane logs why at info about once a minute.
+- A set with fewer members than the replication factor whose group formed
+  is topped up (`raft_top_up`). An abandon leaves a set like this, since it
+  places the leader alone.
   Each write adds one live broker from outside the set, under the same
   checks as a follower replacement and from the same budget. The new member
   joins as a learner and votes once it has caught up, and the next is added
@@ -6167,7 +6187,8 @@ What placement does not do yet for a Raft shard:
   new copy caught up. A Raft leader reports nothing to placement yet, and
   a shard that switched to Raft is not placed at all.
 - **A short set forms nothing.** A group forms only once placement names
-  as many brokers as the stream's replica count ("Forming a group").
+  as many brokers as the stream's replica count ("Forming a group"); a set
+  placed short is written in full once enough brokers are live.
 - **Requests to a broker with no member go by placement.** A broker with
   a member routes by its group's leader hint. One without a member still
   sends to the leader placement names, which can be wrong mid-move.
