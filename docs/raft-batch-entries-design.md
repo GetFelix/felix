@@ -251,23 +251,19 @@ an internal entry. A Kafka consumer sees dense offsets as Kafka itself gives.
 Publish answers keep their fields. Cache versions get denser, and clients
 already treat them as opaque.
 
-The one wire addition is the skip reason, negotiated like every other
-feature, so an old peer and a new one still exchange identical frames:
+The one wire addition is the skip reason. It is part of the 0.8 baseline
+feature set (#3362), not a negotiated feature: 0.8 starts fresh with no 0.7
+peer to stay compatible with, so every 0.8 client and broker speaks it and
+there is no bit to offer and no path for a client without it.
 
-- **Event batches.** The 16 frame flag bits are all taken, so the reason is
-  an extended bit (`EXT_SKIP_REASON`, beside `EXT_RECORD_HEADERS`), a
-  modifier on `0x0800`. With it, a `u8 skip_reason` follows
-  `skipped_before`: 0 removed, 1 lost in re-form. A frame whose count holds
-  both kinds of run is split, so one batch carries one reason.
-- **Group records.** An optional `skipped_reason` field (`"removed"` or
-  `"lost_in_reform"`), sent only to a client that offered a new feature bit
-  beside `FEATURE_GROUP_SKIPPED`, left out when it is `removed`.
-- **Cache watches** get the same field on their change frames, under the
-  same feature bit.
-- **A client that did not negotiate the reason** is not sent a re-form loss
-  in `skipped_before` at all, since it would read the count as "nothing was
-  there". It sees the jump uncounted, which every client already treats as
-  loss. So no client can mistake a re-form loss for an empty hole.
+- **Event batches.** The 0.8 layout of a batch with `skipped_before`
+  (`0x0800`) has a `u8 skip_reason` after it: 0 removed, 1 lost in re-form.
+  A count that would hold both kinds of run is split across two batches,
+  so one batch carries one reason.
+- **Group records.** A `skipped_reason` field (`"removed"` or
+  `"lost_in_reform"`) beside `skipped_before`, sent whenever the count is
+  not 0.
+- **Cache watches** get the same field on their change frames.
 - **The clients** (Rust, and the others in `clients/`) surface the reason
   on the delivered batch and in their gap handling, so an application can
   tell "the broker lost these" from "retention removed these".
@@ -299,9 +295,11 @@ no mixed-version group exists to negotiate with.
 6. **Re-form in offsets.** The control plane floor as an offset, the epoch's
    next offset, gap segments removed. Needs a metadata level.
    `LossReported` in `FelixRaftReform`.
-6a. **Skip reason on the wire.** `EXT_SKIP_REASON`, the group and cache
-   feature bit, the client changes and `docs/protocol.md`. Lands with or
-   right after step 6, and before any release that can re-form in offsets.
+6a. **Skip reason on the wire.** `skip_reason` in the 0.8 event batch
+   layout and `skipped_reason` on group records and cache watches, as
+   baseline (#3362), the client changes and `docs/protocol.md`. Lands with
+   or right after step 6, and before any release that can re-form in
+   offsets.
 7. **Groups, trims and retention** in offsets, with their models.
 8. **Cache shards**: switch to offsets, then batch writes per entry.
 9. **Docs and status**: `docs/protocol.md`, `docs/durable-storage.md`,
@@ -347,7 +345,8 @@ Decided on #3359:
 1. A cache write refused at apply keeps its offset ("Cache shards").
 2. An offset jump from a re-form loss is reported through `skipped_before`
    with a lost-in-re-form reason, never left for a reader to take as a
-   silent drop ("What goes away", "Wire and client impact").
+   silent drop ("What goes away", "Wire and client impact"). The reason is
+   0.8 baseline wire, not negotiated (#3362).
 3. The batch cap stays at 32 MiB, the append limit. Seek cost and
    replication delay are measured later.
 4. The frame reserves a stream id before the v9 freeze, 0 in a group of
