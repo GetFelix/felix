@@ -171,9 +171,14 @@ impl RaftTransport for Beats {
 /// [`Refused::Slow`], so it holds the others up by no more than that. Until
 /// the first answer every member is as slow, and all wait: the broker is
 /// slow, not one member.
+///
+/// Nor does the wait for the rest run past the sender's `deadline` (counted
+/// from now, zero for none) less one `wait` for the trip back: a late first
+/// answer must not turn the whole batch into timeouts.
 pub(crate) async fn answer_each<F, Fut>(
     beats: Vec<RaftRequest>,
     wait: Duration,
+    deadline: Duration,
     handle: F,
 ) -> Vec<Answer>
 where
@@ -187,6 +192,7 @@ where
             to: beat.to.clone(),
         })
         .collect();
+    let received = tokio::time::Instant::now();
     let mut answers: Vec<Option<Answer>> = (0..beats.len()).map(|_| None).collect();
     let mut pending: FuturesUnordered<_> = beats
         .into_iter()
@@ -196,7 +202,10 @@ where
     if let Some((at, answer)) = pending.next().await {
         answers[at] = Some(answer);
     }
-    let cut = tokio::time::Instant::now() + wait;
+    let mut cut = tokio::time::Instant::now() + wait;
+    if !deadline.is_zero() {
+        cut = cut.min(received + deadline.saturating_sub(wait));
+    }
     while let Ok(Some((at, answer))) = tokio::time::timeout_at(cut, pending.next()).await {
         answers[at] = Some(answer);
     }

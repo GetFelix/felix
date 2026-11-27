@@ -3279,7 +3279,8 @@ carries entries never waits.
   that long because a stalled broker's members come back a few milliseconds
   apart. Answered slow, each would fail its heartbeat, and a read-index round
   that needed it would find no quorum and start again. The sender puts the
-  wait in the message.
+  wait in the message. The wait also ends one wait before the batch's
+  deadline, so a late first answer still gets back in time.
 - **Off.** `beat_window` zero sends each heartbeat on its own. It must be
   shorter than `heartbeat`; the runtime refuses a config where it is not.
 

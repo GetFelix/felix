@@ -197,7 +197,7 @@ async fn a_zero_window_sends_each_on_its_own() {
 async fn the_answers_keep_the_heartbeats_order() {
     let beats: Vec<_> = (0..6).map(|n| beat(n, "b")).collect();
     // Later groups answer sooner.
-    let answers = answer_each(beats, WINDOW, |beat| async move {
+    let answers = answer_each(beats, WINDOW, Duration::ZERO, |beat| async move {
         let n = beat.group.shard.shard;
         tokio::time::sleep(Duration::from_micros(u64::from(100 * (6 - n)))).await;
         answer_for(n)
@@ -211,7 +211,7 @@ async fn the_answers_keep_the_heartbeats_order() {
 async fn a_silent_member_holds_the_others_up_for_one_wait_at_most() {
     let beats: Vec<_> = (0..4).map(|n| beat(n, "b")).collect();
     let start = Instant::now();
-    let answers = answer_each(beats, WINDOW, |beat| async move {
+    let answers = answer_each(beats, WINDOW, Duration::ZERO, |beat| async move {
         let n = beat.group.shard.shard;
         if n == 1 {
             std::future::pending::<()>().await;
@@ -238,7 +238,7 @@ async fn a_slow_broker_is_waited_for_until_its_first_answer() {
     let beats: Vec<_> = (0..3).map(|n| beat(n, "b")).collect();
     // Every member takes far longer than the wait: the broker is slow, so
     // none is answered as slow.
-    let answers = answer_each(beats, WINDOW, |beat| async move {
+    let answers = answer_each(beats, WINDOW, Duration::ZERO, |beat| async move {
         tokio::time::sleep(Duration::from_millis(50)).await;
         answer_for(beat.group.shard.shard)
     })
@@ -259,7 +259,12 @@ impl RaftTransport for Answering {
     }
 
     async fn send_beats(&self, beats: Vec<RaftRequest>, wait: Duration) -> Vec<Answer> {
-        answer_each(beats, wait, |beat| async move {
+        let deadline = beats
+            .iter()
+            .map(|beat| beat.deadline)
+            .max()
+            .unwrap_or_default();
+        answer_each(beats, wait, deadline, |beat| async move {
             let n = beat.group.shard.shard;
             tokio::time::sleep(self.delays[n as usize]).await;
             answer_for(n)
@@ -290,7 +295,7 @@ async fn the_wait_counts_from_the_first_answer_not_the_latest() {
     let beats: Vec<_> = (0..4).map(|n| beat(n, "b")).collect();
     let wait = Duration::from_millis(10);
     let start = Instant::now();
-    let answers = answer_each(beats, wait, |beat| async move {
+    let answers = answer_each(beats, wait, Duration::ZERO, |beat| async move {
         let n = beat.group.shard.shard;
         tokio::time::sleep(Duration::from_millis(u64::from(6 * n))).await;
         answer_for(n)
@@ -303,4 +308,23 @@ async fn the_wait_counts_from_the_first_answer_not_the_latest() {
             .iter()
             .all(|a| matches!(a, Err(Refused::Slow(_))))
     );
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_late_first_answer_leaves_time_for_the_trip_back() {
+    // The first answers 70 ms before the 1 s deadline: the rest get only
+    // until one wait before the deadline, so the batch is back in time.
+    let ms = Duration::from_millis;
+    let (wait, deadline) = (ms(50), ms(1000));
+    let beats: Vec<_> = (0..2).map(|n| beat(n, "b")).collect();
+    let start = Instant::now();
+    let answers = answer_each(beats, wait, deadline, |beat| async move {
+        let n = beat.group.shard.shard;
+        tokio::time::sleep(ms(930 + 30 * u64::from(n))).await;
+        answer_for(n)
+    })
+    .await;
+    assert_eq!(start.elapsed(), deadline - wait);
+    assert_eq!(named(&answers[0]), Some(0));
+    assert!(matches!(&answers[1], Err(Refused::Slow(_))));
 }

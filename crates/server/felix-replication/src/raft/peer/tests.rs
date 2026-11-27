@@ -1072,7 +1072,7 @@ impl crate::peer::PeerRequester for Recording {
         };
         let body = match wire::is_beats(&call.body) {
             true => {
-                let (beats, _) = wire::decode_beats(call.body).expect("decode");
+                let (beats, ..) = wire::decode_beats(call.body).expect("decode");
                 let answers: Vec<_> = beats.into_iter().map(refuse).collect();
                 wire::encode_beats_reply(&answers)
             }

@@ -1484,8 +1484,10 @@ takes as every heartbeat's.
 The listener hands every heartbeat to its member at once. Until the first
 answers, all wait: the broker is slow, not one member. After that, a member
 still silent `wait` after the first answer is answered 21 slow, so one stuck
-member holds the rest up by no more than `wait`. A broker sends a quarter of
-its heartbeat interval, never less than its window. A single heartbeat, and
+member holds the rest up by no more than `wait`. Nor does that wait run past
+`deadline`, counted from when the body arrived, less one `wait` for the
+answer's trip back, so a late first answer does not time out the whole batch.
+A broker sends a quarter of its heartbeat interval, never less than its window. A single heartbeat, and
 every heartbeat to a peer without the capability, goes as message 1.
 
 A body that does not read is answered as unreachable. A count larger than the
