@@ -522,9 +522,12 @@ pub enum PeerError {
     /// The request was sent and no answer arrived in time.
     #[error("peer {node_id} did not respond within {timeout:?}")]
     Timeout { node_id: String, timeout: Duration },
-    /// The pool is shutting down.
+    /// The pool is shutting down. Nothing was sent.
     #[error("peer transport is shutting down")]
     ShuttingDown,
+    /// The request was sent and the pool shut down before an answer arrived.
+    #[error("peer transport shut down while waiting on peer {node_id}")]
+    Abandoned { node_id: String },
     /// The peer did not say it understands this request, so it was not sent.
     #[error("peer {node_id} does not support {kind:?}")]
     Unsupported {
@@ -544,11 +547,21 @@ impl PeerError {
         matches!(self, Self::Unavailable { .. })
     }
 
+    /// Whether the peer may have received the request. Every other variant
+    /// is returned before the frame left this broker, so a write that failed
+    /// with one of them was certainly not applied.
+    pub fn may_have_been_sent(&self) -> bool {
+        matches!(
+            self,
+            Self::Disconnected { .. } | Self::Timeout { .. } | Self::Abandoned { .. }
+        )
+    }
+
     fn outcome(&self) -> &'static str {
         match self {
             Self::Unavailable { .. } | Self::ShuttingDown => metrics::OUTCOME_UNREACHABLE,
             Self::Handshake { .. } => metrics::OUTCOME_HANDSHAKE,
-            Self::Disconnected { .. } => metrics::OUTCOME_DISCONNECTED,
+            Self::Disconnected { .. } | Self::Abandoned { .. } => metrics::OUTCOME_DISCONNECTED,
             Self::Timeout { .. } => metrics::OUTCOME_TIMEOUT,
             Self::Unsupported { .. } => metrics::OUTCOME_UNSUPPORTED,
         }

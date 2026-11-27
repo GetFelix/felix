@@ -395,9 +395,11 @@ impl PeerConnection {
                     Err(PeerError::Timeout { node_id: self.node_id.clone(), timeout })
                 }
             },
+            // The frame is already out, so this is not `ShuttingDown`: the
+            // peer may apply it.
             _ = shutdown.cancelled() => {
                 self.pending.lock().waiters.remove(&correlation_id);
-                Err(PeerError::ShuttingDown)
+                Err(PeerError::Abandoned { node_id: self.node_id.clone() })
             }
         }
     }
