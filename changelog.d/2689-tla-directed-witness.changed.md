@@ -1,0 +1,1 @@
+Formal model: the vouch-gate witness for re-form (`FelixRaftWrittenCommitsReformJointDeadOneSetDirected`) is a directed configuration that reaches its violation in seconds, replacing a nightly random walk. The two six-hour joint re-form checks run on the nightly schedule only (#2689).

@@ -16,9 +16,9 @@
 //! [`RaftEngine::read_bound`]. [`RaftEngine::publish`] does both for a broker
 //! stream and hands the committed batch to its subscribers.
 //!
-//! Nothing in the broker calls this yet. No shard runs on it, and the
-//! `raft` feature that compiles it is in no release. The design is in
-//! `docs/per-shard-raft.md`, "Group runtime".
+//! This is the default shard engine. The broker service builds the runtime
+//! in `node/cluster.rs`, and the `raft` feature is on by default there. The
+//! design is in `docs/per-shard-raft.md`, "Group runtime".
 //!
 //! openraft types stay inside this module and `felix_storage::raft_log`.
 
