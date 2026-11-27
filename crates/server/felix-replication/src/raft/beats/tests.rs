@@ -95,7 +95,7 @@ impl RaftTransport for Counting {
 #[tokio::test(start_paused = true)]
 async fn heartbeats_to_one_broker_within_the_window_go_as_one_message() {
     let inner = Arc::new(Counting::default());
-    let beats = Beats::wrap(inner.clone(), WINDOW);
+    let beats = Beats::wrap(inner.clone(), WINDOW, WINDOW);
     let sent = (0..8).map(|n| beats.send(beat(n, "b")));
     let answers = futures::future::join_all(sent).await;
     // Each caller got its own group's answer.
@@ -109,7 +109,7 @@ async fn heartbeats_to_one_broker_within_the_window_go_as_one_message() {
 #[tokio::test(start_paused = true)]
 async fn each_broker_gets_its_own_message() {
     let inner = Arc::new(Counting::default());
-    let beats = Beats::wrap(inner.clone(), WINDOW);
+    let beats = Beats::wrap(inner.clone(), WINDOW, WINDOW);
     let sent = (0..6).map(|n| beats.send(beat(n, if n % 2 == 0 { "b" } else { "c" })));
     let answers = futures::future::join_all(sent).await;
     for (n, answer) in answers.iter().enumerate() {
@@ -123,7 +123,7 @@ async fn each_broker_gets_its_own_message() {
 #[tokio::test(start_paused = true)]
 async fn a_heartbeat_waits_no_longer_than_the_window() {
     let inner = Arc::new(Counting::default());
-    let beats = Beats::wrap(inner.clone(), WINDOW);
+    let beats = Beats::wrap(inner.clone(), WINDOW, WINDOW);
     let start = Instant::now();
     let _ = beats.send(beat(0, "b")).await;
     assert!(start.elapsed() <= WINDOW + Duration::from_millis(1));
@@ -135,7 +135,7 @@ async fn a_heartbeat_waits_no_longer_than_the_window() {
 #[tokio::test(start_paused = true)]
 async fn an_append_with_entries_goes_at_once_on_its_own() {
     let inner = Arc::new(Counting::default());
-    let beats = Beats::wrap(inner.clone(), Duration::from_secs(60));
+    let beats = Beats::wrap(inner.clone(), Duration::from_secs(60), WINDOW);
     let entry = EntryOf::<ShardTypes> {
         log_id: LogIdOf::<ShardTypes>::new(1.into(), 1),
         payload: EntryPayload::Blank,
@@ -154,7 +154,7 @@ async fn an_append_with_entries_goes_at_once_on_its_own() {
 #[tokio::test(start_paused = true)]
 async fn a_full_batch_goes_without_waiting_out_the_window() {
     let inner = Arc::new(Counting::default());
-    let beats = Beats::wrap(inner.clone(), Duration::from_secs(60));
+    let beats = Beats::wrap(inner.clone(), Duration::from_secs(60), WINDOW);
     let start = Instant::now();
     let sent = (0..MAX_BEATS as u32).map(|n| beats.send(beat(n, "b")));
     let answers = futures::future::join_all(sent).await;
@@ -174,7 +174,7 @@ async fn one_groups_failure_fails_only_its_own_heartbeat() {
         fails: Some(2),
         ..Default::default()
     });
-    let beats = Beats::wrap(inner.clone(), WINDOW);
+    let beats = Beats::wrap(inner.clone(), WINDOW, WINDOW);
     let answers = futures::future::join_all((0..5).map(|n| beats.send(beat(n, "b")))).await;
     for (n, answer) in answers.iter().enumerate() {
         match n {
@@ -187,7 +187,7 @@ async fn one_groups_failure_fails_only_its_own_heartbeat() {
 #[tokio::test]
 async fn a_zero_window_sends_each_on_its_own() {
     let inner = Arc::new(Counting::default());
-    let beats = Beats::wrap(inner.clone(), Duration::ZERO);
+    let beats = Beats::wrap(inner.clone(), Duration::ZERO, WINDOW);
     let _ = futures::future::join_all((0..4).map(|n| beats.send(beat(n, "b")))).await;
     assert_eq!(inner.messages.load(Ordering::SeqCst), 4);
     assert!(inner.batches.lock().is_empty());
@@ -244,4 +244,63 @@ async fn a_slow_broker_is_waited_for_until_its_first_answer() {
     })
     .await;
     assert!(answers.iter().all(Result::is_ok));
+}
+
+/// A transport that answers a batch as the receiving broker does, with
+/// group `n` answering `delays[n]` after the batch arrives.
+struct Answering {
+    delays: Vec<Duration>,
+}
+
+#[async_trait]
+impl RaftTransport for Answering {
+    async fn send(&self, request: RaftRequest) -> Answer {
+        answer_for(request.group.shard.shard)
+    }
+
+    async fn send_beats(&self, beats: Vec<RaftRequest>, wait: Duration) -> Vec<Answer> {
+        answer_each(beats, wait, |beat| async move {
+            let n = beat.group.shard.shard;
+            tokio::time::sleep(self.delays[n as usize]).await;
+            answer_for(n)
+        })
+        .await
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn members_a_little_behind_the_first_answer_are_not_refused() {
+    // A stalled broker: the first member answers after 300 ms, the others
+    // 5 and 45 ms after it.
+    let ms = Duration::from_millis;
+    let inner = Arc::new(Answering {
+        delays: vec![ms(300), ms(305), ms(345)],
+    });
+    let beats = Beats::for_config(inner, &RuntimeConfig::default());
+    let answers = futures::future::join_all((0..3).map(|n| beats.send(beat(n, "b")))).await;
+    for (n, answer) in answers.iter().enumerate() {
+        assert_eq!(named(answer), Some(n as u64), "{:?}", answer.as_ref().err());
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn the_wait_counts_from_the_first_answer_not_the_latest() {
+    // Each answers within one wait of the one before, but the last comes
+    // more than one wait after the first.
+    let beats: Vec<_> = (0..4).map(|n| beat(n, "b")).collect();
+    let wait = Duration::from_millis(10);
+    let start = Instant::now();
+    let answers = answer_each(beats, wait, |beat| async move {
+        let n = beat.group.shard.shard;
+        tokio::time::sleep(Duration::from_millis(u64::from(6 * n))).await;
+        answer_for(n)
+    })
+    .await;
+    assert_eq!(start.elapsed(), wait);
+    assert!(answers[..2].iter().all(Result::is_ok));
+    assert!(
+        answers[2..]
+            .iter()
+            .all(|a| matches!(a, Err(Refused::Slow(_))))
+    );
 }

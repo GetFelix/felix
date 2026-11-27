@@ -1470,7 +1470,7 @@ off for members on that peer within a short window (1 ms by default) as one
 | layout | `u8`, 7 |
 | message | `u8` 9 |
 | deadline | `u32`: the longest of the heartbeats' deadlines, in milliseconds, where a listener reads every body's |
-| wait | `u32`: how long, in microseconds, the listener waits for a member once another has answered |
+| wait | `u32`: how long, in microseconds, the listener waits for the rest once the first has answered |
 | count | `u16`, 1 to 512 |
 | heartbeats | `count` times: a `u32` length, then a whole message 1 body as above |
 
@@ -1483,8 +1483,9 @@ takes as every heartbeat's.
 
 The listener hands every heartbeat to its member at once. Until the first
 answers, all wait: the broker is slow, not one member. After that, a member
-silent for `wait` past the latest answer is answered 21 slow, so one stuck
-member holds the rest up by no more than the window. A single heartbeat, and
+still silent `wait` after the first answer is answered 21 slow, so one stuck
+member holds the rest up by no more than `wait`. A broker sends a quarter of
+its heartbeat interval, never less than its window. A single heartbeat, and
 every heartbeat to a peer without the capability, goes as message 1.
 
 A body that does not read is answered as unreachable. A count larger than the

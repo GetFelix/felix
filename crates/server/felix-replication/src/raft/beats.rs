@@ -14,6 +14,7 @@ use futures::stream::FuturesUnordered;
 use futures::{FutureExt, StreamExt};
 use tokio::sync::oneshot;
 
+use super::RuntimeConfig;
 use super::network::{Addressee, RaftReply, RaftRequest, RaftTransport, Refused, Request};
 use super::wire::MAX_BEATS;
 
@@ -24,6 +25,8 @@ type Answer = Result<RaftReply, Refused>;
 pub(crate) struct Beats {
     inner: Arc<dyn RaftTransport>,
     window: Duration,
+    /// How long the receiver waits for the rest once one has answered.
+    wait: Duration,
     queued: Arc<parking_lot::Mutex<Queued>>,
 }
 
@@ -41,18 +44,43 @@ struct Batch {
 }
 
 impl Beats {
-    /// `inner`, with heartbeats held for up to `window`. A zero window
-    /// sends each on its own, as `inner` does.
-    pub(crate) fn wrap(inner: Arc<dyn RaftTransport>, window: Duration) -> Arc<dyn RaftTransport> {
+    /// `inner`, with heartbeats held for up to `window`, and the receiver
+    /// told to wait up to `wait` for the rest once one has answered. A zero
+    /// window sends each on its own, as `inner` does.
+    pub(crate) fn wrap(
+        inner: Arc<dyn RaftTransport>,
+        window: Duration,
+        wait: Duration,
+    ) -> Arc<dyn RaftTransport> {
         if window.is_zero() {
             return inner;
         }
         Arc::new(Self {
             inner,
             window,
+            wait,
             queued: Arc::default(),
         })
     }
+
+    /// `inner` wrapped as `config` says: its `beat_window`, and a wait of
+    /// [`straggler_wait`].
+    pub(crate) fn for_config(
+        inner: Arc<dyn RaftTransport>,
+        config: &RuntimeConfig,
+    ) -> Arc<dyn RaftTransport> {
+        Self::wrap(inner, config.beat_window, straggler_wait(config))
+    }
+}
+
+/// How long a receiver waits for the rest of a batch once one heartbeat has
+/// answered: a quarter of the heartbeat, never under the window. When the
+/// whole broker stalls, its members come back a few milliseconds apart, and a
+/// member answered slow fails that heartbeat's ack, so a read-index round
+/// gets no quorum and goes again. A quarter heartbeat covers that spread and
+/// still answers well before the next heartbeat is due.
+pub(crate) fn straggler_wait(config: &RuntimeConfig) -> Duration {
+    (config.heartbeat / 4).max(config.beat_window)
 }
 
 /// Send `batch` and hand each heartbeat its answer.
@@ -106,11 +134,11 @@ impl RaftTransport for Beats {
             }
         };
         if let Some(full) = full {
-            flush(&self.inner, self.window, full);
+            flush(&self.inner, self.wait, full);
         } else if let Some(id) = timer {
             let queued = Arc::clone(&self.queued);
             let inner = Arc::clone(&self.inner);
-            let window = self.window;
+            let (window, wait) = (self.window, self.wait);
             tokio::spawn(async move {
                 tokio::time::sleep(window).await;
                 let batch = {
@@ -122,7 +150,7 @@ impl RaftTransport for Beats {
                     }
                 };
                 if let Some(batch) = batch {
-                    flush(&inner, window, batch);
+                    flush(&inner, wait, batch);
                 }
             });
         }
@@ -138,11 +166,11 @@ impl RaftTransport for Beats {
     }
 }
 
-/// Answer each heartbeat with `handle`, all at once, in their order. Once
-/// one has answered, a member that stays silent for `wait` past the latest
-/// answer is answered [`Refused::Slow`], so it holds the others up by no
-/// more than that. Until the first answer every member is as slow, and all
-/// wait: the broker is slow, not one member.
+/// Answer each heartbeat with `handle`, all at once, in their order. A
+/// member still silent `wait` after the first answer is answered
+/// [`Refused::Slow`], so it holds the others up by no more than that. Until
+/// the first answer every member is as slow, and all wait: the broker is
+/// slow, not one member.
 pub(crate) async fn answer_each<F, Fut>(
     beats: Vec<RaftRequest>,
     wait: Duration,
@@ -168,7 +196,8 @@ where
     if let Some((at, answer)) = pending.next().await {
         answers[at] = Some(answer);
     }
-    while let Ok(Some((at, answer))) = tokio::time::timeout(wait, pending.next()).await {
+    let cut = tokio::time::Instant::now() + wait;
+    while let Ok(Some((at, answer))) = tokio::time::timeout_at(cut, pending.next()).await {
         answers[at] = Some(answer);
     }
     answers
