@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795749143145,
+  "lastUpdate": 1795754511583,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -92532,6 +92532,72 @@ window.BENCHMARK_DATA = {
             "range": "1318.94",
             "unit": "us",
             "extra": "trials: 5\nmedian: 614.00\nmean: 1530.60\nstdev: 1318.94\ncv: 86.17%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "42c01ab5e5c22ea4d12b17c5af278e21875cf9b3",
+          "message": "fix(raft): a shard placed on too few brokers is filled once enough join (#3331) (#3334)\n\n* fix(placement): a Raft shard placed on too few brokers is written in full once enough join (#3331)\n\nA shard created at RF 3 while one or two brokers were live never formed:\nthe brokers form nothing on a short set and the store takes no copy id\nfor one, so no target was ever stored and the one-member top-up waited on\nseat_open every pass.\n\nPlacement now writes the full set in one step when the group cannot have\nformed: the epoch's placed record names fewer brokers than the factor, at\nepoch 0, with no target, kept counter, formed mark, voters, floor, seed,\nbases or ordered target. Same pause and budget as a swap. A held shard\nis logged at info once a minute with the reason.\n\nSpec-Unaffected: placement writes a full set only for a group no target was ever stored for, a state the Raft placement spec never forms a group in\n\n* fix(placement): the fill drops a never-formed set's dead or leaving leader (#3331)\n\nThe one-step fill needed a live leader that was not leaving, so an RF 3\nshard placed on one broker that then died or started draining stayed held\nfor good, though its group never formed and holds no record. The fill now\ndrops a leader that is down, lost or must leave like any follower; a kept\nfollower, else the first broker added, leads. The dropped broker is in no\nset and no target ever named it, so it forms nothing if it comes back.\n\nTests: the dead, lost and draining lone leader, a dead leader beside a live\nfollower, a dead leader not counted toward the brokers needed, seed and\nbases on the trace list, a once-full set whose target was cleared, and a\nstore test that a filled set's copy ids store a target. TooFewBrokers now\nsays it counts eligible brokers.\n\nSpec-Unaffected: the fill still writes only sets no target was ever stored for, which the Raft placement spec never forms a group in",
+          "timestamp": "2026-11-27T04:32:39Z",
+          "tree_id": "04333e5d1ab09e976b85d5e378229d8300ffc8db",
+          "url": "https://github.com/GetFelix/felix/commit/42c01ab5e5c22ea4d12b17c5af278e21875cf9b3"
+        },
+        "date": 1795754497822,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 95,
+            "range": "0.89",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 95.00\nmean: 94.40\nstdev: 0.89\ncv: 0.95%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 127,
+            "range": "2.70",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 127.00\nmean: 127.60\nstdev: 2.70\ncv: 2.12%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 169,
+            "range": "2.74",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 169.00\nmean: 169.00\nstdev: 2.74\ncv: 1.62%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 132,
+            "range": "5.86",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 132.00\nmean: 134.60\nstdev: 5.86\ncv: 4.35%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 260,
+            "range": "293.39",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 260.00\nmean: 390.20\nstdev: 293.39\ncv: 75.19%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 412,
+            "range": "1056.07",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 412.00\nmean: 851.80\nstdev: 1056.07\ncv: 123.98%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
