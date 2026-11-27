@@ -2401,8 +2401,9 @@ impl Member {
             // What this build reports, so a build that stops reporting the
             // feature leaves it off here too.
             let reported = felix_common::fleet::FleetGate::for_this_build().reported();
-            let feature = [felix_common::fleet::RAFT_WRITTEN_COMMIT.name()];
-            Arc::new(felix_common::fleet::FleetGate::seeded(reported, feature))
+            let fleet = felix_common::fleet::FleetGate::new(reported);
+            fleet.restart([felix_common::fleet::RAFT_WRITTEN_COMMIT.name()]);
+            Arc::new(fleet)
         } else {
             no_fleet()
         };
@@ -3496,6 +3497,7 @@ fn a_member_counts_written_entries_only_on_a_relaxed_run_the_fleet_allows() {
 
 mod alone_in_cluster;
 mod diskless;
+mod fleet_wait;
 mod groups;
 mod purge;
 mod reform;

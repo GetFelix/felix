@@ -353,6 +353,17 @@ pub(crate) async fn handle_cache_watch_message(
             let base = if replayed.is_some() { 0 } else { tail };
             (None, tail, base, None)
         }
+        // A broker that runs its caches on Raft has no member of this shard
+        // open yet. Its hybrid store is never written, so a watch served from
+        // it would join an empty log and hand out no state.
+        None if publish_ctx.engine.runs_raft() => {
+            subscriptions.release();
+            let refusal = crate::serving::cache_routing::raft::not_open(&shard_key);
+            responder
+                .send(ClientError::from_anyhow(&refusal).into_message())
+                .await?;
+            return Ok(true);
+        }
         None => {
             let Some(log) = broker
                 .cache()
