@@ -141,6 +141,18 @@ async fn a_set_holds_until_its_group_forms(store: &dyn ControlPlaneStore) {
         .put_shard_assignment(moved)
         .await
         .expect("the group formed, so its set moves");
+    // The move cleared the copy ids, so no reported voter counts yet: a step
+    // back to broker-x alone could drop the copy that holds the data before
+    // the store knows it votes (#3336).
+    let mut back = read(store, &shard.key).await;
+    back.replicas.clear();
+    assert!(
+        matches!(
+            store.put_shard_assignment(back).await,
+            Err(StoreError::Conflict(_))
+        ),
+        "a step back before the copy ids are reported"
+    );
     // broker-y left the set but is still a kept voter. Naming itself at a
     // huge index, it neither gets back into the voters a blank copy admits
     // nor shuts out the reports that follow (#2909).
@@ -282,7 +294,8 @@ async fn a_native_report_names_the_streams_incarnation(store: &dyn ControlPlaneS
 }
 
 /// The control plane checks the set against the stream's replica count
-/// itself: a broker's view of placement may be stale.
+/// itself: a broker's view of placement may be stale. Once placement writes
+/// the set in full, the members' copy ids store a target.
 async fn a_native_set_short_of_the_replica_count_takes_no_copy_id(store: &dyn ControlPlaneStore) {
     next_stream();
     seed_with_replicas(store, 3).await;
@@ -294,7 +307,57 @@ async fn a_native_set_short_of_the_replica_count_takes_no_copy_id(store: &dyn Co
     let stored = read(store, &shard.key).await;
     assert!(stored.raft_copy_ids.is_empty());
     assert!(stored.raft_ordered.is_none(), "no list starts either");
+
+    // Placement's fill (#3331): the full set in one write, here without
+    // broker-x, as when the lone placed leader is down. broker-x is in no
+    // set now, so it reports nothing, and the new members settle a target.
+    for (node, port) in [("broker-z", 7598), ("broker-w", 7599)] {
+        store
+            .register_node(super::nodes::node(node, port))
+            .await
+            .expect("register");
+    }
+    let mut filled = stored.clone();
+    filled.leader = "broker-y".to_string();
+    filled.replicas = vec!["broker-z".to_string(), "broker-w".to_string()];
+    let filled = store.put_shard_assignment(filled).await.expect("the fill");
+    let current = store.placement_incarnation().await.expect("incarnation");
+    for node in ["broker-x", "broker-y", "broker-z", "broker-w"] {
+        let heard = PlacementAck {
+            incarnation: current,
+            node_incarnation: store.get_node(node).await.expect("node").status.incarnation,
+        };
+        store.record_placement_ack(node, heard).await.expect("ack");
+    }
+    let at = Some(filled.incarnation);
+    assert!(
+        try_native_report(store, &filled, "broker-x", 62, at)
+            .await
+            .is_err(),
+        "the dropped leader is in no set"
+    );
+    for (node, id) in [("broker-y", 63), ("broker-z", 64), ("broker-w", 65)] {
+        try_native_report(store, &filled, node, id, at)
+            .await
+            .expect(node);
+    }
+    let settled = read(store, &shard.key).await;
+    assert_eq!(
+        settled
+            .raft_target
+            .as_ref()
+            .map(|target| target.members.clone()),
+        Some(BTreeMap::from([
+            ("broker-w".to_string(), 65),
+            ("broker-y".to_string(), 63),
+            ("broker-z".to_string(), 64),
+        ])),
+        "{settled:?}"
+    );
     clear(store).await;
+    for node in ["broker-z", "broker-w"] {
+        store.delete_node(node).await.expect("deregister");
+    }
     next_stream();
     seed(store).await;
 }

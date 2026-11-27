@@ -26,6 +26,8 @@ pub use node::{
     DeclaredDead, Node, NodeCapacity, NodeChange, NodeChangeOp, NodeLifecycle, NodePatchRequest,
     NodeSpec, NodeStatus, NodeSuspicion, NodeValidationError, PlacementAck, RootSequence,
 };
+pub use shard::AbandonEpochStart;
+pub(crate) use shard::AbandonError;
 pub(crate) use shard::{
     AloneFacts, Learning, ShardOwner, check_elected_generation, first_generation,
     generation_at_least, previous_generation,

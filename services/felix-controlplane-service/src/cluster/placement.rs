@@ -65,8 +65,8 @@ pub use moves::{
     DEFAULT_RESTORE_STALL_MILLIS, MovePolicy,
 };
 pub use operator::{
-    Catalog, OperatorError, OperatorStep, Refused, ZoneImpact, abandon_log, cancel_move,
-    preview_operator, run_operator, start_move,
+    Catalog, OperatorError, OperatorStep, Refused, ZoneImpact, abandon_log, abandon_raft_log,
+    abandons_on_raft, cancel_move, preview_operator, run_operator, start_move,
 };
 pub use plan::{Plan, ShardPlan, assignment_for, plan, plan_with};
 pub use reconciler::{

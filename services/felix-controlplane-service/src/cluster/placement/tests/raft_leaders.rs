@@ -2,7 +2,7 @@
 //! with one write that changes only `leader`, and leaves failover to the
 //! group. The set changes one member at a time, through the group's
 //! membership target.
-use super::super::raft_leaders::RAFT_REPLACEMENTS_PER_PASS;
+use super::super::raft_leaders::{RAFT_REPLACEMENTS_PER_PASS, single_move_undone};
 use super::*;
 use crate::model::RaftTarget;
 use crate::store::ControlPlaneStore;
@@ -594,6 +594,50 @@ fn an_operator_moves_a_one_member_raft_shard_back() {
         start_move(&catalog, &voting[0].key, "broker-a").unwrap_err(),
         Refused::MemberDown("broker-b".to_string())
     );
+}
+
+/// **A move back sent right after the grow waits for the reports (#3336).**
+/// The grow cleared the copy ids, so the reported voters keep no majority of
+/// the old leader alone and the store would refuse it: the move back is the
+/// retryable `set_unsettled`, and goes ahead once the copy ids are back.
+#[test]
+fn a_move_back_before_the_grown_set_settles_is_unsettled() {
+    let streams = vec![replicated_stream("orders", 1, 1)];
+    let nodes = live(&["broker-a", "broker-b"]);
+    // As the store leaves the grow: copy ids and target dropped, the voters
+    // of the set before kept.
+    let mut just_grown = single_grown(&["broker-a"]);
+    just_grown.raft_copy_ids.clear();
+    just_grown.raft_target = None;
+    let existing = vec![just_grown];
+    let catalog = Catalog {
+        streams: &streams,
+        caches: &[],
+        nodes: &nodes,
+        existing: &existing,
+        caught_up: &NothingCaughtUp,
+        policy: raft(),
+    };
+    assert_eq!(
+        start_move(&catalog, &existing[0].key, "broker-a").unwrap_err(),
+        Refused::SetUnsettled
+    );
+    assert!(
+        existing[0].moves_formed_set(
+            &single_move_undone(&existing[0], 1).expect("an undo").1,
+            existing[0].incarnation
+        ),
+        "the store refuses the same write"
+    );
+
+    let settled = vec![single_grown(&["broker-a"])];
+    let catalog = Catalog {
+        existing: &settled,
+        ..catalog
+    };
+    let step = start_move(&catalog, &settled[0].key, "broker-a").expect("the retry");
+    assert!(matches!(step.step, MoveStep::RaftMoveUndone { .. }));
+    assert!(!settled[0].moves_formed_set(&step.assignment, settled[0].incarnation));
 }
 
 /// One set change at a time, and only with every member serving: the joint

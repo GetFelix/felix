@@ -118,6 +118,18 @@ async fn satisfies_the_reform_epoch_contract() {
 }
 
 #[tokio::test]
+async fn satisfies_the_abandon_epoch_contract() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let store = unrecorded_store(dir.path()).await;
+    store
+        .local()
+        .expect("caught up")
+        .apply_record_identity(crate::store::identity::ClusterIdentity::generate("raft"))
+        .await;
+    crate::store::contract::abandon_epochs::run_abandon_epoch_contract(store).await;
+}
+
+#[tokio::test]
 async fn satisfies_the_raft_floor_contract() {
     let dir = tempfile::tempdir().expect("tempdir");
     let store = single_node_store(dir.path()).await;

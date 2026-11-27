@@ -22,6 +22,7 @@ mod raft_dead_seat;
 mod raft_drain;
 mod raft_elected;
 mod raft_leaders;
+mod raft_short_placement;
 mod raft_top_up;
 mod readmit;
 mod reconciler;

@@ -391,6 +391,9 @@ impl ShardAssignment {
     }
 }
 
+mod abandon;
+pub use abandon::AbandonEpochStart;
+pub(crate) use abandon::AbandonError;
 mod alone;
 pub(crate) use alone::AloneFacts;
 
