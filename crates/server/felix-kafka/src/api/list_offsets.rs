@@ -75,7 +75,7 @@ async fn offset_for(
     // The high watermark, not the log end: an offset past the commit point is
     // not one a consumer may start from.
     let end = log.tail_offset().await.map_err(storage)?;
-    let tail = match readable.high_watermark(end) {
+    let tail = match readable.high_watermark(end, false) {
         Ok(tail) => tail,
         Err(Unreadable::NotServed) => return Err(ResponseError::NotLeaderOrFollower),
         // A new leader with no mark yet has no `latest` to give, but the
