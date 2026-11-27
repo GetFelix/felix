@@ -2076,7 +2076,14 @@ An RF 1 shard grows to the draining broker and a live broker outside the
 set, then shrinks to that broker once its copy votes, so the old copy
 holds every acknowledged record until the new one does. A larger set whose
 members all drain swaps a follower for a live broker first and names it
-leader on a later pass. Each write takes a slot from the per-pass budget
+leader on a later pass. A set short of its factor with no follower to swap,
+such as an RF 3 shard down to its draining leader after an abandon, grows
+by one live broker as a top-up does (#3303). The lead moves to that broker
+once the group reports its copy voting, never before, then the old copy is
+swapped out as a follower and the top-up refills the set. A grown copy
+whose broker goes down before it votes holds the shard (`member_down`)
+until it is back or lost, and a lost one's seat goes to another live
+broker with the draining broker still leading. Each write takes a slot from the per-pass budget
 and a pause holds it. With no live broker outside the set the shard waits
 (`NoDestination`). A destination that goes down before it votes is
 dropped, and the next pass picks another. One that goes down after it

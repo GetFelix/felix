@@ -353,3 +353,309 @@ fn a_drain_move_whose_destination_dies_unopened_is_undone_first() {
         }
     }
 }
+
+/// Walks a draining short set from `existing` until placement writes no
+/// more, applying each write first with only the voters it kept (the new
+/// member learning) and then with every member voting. Checks on the way
+/// that the store takes every write and that `broker-a` leaves only once
+/// a copy that votes takes the lead. Returns the last record.
+fn walk_drain(streams: &[Stream], nodes: &[Node], existing: ShardAssignment) -> ShardAssignment {
+    let mut record = existing;
+    for _ in 0..8 {
+        let plan = plan_with(
+            streams,
+            &[],
+            nodes,
+            std::slice::from_ref(&record),
+            &NothingCaughtUp,
+            raft(),
+        );
+        if plan.moves().count() == 0 {
+            assert_eq!(only_waits(&plan), vec![], "{record:?}");
+            return record;
+        }
+        let (step, next) = the_move(&plan);
+        let set = next.raft_set();
+        assert!(!record.holds_formed_set(&set), "store refuses {step:?}");
+        if !set.contains("broker-a") {
+            assert_ne!(record.leader, "broker-a", "dropped while leading: {step:?}");
+            assert!(record.reports_voting(&record.leader), "{record:?}");
+        }
+        let kept: Vec<&str> = set
+            .iter()
+            .map(String::as_str)
+            .filter(|node| record.reports_voting(node))
+            .collect();
+        // While the newcomer learns, nothing drops a copy and no non-voter
+        // is named leader.
+        if kept.len() < set.len() {
+            let learning = applied(&next, &kept);
+            let plan = plan_with(
+                streams,
+                &[],
+                nodes,
+                std::slice::from_ref(&learning),
+                &NothingCaughtUp,
+                raft(),
+            );
+            for (_, step, after) in plan.moves() {
+                assert!(kept.contains(&after.leader.as_str()), "{step:?}");
+                assert!(after.raft_set().is_superset(&set), "{step:?}");
+            }
+        }
+        let all: Vec<&str> = set.iter().map(String::as_str).collect();
+        record = applied(&next, &all);
+    }
+    panic!("the drain did not settle: {record:?}");
+}
+
+/// **An RF 3 set down to its draining leader grows, hands over and leaves
+/// (#3303).** No follower exists to swap, so the set grows by one live
+/// broker while the old copy leads and votes; the lead moves once the new
+/// copy votes, the old copy is swapped out, and a top-up brings the set
+/// back to three voters without it.
+#[test]
+fn a_drain_of_an_rf3_shard_down_to_its_leader_reaches_three_voters_without_it() {
+    let streams = vec![replicated_stream("orders", 1, 3)];
+    let nodes = a_is(
+        NodeLifecycle::Draining,
+        &["broker-a", "broker-b", "broker-c", "broker-d"],
+    );
+    let alone = shard_on(0, "broker-a", &[], &["broker-a"]);
+
+    let plan = plan_with(
+        &streams,
+        &[],
+        &nodes,
+        std::slice::from_ref(&alone),
+        &NothingCaughtUp,
+        raft(),
+    );
+    let (step, grown) = the_move(&plan);
+    assert!(matches!(step, MoveStep::RaftTopUp { .. }), "{step:?}");
+    assert_eq!(grown.leader, "broker-a", "the old copy keeps leading");
+    assert_eq!(grown.replicas.len(), 1);
+
+    let done = walk_drain(&streams, &nodes, alone);
+    assert_eq!(done.raft_set().len(), 3, "{done:?}");
+    assert!(!done.raft_set().contains("broker-a"), "{done:?}");
+}
+
+/// **An RF 2 set down to its draining leader ends on two live brokers.**
+#[test]
+fn a_drain_of_an_rf2_shard_down_to_its_leader_moves_off_it() {
+    let streams = vec![replicated_stream("orders", 1, 2)];
+    let nodes = a_is(
+        NodeLifecycle::Draining,
+        &["broker-a", "broker-b", "broker-c"],
+    );
+    let done = walk_drain(&streams, &nodes, single(0));
+    assert_eq!(done.raft_set().len(), 2, "{done:?}");
+    assert!(!done.raft_set().contains("broker-a"), "{done:?}");
+}
+
+/// **The old copy stays until the new one votes.** While the grown set's
+/// newcomer learns, the draining leader keeps the lead and its seat; the
+/// store would refuse any set without it, as the reported voters (it
+/// alone) hold no majority of one.
+#[test]
+fn a_short_drain_keeps_the_old_copy_until_the_new_one_votes() {
+    let streams = vec![replicated_stream("orders", 1, 3)];
+    let nodes = a_is(
+        NodeLifecycle::Draining,
+        &["broker-a", "broker-b", "broker-c"],
+    );
+    let learning = shard_on(0, "broker-a", &["broker-b"], &["broker-a"]);
+    let plan = plan_with(
+        &streams,
+        &[],
+        &nodes,
+        std::slice::from_ref(&learning),
+        &NothingCaughtUp,
+        raft(),
+    );
+    assert_eq!(only_waits(&plan), vec![Blocked::Unapplied]);
+    for without_a in [&["broker-b"][..], &["broker-b", "broker-c"]] {
+        let set = without_a.iter().map(|n| n.to_string()).collect();
+        assert!(learning.holds_formed_set(&set), "{without_a:?}");
+    }
+
+    let voting = shard_on(0, "broker-a", &["broker-b"], &["broker-a", "broker-b"]);
+    let plan = plan_with(&streams, &[], &nodes, &[voting], &NothingCaughtUp, raft());
+    let (step, renamed) = the_move(&plan);
+    assert!(matches!(step, MoveStep::RaftLeader { .. }), "{step:?}");
+    assert_eq!(renamed.leader, "broker-b");
+    assert_eq!(renamed.replicas, vec!["broker-a".to_string()]);
+}
+
+/// **A newcomer that dies before it votes holds the shard until it is
+/// lost, then its seat is given away.** The draining broker stays leader
+/// throughout, so the shard is never named onto a copy that never led.
+#[test]
+fn a_short_drain_whose_newcomer_dies_gives_its_seat_away_once_lost() {
+    use super::restore::{MINUTE, Reports, gone};
+    let streams = vec![replicated_stream("orders", 1, 3)];
+    let learning = shard_on(0, "broker-a", &["broker-b"], &["broker-a"]);
+
+    let mut down = a_is(
+        NodeLifecycle::Draining,
+        &["broker-a", "broker-b", "broker-c"],
+    );
+    down[1].status.lifecycle = NodeLifecycle::Down;
+    let plan = plan_with(
+        &streams,
+        &[],
+        &down,
+        std::slice::from_ref(&learning),
+        &NothingCaughtUp,
+        raft(),
+    );
+    assert_eq!(
+        only_waits(&plan),
+        vec![Blocked::MemberDown {
+            node: "broker-b".to_string(),
+            why: Leaving::Draining
+        }]
+    );
+
+    let mut lost = a_is(NodeLifecycle::Draining, &["broker-a", "broker-c"]);
+    lost.push(gone("broker-b", 10 * MINUTE));
+    let plan = plan_with(
+        &streams,
+        &[],
+        &lost,
+        std::slice::from_ref(&learning),
+        &Reports::default(),
+        raft(),
+    );
+    let (step, swapped) = the_move(&plan);
+    assert_eq!(
+        step,
+        MoveStep::RaftReplace {
+            from: "broker-b".to_string(),
+            to: "broker-c".to_string()
+        }
+    );
+    assert_eq!(swapped.leader, "broker-a");
+    assert_eq!(swapped.replicas, vec!["broker-c".to_string()]);
+    assert!(!learning.holds_formed_set(&swapped.raft_set()));
+}
+
+/// **A draining leader that dies mid-way is never dropped by a write the
+/// store takes.** Its copy is the only one that votes, so every write
+/// without it needs the newcomer's vote first.
+#[test]
+fn a_short_drain_never_drops_a_dead_old_copy_before_the_new_one_votes() {
+    use super::restore::{MINUTE, Reports, gone};
+    let streams = vec![replicated_stream("orders", 1, 3)];
+    let learning = shard_on(0, "broker-a", &["broker-b"], &["broker-a"]);
+    let down = a_is(NodeLifecycle::Down, &["broker-a", "broker-b", "broker-c"]);
+    let mut lost = live(&["broker-b", "broker-c"]);
+    lost.push(gone("broker-a", 10 * MINUTE));
+    for nodes in [&down, &lost] {
+        let plan = plan_with(
+            &streams,
+            &[],
+            nodes,
+            std::slice::from_ref(&learning),
+            &Reports::default(),
+            raft(),
+        );
+        for (_, step, next) in plan.moves() {
+            let set = next.raft_set();
+            assert!(
+                set.contains("broker-a") || learning.holds_formed_set(&set),
+                "{step:?}"
+            );
+        }
+    }
+}
+
+/// **A cancelled drain keeps topping up with the old leader in place.**
+#[test]
+fn a_cancelled_short_drain_tops_up_around_the_leader() {
+    let streams = vec![replicated_stream("orders", 1, 3)];
+    let nodes = live(&["broker-a", "broker-b", "broker-c"]);
+    let learning = shard_on(0, "broker-a", &["broker-b"], &["broker-a"]);
+    let plan = plan_with(&streams, &[], &nodes, &[learning], &NothingCaughtUp, raft());
+    assert_eq!(only_waits(&plan), vec![Blocked::Unapplied]);
+
+    let voting = shard_on(0, "broker-a", &["broker-b"], &["broker-a", "broker-b"]);
+    let plan = plan_with(&streams, &[], &nodes, &[voting], &NothingCaughtUp, raft());
+    let (step, grown) = the_move(&plan);
+    assert_eq!(
+        step,
+        MoveStep::RaftTopUp {
+            to: "broker-c".to_string()
+        }
+    );
+    assert_eq!(grown.leader, "broker-a");
+}
+
+/// **With no live broker the short set waits, and moves once one is.**
+#[test]
+fn a_short_drain_waits_for_a_live_broker_then_proceeds() {
+    let streams = vec![replicated_stream("orders", 1, 3)];
+    let mut nodes = a_is(
+        NodeLifecycle::Draining,
+        &["broker-a", "broker-b", "broker-c"],
+    );
+    nodes[1].status.lifecycle = NodeLifecycle::Down;
+    nodes[2].status.lifecycle = NodeLifecycle::Draining;
+    let plan = plan_with(
+        &streams,
+        &[],
+        &nodes,
+        &[single(0)],
+        &NothingCaughtUp,
+        raft(),
+    );
+    assert_eq!(only_waits(&plan), vec![Blocked::NoDestination]);
+
+    nodes[1].status.lifecycle = NodeLifecycle::Live;
+    let plan = plan_with(
+        &streams,
+        &[],
+        &nodes,
+        &[single(0)],
+        &NothingCaughtUp,
+        raft(),
+    );
+    let (step, grown) = the_move(&plan);
+    assert_eq!(
+        step,
+        MoveStep::RaftTopUp {
+            to: "broker-b".to_string()
+        }
+    );
+    assert_eq!(grown.leader, "broker-a");
+}
+
+/// **The grow is a set change: a pause holds it and the budget caps it.**
+#[test]
+fn a_short_drain_is_paused_and_paced() {
+    let count = RAFT_REPLACEMENTS_PER_PASS as u32 + 3;
+    let streams = vec![replicated_stream("orders", count, 3)];
+    let existing: Vec<_> = (0..count).map(single).collect();
+    let nodes = a_is(NodeLifecycle::Draining, &["broker-a", "broker-b"]);
+
+    let paused = MovePolicy {
+        paused: true,
+        ..raft()
+    };
+    let plan = plan_with(&streams, &[], &nodes, &existing, &NothingCaughtUp, paused);
+    assert!(
+        only_waits(&plan).iter().all(|b| *b == Blocked::Paused),
+        "{plan:?}"
+    );
+
+    let plan = plan_with(&streams, &[], &nodes, &existing, &NothingCaughtUp, raft());
+    assert_eq!(plan.moves().count(), RAFT_REPLACEMENTS_PER_PASS, "{plan:?}");
+    assert_eq!(
+        plan.waiting()
+            .filter(|(_, b)| **b == Blocked::MoveLimit)
+            .count(),
+        3,
+        "{plan:?}"
+    );
+}
