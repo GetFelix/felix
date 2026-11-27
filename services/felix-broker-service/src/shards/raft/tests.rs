@@ -2399,6 +2399,17 @@ impl Member {
         Self::assemble(net, name, root, broker, no_fleet())
     }
 
+    /// [`Self::start_cache`], with `sessions` on `replicas` brokers.
+    pub(crate) async fn start_cache_of(
+        net: &Arc<Loopback>,
+        name: &'static str,
+        replicas: u32,
+    ) -> Self {
+        let root = tempfile::tempdir().expect("tempdir");
+        let broker = cache_broker_of(root.path(), "sessions", replicas).await;
+        Self::assemble(net, name, root, broker, no_fleet())
+    }
+
     /// A member of a quorum `orders` whose fleet finalized
     /// `raft_stream_purge`, so its retention timer trims and then purges,
     /// with the storage opened on `config`.

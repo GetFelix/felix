@@ -124,6 +124,9 @@ pub(crate) struct RaftShards {
     /// Shards with a member open here whose placement names only other
     /// brokers. See [`EngineShards::placed_elsewhere`].
     unplaced: parking_lot::Mutex<HashSet<ShardKey>>,
+    /// Shards whose readers were ended for want of a leader, so the ending
+    /// is logged once each time the member loses it.
+    readers_ended: parking_lot::Mutex<HashSet<ShardKey>>,
     /// The placement generation each held-back short shard was last warned
     /// for, so a placement version warns once.
     short_warned: parking_lot::Mutex<HashMap<ShardKey, u64>>,
@@ -316,6 +319,7 @@ impl RaftShards {
             claims: AtomicU64::new(0),
             off_placement: parking_lot::Mutex::default(),
             unplaced: parking_lot::Mutex::default(),
+            readers_ended: parking_lot::Mutex::default(),
             #[cfg(test)]
             stall_reads: tokio::sync::watch::Sender::new(false),
             #[cfg(test)]
@@ -1022,6 +1026,7 @@ impl RaftShards {
     async fn close_member(&self, key: &ShardKey, member: Member) {
         self.runtime.close(key).await;
         self.unplaced.lock().remove(key);
+        self.readers_ended.lock().remove(key);
         // The hub keys watches by shard, not incarnation: a watch left here
         // would go quiet, or, once the cache is made again, drop the new
         // group's low indexes as duplicates. Ended after the member stopped,
@@ -1402,6 +1407,15 @@ impl EngineShards for RaftShards {
                     .runtime
                     .status(key)
                     .is_some_and(|status| status.leader.is_none());
+                if !leaderless {
+                    self.readers_ended.lock().remove(key);
+                } else if self.readers_ended.lock().insert(key.clone()) {
+                    tracing::info!(
+                        shard = ?key,
+                        unplaced = self.unplaced.lock().contains(key),
+                        "a Raft member hears no leader; ending its subscriptions and cache watches as moved"
+                    );
+                }
                 if leaderless && key.kind == ShardKind::Stream {
                     self.broker
                         .end_deposed_subscriptions(
