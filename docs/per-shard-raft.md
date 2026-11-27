@@ -204,6 +204,11 @@ records, in each of these cases:
 - The directory fails the restore check below.
 - The copy's log was poisoned in its last run ("A poisoned log" below).
 
+An open's file work (the lock, the checks, a rotation's syncs and the log's
+open) runs on the blocking pool. A bulk create opens hundreds of copies on
+each broker, and on a runtime worker each open's fsyncs would stall every task
+queued behind it.
+
 **Votes are always fsynced.** The vote, the copy id and the membership are
 synced before they are answered. Votes are rare, so this costs nothing on
 the write path. The log is fsync on commit and refuses any other mode
