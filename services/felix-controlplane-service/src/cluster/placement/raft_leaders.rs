@@ -77,9 +77,11 @@ pub(super) fn on_raft(existing: &ShardAssignment, raft_streams: bool, durable: b
 ///   the shard waits, shown to the operator. A seat whose broker died before
 ///   its copy opened is given away the same way, though no target was ever
 ///   stored for it ([`dead_seat`]).
-/// - A set short of the replication factor, as an abandon or a placement
-///   on too few brokers leaves it, grows by a live node outside the set
-///   ([`top_up`]), one member a write.
+/// - A set short of the replication factor whose group formed, as an
+///   abandon leaves it, grows by a live node outside the set ([`top_up`]),
+///   one member a write. A set placed on too few brokers never formed, and
+///   is placed in full in one write once enough are live
+///   ([`fill_unformed`]).
 /// - A live leader leading two or more shards over a live member moves to
 ///   it, the stream's spread first and then the cluster's, while nothing is
 ///   recovering. With no such member, a live broker outside the set takes a
@@ -138,6 +140,22 @@ pub(super) fn raft_step<'a>(
         && let Some(to) = elected
     {
         return rename(existing, to, true, counted, leaders, moves);
+    }
+    // Before the swaps and the top-up, which wait for a target this set
+    // can never get.
+    if is_live(leader)
+        && leaving(leader).is_none()
+        && let Some(decision) = fill_unformed(
+            existing,
+            replication_factor,
+            is_serving,
+            leaving,
+            eligible,
+            load,
+            moves,
+        )
+    {
+        return decision;
     }
     // A leader that must leave is renamed first, below; it is swapped out
     // as a follower on a later pass.
@@ -815,8 +833,8 @@ fn newcomer<'a>(
 }
 
 /// Grows a set short of its replication factor by one live node outside
-/// it. Nothing else adds a copy to a Raft set: a swap keeps the size, and
-/// an abandoned or thinly placed shard would otherwise acknowledge
+/// it. Nothing else adds a copy to a formed Raft set: a swap keeps the
+/// size, and an abandoned shard would otherwise acknowledge
 /// `Quorum` writes on fewer copies than its factor for good.
 ///
 /// One member a write, so the voters the leader reported always hold at
@@ -883,6 +901,107 @@ pub(super) fn seat_open(existing: &ShardAssignment) -> Result<(), Blocked> {
         return Err(Blocked::Unformed);
     }
     Ok(())
+}
+
+/// Places a set short of its replication factor in full, in one write,
+/// when its group never formed. A broker forms nothing on a short set and
+/// the store takes no copy id for one, so such a set never gets a target
+/// and [`top_up`] would wait on [`seat_open`] for good (#3331). With no
+/// group there is no record to keep: the write keeps the leader and every
+/// serving follower that need not leave, and adds live brokers outside the
+/// set until it is full. The brokers then form the group as on a shard
+/// placed in full from the start.
+///
+/// Held by a pause and from the replacement budget, as a top-up is. `None`
+/// when the set is full or its group may have formed ([`never_formed`]).
+fn fill_unformed<'a>(
+    existing: &'a ShardAssignment,
+    replication_factor: u32,
+    is_serving: &dyn Fn(&str) -> bool,
+    leaving: &dyn Fn(&str) -> Option<Leaving>,
+    eligible: &[&'a Node],
+    load: &mut HashMap<&'a str, u32>,
+    moves: &mut Moves,
+) -> Option<Decision> {
+    let needed = replication_factor.max(1) as usize;
+    if existing.nodes().count() >= needed || !never_formed(existing, needed) {
+        return None;
+    }
+    let held = |blocked| {
+        Decision::Waiting(Blocked::Unfilled {
+            held: Box::new(blocked),
+        })
+    };
+    let mut next = ShardAssignment {
+        replicas: existing
+            .replicas
+            .iter()
+            .filter(|node| is_serving(node) && leaving(node).is_none())
+            .cloned()
+            .collect(),
+        ..existing.renamed()
+    };
+    let kept = next.nodes().count();
+    let mut added = Vec::new();
+    while next.nodes().count() < needed {
+        // Not a broker this write drops: it is down or must leave.
+        let Some(to) = newcomer(&next, None, eligible, load)
+            .filter(|to| !existing.nodes().any(|node| node == to))
+        else {
+            let outside = eligible
+                .iter()
+                .filter(|node| !existing.nodes().any(|member| *member == node.node_id))
+                .count();
+            return Some(held(Blocked::TooFewBrokers {
+                live: (kept + outside) as u32,
+                needed: needed as u32,
+            }));
+        };
+        next.replicas.push(to.to_string());
+        added.push(to);
+    }
+    let step = MoveStep::RaftFill {
+        to: added.iter().map(|to| to.to_string()).collect(),
+    };
+    match spend_replacement(moves, step, next) {
+        Decision::Waiting(blocked) => Some(held(blocked)),
+        decision => {
+            for to in added {
+                *load.entry(to).or_default() += 1;
+            }
+            Some(decision)
+        }
+    }
+}
+
+/// Whether `existing`'s group cannot have formed, so its set may change in
+/// any way. A group forms only on a stored target, and the store takes a
+/// copy id, the only thing that stores a target, only while the set names
+/// `needed` brokers. `placed` lists every broker placed in the epoch, so
+/// fewer than `needed` on it means no set of the epoch was ever full.
+///
+/// A shard with no `placed` record (restored, or older than the record)
+/// does not count, nor one past a re-form, which starts from copies that
+/// hold records. Every other trace a group leaves is checked too, so a
+/// record that lost `placed`'s guarantee still holds: a target, a counter
+/// kept from a dropped one, a formed mark, reported voters or floor, an
+/// epoch seed, or an ordered target.
+fn never_formed(existing: &ShardAssignment, needed: usize) -> bool {
+    existing
+        .placed
+        .as_ref()
+        .is_some_and(|placed| placed.epoch == 0 && placed.brokers.len() < needed)
+        && existing.raft_target.is_none()
+        && existing.raft_target_counter == 0
+        && existing.raft_formed.is_none()
+        && existing.raft_voters.is_none()
+        && existing.raft_floor.is_none()
+        && existing.raft_seed.is_none()
+        && existing.raft_bases.is_none()
+        && existing
+            .raft_ordered
+            .as_ref()
+            .is_none_or(|ordered| !ordered.lost && ordered.targets.is_empty())
 }
 
 /// `existing` with its leader's seat given to `to`, a broker outside the

@@ -166,6 +166,10 @@ pub enum MoveStep {
     /// a live broker outside it. The group's leader adds `to` as a learner
     /// and makes it a voter once it catches up.
     RaftTopUp { to: String },
+    /// A Raft shard placed on fewer brokers than its replication factor,
+    /// whose group never formed, is placed in full: `to` joins the set in
+    /// one write, and the brokers form the group on it.
+    RaftFill { to: Vec<String> },
     /// A hybrid move left on a Raft shard is dropped. Its group never
     /// reports what the move waits for.
     RaftMoveDropped,
@@ -224,6 +228,7 @@ impl MoveStep {
             Self::RaftLeaderTimedOut { .. } => "raft_leader_timed_out",
             Self::RaftReplace { .. } => "raft_replace",
             Self::RaftTopUp { .. } => "raft_top_up",
+            Self::RaftFill { .. } => "raft_fill",
             Self::RaftMoveDropped => "raft_move_dropped",
             Self::RaftMoveUndone { .. } => "raft_move_undone",
             Self::OwnerReplaced { .. } => "owner_replaced",
@@ -315,6 +320,12 @@ pub enum Blocked {
     /// is not serving. Either set of one needs its vote, so the shard stays
     /// until it is back or an operator re-forms the group.
     MoveStranded { node: String },
+    /// A Raft shard placed on fewer brokers than its replication factor has
+    /// never formed, and the write that places it in full waits for `held`.
+    Unfilled { held: Box<Blocked> },
+    /// Fewer brokers can hold a copy (`live`) than the replication factor
+    /// needs.
+    TooFewBrokers { live: u32, needed: u32 },
 }
 
 impl std::fmt::Display for Blocked {
@@ -379,6 +390,15 @@ impl std::fmt::Display for Blocked {
             Self::MoveStranded { node } => write!(
                 f,
                 "{node} votes in this group of two and is not serving; the move finishes once it is back, or re-form the group without it"
+            ),
+            Self::Unfilled { held } => write!(
+                f,
+                "the group has not formed: it is placed on fewer brokers than its replication factor, \
+                 and the write that places it in full waits ({held})"
+            ),
+            Self::TooFewBrokers { live, needed } => write!(
+                f,
+                "{live} live brokers can hold a copy and the replication factor needs {needed}"
             ),
         }
     }
