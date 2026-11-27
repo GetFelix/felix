@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795738893859,
+  "lastUpdate": 1795740219880,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -72540,6 +72540,58 @@ window.BENCHMARK_DATA = {
             "range": "55730.46",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 833657.91\nmean: 810811.42\nstdev: 55730.46\ncv: 6.87%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "78fd56868b441f3af36cc1f7f5f8e5d01db289a2",
+          "message": "fix(raft): a one-replica shard opened before its re-form could be decided re-forms later (#3312) (#3317)\n\n* fix(raft): a held one-replica shard re-forms once its open could not decide it (#3312)\n\nA cluster RF 1 shard rotated by a relaxed crash re-forms only inside its\nopen. When the open ran before registration's answer enabled the fleet\nfeatures, before the writer was set, or on an assignment that did not yet\nname this broker alone, the re-form returned without a word and the member\nopened held, with nothing to open it again. The open now records that\ncase, and the feed pass closes the never-formed member once the reason\nclears, so the next open re-forms it through the same checks.\n\nSpec-Unaffected: the re-form's checks and its single write are unchanged; only when the open runs moves\n\n* docs(raft): a held one-replica shard re-forms once its open can decide it (#3312)\n\nSpec-Unaffected: docs and changelog only\n\n* box the recorded assignment in the re-form outcome\n\nSpec-Unaffected: type layout only",
+          "timestamp": "2026-11-27T00:36:30Z",
+          "tree_id": "0b5eb479eca1e1f7641e205986d91598d8b6adc8",
+          "url": "https://github.com/GetFelix/felix/commit/78fd56868b441f3af36cc1f7f5f8e5d01db289a2"
+        },
+        "date": 1795740219208,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 513210.89,
+            "range": "24104.79",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 513210.89\nmean: 512682.25\nstdev: 24104.79\ncv: 4.70%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1018-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 513210.89,
+            "range": "24104.79",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 513210.89\nmean: 512682.25\nstdev: 24104.79\ncv: 4.70%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1018-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 123553.5,
+            "range": "5912.22",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 123553.50\nmean: 121244.37\nstdev: 5912.22\ncv: 4.88%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1018-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1235534.96,
+            "range": "59122.18",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1235534.96\nmean: 1212443.66\nstdev: 59122.18\ncv: 4.88%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1018-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
