@@ -180,7 +180,8 @@ pub(crate) struct ReformPlan<B> {
     pub(crate) first_index: u64,
     /// The restore's gap, when the plan is one.
     pub(crate) offset_gap: Option<u64>,
-    /// The highest key of any vote or entry read, and of the floor.
+    /// The highest key of any entry read, of the floor, and of any vote read
+    /// that a majority of some voter set voted at or above.
     pub(crate) top: Key,
     /// Set when the voters whose votes are unknown (dead, no vote of the
     /// epoch read, a copy of the epoch a restore rotated, or a copy id the
@@ -348,15 +349,6 @@ pub(crate) fn plan_reform_as<B: Ord + Clone>(
         }
     }
 
-    // T over this incarnation's votes and entries, and the floor.
-    let entries = copies.iter().filter_map(|c| c.last).max();
-    let votes = copies
-        .iter()
-        .filter_map(|c| Some((c.epoch?, c.read.vote.unwrap_or(0))))
-        .max();
-    let floor = record.floor.map(|floor| (floor.epoch, floor.term));
-    let top = entries.max(votes).max(floor).unwrap_or((0, 0));
-
     // A term above every vote read needs a majority of some voter set of
     // the epoch, and votes are fsynced before the reply and kept across a
     // power cut. So unless the unknown votes are a majority of one, the top
@@ -416,7 +408,46 @@ pub(crate) fn plan_reform_as<B: Ord + Clone>(
         }
         rule.copy_epoch(current) != Some(epoch)
     };
-    let marked = marked_by(record, &live, unknown_vote);
+    let sets = voter_sets(record, &live);
+    let marked = match &sets {
+        Ok(sets) => marked_by(sets, unknown_vote),
+        Err(unknown) => Some(unknown.clone()),
+    };
+
+    // T over this incarnation's entries, the floor, and the votes some
+    // majority reached. A term no majority of any voter set voted at or
+    // above elected nobody, so no entry carries it: a lone candidate's vote
+    // would otherwise sit above every entry and cut every tail (#3351). An
+    // unknown vote counts as reaching it, and so does any copy of the
+    // broker, which can only count more.
+    let vote_key = |c: &Copy<'_, B>| Some((c.epoch?, c.read.vote.unwrap_or(0)));
+    let mut broker_votes: BTreeMap<&B, Key> = BTreeMap::new();
+    for (copy, key) in copies.iter().filter_map(|c| Some((c, vote_key(c)?))) {
+        let at = broker_votes.entry(copy.broker).or_insert(key);
+        *at = (*at).max(key);
+    }
+    let reached = |key: Key| {
+        let Ok(sets) = &sets else {
+            return true;
+        };
+        sets.iter().any(|(_, set)| {
+            let from = set
+                .iter()
+                .filter(|voter| {
+                    unknown_vote(voter) || broker_votes.get(&voter.0).is_some_and(|v| *v >= key)
+                })
+                .count();
+            from * 2 > set.len()
+        })
+    };
+    let entries = copies.iter().filter_map(|c| c.last).max();
+    let votes = copies
+        .iter()
+        .filter_map(vote_key)
+        .filter(|key| reached(*key))
+        .max();
+    let floor = record.floor.map(|floor| (floor.epoch, floor.term));
+    let top = entries.max(votes).max(floor).unwrap_or((0, 0));
 
     let mut vouched = Vec::with_capacity(copies.len());
     let mut cut_by_vote = false;
@@ -701,25 +732,27 @@ fn is_alone<B: Ord + Clone>(
         })
 }
 
-/// The first voter set of the epoch whose majority has unknown votes, or
-/// the first source not known.
-fn marked_by<B: Ord + Clone>(
-    record: &GroupRecord<B>,
-    live: &BTreeMap<&B, &BrokerReport<B>>,
-    unknown_vote: impl Fn(&VoterId<B>) -> bool,
-) -> Option<Marked<B>> {
-    let mut sets: Vec<(VoterSource<B>, &BTreeSet<VoterId<B>>)> = Vec::new();
+/// A voter set of the epoch and where it comes from.
+type VoterSet<'a, B> = (VoterSource<B>, &'a BTreeSet<VoterId<B>>);
+
+/// Every voter set of the epoch a re-form can know, or the first source
+/// not known.
+fn voter_sets<'a, B: Ord + Clone>(
+    record: &'a GroupRecord<B>,
+    live: &BTreeMap<&B, &'a BrokerReport<B>>,
+) -> Result<Vec<VoterSet<'a, B>>, Marked<B>> {
+    let mut sets = Vec::new();
     match &record.seed {
         Some(seed) if !seed.is_empty() => sets.push((VoterSource::Seed, seed)),
-        _ => return Some(Marked::Unknown(VoterSource::Seed)),
+        _ => return Err(Marked::Unknown(VoterSource::Seed)),
     }
     let Some(ordered) = &record.ordered else {
-        return Some(Marked::Unknown(VoterSource::Ordered));
+        return Err(Marked::Unknown(VoterSource::Ordered));
     };
     sets.extend(ordered.iter().map(|set| (VoterSource::Ordered, set)));
     for (broker, report) in live {
         let Some(memberships) = &report.memberships else {
-            return Some(Marked::Unknown(VoterSource::Membership((*broker).clone())));
+            return Err(Marked::Unknown(VoterSource::Membership((*broker).clone())));
         };
         sets.extend(
             memberships
@@ -727,12 +760,20 @@ fn marked_by<B: Ord + Clone>(
                 .map(|set| (VoterSource::Membership((*broker).clone()), set)),
         );
     }
-    sets.into_iter().find_map(|(from, set)| {
+    Ok(sets)
+}
+
+/// The first voter set whose majority has unknown votes.
+fn marked_by<B: Ord + Clone>(
+    sets: &[VoterSet<'_, B>],
+    unknown_vote: impl Fn(&VoterId<B>) -> bool,
+) -> Option<Marked<B>> {
+    sets.iter().find_map(|(from, set)| {
         let unknown: BTreeSet<VoterId<B>> =
             set.iter().filter(|b| unknown_vote(b)).cloned().collect();
         (unknown.len() * 2 > set.len()).then(|| Marked::Majority {
-            from,
-            set: set.clone(),
+            from: from.clone(),
+            set: (*set).clone(),
             unknown,
         })
     })

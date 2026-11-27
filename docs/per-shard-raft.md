@@ -475,11 +475,10 @@ the top term is kept whole. Offsets are not reused: the vouch rule, the
 floor and the reservations are unchanged. A record that every copy lost in
 the power cut is still lost, as relaxed fsync allows.
 
-One case still cuts to the saved commit (issue #3351). A leader that
-restarts while its followers are held stands for election alone, so its
-vote is in a term above every entry read. T is that vote's term, no copy
-is kept whole, and the plan needs the loss accepted even though every vote
-is known.
+A leader that restarts while its followers are held stands for election
+alone, so its vote is in a term above every entry read. No majority voted
+in that term, so it does not count toward T (see "When a copy vouches for
+its whole log" below), and the leader's copy is still kept whole (#3351).
 
 **Per directory, not only per root.** The check above judges a data root,
 and the copy id is per shard directory, so two more things are checked when
@@ -1632,6 +1631,22 @@ marked. Every elected term took votes from a majority of some voter set of
 the epoch, and a vote is fsynced before the reply and kept across a power
 cut, so while the unknown votes are a minority of every voter set, some
 vote read is at least as new as every elected term.
+
+A vote's term counts toward T only when a majority of some voter set voted
+at or above it. A candidate that stands for election and loses still saves
+the vote it gave itself, so without this one lone candidate would put T
+above every entry and cut every copy to its saved commit (#3351). A term no
+majority reached elected nobody and holds no entry, so leaving it out keeps
+T at least as new as every elected term. An unknown vote counts as at or
+above the term, and so does any copy of the voter's broker, so the rule
+only ever counts more. `FelixRaftReformKeptCampaign.cfg` adds lost
+elections and passes `KeptLossBound`; counting every vote instead
+(`FelixRaftReformKeptCampaignLoneVote.cfg`) cuts an acknowledged record a
+read copy holds.
+
+> `crates/server/felix-storage/src/raft_copy/tests/vouch.rs`,
+> `a_lone_candidates_vote_never_cuts_the_tail`,
+> `a_lone_vote_counts_when_an_unknown_vote_can_make_the_majority`.
 
 A voter is a copy, named by its broker and copy id, not a broker. A broker
 whose disk was replaced runs a new copy that never gave the old one's votes,
