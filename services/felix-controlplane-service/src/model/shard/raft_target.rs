@@ -280,6 +280,15 @@ impl ShardAssignment {
         matches!(self.formed_voters(), Some(Some(voters)) if !voters.members.contains_key(node))
     }
 
+    /// The copy id under which the voters a leader of this record's formed
+    /// group reported, at its incarnation and epoch, name `node`.
+    pub(crate) fn voted_copy(&self, node: &str) -> Option<u64> {
+        match self.formed_voters() {
+            Some(Some(voters)) => voters.members.get(node).copied(),
+            _ => None,
+        }
+    }
+
     /// `None` when this record's group has not formed; otherwise the voters
     /// its leader reported at this incarnation and epoch, if any.
     fn formed_voters(&self) -> Option<Option<&RaftVoters>> {

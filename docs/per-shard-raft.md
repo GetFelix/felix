@@ -6033,7 +6033,15 @@ target counter (metadata level 36):
   seat to another live broker once it is lost, provided the group formed and
   its reported voters do not name it (`docs/control-plane.md`, "Raft
   shards"). The group never heard of the set that named it, and the next
-  set still needs a majority of the reported voters. A placement write that
+  set still needs a majority of the reported voters. A member that was a
+  voter and dies before it reports again would hold the target the same
+  way, so placement reports its copy for it, the copy id the voters its
+  group reported at this incarnation and epoch name it under (#3313). The
+  vouched id is the one the group's voters name, so the target names the
+  member the group already has. If the broker comes back with another copy,
+  it reports that itself and keeps reporting until the target names it. A
+  copy answers only for its own member id, so a target naming a stale copy
+  forms nothing. A placement write that
   keeps the set, a leader report and a doomed-set write leave it alone. So
   within one incarnation a version names exactly one member set.
 - **It counts within one stream incarnation.** A stream deleted and
@@ -6081,6 +6089,15 @@ How a broker reports its copy id:
   the group the copy is in. The control plane refuses a report from an
   earlier process of the node, or for another incarnation of the stream,
   so a late retry never lands on a newer copy or a recreated stream.
+- **Or by placement, for a down voter.** When a set change dropped the
+  copy ids and one member has not reported again, placement reports for it
+  once its broker is down, every other member serves and has reported, and
+  the group's reported voters name it. The report carries the broker's
+  current registration and goes through the same command and checks as the
+  broker's own, so no metadata level changes. If the broker comes back with
+  a rotated copy, its own report replaces this one, and a target naming the
+  old copy forms nothing: a copy refuses requests for any member id but its
+  own.
 - **Until the target names it.** A report is idempotent. The broker sends
   it again 5 seconds after the control plane refuses it (a shard not on Raft
   yet, a placement not acknowledged by every broker, a control plane below
