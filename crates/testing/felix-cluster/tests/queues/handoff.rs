@@ -596,10 +596,24 @@ async fn finish_via(cluster: &Cluster, via: &str, acked: &mut HashSet<u64>) -> u
                 "{via} handed out offset {} after the group acked it",
                 record.offset,
             );
-            cluster
-                .group_ack_via(via, STREAM, 0, GROUP, record.offset)
-                .await
-                .expect("ack");
+            // A leader change or membership change can hold the ack past its
+            // wait; the broker answers that "retry", and the ack is not lost.
+            let ack_by = tokio::time::Instant::now() + wait::budget(Duration::from_secs(30));
+            loop {
+                match cluster
+                    .group_ack_via(via, STREAM, 0, GROUP, record.offset)
+                    .await
+                {
+                    Ok(()) => break,
+                    Err(err)
+                        if format!("{err:#}").contains("; retry")
+                            && tokio::time::Instant::now() < ack_by =>
+                    {
+                        tokio::time::sleep(Duration::from_millis(100)).await;
+                    }
+                    Err(err) => panic!("ack: {err:#}"),
+                }
+            }
             acked.insert(record.offset);
             finished += 1;
         }
