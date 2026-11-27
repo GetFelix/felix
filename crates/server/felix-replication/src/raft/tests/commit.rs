@@ -916,6 +916,79 @@ async fn a_placed_transfer_with_nothing_in_flight_is_not_held() {
     led.cluster.stop().await;
 }
 
+/// Close the leader's term for a transfer with one write of it on no
+/// follower, then cut the leader off until another member wins a later
+/// term and commits past that write's index. Returns the write, its
+/// waiter, and the new leader's last index.
+async fn closed_and_replaced(
+    led: &Led,
+) -> (
+    Written,
+    tokio::task::JoinHandle<Result<(), CommitError>>,
+    u64,
+) {
+    led.cut_followers();
+    let written = led.propose(1).await;
+    let waiting = tokio::spawn(led.engine.await_commit(&shard(0), written, PATIENCE));
+    assert_eq!(
+        led.engine.transfer_starting(&shard(0)).await,
+        Some(led.term)
+    );
+    let old = led.leader.broker.to_string();
+    led.cluster.net.muted.lock().insert(old.clone());
+    *led.cluster.net.cut.lock() = HashSet::from([old]);
+    let theirs = led.cluster.write(0, b"theirs").await;
+    assert!(theirs > written.end - 1, "the index was not taken");
+    assert_ne!(led.cluster.elected(0).await, led.leader);
+    (written, waiting, theirs)
+}
+
+/// **A write of a closed term that does not commit before the transfer is
+/// never acknowledged.** The new leader never had it and truncates it on
+/// the old one. Its waiter is told the outcome is unknown, and a wait
+/// begun after the truncation is refused too.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_closed_terms_write_the_new_leader_truncates_is_not_acked() {
+    let mut led = led().await;
+    let (written, waiting, theirs) = closed_and_replaced(&led).await;
+    led.heal();
+    let told = waiting.await.expect("the wait");
+    let detail = lost(&told);
+    assert!(
+        [
+            "this broker stopped leading the shard",
+            "another leader's entry committed at the offset"
+        ]
+        .contains(&detail),
+        "{detail}"
+    );
+    eventually(|| (led.engine.read_bound(&shard(0)).ok()? > theirs).then_some(())).await;
+    let after = led.engine.await_commit(&shard(0), written, PATIENCE).await;
+    assert_eq!(
+        lost(&after),
+        "another leader's entry committed at the offset"
+    );
+    led.cluster.stop().await;
+}
+
+/// **A leader deposed with a write of its closed term outstanding tells
+/// the publisher at once.** The apply is held, so only the later term the
+/// member hears can answer the waiter.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_closed_terms_waiter_is_told_promptly_once_a_later_term_is_seen() {
+    let mut led = led().await;
+    let (_, waiting, _) = closed_and_replaced(&led).await;
+    let runtime = led.cluster.runtime(&led.leader.broker);
+    let group = runtime.group(&shard(0)).expect("group");
+    let held = Arc::clone(&group.apply_hold).lock_owned().await;
+    led.heal();
+    let told = tokio::time::timeout(Duration::from_secs(10), waiting).await;
+    let told = told.expect("told before the apply").expect("the wait");
+    assert_eq!(lost(&told), "this broker stopped leading the shard");
+    drop(held);
+    led.cluster.stop().await;
+}
+
 /// A log that fails stops the group, which closes the shard.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_group_that_stops_on_a_storage_error_closes_the_shard() {

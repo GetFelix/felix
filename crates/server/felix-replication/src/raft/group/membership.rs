@@ -172,11 +172,13 @@ impl Group {
     /// whole log and this leader has applied it, waiting at most `within`.
     /// The shard closes first, so no new write lands meanwhile and a busy
     /// log stops growing away from `to`. The apply is waited for because a
-    /// write's waiter is answered here only by its commit: one still in
-    /// flight when this member steps down is told the outcome is unknown,
-    /// though the new leader keeps it. Asked anyway when the wait runs out:
-    /// the term is closed by then, and a transfer that does not go through
-    /// ends it.
+    /// write's waiter is acked only by its commit, seen here: a write that
+    /// commits before the hand-over is answered by it. Two can still be
+    /// told the outcome is unknown: a batch already queued that is appended
+    /// after the last check, and any write still in flight when `within`
+    /// runs out, since the transfer is asked anyway (the term is closed and
+    /// a transfer that does not go through ends it). Neither is acked unless
+    /// its entry commits in this term.
     pub(crate) async fn transfer_in_caught_up(
         &self,
         term: u64,

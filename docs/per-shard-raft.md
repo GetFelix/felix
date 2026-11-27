@@ -5771,20 +5771,27 @@ openraft. Publishes in that window are told the shard is not ready. The
 refusal is retryable and nothing was written, so the client sends every
 publish kind again under its reconnect policy (a plain one too, since
 nothing of it was applied); a hand-over that outlasts the policy returns the
-refusal. A write already proposed when the hand-over began is answered by
-its commit, which the wait for the apply lets the old leader see. If the
-wait runs out first, the transfer is asked anyway, since the term cannot
-open again. A write still in flight then may commit under the new leader,
-which the old one cannot confirm, so it is answered `leadership_lost`
-(outcome unknown), and a plain publish returns that rather than risk a
-duplicate. A transfer a membership step asks for (a move off the leader)
+refusal. A write in flight when the hand-over began is answered by its
+commit if it commits before the hand-over, which the wait for the apply
+lets the old leader see. Two cases still end in `leadership_lost` (outcome
+unknown). A batch already queued for openraft can be appended in the short
+window after the leader's last check and before it asks for the transfer.
+And if the wait runs out first, the transfer is asked anyway, since the
+term cannot open again, with writes still in flight. Such a write may
+commit under the new leader, which the old one cannot confirm, or be
+truncated by it; either way the publisher is told the outcome is unknown,
+and a plain publish returns that rather than risk a duplicate. A write is
+acknowledged only when its entry committed in the term that wrote it,
+never for one that did not. A transfer a membership step asks for (a move off the leader)
 waits the same way. The target campaigns while the other followers still
 hear the old leader, so their pre-vote check lets a transfer target
 through.
 
 > `crates/server/felix-replication/src/raft/tests/commit.rs`,
-> `a_placed_transfer_waits_for_its_terms_writes_to_be_answered` and
-> `a_placed_transfer_with_nothing_in_flight_is_not_held`.
+> `a_placed_transfer_waits_for_its_terms_writes_to_be_answered`,
+> `a_placed_transfer_with_nothing_in_flight_is_not_held`,
+> `a_closed_terms_write_the_new_leader_truncates_is_not_acked` and
+> `a_closed_terms_waiter_is_told_promptly_once_a_later_term_is_seen`.
 
 A new group goes through this once: the broker that formed it leads its
 first term, then hands over. The test harness's
