@@ -249,10 +249,18 @@ answered, so a held root does not keep the broker from serving its other
 shards. Until the root passes, no Raft member opens, a request for a Raft
 shard placed here is answered "not ready", and the log says once why the
 root is held. When it passes, the routing feed is woken and the members
-open. A broker that started from its saved control-plane view, with the
-control plane down, has not had its restore check answered yet. Under the
-unified fence, the default, its Raft members wait for the control plane
-too, even with a witness: a restarted broker counts for nothing until the
+open. They also wait for the broker's registration to say which fleet
+features are enabled, because a member reads `raft_written_commit` (its
+fsync mode) and `raft_alone_reform` once, at its open. Opened before the
+answer, a member on a relaxed broker would fsync on commit until it next
+opened. A start from the saved view whose features already decide both
+does not wait, nor does a standalone broker, which is its own fleet, nor a
+start whose members vote before the restore check (below). If no answer
+comes within 10 s, the members open on what is known, the strict side of
+both, and the log says so. A broker that started from its saved
+control-plane view, with the control plane down, has not had its restore
+check answered yet. Under the unified fence, the default, its Raft
+members wait for the control plane too, even with a witness: a restarted broker counts for nothing until the
 control plane has checked it, as on the hybrid engine. With
 `FELIX_UNIFIED_FENCE=0` they open on the witness.
 
