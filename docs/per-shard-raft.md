@@ -204,6 +204,11 @@ records, in each of these cases:
 - The directory fails the restore check below.
 - The copy's log was poisoned in its last run ("A poisoned log" below).
 
+A normal open's file work (the lock, the checks, a rotation's syncs and the log's
+open) runs on the blocking pool. A bulk create opens hundreds of copies on
+each broker, and on a runtime worker each open's fsyncs would stall every task
+queued behind it.
+
 **Votes are always fsynced.** The vote, the copy id and the membership are
 synced before they are answered. Votes are rare, so this costs nothing on
 the write path. The log is fsync on commit and refuses any other mode
@@ -5254,8 +5259,11 @@ log, stored as group records (`docs/storage-format.md`, "Group records").
 Every member folds them, in log order, into the same group table, so a
 new leader serves the group from exactly the state the old one committed.
 `docs/formal/FelixRaftGroups.tla` models the rules the fold follows; it
-leaves out discard, which only drops a dead letter, and `if_new`, which the
-leader decides before it proposes the seek.
+leaves out discard, which only drops a dead letter, `if_new`, which the
+leader decides before it proposes the seek, and claims: the model has no
+claim entries, visibility timeouts or attempt counts. That a new leader
+holds every claim a consumer was told about is checked by tests only
+(`queue/raft/tests.rs`, `a_claim_survives_a_change_of_leader`).
 
 The group table is the shard's consumer groups as one member has applied
 them: per group, its creation token, its cursor (everything below it is
