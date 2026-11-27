@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795808677661,
+  "lastUpdate": 1795809371727,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -93984,6 +93984,72 @@ window.BENCHMARK_DATA = {
             "range": "100.97",
             "unit": "us",
             "extra": "trials: 5\nmedian: 371.00\nmean: 409.40\nstdev: 100.97\ncv: 24.66%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "bfcdf59d030235b6d6800ad8bef2e508f9870764",
+          "message": "test(cluster): planned-move tests run on Raft (#3301) (#3329)\n\n* test(cluster): move tests run on the Raft engine, and the harness waits out set_unsettled (#3301)\n\nUn-skip the planned-move tests that can run on Raft, asserting the Raft\nresults there (raft_replace, the old member leaves the set, an undo is a\nmove back) and keeping the hybrid assertions on hybrid. start_move waits\nfor a Raft set to settle instead of failing on 409 set_unsettled. The\ntests that exercise a hybrid-only mechanism are skipped with that reason.\n\nSpec-Unaffected: test only\n\n* test(cluster): move tests account for Raft skips and retry what Raft makes retryable (#3301)\n\nOffsets on Raft include no-op and membership entries, so the move tests check\neach gap against the event's skip count. The replay retries a shard still\nopening, the idempotent re-send retries until the new leader answers, and\nthree tests that fail on Raft for product reasons skip there until their\nissues land (#3335, #3336, #3337).\n\nSpec-Unaffected: test only\n\n* test(cluster): a move-back test retries an ack the broker refuses with retry\n\nSpec-Unaffected: test-only\n\n* test(cluster): move tests read a whole replay after a reset, not a prefix\n\nThe replay after a Raft move can reach the destination while it is still\ntaking leadership. The broker resets the event stream with NOT_SERVING_HERE\n(code 1), which asks the client to subscribe again. read_whole_log panicked\non it, and replay_from / replay_shard_from returned the prefix read before\nthe reset. All three now use Cluster::whole_replay_on / whole_replay_of_shard,\nwhich start the replay again from offset 0; read_whole_log still checks\noffset continuity on the replay it keeps.\n\nSpec-Unaffected: test harness only; no broker behaviour changes",
+          "timestamp": "2026-11-27T19:50:20Z",
+          "tree_id": "004f11517b9ae6ecc768e7a0cb7ef990766c6bbb",
+          "url": "https://github.com/GetFelix/felix/commit/bfcdf59d030235b6d6800ad8bef2e508f9870764"
+        },
+        "date": 1795809346711,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 69,
+            "range": "2.07",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 69.00\nmean: 68.40\nstdev: 2.07\ncv: 3.03%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1018-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 120,
+            "range": "18.17",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 120.00\nmean: 127.60\nstdev: 18.17\ncv: 14.24%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1018-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 148,
+            "range": "970.35",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 148.00\nmean: 581.20\nstdev: 970.35\ncv: 166.96%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1018-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 86,
+            "range": "5.37",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 86.00\nmean: 88.40\nstdev: 5.37\ncv: 6.07%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1018-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 197,
+            "range": "224.57",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 197.00\nmean: 294.60\nstdev: 224.57\ncv: 76.23%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1018-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 994,
+            "range": "688.04",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 994.00\nmean: 1020.80\nstdev: 688.04\ncv: 67.40%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1018-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
