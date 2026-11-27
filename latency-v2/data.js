@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795801381348,
+  "lastUpdate": 1795807827443,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -93786,6 +93786,72 @@ window.BENCHMARK_DATA = {
             "range": "176.22",
             "unit": "us",
             "extra": "trials: 5\nmedian: 395.00\nmean: 455.00\nstdev: 176.22\ncv: 38.73%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "14027797c4367619881ad8143ca1c5c9f7eca94a",
+          "message": "fix(raft): a re-form counts a vote's term only when a majority of some voter set reached it (#3351) (#3375)\n\n* spec(reform): a vote's term counts toward T only when a majority reached it (#3351)\n\nFelixRaftReform.tla gains Campaign: a voter stands for election and\nloses, keeping the vote it gave itself. Top now counts a vote only when\na majority of some voter set voted at or above it, and KeptLossBound\nholds on that. FelixRaftReformKeptCampaign checks the rule;\nFelixRaftReformKeptCampaignLoneVote counts every vote (LoneVoteCounts)\nand must violate KeptLossBound.\n\n* fix(raft): a lone candidate's vote no longer cuts every tail at a re-form (#3351)\n\nThe vouch rule took T over every vote read, so a leader that restarted\nalone and stood for election put T in a term with no entry, and the\nplan cut every copy to its saved commit. A vote's term now counts only\nwhen a majority of some voter set voted at or above it, with unknown\nvotes counted as reaching it (FelixRaftReform.tla, Top). The cluster\ntest skipped for this runs again, and the test that pinned the cut is\ngone.\n\n* test(raft): pin that a one-voter membership makes a lone vote count (#3351)\n\nAdds a unit test for the cautious case filed as #3357, gives\nFelixRaftReformKeptCampaign its measured weight, and puts the run's\nnumbers in the formal README.\n\nSpec-Unaffected: tests, docs and the TLC weight table only\n\n* spec(reform): Top asks Reached only of a vote above every entry (#3351)\n\nSame T, so the same states. Every ReformKept candidate evaluated\nReached for every vote read, which made FelixRaftReformTwoRotatedFull\nrun about half again as long as on main (31 min, 40.55M distinct\nstates) and past a pull request job's hour beside its shard.\n\n* ci(tla): weigh the re-form configurations by their measured times\n\nFelixRaftReformTwoRotatedFull took 47 min on a pull request runner\n(40,553,930 distinct states, the same as main's 31 min run), so it ran\npast its shard's hour at weight 15. At 47 a pull request checks it in a\njob of its own. FelixRaftReform, TwoRotated and KeptOldKept get their\nmeasured times too.\n\nSpec-Unaffected: CI weights and README numbers only",
+          "timestamp": "2026-11-27T19:21:39Z",
+          "tree_id": "4198c7029ce6bc93de033ca05ee3bc1412332a06",
+          "url": "https://github.com/GetFelix/felix/commit/14027797c4367619881ad8143ca1c5c9f7eca94a"
+        },
+        "date": 1795807810019,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 150,
+            "range": "0.55",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 150.00\nmean: 150.40\nstdev: 0.55\ncv: 0.36%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 204,
+            "range": "5.36",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 204.00\nmean: 205.80\nstdev: 5.36\ncv: 2.60%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 262,
+            "range": "224.94",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 262.00\nmean: 388.60\nstdev: 224.94\ncv: 57.89%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 196,
+            "range": "1.14",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 196.00\nmean: 196.40\nstdev: 1.14\ncv: 0.58%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 384,
+            "range": "9.14",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 384.00\nmean: 388.00\nstdev: 9.14\ncv: 2.36%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 538,
+            "range": "25.94",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 538.00\nmean: 525.20\nstdev: 25.94\ncv: 4.94%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
