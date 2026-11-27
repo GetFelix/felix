@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795791906526,
+  "lastUpdate": 1795792860042,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -73632,6 +73632,58 @@ window.BENCHMARK_DATA = {
             "range": "97121.19",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1212668.36\nmean: 1172448.34\nstdev: 97121.19\ncv: 8.28%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "4337a57db5b89a8fce90fce318b3609506759c2d",
+          "message": "docs: felix-replication and ARCHITECTURE.md describe Raft as the default engine (#3363) (#3370)\n\n* docs: felix-replication and ARCHITECTURE.md say Raft is the default engine (#3363)\n\nSpec-Unaffected: docs only\n\n* docs: drop feature-gated intra-doc link in felix-replication\n\nSpec-Unaffected: docs only",
+          "timestamp": "2026-11-27T15:14:19Z",
+          "tree_id": "f27cc6ffeee9c1938226e452d97bc6ebdd441707",
+          "url": "https://github.com/GetFelix/felix/commit/4337a57db5b89a8fce90fce318b3609506759c2d"
+        },
+        "date": 1795792859250,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 360601.75,
+            "range": "2903.31",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 360601.75\nmean: 359297.00\nstdev: 2903.31\ncv: 0.81%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 360601.75,
+            "range": "2903.31",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 360601.75\nmean: 359297.00\nstdev: 2903.31\ncv: 0.81%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 82422.31,
+            "range": "3994.29",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 82422.31\nmean: 80680.04\nstdev: 3994.29\ncv: 4.95%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 824223.13,
+            "range": "39942.88",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 824223.13\nmean: 806800.44\nstdev: 39942.88\ncv: 4.95%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
