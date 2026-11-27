@@ -217,6 +217,46 @@ pub fn begin(
     registered: Option<u64>,
     boot: Option<BootId>,
     repair_pending: impl FnOnce() -> bool,
+    fresh: impl FnMut() -> [u8; 16],
+) -> Result<Begun> {
+    begin_with(
+        root,
+        relaxed,
+        registered,
+        RootCopies::default(),
+        boot,
+        repair_pending,
+        fresh,
+    )
+}
+
+/// The copies of the data root's Raft root sequence kept outside it, which
+/// [`begin_with`] compares the root with before a relaxed crash rotates it.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct RootCopies<'a> {
+    /// Where the run witness is kept ([`witness::default_dir`]).
+    pub witness_dir: Option<&'a Path>,
+    /// The control plane's copy: the storage id it holds a sequence for,
+    /// and the highest sequence a heartbeat carried for it.
+    pub control_plane: Option<(StorageId, u64)>,
+}
+
+/// [`begin`], with the copies of the root sequence outside the root. When a
+/// relaxed crash rotates the id and the root's mark log is not behind any
+/// copy for the old id, with at least one copy there, the mark log is set
+/// aside rather than removed: a copy minted under the old id then rotates as
+/// a power cut when its copy id and vote still meet its marks, so a re-form
+/// can count its vote. Without a copy, or behind one, the root may have been
+/// put back from a backup, and every copy rotates as a restore. See
+/// `docs/per-shard-raft.md`, "A relaxed crash keeps the marks it can vouch
+/// for".
+pub fn begin_with(
+    root: &Path,
+    relaxed: bool,
+    registered: Option<u64>,
+    copies: RootCopies<'_>,
+    boot: Option<BootId>,
+    repair_pending: impl FnOnce() -> bool,
     mut fresh: impl FnMut() -> [u8; 16],
 ) -> Result<Begun> {
     // A restore that stopped part way may have put older data back under
@@ -282,18 +322,27 @@ pub fn begin(
     let rotate = restored || crashed;
     let id = if rotate {
         let next = fresh();
+        let relaxed_crash = matches!(last_run, LastRun::Crashed { relaxed: true, .. });
         // Before the new id: a crash after the rotation but before the
         // evidence would keep every standalone shard held, with no operator
         // way out. Evidence naming an id never installed is void, and the
-        // retry's record keeps its chain.
-        if matches!(last_run, LastRun::Crashed { relaxed: true, .. }) {
-            record_relaxed_crash(root, loaded, StorageId::from_bytes(next), false)?;
+        // retry's record keeps its chain. A directory older than its
+        // registration is a restore whatever its last run did.
+        if relaxed_crash {
+            record_relaxed_crash(root, loaded, StorageId::from_bytes(next), restored)?;
         }
         #[cfg(test)]
         tests::crash_point(1)?;
+        // Checked now: the control plane's copy for the old id is replaced
+        // at the next heartbeat, and the witness is cleared by a reboot.
+        let keep_marks = relaxed_crash && !restored && marks_vouched(root, loaded, copies);
         // Before the new id: a crash in between must not leave a rotated
         // directory whose copies a later clean start still trusts.
-        let id = copy_trust::rotate_storage_id(root, next)?;
+        let id = if keep_marks {
+            copy_trust::rotate_storage_id_keeping_marks(root, next)?
+        } else {
+            copy_trust::rotate_storage_id(root, next)?
+        };
         #[cfg(test)]
         tests::crash_point(2)?;
         if restored {
@@ -350,6 +399,34 @@ pub fn begin(
         recorded,
         rotated: rotate,
     })
+}
+
+/// Whether the Raft mark log under `root`, with storage id `id`, is at or
+/// above every copy of its root sequence kept outside the root for `id`,
+/// with at least one such copy: the gate's test, made before the rotation
+/// that would start the comparison over. A root sequence of 0 holds no
+/// marks to keep.
+#[cfg(feature = "raft")]
+fn marks_vouched(root: &Path, id: StorageId, copies: RootCopies<'_>) -> bool {
+    let Some(sequence) = crate::raft_copy::sequence_before(root, id).filter(|s| *s > 0) else {
+        return false;
+    };
+    let witnessed = witness::recorded_sequence(root, copies.witness_dir)
+        .filter(|(recorded, _)| *recorded == id)
+        .map(|(_, sequence)| sequence);
+    let control_plane = copies
+        .control_plane
+        .filter(|(held, _)| *held == id)
+        .map(|(_, sequence)| sequence);
+    (witnessed.is_some() || control_plane.is_some())
+        && witnessed.is_none_or(|copy| sequence >= copy)
+        && control_plane.is_none_or(|copy| sequence >= copy)
+}
+
+/// A build without the Raft engine keeps no mark log.
+#[cfg(not(feature = "raft"))]
+fn marks_vouched(_root: &Path, _id: StorageId, _copies: RootCopies<'_>) -> bool {
+    false
 }
 
 /// Push everything the crashed run left in the page cache to the device,

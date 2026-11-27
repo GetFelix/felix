@@ -8,7 +8,8 @@
 //! [`super::CacheCommand::Watched`] entry, which a member serving a watch
 //! has its leader append so that every member records and a resume after a
 //! failover is replayed. A resume from below a member's floor, or on a
-//! member that kept no changes, is resnapshotted.
+//! member that kept no changes, is replayed from the log above the
+//! snapshot instead (`machine::replay_from_log`).
 
 use std::collections::VecDeque;
 

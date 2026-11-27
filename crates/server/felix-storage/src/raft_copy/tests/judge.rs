@@ -876,3 +876,236 @@ async fn a_copy_reopens_at_once_after_a_close_under_load() {
         }
     }
 }
+
+/// #3005: an adopted base raises no mark, but once an install purges over
+/// it a batched append is marked as on any copy, so losing that append
+/// still reads as a log below its mark and rotates.
+#[tokio::test]
+async fn an_installed_learner_that_loses_a_marked_append_rotates() {
+    use openraft::storage::RaftLogStorage;
+
+    let root = Root::new();
+    let copies = root.open();
+    let dir = root.shard_dir();
+    let mode = LogMarkMode::Batched(std::time::Duration::from_secs(3600));
+    let opened = open_copy(&copies, &dir).await;
+    let mut log = Log::new(opened.log.clone(), Codec).expect("a Raft log");
+    append(
+        &mut log,
+        &[normal(1, 0, "a"), normal(1, 1, "b"), normal(1, 2, "c")],
+    )
+    .await
+    .expect("append")
+    .await
+    .expect("flush");
+    drop(log);
+    let copy = close(opened).await;
+    crate::raft_log::adopted::store(&dir).expect("adopted");
+
+    let opened = open_copy(&copies, &dir).await;
+    let mut log = Log::new(opened.log.clone(), Codec).expect("a Raft log");
+    log.mark_with(opened.marks.clone(), mode).expect("marks");
+    log.mark_recovered().await.expect("recovered");
+    assert_eq!(root.marks_on_disk().expect("marks").log, None);
+    log.purge(crate::raft_log::tests::log_id(2, 7))
+        .await
+        .expect("install");
+    drop(log);
+    close(opened).await;
+    let backup = tempfile::tempdir().expect("backup");
+    copy_tree(&dir, backup.path());
+
+    // The first append is marked by the reopen's recovery, the second by
+    // the batch.
+    for (index, by_batch) in [(8, false), (9, true)] {
+        let opened = open_copy(&copies, &dir).await;
+        assert_eq!((opened.copy, opened.rotation.clone()), (copy, None));
+        let mut log = Log::new(opened.log.clone(), Codec).expect("a Raft log");
+        log.mark_with(opened.marks.clone(), mode).expect("marks");
+        log.mark_recovered().await.expect("recovered");
+        if by_batch {
+            assert_eq!(root.marks_on_disk().expect("marks").log, Some(point(3, 8)));
+        }
+        append(&mut log, &[normal(3, index, "next")])
+            .await
+            .expect("append")
+            .await
+            .expect("flush");
+        if by_batch {
+            copies.mark_log().mark_batched().await.expect("batch");
+            assert_eq!(root.marks_on_disk().expect("marks").log, Some(point(3, 9)));
+        }
+        drop(log);
+        close(opened).await;
+    }
+
+    restore(backup.path(), &dir);
+    let restored = open_copy(&copies, &dir).await;
+    assert_eq!(
+        restored.rotation.clone().map(|rotation| rotation.reason),
+        Some(RotateReason::LogBelowMark)
+    );
+    assert_ne!(restored.copy, copy);
+    close(restored).await;
+}
+
+/// What the copy of `SHARD` holds when a relaxed run's machine crashes.
+enum Crashed {
+    /// The vote it saved last.
+    Whole,
+    /// A backup from before its last vote, put back over it.
+    OlderVote,
+}
+
+/// Run a relaxed broker's copy that votes, crash the machine, and start
+/// again with `control_plane` as the control plane's copy of the root
+/// sequence, given the old id and the root's sequence. How the rotated copy
+/// is kept.
+async fn after_a_relaxed_crash(
+    crashed: Crashed,
+    control_plane: impl FnOnce(StorageId, u64) -> Option<(StorageId, u64)>,
+) -> RotatedBy {
+    after_a_crash_with(crashed, false, None, control_plane).await
+}
+
+/// [`after_a_relaxed_crash`], with the run witness seeded to `witness`
+/// (given the root's sequence) after the machine restart, and with the
+/// directory older than its registration when `restored`.
+async fn after_a_crash_with(
+    crashed: Crashed,
+    restored: bool,
+    witness: Option<fn(u64) -> u64>,
+    control_plane: impl FnOnce(StorageId, u64) -> Option<(StorageId, u64)>,
+) -> RotatedBy {
+    use crate::run_state::{BootId, RootCopies, begin_with, record_registration};
+    let root = Root::new();
+    let boot = |byte| Some(BootId::from_bytes([byte; 16]));
+    let begun = begin_with(
+        root.path(),
+        true,
+        None,
+        RootCopies::default(),
+        boot(1),
+        || false,
+        || [2; 16],
+    )
+    .expect("begin");
+    assert!(!begun.rotated);
+    let backup = tempfile::tempdir().expect("backup");
+    let (old_id, sequence) = {
+        let copies = root.open();
+        let opened = open_copy(&copies, &root.shard_dir()).await;
+        save_vote(&opened, 3).await;
+        if let Crashed::OlderVote = crashed {
+            close(opened).await;
+            copy_tree(&root.shard_dir(), backup.path());
+            let opened = open_copy(&copies, &root.shard_dir()).await;
+            save_vote(&opened, 5).await;
+            close(opened).await;
+            restore(backup.path(), &root.shard_dir());
+        } else {
+            close(opened).await;
+        }
+        (copies.storage_id(), copies.mark_log().sequence())
+    };
+    // The machine restarts: the witness is gone, and the run left no clean
+    // stop.
+    root.forget_witness();
+    if let Some(at) = witness {
+        crate::run_state::witness::record_sequence(
+            root.path(),
+            Some(root.shm.path()),
+            old_id,
+            at(sequence),
+        );
+    }
+    if restored {
+        record_registration(root.path(), 1).expect("registration");
+    }
+    let begun = begin_with(
+        root.path(),
+        true,
+        restored.then_some(2),
+        RootCopies {
+            witness_dir: Some(root.shm.path()),
+            control_plane: control_plane(old_id, sequence),
+        },
+        boot(2),
+        || false,
+        || [3; 16],
+    )
+    .expect("begin");
+    assert!(begun.rotated);
+    root.witness_current_id();
+    let copies = root.open();
+    let reopened = open_copy(&copies, &root.shard_dir()).await;
+    let rotation = reopened.rotation.clone().expect("rotated");
+    assert_eq!(rotation.reason, RotateReason::StorageId);
+    let by = rotated_by::load(&rotation.kept.expect("kept")).expect("by");
+    if let RotatedBy::PowerCut { to } = by {
+        assert_eq!(to, reopened.copy);
+    }
+    close(reopened).await;
+    by
+}
+
+/// A relaxed crash of the machine rotates the storage id, and with it every
+/// copy. The root's marks are not behind the control plane's copy for the
+/// old id, so the copy that still holds its vote is kept as a power cut,
+/// whose vote a re-form counts (#3309).
+#[tokio::test]
+async fn a_relaxed_crash_keeps_a_copy_that_meets_its_marks_as_a_power_cut() {
+    let by = after_a_relaxed_crash(Crashed::Whole, |id, sequence| Some((id, sequence))).await;
+    assert!(matches!(by, RotatedBy::PowerCut { .. }), "{by:?}");
+}
+
+/// The marks are kept only when something outside the root vouches for
+/// them, and a copy is a power cut only while it meets them: a root behind
+/// the control plane, one nothing has a copy of, a copy under another id,
+/// and a copy holding an older vote all rotate as restores.
+#[tokio::test]
+async fn a_relaxed_crash_nothing_vouches_for_rotates_as_a_restore() {
+    let behind =
+        after_a_relaxed_crash(Crashed::Whole, |id, sequence| Some((id, sequence + 1))).await;
+    assert_eq!(
+        behind,
+        RotatedBy::Restore,
+        "a root behind the control plane"
+    );
+    let unchecked = after_a_relaxed_crash(Crashed::Whole, |_, _| None).await;
+    assert_eq!(unchecked, RotatedBy::Restore, "no copy of the sequence");
+    let other_id = after_a_relaxed_crash(Crashed::Whole, |_, sequence| {
+        Some((StorageId::from_bytes([9; 16]), sequence))
+    })
+    .await;
+    assert_eq!(other_id, RotatedBy::Restore, "a copy under another id");
+    let older =
+        after_a_relaxed_crash(Crashed::OlderVote, |id, sequence| Some((id, sequence))).await;
+    assert_eq!(
+        older,
+        RotatedBy::Restore,
+        "a copy put back with an older vote"
+    );
+}
+
+/// The run witness is a copy of the root sequence too: one equal to the
+/// root's vouches for its marks, and one ahead of it means the root was put
+/// back from a backup, so the copy rotates as a restore.
+#[tokio::test]
+async fn a_witness_vouches_for_the_marks_only_while_the_root_is_not_behind_it() {
+    let equal = after_a_crash_with(Crashed::Whole, false, Some(|s| s), |_, _| None).await;
+    assert!(matches!(equal, RotatedBy::PowerCut { .. }), "{equal:?}");
+    let ahead = after_a_crash_with(Crashed::Whole, false, Some(|s| s + 1), |_, _| None).await;
+    assert_eq!(ahead, RotatedBy::Restore, "a witness ahead of the root");
+}
+
+/// A directory older than its registration is a restore even when the
+/// control plane's copy would vouch for its marks.
+#[tokio::test]
+async fn a_restored_root_keeps_its_copies_judged_as_restores() {
+    let by = after_a_crash_with(Crashed::Whole, true, None, |id, sequence| {
+        Some((id, sequence))
+    })
+    .await;
+    assert_eq!(by, RotatedBy::Restore);
+}

@@ -534,6 +534,143 @@ async fn a_re_formed_voters_base_stays_below_the_gap() {
     }
 }
 
+/// A learner that pulled a re-formed group's base and then installs the
+/// snapshot at the gap's end is asked by openraft to purge through the gap's
+/// end. That keeps the base below the purged id, as a re-formed voter holds
+/// it, instead of emptying the log; any other purge past the end still does.
+#[tokio::test]
+async fn a_purge_at_the_gap_end_keeps_the_base_below_it() {
+    use crate::raft_copy::epoch_file::{self, EpochBase, EpochFile, EpochLogId};
+
+    let first = 12 + (1 << 40);
+    for (first_index, keeps) in [(first, true), (first + 1, false)] {
+        let dir = tempdir().expect("dir");
+        let mut raft = open(&dir);
+        append_flushed(&mut raft, &thirty()[..12]).await;
+        let base = EpochBase {
+            base_last: Some(EpochLogId {
+                index: 11,
+                epoch: 0,
+                term: 1,
+            }),
+            first_index,
+        };
+        epoch_file::store(
+            dir.path(),
+            &EpochFile {
+                incarnation: 1,
+                bases: vec![base],
+            },
+        )
+        .expect("epoch");
+        raft.purge(log_id(2, first - 1)).await.expect("purge");
+        assert_eq!(
+            state(&raft).await,
+            (Some(log_id(2, first - 1)), Some(log_id(2, first - 1)))
+        );
+        assert_eq!(all(&raft).await.expect("read"), []);
+        let held =
+            raft.disk_log().base_offset()..raft.disk_log().tail_offset().await.expect("tail");
+        assert_eq!(held, if keeps { 0..12 } else { first..first });
+        if !keeps {
+            continue;
+        }
+        let next = normal(3, first, "next");
+        append_flushed(&mut raft, std::slice::from_ref(&next)).await;
+        raft.disk_log().close().await.expect("close");
+        drop(raft);
+        let raft = open(&dir);
+        let mut offsets: Vec<Offset> = Vec::new();
+        loop {
+            let start = offsets.last().map_or(0, |last| last + 1);
+            let page = raft
+                .disk_log()
+                .read_range(ReadRange {
+                    start,
+                    max_bytes: usize::MAX,
+                })
+                .await
+                .expect("read")
+                .records;
+            if page.is_empty() {
+                break;
+            }
+            offsets.extend(page.iter().map(|record| record.offset));
+        }
+        let mut expected: Vec<Offset> = (0..12).collect();
+        expected.push(first);
+        assert_eq!(offsets, expected, "the base survives a reopen");
+        assert_eq!(all(&raft).await.expect("read"), [next]);
+    }
+}
+
+/// An adopted base is hidden from openraft, across restarts, until the
+/// install's purge at the gap's end: the log shows no entry and no purged
+/// id, a truncation keeps the base, and an append or a purge into it is
+/// refused. The base reads stay open, and once the purge lands the log
+/// looks as a re-formed voter's does.
+#[tokio::test]
+async fn an_adopted_base_is_hidden_until_the_gap_purge() {
+    use crate::raft_copy::epoch_file::{self, EpochBase, EpochFile, EpochLogId};
+
+    let first = 12 + (1 << 40);
+    let dir = tempdir().expect("dir");
+    let mut raft = open(&dir);
+    append_flushed(&mut raft, &thirty()[..12]).await;
+    epoch_file::store(
+        dir.path(),
+        &EpochFile {
+            incarnation: 1,
+            bases: vec![EpochBase {
+                base_last: Some(EpochLogId {
+                    index: 11,
+                    epoch: 0,
+                    term: 1,
+                }),
+                first_index: first,
+            }],
+        },
+    )
+    .expect("epoch");
+    raft.disk_log().close().await.expect("close");
+    drop(raft);
+    crate::raft_log::adopted::store(dir.path()).expect("mark");
+
+    // Each open is a restart between the adoption and the install.
+    for _ in 0..2 {
+        let mut raft = open(&dir);
+        assert_eq!(state(&raft).await, (None, None));
+        assert_eq!(all(&raft).await.expect("read"), []);
+        assert_eq!(raft.read_committed().await.expect("committed"), None);
+        assert_eq!(base_page(&raft).await, thirty()[11..12]);
+        raft.truncate_after(None).await.expect("truncate");
+        assert_eq!(raft.disk_log().tail_offset().await.expect("tail"), 12);
+        assert!(append(&mut raft, &[normal(1, 12, "over")]).await.is_err());
+        assert!(raft.purge(log_id(1, 5)).await.is_err());
+        raft.disk_log().close().await.expect("close");
+    }
+
+    let mut raft = open(&dir);
+    raft.purge(log_id(2, first - 1)).await.expect("purge");
+    assert!(!crate::raft_log::adopted::held(dir.path()).expect("mark"));
+    assert_eq!(
+        state(&raft).await,
+        (Some(log_id(2, first - 1)), Some(log_id(2, first - 1)))
+    );
+    let next = normal(3, first, "next");
+    append_flushed(&mut raft, std::slice::from_ref(&next)).await;
+    raft.disk_log().close().await.expect("close");
+    drop(raft);
+    let raft = open(&dir);
+    assert_eq!(all(&raft).await.expect("read"), [next]);
+    assert_eq!(base_page(&raft).await, thirty()[11..12]);
+}
+
+/// The base's last entry, as the gap snapshot's install looks for it.
+async fn base_page(raft: &RaftLog<Types, Codec>) -> Vec<TestEntry> {
+    raft.reader().base_page(11, 13).await.expect("base")
+}
+
 /// A call that outlasts the threshold is warned about; one under it, and
 /// any call before a threshold is set, is not.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

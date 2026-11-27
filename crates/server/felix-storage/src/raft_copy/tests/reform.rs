@@ -474,6 +474,78 @@ async fn a_started_copy_with_a_record_in_its_gap_refuses_the_plan() {
     );
 }
 
+/// A log of entries `0..len` of term 1, closed.
+async fn log_of(len: u64) -> TempDir {
+    let dir = tempfile::tempdir().expect("dir");
+    let mut raft = open(&dir);
+    let entries: Vec<_> = (0..len).map(|index| normal(1, index, "x")).collect();
+    append_flushed(&mut raft, &entries).await;
+    raft.disk_log().close().await.expect("close");
+    dir
+}
+
+/// #3005: a base a learner pulled and never installed over is hidden from
+/// its log and refused by a start, so the survey reads it as no entries,
+/// current or kept. An install's purged id makes it a log again.
+#[tokio::test]
+async fn a_survey_reads_an_adopted_base_no_install_purged_over_as_blank() {
+    let dir = log_of(6).await;
+    crate::raft_log::adopted::store(dir.path()).expect("mark");
+    let probes = BTreeSet::from([0, 5]);
+    let read = read_copy(dir.path(), SPACING, &probes).expect("read");
+    assert_eq!((read.last, read.purged, read.committed), (None, None, None));
+    assert_eq!(read.terms, BTreeMap::from([(0, None), (5, None)]));
+
+    crate::raft_log::store_purged(dir.path(), 2, crate::raft_log::generation_of(1).unwrap())
+        .expect("purged");
+    let read = read_copy(dir.path(), SPACING, &probes).expect("read");
+    assert_eq!(read.last, Some(LogPoint { term: 1, index: 5 }));
+}
+
+/// #3005: a kept adopted base is never the plan's source, though it is the
+/// longest log: the start would refuse it every time.
+#[tokio::test]
+async fn a_plan_never_takes_a_kept_adopted_base() {
+    let adopted = log_of(6).await;
+    crate::raft_log::adopted::store(adopted.path()).expect("mark");
+    let (b, c) = (log_of(3).await, log_of(3).await);
+    let none = tempfile::tempdir().expect("dir");
+    let probes: BTreeSet<u64> = (0..8).collect();
+    let read = |dir: &std::path::Path, copy| {
+        let mut read = read_copy(dir, SPACING, &probes).expect("read");
+        read.copy = Some(copy);
+        read.vote = Some(1);
+        read
+    };
+    let report = |current, kept| BrokerReport {
+        leads: false,
+        names: BTreeSet::new(),
+        memberships: Some(Vec::new()),
+        copies: BrokerCopies { current, kept },
+    };
+    let mut kept = read(adopted.path(), 1);
+    kept.rotated_by = Some(RotatedBy::PowerCut { to: 1 });
+    let reports = BTreeMap::from([
+        ("a", report(read(&none.path().join("gone"), 1), vec![kept])),
+        ("b", report(read(b.path(), 2), vec![])),
+        ("c", report(read(c.path(), 3), vec![])),
+    ]);
+    let record = GroupRecord {
+        incarnation: 1,
+        bases: Vec::new(),
+        floor: None,
+        offset_floor: None,
+        placed: Some(BTreeSet::from(["a", "b", "c"])),
+        dead: BTreeSet::new(),
+        seed: Some(BTreeSet::from([("a", 1), ("b", 2), ("c", 3)])),
+        ordered: Some(Vec::new()),
+        restore: None,
+    };
+    let plan = plan_reform(&record, &reports).expect("a plan");
+    assert_ne!(plan.source.1, Source::Kept(adopted.path().to_path_buf()));
+    assert_eq!(plan.base_end(), 3);
+}
+
 /// #2602: a copy that never installed a floor still has one, from the trim
 /// records it holds. A re-form reads the highest at or below its saved
 /// commit, with that record's headers; a trim past the commit may never

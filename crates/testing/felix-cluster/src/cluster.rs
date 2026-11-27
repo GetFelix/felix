@@ -167,14 +167,25 @@ impl Cluster {
         stream: &str,
         shard: u32,
     ) -> anyhow::Result<Option<std::collections::BTreeMap<String, u64>>> {
-        let key = felix_controlplane_service::model::ShardKey {
-            tenant_id: self.tenant_id.clone(),
-            namespace: self.namespace.clone(),
-            stream: stream.to_string(),
+        self.raft_target_of(
+            felix_controlplane_service::model::ShardKind::Stream,
+            stream,
             shard,
-            kind: felix_controlplane_service::model::ShardKind::Stream,
-        };
-        let record = self.control_plane().shard_record(&key).await?;
+        )
+        .await
+    }
+
+    /// [`Self::raft_target`] for a stream or a cache shard.
+    pub async fn raft_target_of(
+        &self,
+        kind: felix_controlplane_service::model::ShardKind,
+        name: &str,
+        shard: u32,
+    ) -> anyhow::Result<Option<std::collections::BTreeMap<String, u64>>> {
+        let record = self
+            .control_plane()
+            .shard_record(&self.shard_key(kind, name, shard))
+            .await?;
         Ok(record.raft_target.map(|target| target.members))
     }
 
@@ -182,14 +193,25 @@ impl Cluster {
     /// plane stores a target for the current set and a leader of that group
     /// has reported it formed. A move or replacement is refused until then.
     pub async fn raft_set_settled(&self, stream: &str, shard: u32) -> anyhow::Result<bool> {
-        let key = felix_controlplane_service::model::ShardKey {
-            tenant_id: self.tenant_id.clone(),
-            namespace: self.namespace.clone(),
-            stream: stream.to_string(),
+        self.raft_set_settled_of(
+            felix_controlplane_service::model::ShardKind::Stream,
+            stream,
             shard,
-            kind: felix_controlplane_service::model::ShardKind::Stream,
-        };
-        let record = self.control_plane().shard_record(&key).await?;
+        )
+        .await
+    }
+
+    /// [`Self::raft_set_settled`] for a stream or a cache shard.
+    pub async fn raft_set_settled_of(
+        &self,
+        kind: felix_controlplane_service::model::ShardKind,
+        name: &str,
+        shard: u32,
+    ) -> anyhow::Result<bool> {
+        let record = self
+            .control_plane()
+            .shard_record(&self.shard_key(kind, name, shard))
+            .await?;
         let targeted = record.raft_target.as_ref().is_some_and(|target| {
             target
                 .members
@@ -197,6 +219,21 @@ impl Cluster {
                 .eq(record.nodes().collect::<std::collections::BTreeSet<_>>())
         });
         Ok(targeted && !record.holds_unformed_set())
+    }
+
+    fn shard_key(
+        &self,
+        kind: felix_controlplane_service::model::ShardKind,
+        name: &str,
+        shard: u32,
+    ) -> felix_controlplane_service::model::ShardKey {
+        felix_controlplane_service::model::ShardKey {
+            tenant_id: self.tenant_id.clone(),
+            namespace: self.namespace.clone(),
+            stream: name.to_string(),
+            shard,
+            kind,
+        }
     }
 
     fn control_plane(&self) -> &ControlPlane {

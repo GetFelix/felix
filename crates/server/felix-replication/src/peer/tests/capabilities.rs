@@ -315,7 +315,8 @@ async fn raft_layouts_travel_only_to_a_caller_that_offered_them() {
     let raft = config()
         .capabilities()
         .union(PeerCapabilities::RAFT)
-        .union(PeerCapabilities::RAFT_BEATS);
+        .union(PeerCapabilities::RAFT_BEATS)
+        .union(PeerCapabilities::RAFT_BASE_PULL);
 
     let pool = pool(config());
     let offer = pool

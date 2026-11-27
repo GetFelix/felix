@@ -4,6 +4,7 @@
 
 use std::collections::BTreeMap;
 
+use felix_replication::engine::Engine as _;
 use felix_storage::raft_copy::{
     BrokerReport, GroupRecord, PlanView, SurveyStep, VoterId, WireStart, first_probes, plan_starts,
     survey_step,
@@ -211,6 +212,19 @@ pub(super) fn copies(members: &[Member], key: &ShardKey) -> BTreeMap<String, u64
         .collect()
 }
 
+/// `next` with the control plane's target `target`.
+fn with_target(next: &ShardAssignment, target: BTreeMap<String, u64>) -> ShardAssignment {
+    let mut fed = next.clone();
+    fed.target = Some(RaftTarget {
+        version: RaftTargetVersion {
+            incarnation: 1,
+            counter: 1,
+        },
+        members: target,
+    });
+    fed
+}
+
 /// The target the control plane stored before the stop, which the epoch
 /// write carries: every placed copy, the learner too, which kept its id.
 /// Fed to every member and told to the leader, as a heartbeat answer does,
@@ -225,14 +239,7 @@ pub(super) async fn rejoin(
     joins: bool,
 ) {
     assert_eq!(copies(members, key), target, "a copy changed its id");
-    let mut fed = next.clone();
-    fed.target = Some(RaftTarget {
-        version: RaftTargetVersion {
-            incarnation: 1,
-            counter: 1,
-        },
-        members: target,
-    });
+    let fed = with_target(next, target);
     for member in members {
         let lease = Arc::new(LeaseState::on_tokio_clock(Duration::from_secs(10)));
         member.shards.follow_lease(Arc::clone(&lease));
@@ -257,29 +264,60 @@ pub(super) async fn rejoin(
     .await;
 }
 
-/// **A three-copy group whose leader is gone re-forms through the stop,
-/// the plan and the broker's start, and serves again with nothing acked
-/// lost and no offset given out twice.** `broker-c` missed the last
-/// acknowledged record, so the plan makes it a learner, and the new epoch's
-/// voters are the two copies that hold it.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_three_copy_stream_group_re_forms_and_serves() {
-    use felix_replication::engine::Engine;
+/// A stream group re-formed after its leader was lost, with `broker-c`
+/// a learner: it missed the last acknowledged record, so the new epoch's
+/// voters are the two copies that hold it. One record is published in the
+/// new epoch.
+struct ReFormed {
+    net: Arc<Loopback>,
+    members: Vec<Member>,
+    next: ShardAssignment,
+    view: PlanView,
+    /// The copies' ids before the stop, which the epoch write carries.
+    target: BTreeMap<String, u64>,
+    /// The new epoch's leader.
+    leader: usize,
+    learner: usize,
+    /// Every record acknowledged before the re-form, then the one after.
+    acked: Vec<u64>,
+}
 
+async fn re_formed(orders: &ShardKey) -> ReFormed {
+    re_formed_trimmed(orders, false).await
+}
+
+/// [`re_formed`], with the stream trimmed to `a3` before the stop when
+/// `trimmed`, so the base the voters serve starts at that floor.
+async fn re_formed_trimmed(orders: &ShardKey, trimmed: bool) -> ReFormed {
     let (net, members, leader) = trio().await;
-    let orders = key("orders", 0);
     assert_eq!(members[leader].name, "broker-a");
-    let term = members[leader].shards.leading(&orders).expect("term");
+    let term = members[leader].shards.leading(orders).expect("term");
     let mut acked = vec![
         members[leader].publish(term, b"a1").await,
         members[leader].publish(term, b"a2").await,
     ];
-    let target = copies(&members, &orders);
+    let target = copies(&members, orders);
     isolate(&net, "broker-c");
     acked.push(members[leader].publish(term, b"a3").await);
-    let last = *acked.last().expect("acked");
+    let mut last = *acked.last().expect("acked");
+    if trimmed {
+        let lead = &members[leader];
+        lead.broker.allow_raft_head_trims_when(|| true);
+        super::trim::trim(&lead.broker, &lead.engine, term, last, last + 1)
+            .await
+            .expect("trimmed");
+        for member in members.iter().filter(|member| member.name != "broker-c") {
+            let log = member.shards.log_of(orders).await.expect("log");
+            until("the trim applies", || {
+                log.readable_base() == last && log.commit_offset() == last + 2
+            })
+            .await;
+        }
+        // The trim record is the base's last entry.
+        last += 1;
+    }
 
-    let (view, starts) = stop_and_plan(&members, &orders, leader).await;
+    let (view, starts) = stop_and_plan(&members, orders, leader).await;
     assert_eq!(view.learners, ["broker-c"]);
     let voters: Vec<&str> = view.voters.iter().map(|(b, _)| b.as_str()).collect();
     assert_eq!(voters, ["broker-a", "broker-b"]);
@@ -288,56 +326,403 @@ async fn a_three_copy_stream_group_re_forms_and_serves() {
     net.muted.lock().clear();
 
     let next = next_epoch(replicated(), &view);
-    let now = start(&members, &orders, &next, &starts).await;
-    assert_ne!(members[now].name, "broker-c", "a learner leads");
-    let term = members[now].shards.leading(&orders).expect("term");
-    let after = members[now].publish(term, b"b1").await;
+    let leader = start(&members, orders, &next, &starts).await;
+    assert_ne!(members[leader].name, "broker-c", "a learner leads");
+    let term = members[leader].shards.leading(orders).expect("term");
+    let after = members[leader].publish(term, b"b1").await;
     assert!(after > last, "offset {after} reused an acknowledged one");
-    let status = members[now].shards.runtime.status(&orders).expect("open");
+    acked.push(after);
+    let learner = members
+        .iter()
+        .position(|member| member.name == "broker-c")
+        .expect("c");
+    ReFormed {
+        net,
+        members,
+        next,
+        view,
+        target,
+        leader,
+        learner,
+        acked,
+    }
+}
+
+/// What `member` serves from `from`, every field the record's bytes carry.
+async fn records(member: &Member, from: u64) -> Vec<(u64, u64, u32, bytes::Bytes)> {
+    member
+        .broker
+        .read_durable("t1", "ns", "orders", 0, from, 1 << 20)
+        .await
+        .map(|read| {
+            read.into_iter()
+                .map(|record| {
+                    (
+                        record.offset,
+                        record.timestamp_micros,
+                        record.checksum,
+                        record.payload,
+                    )
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Add the learner to the leader, then run the learner's feed passes, as
+/// the broker runs them, until `done`: a pass closes a learner that staged
+/// its base and opens it again, so the open adopts it.
+async fn feed_learner(re: &ReFormed, orders: &ShardKey, mut done: impl FnMut() -> bool) -> bool {
+    rejoin(
+        &re.members,
+        orders,
+        &re.next,
+        re.leader,
+        re.target.clone(),
+        false,
+    )
+    .await;
+    let fed = with_target(&re.next, re.target.clone());
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
+    while !done() {
+        if tokio::time::Instant::now() >= deadline {
+            return false;
+        }
+        re.members[re.learner]
+            .shards
+            .take(&mut assignments([fed.clone()]))
+            .await;
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    true
+}
+
+fn promoted(re: &ReFormed, orders: &ShardKey) -> bool {
+    let shards = &re.members[re.leader].shards;
+    shards.runtime.voters(orders).is_some_and(|voters| {
+        voters
+            .iter()
+            .any(|voter| voter.broker.as_ref() == "broker-c")
+    }) && shards
+        .runtime
+        .status(orders)
+        .is_some_and(|status| status.membership == MembershipProgress::Settled)
+}
+
+/// The learner of `re` has joined: it holds the base as the leader does,
+/// nothing in the gap, and counts towards the next commit.
+async fn caught_up(re: &ReFormed, orders: &ShardKey) {
+    let (leader, learner) = (&re.members[re.leader], &re.members[re.learner]);
+    let last = re.acked[re.acked.len() - 2];
+    let after = re.acked[re.acked.len() - 1];
+    until("the new voter applies what the leader committed", || {
+        learner.engine.committed_bound(orders) == leader.engine.committed_bound(orders)
+    })
+    .await;
+    let served = records(leader, 0).await;
+    let payloads: Vec<&[u8]> = served.iter().map(|record| &record.3[..]).collect();
+    assert_eq!(payloads, [&b"a1"[..], b"a2", b"a3", b"b1"]);
+    assert_eq!(records(learner, 0).await, served, "the base differs");
+    // The gap holds nothing: the first record past the base is the epoch's.
+    let past = records(learner, last + 1).await;
+    assert_eq!(past.first().map(|record| record.0), Some(after));
+    assert!(after >= re.view.first_index, "{after} is in the gap");
+
+    // With the other voter cut off, a commit needs the new voter.
+    let other = re
+        .members
+        .iter()
+        .find(|member| member.name != leader.name && member.name != "broker-c")
+        .expect("the other voter");
+    isolate(&re.net, other.name);
+    let term = leader.shards.leading(orders).expect("term");
+    let next = leader.publish(term, b"b2").await;
+    assert!(next > after);
+    until("the new voter applies the next record", || {
+        learner.engine.committed_bound(orders) == felix_broker::ReadBound::Committed(next + 1)
+    })
+    .await;
+    let tail = records(learner, next).await;
+    assert_eq!(tail.first().map(|record| &record.3[..]), Some(&b"b2"[..]));
+}
+
+/// **A three-copy group whose leader is gone re-forms through the stop,
+/// the plan and the broker's start, and serves again with nothing acked
+/// lost and no offset given out twice.**
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_three_copy_stream_group_re_forms_and_serves() {
+    let orders = key("orders", 0);
+    let re = re_formed(&orders).await;
+    let now = &re.members[re.leader];
+    let status = now.shards.runtime.status(&orders).expect("open");
     assert!(
-        status.committed >= Some(view.first_index),
+        status.committed >= Some(re.view.first_index),
         "{status:?} committed nothing in the new epoch"
     );
-    let read = members[now]
-        .broker
-        .read_durable("t1", "ns", "orders", 0, acked[0], 1 << 20)
+    let payloads: Vec<_> = records(now, re.acked[0])
         .await
-        .expect("read");
-    let payloads: Vec<&[u8]> = read.iter().map(|record| &record.payload[..]).collect();
+        .into_iter()
+        .map(|record| record.3)
+        .collect();
     assert_eq!(payloads, [&b"a1"[..], b"a2", b"a3", b"b1"]);
-    let other = members
+    let after = *re.acked.last().expect("acked");
+    let other = re
+        .members
         .iter()
-        .find(|member| member.name != members[now].name && member.name != "broker-c")
+        .find(|member| member.name != now.name && member.name != "broker-c")
         .expect("the other voter");
     until("the other voter applies the new record", || {
         other.engine.committed_bound(&orders) == felix_broker::ReadBound::Committed(after + 1)
     })
     .await;
+    stop(&re.members).await;
+}
 
-    // The learner is added but never promoted: the leader's snapshot at the
-    // gap's end carries no records, so the learner refuses it rather than
-    // serve a log missing the base (#3005). It leads nothing and votes in
-    // nothing, so it cannot lose an acknowledged record.
-    let c = members
-        .iter()
-        .position(|member| member.name == "broker-c")
-        .expect("c");
-    rejoin(&members, &orders, &next, now, target, false).await;
-    tokio::time::sleep(Duration::from_secs(1)).await;
-    let voters = members[now].shards.runtime.voters(&orders).expect("voters");
+/// **The learner of a re-formed stream group catches up across the gap**:
+/// the leader's snapshot at the gap's end carries no records, so the
+/// learner pulls the base from a voter, reopens to adopt it, installs the
+/// snapshot over it and is promoted. It then serves the base exactly as the
+/// leader does, nothing in the gap, and a commit counts it (#3005).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_re_formed_stream_learner_pulls_its_base_and_joins() {
+    let orders = key("orders", 0);
+    let re = re_formed(&orders).await;
     assert!(
-        voters
-            .iter()
-            .all(|voter| voter.broker.as_ref() != "broker-c"),
-        "a learner without the base's records became a voter: {voters:?}"
+        feed_learner(&re, &orders, || promoted(&re, &orders)).await,
+        "the learner was never promoted"
     );
-    assert!(members[c].shards.leading(&orders).is_none());
+    let asked: u64 = re.net.bases_asked.lock().values().sum();
+    assert!(asked > 0, "the learner joined without pulling its base");
+    caught_up(&re, &orders).await;
+    stop(&re.members).await;
+}
+
+/// **The learner of a stream trimmed before its re-form pulls the base
+/// from the floor and joins**: the gap snapshot names the floor, so the
+/// learner pulls `a3` and the trim record, installs over them and is
+/// promoted. It then keeps the leader's floor, refuses reads below it,
+/// serves what the leader serves, and takes a later trim as the leader
+/// does.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_learner_of_a_stream_trimmed_before_its_re_form_joins() {
+    let orders = key("orders", 0);
+    let re = re_formed_trimmed(&orders, true).await;
+    let (leader, learner) = (&re.members[re.leader], &re.members[re.learner]);
+    let floor = re.acked[2];
+    assert!(
+        feed_learner(&re, &orders, || promoted(&re, &orders)).await,
+        "the learner was never promoted"
+    );
+    let asked: u64 = re.net.bases_asked.lock().values().sum();
+    assert!(asked > 0, "the learner joined without pulling its base");
+    until("the new voter applies what the leader committed", || {
+        learner.engine.committed_bound(&orders) == leader.engine.committed_bound(&orders)
+    })
+    .await;
+    let floor_of = |log: &felix_storage::DiskLog| log.head_trim().map(|trim| trim.floor);
+    let ours = learner.shards.log_of(&orders).await.expect("log");
+    let theirs = leader.shards.log_of(&orders).await.expect("log");
+    assert_eq!(floor_of(&theirs), Some(floor));
+    assert_eq!(floor_of(&ours), Some(floor), "the learner's floor differs");
+    assert_eq!(ours.readable_base(), floor);
+    assert!(
+        super::trim::too_old(&learner.broker, floor - 1).await,
+        "the learner read below the floor"
+    );
+    let served = records(leader, floor).await;
+    let payloads: Vec<&[u8]> = served.iter().map(|record| &record.3[..]).collect();
+    assert_eq!(payloads, [&b"a3"[..], b"b1"]);
+    assert_eq!(records(learner, floor).await, served, "the base differs");
+
+    // A later trim raises both floors alike.
+    let term = leader.shards.leading(&orders).expect("term");
+    let next = leader.publish(term, b"b2").await;
+    super::trim::trim(&leader.broker, &leader.engine, term, next, next + 1)
+        .await
+        .expect("trimmed");
+    for log in [&theirs, &ours] {
+        until("the later trim applies", || {
+            log.readable_base() == next && log.commit_offset() == next + 2
+        })
+        .await;
+    }
+    assert_eq!(floor_of(&ours), floor_of(&theirs));
+    assert!(super::trim::too_old(&learner.broker, next - 1).await);
+    stop(&re.members).await;
+}
+
+/// **A voter that serves the base from another history is abandoned**,
+/// with nothing it served kept, and the learner pulls the whole base from
+/// the next voter.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_learner_abandons_a_voter_serving_another_history() {
+    let orders = key("orders", 0);
+    let re = re_formed(&orders).await;
+    re.net.bent_base.lock().insert("broker-a".to_string());
+    assert!(
+        feed_learner(&re, &orders, || promoted(&re, &orders)).await,
+        "the learner was never promoted"
+    );
+    let asked = re.net.bases_asked.lock().clone();
+    assert!(asked.get("broker-a").copied().unwrap_or(0) > 0, "{asked:?}");
+    assert!(asked.get("broker-b").copied().unwrap_or(0) > 0, "{asked:?}");
+    caught_up(&re, &orders).await;
+    stop(&re.members).await;
+}
+
+/// **A learner that catches up from a normal snapshot in the middle of its
+/// base pull stops the pull**: the leader trimmed and purged past the gap
+/// while the pull waited on a voter, so the learner installs the purge
+/// snapshot and is promoted. The pull, released after that, stages
+/// nothing, the member is never closed to adopt a base, and its log is the
+/// one the snapshot and the appends gave it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_learner_caught_up_by_a_snapshot_mid_pull_drops_the_pull() {
+    let orders = key("orders", 0);
+    let re = re_formed(&orders).await;
+    let (leader, learner) = (&re.members[re.leader], &re.members[re.learner]);
+    let other = re
+        .members
+        .iter()
+        .find(|member| member.name != leader.name && member.name != "broker-c")
+        .expect("the other voter");
+    // The pull goes to the other voter, which holds it unanswered.
+    re.net.no_base.lock().insert(leader.name.to_string());
+    re.net.held_base.lock().insert(other.name.to_string());
+    let asked = || {
+        re.net
+            .bases_asked
+            .lock()
+            .get(other.name)
+            .copied()
+            .unwrap_or(0)
+    };
+    assert!(
+        feed_learner(&re, &orders, || asked() > 0).await,
+        "the learner never started its pull"
+    );
+
+    let term = leader.shards.leading(&orders).expect("term");
+    leader.broker.allow_raft_head_trims_when(|| true);
+    leader.publish(term, b"b2").await;
+    let floor = leader.publish(term, b"b3").await;
+    super::trim::trim(&leader.broker, &leader.engine, term, floor, floor + 1)
+        .await
+        .expect("trimmed");
+    // Cut off, the learner stops counting as live, so the leader purges.
+    re.net.cut.lock().insert("broker-c".to_string());
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
+    let purged = loop {
+        if let Some(at) = leader.shards.runtime.purge_below_floor(&orders).await {
+            break at;
+        }
+        assert!(tokio::time::Instant::now() < deadline, "no purge");
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    };
+    assert_eq!(purged, floor - 1);
+    re.net.cut.lock().clear();
+
+    let fed = with_target(&re.next, re.target.clone());
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
+    while !promoted(&re, &orders) {
+        assert!(tokio::time::Instant::now() < deadline, "never promoted");
+        unstaged_pass(learner, &orders, &fed).await;
+    }
+    let log = learner.shards.log_of(&orders).await.expect("log");
+    assert_eq!(
+        log.carried_floor().map(|carried| carried.floor),
+        Some(floor)
+    );
+
+    // The voter answers now. A pull still running would get the whole
+    // base within its longest backoff and one chunk's wait.
+    re.net.held_base.lock().clear();
+    let quiet = tokio::time::Instant::now() + Duration::from_secs(12);
+    while tokio::time::Instant::now() < quiet {
+        unstaged_pass(learner, &orders, &fed).await;
+    }
+    assert!(
+        !log.dir().join("base-staging").exists(),
+        "a staging log was left behind"
+    );
+    let now = learner.shards.log_of(&orders).await.expect("log");
+    assert_eq!(
+        now.carried_floor().map(|carried| carried.floor),
+        Some(floor)
+    );
+    let served = records(leader, floor).await;
+    assert!(!served.is_empty());
+    until("the learner serves what the leader serves", || {
+        learner.engine.committed_bound(&orders) == leader.engine.committed_bound(&orders)
+    })
+    .await;
+    assert_eq!(records(learner, floor).await, served);
+    stop(&re.members).await;
+}
+
+/// One feed pass on a learner that must never have staged a base, which
+/// would close it to adopt one.
+async fn unstaged_pass(learner: &Member, orders: &ShardKey, fed: &ShardAssignment) {
+    assert!(
+        !learner.shards.runtime.base_staged(orders),
+        "a pull staged a base over a member that caught up"
+    );
+    learner.shards.take(&mut assignments([fed.clone()])).await;
+    tokio::time::sleep(Duration::from_millis(50)).await;
+}
+
+/// **A learner that cannot pull its base stays a learner**: it installs
+/// nothing, is never promoted, serves no reads, and the leader's commit
+/// does not count it, so it can lose no acknowledged record.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_learner_without_its_base_never_joins() {
+    let orders = key("orders", 0);
+    let re = re_formed(&orders).await;
+    re.net
+        .no_base
+        .lock()
+        .extend(["broker-a", "broker-b"].map(String::from));
+    // Forty feed passes, each a chance to reopen and install.
+    let mut passes = 0;
+    feed_learner(&re, &orders, || {
+        passes += 1;
+        passes > 40
+    })
+    .await;
+    assert!(
+        !promoted(&re, &orders),
+        "a learner without the base's records became a voter"
+    );
+    let asked: u64 = re.net.bases_asked.lock().values().sum();
+    assert!(asked > 0, "the learner never asked for its base");
+    let (leader, learner) = (&re.members[re.leader], &re.members[re.learner]);
+    let after = *re.acked.last().expect("acked");
+    assert!(learner.shards.leading(&orders).is_none());
     assert_ne!(
-        members[c].engine.committed_bound(&orders),
+        learner.engine.committed_bound(&orders),
         felix_broker::ReadBound::Committed(after + 1),
         "the learner claims records it was never sent"
     );
-    stop(&members).await;
+    assert_eq!(
+        records(learner, 0).await,
+        Vec::new(),
+        "the learner serves reads"
+    );
+    let other = re
+        .members
+        .iter()
+        .find(|member| member.name != leader.name && member.name != "broker-c")
+        .expect("the other voter");
+    isolate(&re.net, other.name);
+    let term = leader.shards.leading(&orders).expect("term");
+    assert_eq!(
+        leader
+            .publish_within(term, b"b2", Duration::from_secs(2))
+            .await,
+        None,
+        "a commit counted the learner"
+    );
+    stop(&re.members).await;
 }
 
 /// **A three-copy cache group re-forms the same way, and its cache is

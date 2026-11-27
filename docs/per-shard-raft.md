@@ -418,11 +418,68 @@ before it writes the new id. `open_root` is called only after the start's
 restore check has answered, so no rotation removes a mark log that is
 open, except on a start that votes before the check; there the open log
 stops at the rotation ("Voting before the restore check"). Every shard
-directory minted under the old id rotates when it opens,
-so the old marks protect nothing. Kept, they would carry a sequence that
-no copy outside the root names under the new id, and the root would be
-held after the next reboot. A crash between the removal and the new id
-leaves the old id with no marks, which rotates every directory too.
+directory minted under the old id rotates when it opens. Kept as the live
+log, the old marks would carry a sequence that no copy outside the root
+names under the new id, and the root would be held after the next reboot.
+A crash between the removal and the new id leaves the old id with no marks,
+which rotates every directory too. One rotation sets the log aside instead
+of removing it: a relaxed crash whose marks the copies outside the root
+vouch for (next).
+
+**A relaxed crash keeps the marks it can vouch for.** A machine crash of a
+relaxed run rotates the storage id, so every copy on the root rotates when
+it opens. Without its marks, such a copy cannot show it still holds its
+newest vote, so it would be kept as a restore and its vote would not count
+in a re-form. A group whose followers lost power would then re-form from
+the saved commit and drop acknowledged records the disks still hold
+(issue #3309). So `run_state::begin_with`, before it rotates, makes the
+gate's check against the old id: the mark log's root sequence is at or
+above the run witness's copy and the control plane's copy for that id, and
+at least one of them is there. It has to be then, since the next heartbeat
+replaces the control plane's copy and a reboot clears the witness. When the
+check passes, the rotation renames `raft-marks` to
+`raft-marks-before-<old id>` instead of removing it. A copy minted under
+that id is then judged against its marks when it opens: when the marks name
+its copy id and its vote is at or above the vote mark, it is kept as
+`power-cut`, as a log below its mark is. A copy that fails either, a
+poisoned one, or one a re-form stopped is kept as `restore`. The live mark
+log starts over at sequence 0 under the new id, so the gate is unchanged.
+
+A directory older than its registration is a restore whatever its last run
+did: it keeps no marks, and its relaxed-crash record is tagged as a
+restore, so a standalone re-form starts it above the time line.
+
+What this relies on:
+
+- Votes and the vote mark are synced before a vote is answered, under every
+  fsync mode, so a power cut keeps both. A copy whose vote meets its mark
+  gave no newer vote.
+- A truncation is synced under every fsync mode: the log mark is lowered
+  first, each unlinked segment is synced out of the directory newest first,
+  and the cut segment's new length is synced before the next append. So a
+  power cut leaves a prefix of what the copy last held, never an entry it
+  had truncated.
+- The check sees what the gate sees, no more. A root put back from a backup
+  newer than the control plane's copy passes it, as it passes the gate
+  (Questions, 12): one heartbeat while the control plane is reachable, the
+  whole outage while it is not. Inside that window a backup's copies can
+  read as power cuts with a vote older than one they gave. That is the
+  documented gap, and restoring a live snapshot is supported only after
+  `felix-broker rotate-storage-id`, which keeps no marks.
+
+Under `OnCommit` with no copy vouching for an unsynced record, a machine
+crash does not rotate, so nothing changes there. Under `Periodic` or
+`None`, or once a copy vouched unsynced, the kept votes count, so a plan is
+marked only for the reasons it would be without the crash, and the copy at
+the top term is kept whole. Offsets are not reused: the vouch rule, the
+floor and the reservations are unchanged. A record that every copy lost in
+the power cut is still lost, as relaxed fsync allows.
+
+One case still cuts to the saved commit (issue #3351). A leader that
+restarts while its followers are held stands for election alone, so its
+vote is in a term above every entry read. T is that vote's term, no copy
+is kept whole, and the plan needs the loss accepted even though every vote
+is known.
 
 **Per directory, not only per root.** The check above judges a data root,
 and the copy id is per shard directory, so two more things are checked when
@@ -1262,8 +1319,10 @@ knows of (see "When a copy vouches for its whole log" below). On Linux a process
 needs a re-form. A power cut rotates a broker's copy only when its run was
 relaxed or a copy in its root had vouched, and the old voter seat then
 stays empty until membership changes exist, so a group that loses a
-majority of its voters to power cuts is in the same place as one whose
-voters died.
+majority of its voters to power cuts needs a re-form. The re-form still
+counts those voters' votes when the root kept their marks ("A relaxed
+crash keeps the marks it can vouch for"); otherwise it is in the same
+place as one whose voters died.
 
 **Why reachable copies stop first.** With a majority gone the old epoch
 cannot commit. But the list can be read while a slow voter is still about
@@ -1274,8 +1333,9 @@ epoch commit.
 **What the command cannot protect against** is a wrong declaration. Two
 brokers declared dead that are in fact alive and can reach each other are
 a majority of the old epoch. They can elect and acknowledge writes until
-they learn of the new epoch, which voids their messages and stops them.
-Those writes are lost. This is why declaring a broker dead is its own
+they learn of the new epoch, which closes their members, and the new
+group refuses their messages throughout ("A copy the record has left is
+closed"). Those writes are lost. This is why declaring a broker dead is its own
 step, and why the operations docs tie it to wiping the machine.
 
 **The two holes of the automatic design.** Issue #2304 was a re-form
@@ -1432,13 +1492,14 @@ member it holds, it checks both:
 | The copy's `raft-epoch` | The record's epoch | Floor report | Copy id report |
 |---|---|---|---|
 | names epoch `e` | `e` | at `e` | sent |
-| names epoch `e` | another | at `e`, which the control plane refuses | not sent |
+| names epoch `e` | below `e` (a stale view) | at `e`, which the control plane refuses | not sent |
+| names epoch `e` | above `e` | the member is closed (below) | the member is closed |
 | none | 0 | at 0 | sent |
-| none | above 0 | not sent | not sent |
+| none | above 0 | the member is closed (below) | the member is closed |
 
 Without its copy id the control plane never puts the copy in the shard's
-target, so the leader never makes it a voter: an unknown-epoch copy does
-not vote, and a re-form plan does not have to mark around it. The floor
+target, so the leader never makes it a voter: a stale view never makes a
+copy a voter, and a re-form plan does not have to mark around it. The floor
 check is a second line: the control plane already refuses a floor report
 for an epoch other than its record's (`OtherEpoch`), but a broker that
 sent one at epoch 0 would retry it forever and the group's floor would
@@ -1470,14 +1531,52 @@ log already starts past the epoch's gap. A file this wrote from a view an
 epoch behind is replaced the same way while the directory still holds
 nothing. `raft_copy::write_fresh_epoch` holds the rules.
 
-A directory that holds anything is left without the file and never
-counts: it is a restore older than the epoch, and its log or vote may be
-from an epoch it was never part of. A stop marker refuses it too: a copy
+A directory that holds anything is left without the file and is not
+opened: it is a restore older than the epoch, or a copy no re-form read,
+and its log or vote may be from an epoch it was never part of. A stop marker refuses it too: a copy
 without `raft-epoch` is stopped at epoch 0, and naming a later epoch over
 it would spend the marker and let it rejoin under its old copy id. Such a
 copy stays out of the group until a re-form places it, whose learner start
 empties it. Besides that start and a rotation, which carries the file into
 the fresh directory it makes, nothing else writes `raft-epoch`.
+
+**A copy the record has left is closed (#3289).** Every re-form stops
+the copies it reads and starts them in the new epoch, so a copy that names
+an older epoch than the record, and is neither stopped nor partway through
+a start, is one no re-form read. It still holds its old membership. Take
+{A, B, C} with B and C declared dead while they are alive: the re-form
+starts epoch 1 on A alone, and B and C, together a majority of epoch 0,
+could elect each other and acknowledge writes beside A's group. A single
+returning copy can do the same when its old voter set had one voter. So a
+broker never opens such a copy, and closes its member when the record
+moves past it, on any feed pass: after a restart, when a partition heals,
+or when the broker joins late. A copy ahead of the record is never closed,
+since the record only moves on and a view behind the copy is stale. The
+copy's data is left on disk. A later re-form reads it and starts it as a
+learner, which empties it.
+
+Group messages carry the sending copy's epoch too ("re-form epoch" in
+`docs/internal-protocol.md`, "Raft messages"), and a member refuses a
+message from any other epoch. Without that, a vote request from epoch 0
+reaches an epoch 1 member under the same incarnation, and an epoch 0
+leader's append could cut the epoch 1 log. With both, no copy outside the
+re-formed epoch votes in it or leads its old membership once it has seen
+the new record.
+
+What this does not close is the time before the copy sees the record.
+B and C cut off from the control plane still lead until they hear of
+epoch 1, because a Raft leader's acknowledgements do not depend on a
+control-plane lease. That is the wrong declaration below ("What the
+command cannot protect against"), pinned as an expected violation by
+`FelixRaftReformWrongDeclaration.cfg`, and the lease is tracked in #3343.
+
+> `services/felix-broker-service/src/shards/raft/tests.rs`,
+> `a_copy_the_records_epoch_has_left_is_closed` and
+> `a_copy_ahead_of_the_record_stays_open`.
+> `crates/server/felix-replication/src/raft/peer/tests.rs`,
+> `a_message_from_another_reform_epoch_is_refused_and_changes_nothing`.
+> Model: `docs/formal/FelixRaftReform.tla`, whose `Elect` takes votes only
+> from copies of the candidate's epoch.
 
 **Why the floor is a log id, not an offset (#2402).** An offset alone
 covers offsets above the end of the base, not offsets inside it. Take
@@ -1623,8 +1722,7 @@ Questions, 10.
 the base, that copy is the only voter and the rest are learners. The leader
 promotes each learner by a membership change as soon as it has caught up.
 A cache learner catches up from the leader's snapshot. A stream learner
-cannot yet: the snapshot at the gap's end carries no records, so the learner
-refuses it and stays a learner (#3005).
+first pulls the base, as the next section describes.
 Until the voters are again a majority of the placed set, the control plane
 shows the shard as under-replicated and does not count it as RF 3, and a
 `Quorum` acknowledgement rests on as many copies as there are voters,
@@ -1632,6 +1730,84 @@ which can be one. The same holds for a switch that started with two voters.
 
 The control plane is on this path. It already is for placement, and a
 group that needs re-forming is not serving.
+
+#### A new member of a re-formed group
+
+A re-formed stream group's leader holds the base, then the gap, then the
+new epoch. Its snapshot at the gap's end carries the group's state but no
+records, since a shard snapshot travels in memory under a 1 GiB cap. A
+blank learner that installed it would serve nothing below the gap, so it
+refuses it and gets the records first:
+
+1. **The refused snapshot starts a pull.** The learner asks one voter at a
+   time for the base, from the snapshot's floor (0 for a stream never
+   trimmed) to the base's last entry, in chunks of at most 4,096 entries
+   or 8 MiB. Only a voter that offers `RAFT_BASE_PULL`
+   ([internal protocol](internal-protocol.md)) is asked; a voter built
+   before it is never sent the message. A voter reads the chunk from its
+   log alone, below its purged id, and serves nothing past the base. Base
+   entries are committed and never change.
+2. **Each entry is checked and staged.** The learner checks every entry's
+   index and term against the base it was started with. A mismatch, a
+   refusal or a timeout drops everything staged from that voter and moves
+   to the next, so the staged log never mixes two voters. Eight passes
+   over the voters, with a growing wait, before the pull gives up; the
+   next refused snapshot starts another. The staged log is synced and
+   marked whole.
+3. **The member reopens and adopts it.** The broker closes the member and
+   opens it again. The open renames the staged segments into the empty
+   log under a marker, so a crash leaves the copy blank or rolls forward.
+   A copy that took a snapshot or entries in the meantime caught up
+   another way, and its staged log is discarded instead. The adopted log
+   is marked `raft-base-adopted`, and while that mark is there Raft is
+   shown an empty log: no entry, no last log id, no purged id, as on a
+   blank learner. Raft cannot append to, truncate or purge into the base,
+   and the learner reports nothing from it in an election. The mark is on
+   disk, so a restart before the install keeps the base hidden. A
+   re-form's survey reads such a copy, current or kept, as blank too, so
+   a plan never counts it or takes it as a source.
+4. **The gap snapshot installs over the base.** It now skips only the
+   gap, so the learner takes it, acknowledges it, and the leader appends
+   the epoch from the first index and promotes the learner. The install's
+   purge through the gap's end writes the purged id with the base kept
+   below it, then drops the mark: from there the copy looks like a
+   re-formed voter. A base pulled from a floor above 0 works the same
+   way, and the learner keeps the floor the snapshot carries.
+
+Before it holds the base, a learner installs no gap snapshot, is not
+promoted, does not vote, serves no reads and counts toward no commit.
+A normal snapshot can still catch it up: once the leader has trimmed and
+purged past the gap, its snapshot installs as for any member behind a
+purge, and a pull still running is stopped and its staged log dropped.
+
+What an operator sees while a learner pulls: the shard stays
+under-replicated, the learner's broker logs the pull's end at `info`
+(staged) or `warn` (no voter served it, or the voters' floor is past the
+base), and each voter that refuses a chunk logs why at `warn`. A learner
+that holds its base and still cannot install the snapshot (its log starts
+above the snapshot's floor, its epoch file names an older base, or the
+leader's snapshot no longer ends at the gap) logs why every 30 seconds
+and counts `felix_broker_raft_held_base_refusals_total{reason}`. After it
+has been refused for two seconds it drops the base at its next open and
+pulls again; each later drop waits twice as long, up to a minute, and an
+epoch gets four. The count is kept in the copy's directory, so a reopen
+does not reset it. After that the learner keeps its base, logs once at
+`warn` that it gave up copying the base for this epoch, and the refusal
+warning repeats until an operator looks.
+
+A head trim inside the base does not free a re-formed voter's disk. Its
+purged id sits at the gap's end, so a purge at or below it removes
+nothing, and the base's segments stay until the floor passes the gap and
+a purge runs past it. Dropping them earlier would raise the floor the
+voter serves the base from above the one the gap snapshot carries, and a
+new learner could then never install it.
+
+> `services/felix-broker-service/src/shards/raft/tests/reform.rs`,
+> `a_re_formed_stream_learner_pulls_its_base_and_joins`,
+> `a_learner_of_a_stream_trimmed_before_its_re_form_joins`,
+> `a_learner_without_its_base_never_joins`,
+> `a_learner_abandons_a_voter_serving_another_history` and
+> `a_learner_caught_up_by_a_snapshot_mid_pull_drops_the_pull`
 
 ### Abandoning a lost group
 
@@ -1718,8 +1894,8 @@ record.
 A broker of the lost epoch can come back, declared dead or not, with its
 copy and its old membership. Opened, that member would elect itself and
 serve a log the operator gave up. So a broker never opens a copy whose
-epoch is behind an epoch that started from an empty base, and closes such
-a member if it is open when the record moves on. The copy's data is left
+epoch is behind the record, and closes such a member if it is open when
+the record moves on ("A copy the record has left is closed"). The copy's data is left
 on disk, and it sends no copy id, so it never joins the new epoch either.
 
 > `crates/server/felix-storage/src/raft_copy/tests/fresh_epoch.rs`,
@@ -5325,7 +5501,15 @@ move from an older control plane added:
   the set to the draining broker and a live broker outside it, and the
   shrink below ends the move once the new copy votes. A larger set whose
   members all drain swaps a follower for a live broker first, and the lead
-  moves to it on a later pass. Each write takes a slot from the budget of
+  moves to it on a later pass. A set short of its factor with no follower
+  to swap (RF 3 down to its draining leader) grows by one live broker, and
+  the lead moves to it only once the group reports it voting; the old copy
+  is then swapped out and the top-up refills the set (#3303). A draining
+  leader that crashes meanwhile keeps its name, since a learner cannot be
+  elected, and the shard waits for it or a re-form. Until the refill
+  votes, an RF 3 shard runs on two voters, and losing either stops writes
+  until it returns or the group is re-formed. That order lets the
+  draining broker leave once two copies exist, not three. Each write takes a slot from the budget of
   16 set changes and a pause holds it. With no live broker outside the set
   the shard shows as waiting with "no live node can take this shard". A
   drain cancelled mid-move does not undo it: the move finishes.
@@ -5374,11 +5558,11 @@ move from an older control plane added:
   a joint change that needs its vote as well. Two voters are never less
   durable than one, so the top-up still adds one copy at a time.
 - The replication count counts copies the group reports voting. A stream
-  learner a re-form started cannot catch up across the re-form's gap yet
-  (#3005), so a re-formed stream group stays below its factor, shows as
-  under-replicated, and waits each pass for its group to report voters
-  that keep a majority of the next set. Only that shard's leader balance
-  stops; the rest of the pass goes on.
+  learner a re-form started counts once it has pulled the base and been
+  promoted ("A new member of a re-formed group"). Until then the shard
+  shows as under-replicated and waits each pass for its group to report
+  voters that keep a majority of the next set. Only that shard's leader
+  balance stops; the rest of the pass goes on.
 - A balance pass gives a seat to a live broker outside the set when it
   leads two fewer than the shard's leader and no member does (#3113). A
   broker a drain swapped out of every set, then restarted, is that broker:
@@ -6004,6 +6188,7 @@ before.
 | `felix_broker_raft_membership_steps_total{step="placed_transfer"}` | Placement transfers asked |
 | `felix_broker_raft_placed_transfers_total` | By `outcome`: `landed` (this member stopped leading), `failed` (it still led a later term), `held` (counted once per reason, `why`: `unsettled`, `lagging`, `degraded`, `budget`) |
 | `felix_broker_raft_snapshot_unsendable_total` | Snapshot sends a leader refused, one per attempt, because the snapshot was over the 1 GiB a member takes, for stream and cache groups; each is also logged with the group and member, once a minute per member ("How big a cache group gets") |
+| `felix_broker_raft_held_base_refusals_total` | Gap snapshots a re-formed stream group's learner refused although it held its pulled base, by `reason`: `held_above_floor`, `floor_past_base`, `not_gap_end` or `unreadable` ("A new member of a re-formed group") |
 
 #### Where a target comes from
 
@@ -6025,7 +6210,15 @@ target counter (metadata level 36):
   seat to another live broker once it is lost, provided the group formed and
   its reported voters do not name it (`docs/control-plane.md`, "Raft
   shards"). The group never heard of the set that named it, and the next
-  set still needs a majority of the reported voters. A placement write that
+  set still needs a majority of the reported voters. A member that was a
+  voter and dies before it reports again would hold the target the same
+  way, so placement reports its copy for it, the copy id the voters its
+  group reported at this incarnation and epoch name it under (#3313). The
+  vouched id is the one the group's voters name, so the target names the
+  member the group already has. If the broker comes back with another copy,
+  it reports that itself and keeps reporting until the target names it. A
+  copy answers only for its own member id, so a target naming a stale copy
+  forms nothing. A placement write that
   keeps the set, a leader report and a doomed-set write leave it alone. So
   within one incarnation a version names exactly one member set.
 - **It counts within one stream incarnation.** A stream deleted and
@@ -6073,6 +6266,15 @@ How a broker reports its copy id:
   the group the copy is in. The control plane refuses a report from an
   earlier process of the node, or for another incarnation of the stream,
   so a late retry never lands on a newer copy or a recreated stream.
+- **Or by placement, for a down voter.** When a set change dropped the
+  copy ids and one member has not reported again, placement reports for it
+  once its broker is down, every other member serves and has reported, and
+  the group's reported voters name it. The report carries the broker's
+  current registration and goes through the same command and checks as the
+  broker's own, so no metadata level changes. If the broker comes back with
+  a rotated copy, its own report replaces this one, and a target naming the
+  old copy forms nothing: a copy refuses requests for any member id but its
+  own.
 - **Until the target names it.** A report is idempotent. The broker sends
   it again 5 seconds after the control plane refuses it (a shard not on Raft
   yet, a placement not acknowledged by every broker, a control plane below
@@ -6089,7 +6291,10 @@ already gave the shard. A broker's shard watch drops any other change at a
 generation it holds as stale, but it takes one at the same generation and
 set whose target is newer than the one it holds
 (`ShardOwnership::apply`), so the target reaches the brokers through the
-feed and not only through a resync.
+feed and not only through a resync. The copy id writes before the one that
+completes a target change nothing on most brokers, but they still end the
+long poll, so the watch asks again at once instead of waiting out the sync
+interval, and the target write that follows arrives as soon as it lands.
 
 Withholding is decided when the feed is read, and the acknowledgement that
 ends it writes no change, so a target read while withheld would never be
@@ -6997,19 +7202,25 @@ on the hybrid.
   change's key, value and slot (`raft/cache/recent.rs`). A member that is
   not recording keeps nothing and pays nothing extra per write; its tick
   frees what an idle shard kept. Where a member's recording starts is its
-  floor: every change from there on is kept, so a resume from below it,
-  for example from before the first watched entry, or on a member that
-  is not recording, is resnapshotted. A resume
+  floor: every change from there on is kept. A resume
   whose offset is still kept is replayed `[from_offset, edge)` from them,
   deletes included, exactly as the hybrid replays its log, then joins live
-  delivery. One from below the oldest kept change is answered with
+  delivery. A resume from below the floor, for example from before the
+  first watched entry, or on a member that is not recording, is replayed
+  from the member's Raft log instead: the member reads its stored
+  snapshot, folds the entries above it into a copy of that state up to
+  the edge, and keeps the changes from `from_offset` on. Apply is
+  deterministic, so the copy makes the same changes the live state made.
+  Only entries below the edge are read, and those are applied and so
+  committed (`raft/machine.rs`, `replay_from_log`). A resume from at or
+  before the snapshot's entry finds those changes compacted into the
+  snapshot, as a hybrid resume below retention does, and is answered with
   `resnapshot` and each key's current value, read after the member has
   applied every put acknowledged before the watch began. A snapshot
   install or a restart starts the kept changes empty, past the snapshot's
   entry: recording again at once if the snapshot is inside a watched
   entry's life, which the snapshot carries, and otherwise from the next
-  watched entry applied. A resume from at or before the snapshot's entry
-  resnapshots. A value
+  watched entry applied. A value
   bigger than the byte bound still reaches live watches, and moves the
   oldest kept change past it. A resume from past the
   edge, an offset a member further ahead gave out, waits for this one to

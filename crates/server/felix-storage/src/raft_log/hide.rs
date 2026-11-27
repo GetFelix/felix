@@ -46,6 +46,10 @@ pub(super) struct Bounds {
     pub(super) on_disk: Option<Purged>,
     /// Always past `on_disk`.
     pub(super) hidden: Option<Purged>,
+    /// The end of an adopted base no snapshot has installed over
+    /// ([`super::adopted`]): no entry below it is shown. Only while nothing
+    /// is purged.
+    pub(super) shown_from: Option<Offset>,
 }
 
 impl Bounds {
@@ -138,34 +142,8 @@ impl<K> Shared<K> {
     /// purge empties the log, which resets it here. The caller of a purge
     /// that may empty the log has waited for every append's callback.
     pub(super) async fn remove_through(&self, purged: Purged, behind: bool) -> io::Result<()> {
+        self.store_purged(purged).await?;
         let log = &self.log;
-        // A stopped log refuses the reset a purge past the end needs, so it
-        // takes no new id either.
-        if log.is_poisoned() {
-            return Err(io::Error::other(format!(
-                "{}: the log is stopped",
-                log.label()
-            )));
-        }
-        let dir = log.dir().to_path_buf();
-        // Refused once closed: the directory may already be another log's.
-        let writer = log.clone();
-        felix_common::blocking::spawn(move || {
-            writer.write_while_open(|| purged::store(&dir, &purged))
-        })
-        .await
-        .map_err(io::Error::other)?
-        .map_err(io_error)?;
-        {
-            let mut bounds = self.bounds.lock();
-            bounds.on_disk = Some(purged);
-            if bounds
-                .hidden
-                .is_some_and(|hidden| hidden.index <= purged.index)
-            {
-                bounds.hidden = None;
-            }
-        }
         let first: Offset = purged.index + 1;
         if first >= log.tail_offset().await.map_err(io_error)? {
             log.reset_to(first).await.map_err(io_error)
@@ -176,6 +154,50 @@ impl<K> Shared<K> {
             }
             log.trim_before(first).await.map(drop).map_err(io_error)
         }
+    }
+
+    /// Put `purged` on disk and in the bounds, removing nothing. Alone it
+    /// leaves every record below the id in place, as a re-formed copy keeps
+    /// its base below the gap.
+    pub(super) async fn store_purged(&self, purged: Purged) -> io::Result<()> {
+        let log = &self.log;
+        // A stopped log refuses the reset a purge past the end needs, so it
+        // takes no new id either.
+        if log.is_poisoned() {
+            return Err(io::Error::other(format!(
+                "{}: the log is stopped",
+                log.label()
+            )));
+        }
+        let dir = log.dir().to_path_buf();
+        let adopted = self.bounds.lock().shown_from.is_some();
+        // Refused once closed: the directory may already be another log's.
+        let writer = log.clone();
+        felix_common::blocking::spawn(move || {
+            writer.write_while_open(|| {
+                purged::store(&dir, &purged)?;
+                // After the id: the base is never shown without it.
+                if adopted {
+                    super::adopted::remove(&dir)?;
+                }
+                Ok(())
+            })
+        })
+        .await
+        .map_err(io::Error::other)?
+        .map_err(io_error)?;
+        {
+            let mut bounds = self.bounds.lock();
+            bounds.on_disk = Some(purged);
+            bounds.shown_from = None;
+            if bounds
+                .hidden
+                .is_some_and(|hidden| hidden.index <= purged.index)
+            {
+                bounds.hidden = None;
+            }
+        }
+        Ok(())
     }
 
     /// Purge through `asked`: remove what the stored snapshot covers and

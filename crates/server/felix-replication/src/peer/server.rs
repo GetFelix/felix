@@ -328,14 +328,16 @@ impl PeerServer {
 
     /// Answer peers' Raft messages with `raft`, and offer
     /// [`PeerCapabilities::RAFT`] so they send them, with
-    /// [`PeerCapabilities::RAFT_BEATS`] for heartbeats sent together. A
+    /// [`PeerCapabilities::RAFT_BEATS`] for heartbeats sent together and
+    /// [`PeerCapabilities::RAFT_BASE_PULL`] for a re-formed stream's base. A
     /// caller that offers [`PeerCapabilities::RAFT_LAYOUTS`] is told the
     /// layouts `raft` reads.
     pub fn with_raft(mut self, raft: Arc<dyn RaftHandler>) -> Self {
         self.capabilities = self
             .capabilities
             .union(PeerCapabilities::RAFT)
-            .union(PeerCapabilities::RAFT_BEATS);
+            .union(PeerCapabilities::RAFT_BEATS)
+            .union(PeerCapabilities::RAFT_BASE_PULL);
         self.raft = Some(raft);
         self
     }

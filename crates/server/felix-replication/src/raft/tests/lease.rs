@@ -23,6 +23,7 @@ pub(super) fn vote_of(term: u64, broker: &str, committed: bool) -> VoteOf<ShardT
 fn to(broker: &str, body: Request) -> RaftRequest {
     RaftRequest {
         group: group(0),
+        reform_epoch: 0,
         to: MemberId::new(broker, 1),
         beat: crate::raft::network::Beat::default(),
         report: crate::raft::network::Ask::Nothing,

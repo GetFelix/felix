@@ -1054,6 +1054,19 @@ impl CopyMarks {
         self.submit(Update::LowerLog(point)).await
     }
 
+    /// Stop the batch marking this copy's log. For a start, which replaces
+    /// a log no member has open. A batch that read the position before this
+    /// queued its mark already, so a later lowering lands after it.
+    pub(crate) fn forget_batched(&self) {
+        let mut sources = self.log.inner.batched.lock();
+        if sources
+            .get(&self.shard)
+            .is_some_and(|source| source.copy == self.copy)
+        {
+            sources.remove(&self.shard);
+        }
+    }
+
     /// Have the batch write this shard's flushed position from `positions`
     /// every `interval`.
     pub(crate) fn batch_from(&self, positions: watch::Receiver<LogPositions>, interval: Duration) {
@@ -1320,6 +1333,59 @@ impl<'a> Cursor<'a> {
 
     fn u64(&mut self) -> Option<u64> {
         Some(u64::from_be_bytes(self.take(8)?.try_into().ok()?))
+    }
+}
+
+/// The root sequence of the mark log under `root` that a rotation from `id`
+/// would set aside: the live log, or the one already set aside under `id`
+/// when a crash stopped that rotation part way. `None` without either, or
+/// for one that does not read, which is no evidence.
+pub(crate) fn sequence_before(root: &Path, id: StorageId) -> Option<u64> {
+    let before = crate::run_state::copy_trust::raft_marks_before(id);
+    let bytes = match state_file::load(root, FILE_NAME) {
+        Ok(Some(bytes)) => bytes,
+        Ok(None) => state_file::load(root, &before).ok()??,
+        Err(_) => return None,
+    };
+    read(&bytes).ok().map(|read| read.sequence)
+}
+
+/// The marks a relaxed crash's rotation set aside under `root`, with the
+/// storage id they were written under. `None` when there are none, and
+/// when they do not read, so a copy minted under that id judges as any
+/// copy of another id does.
+pub(crate) fn marks_before(root: &Path) -> Option<(StorageId, HashMap<Arc<str>, ShardMarks>)> {
+    let prefix = crate::run_state::copy_trust::RAFT_MARKS_BEFORE;
+    let mut found = None;
+    for entry in crate::fs::read_dir(root).ok()? {
+        let name = entry.ok()?.file_name();
+        let Some(hex) = name.to_str().and_then(|name| name.strip_prefix(prefix)) else {
+            continue;
+        };
+        // A rotation keeps only one.
+        if found.is_some() {
+            return None;
+        }
+        found = Some(StorageId::from_hex(hex)?);
+    }
+    let id = found?;
+    let name = crate::run_state::copy_trust::raft_marks_before(id);
+    let read = match state_file::load(root, &name) {
+        Ok(Some(bytes)) => read(&bytes),
+        Ok(None) => return None,
+        Err(err) => Err(err.to_string()),
+    };
+    match read {
+        Ok(read) => Some((id, read.live)),
+        Err(why) => {
+            tracing::warn!(
+                path = %root.join(&name).display(),
+                why,
+                "could not read the mark log a rotation set aside; copies minted under its \
+                 storage id rotate as restores"
+            );
+            None
+        }
     }
 }
 

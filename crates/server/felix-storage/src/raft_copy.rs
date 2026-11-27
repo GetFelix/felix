@@ -22,6 +22,8 @@
 //! and the rules are the ones `docs/formal/FelixRaftIdentity.tla` checks.
 
 mod alone;
+mod base_discard;
+mod base_pull;
 pub(crate) mod copy_file;
 pub(crate) mod epoch_file;
 mod fresh_epoch;
@@ -34,6 +36,7 @@ mod reform;
 mod report;
 mod restore;
 mod rotated_by;
+mod staging;
 #[cfg_attr(
     not(test),
     allow(dead_code, reason = "the re-form command, not built yet, calls it")
@@ -46,6 +49,8 @@ mod vouch;
 mod wire;
 
 pub use alone::{Alone, AlonePlan, Aloned, EpochRecord, LocalRecord, ReadCopy};
+pub use base_discard::{BaseDiscard, MAX_BASE_DISCARDS, discard_wait, request_discard};
+pub use base_pull::{BaseCheck, Mismatch};
 pub use copy_file::CopyFile;
 #[allow(
     unused_imports,
@@ -59,6 +64,7 @@ pub use judge::{
     CopyRoot, KeptCopy, OpenedCopy, RotateReason, Rotation, highest_reserved,
     holds_log_without_copy, hybrid_log_under, kept_copies, reached_before,
 };
+pub(crate) use marks::sequence_before;
 pub use marks::{CopyMarks, MarkLog};
 pub use placement_ack::{
     MAX_PLACEMENT_ACK_AHEAD, ack_placement_incarnation, acked_placement_incarnation,
@@ -82,12 +88,13 @@ pub use restore::restore_copy;
     reason = "the re-form command, not built yet, uses them"
 )]
 pub(crate) use rotated_by::RotatedBy;
+pub use staging::{Staging, discard as discard_staged};
+pub use start::{ADOPTING, GapFold, adopt_staged, start_due, started_in};
 #[allow(
     unused_imports,
     reason = "the re-form command, not built yet, uses them"
 )]
 pub(crate) use start::{AcceptLoss, CopyStart, LossNotAccepted, Role, Start, building, start_copy};
-pub use start::{GapFold, start_due, started_in};
 pub use stop_file::{StoppedCopy, stop, stopped};
 #[cfg(test)]
 pub(crate) use vouch::plan_reform;
@@ -118,6 +125,12 @@ use crate::raft_log::LogPoint;
 /// See `docs/per-shard-raft.md`, "A copy's group epoch".
 pub fn group_epoch(dir: &Path) -> std::io::Result<Option<u64>> {
     Ok(epoch_file::load(dir)?.map(|file| file.epoch()))
+}
+
+/// The base the copy in `dir` started its latest epoch from, `None` at
+/// epoch 0. A voter serves a learner's pull of the base from it.
+pub fn latest_base(dir: &Path) -> std::io::Result<Option<EpochBase>> {
+    Ok(epoch_file::load(dir)?.and_then(|file| file.bases.last().copied()))
 }
 
 /// A saved vote as the marks keep it: the generation (term plus one), the

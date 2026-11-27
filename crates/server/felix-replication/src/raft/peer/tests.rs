@@ -53,6 +53,7 @@ fn vote_for(group: GroupId, to: MemberId) -> RaftRequest {
     let leader = openraft::impls::leader_id_std::LeaderId::new(1, MemberId::new("a", 1));
     RaftRequest {
         group,
+        reform_epoch: 0,
         to,
         beat: crate::raft::network::Beat::default(),
         report: crate::raft::network::Ask::Nothing,
@@ -251,6 +252,18 @@ impl crate::peer::PeerRequester for Counting {
         _addr: SocketAddr,
     ) -> Result<PeerCapabilities, PeerError> {
         Ok(self.offered)
+    }
+
+    /// States this build's layouts, as every current listener does.
+    async fn raft_offer(
+        &self,
+        _node_id: &str,
+        _addr: SocketAddr,
+    ) -> Result<crate::peer::RaftOffer, PeerError> {
+        Ok(crate::peer::RaftOffer {
+            capabilities: self.offered,
+            layouts: Some(wire::LAYOUTS),
+        })
     }
 }
 
@@ -614,6 +627,77 @@ async fn an_outsider_at_a_higher_term_is_refused_and_changes_nothing() {
     broker.stop().await;
 }
 
+/// A member takes a message only from its own re-form epoch (#3289). A
+/// copy the group re-formed without still holds the old membership, in
+/// which this member's broker votes; were its vote or append taken, it
+/// could lead beside the new group or cut the new group's log.
+#[tokio::test]
+async fn a_message_from_another_reform_epoch_is_refused_and_changes_nothing() {
+    let root = tempfile::tempdir().expect("dir");
+    let book = Book::default();
+    let broker = Broker::start("a", &book, true).await;
+    let group = GroupId::new(shard(), 0);
+    let to = MemberId::new("a", 1);
+    broker
+        .runtime
+        .open_in_epoch(group.clone(), 1, 1, open_log(&root, "a"))
+        .await
+        .expect("open");
+    let members: BTreeSet<MemberId> = ["a", "b"].map(|b| MemberId::new(b, 1)).into();
+    broker
+        .runtime
+        .initialize(&shard(), members)
+        .await
+        .expect("initialize");
+    let member = broker.runtime.group(&shard()).expect("group");
+    let vote = || async {
+        let state = member
+            .raft()
+            .with_raft_state(|state| state.vote_ref().clone());
+        state.await.expect("core")
+    };
+    let ask = |reform_epoch: u64, append: bool| {
+        let leader = openraft::impls::leader_id_std::LeaderId::new(100, MemberId::new("b", 1));
+        let mut request = vote_for(group.clone(), to.clone());
+        request.reform_epoch = reform_epoch;
+        request.body = if append {
+            Request::Append(openraft::raft::AppendEntriesRequest {
+                vote: VoteOf::<ShardTypes>::from_leader_id(leader, true),
+                prev_log_id: None,
+                entries: Vec::new(),
+                leader_commit: None,
+            })
+        } else {
+            Request::Vote(VoteRequest::new(
+                VoteOf::<ShardTypes>::from_leader_id(leader, false),
+                None,
+            ))
+        };
+        wire::encode_request(&request).expect("encode")
+    };
+    for (epoch, append) in [(0, false), (0, true), (2, true)] {
+        let reply = broker
+            .runtime
+            .answer(Some("b".into()), ask(epoch, append))
+            .await;
+        let Err(Refused::Unreachable(why)) = wire::decode_reply(reply).expect("reply") else {
+            panic!("expected a refusal from epoch {epoch}");
+        };
+        assert!(why.contains("re-form epoch 1"), "{why}");
+        let now = vote().await;
+        assert!(
+            term_of(&now) < 100,
+            "epoch {epoch} raised the term: {now:?}"
+        );
+    }
+    let reply = broker.runtime.answer(Some("b".into()), ask(1, true)).await;
+    wire::decode_reply(reply)
+        .expect("reply")
+        .expect("an append from the member's own epoch is answered");
+    assert_eq!(term_of(&vote().await), 100);
+    broker.stop().await;
+}
+
 /// A message for another copy of a member is answered with that member's
 /// copy id, which only a broker of the group is told. The answer path
 /// refuses an outsider before that refusal is built.
@@ -946,6 +1030,7 @@ fn heartbeat_for(shard: u32, to: &str) -> RaftRequest {
     key.shard = shard;
     RaftRequest {
         group: GroupId::new(key, 0),
+        reform_epoch: 0,
         to: MemberId::new(to, 1),
         beat: crate::raft::network::Beat::default(),
         report: crate::raft::network::Ask::Nothing,
@@ -1008,6 +1093,18 @@ impl crate::peer::PeerRequester for Recording {
     ) -> Result<PeerCapabilities, PeerError> {
         Ok(self.offered)
     }
+
+    /// States this build's layouts, as every current listener does.
+    async fn raft_offer(
+        &self,
+        _node_id: &str,
+        _addr: SocketAddr,
+    ) -> Result<crate::peer::RaftOffer, PeerError> {
+        Ok(crate::peer::RaftOffer {
+            capabilities: self.offered,
+            layouts: Some(wire::LAYOUTS),
+        })
+    }
 }
 
 fn refused_shards(answers: &[Result<RaftReply, Refused>]) -> Vec<u32> {
@@ -1068,6 +1165,48 @@ async fn heartbeats_go_together_only_to_a_peer_that_offered_it() {
         newer.bodies.lock()[1],
         wire::encode_request(&heartbeat_for(7, "b")).expect("encode")
     );
+}
+
+/// A learner's base pull goes only to a voter that offered
+/// `RAFT_BASE_PULL`. One that has not is never asked.
+#[tokio::test]
+async fn a_base_pull_goes_only_to_a_peer_that_offered_it() {
+    let book = Book::default();
+    book.lock()
+        .insert("b".into(), "127.0.0.1:1".parse().expect("addr"));
+    let pull = || {
+        let mut request = heartbeat_for(0, "b");
+        request.body = Request::BasePull {
+            from: MemberId::new("c", 1),
+            start: 0,
+            max_bytes: 1024,
+            max_count: 8,
+        };
+        request
+    };
+
+    let older = Arc::new(Recording {
+        offered: PeerCapabilities::RAFT.union(PeerCapabilities::RAFT_BEATS),
+        bodies: Default::default(),
+    });
+    let transport = PeerTransport::new(Arc::clone(&older), self::book(&book));
+    match transport.send(pull()).await {
+        Err(Refused::Unreachable(why)) => assert!(why.contains("base pulls"), "{why}"),
+        Err(other) => panic!("refused otherwise: {other:?}"),
+        Ok(_) => panic!("sent"),
+    }
+    assert!(older.bodies.lock().is_empty());
+
+    let newer = Arc::new(Recording {
+        offered: PeerCapabilities::RAFT.union(PeerCapabilities::RAFT_BASE_PULL),
+        bodies: Default::default(),
+    });
+    let transport = PeerTransport::new(Arc::clone(&newer), self::book(&book));
+    assert!(matches!(
+        transport.send(pull()).await,
+        Err(Refused::NoSuchMember(_))
+    ));
+    assert_eq!(newer.bodies.lock().len(), 1);
 }
 
 /// Heartbeats together cross a real listener, which offers `RAFT_BEATS`
@@ -1135,14 +1274,15 @@ fn layouts(lowest: u8, highest: u8) -> RaftLayouts {
     RaftLayouts::new(lowest, highest).expect("layouts")
 }
 
-/// **A peer whose stated layouts include this build's is sent to**, and so
-/// is one that states none: that silence is read as layout 6.
+/// **A peer whose stated layouts include this build's is sent to.** One
+/// that states none is read as layout 6, which this build no longer
+/// writes, so it is refused.
 #[tokio::test]
 async fn a_peer_that_reads_this_layout_is_sent_one() {
     let book = Book::default();
     book.lock()
         .insert("b".into(), "127.0.0.1:1".parse().expect("addr"));
-    for stated in [Some(wire::LAYOUTS), Some(layouts(4, 9)), None] {
+    for stated in [Some(wire::LAYOUTS), Some(layouts(4, 9))] {
         let requester = Stating::new(stated);
         let transport = PeerTransport::new(Arc::clone(&requester), self::book(&book));
         let _ = transport
@@ -1154,6 +1294,15 @@ async fn a_peer_that_reads_this_layout_is_sent_one() {
             "a peer stating {stated:?} was not sent the vote"
         );
     }
+    let requester = Stating::new(None);
+    let transport = PeerTransport::new(Arc::clone(&requester), self::book(&book));
+    let refused = transport
+        .send(vote_for(GroupId::new(shard(), 0), MemberId::new("b", 1)))
+        .await
+        .err()
+        .expect("refused");
+    assert!(matches!(refused, Refused::Unreachable(_)), "{refused}");
+    assert_eq!(requester.sent.load(Ordering::SeqCst), 0);
 }
 
 /// **A peer that reads no layout this build writes is never sent a Raft
@@ -1164,7 +1313,7 @@ async fn a_peer_on_other_layouts_is_refused_with_the_reason() {
     let book = Book::default();
     book.lock()
         .insert("b".into(), "127.0.0.1:1".parse().expect("addr"));
-    for stated in [layouts(7, 9), layouts(1, 5)] {
+    for stated in [layouts(8, 9), layouts(1, 6)] {
         let requester = Stating::new(Some(stated));
         let transport = PeerTransport::new(Arc::clone(&requester), self::book(&book));
         let refused = transport
@@ -1172,7 +1321,10 @@ async fn a_peer_on_other_layouts_is_refused_with_the_reason() {
             .await
             .err()
             .expect("refused");
-        let expected = format!("states Raft layouts {stated} and this build writes 6");
+        let expected = format!(
+            "states Raft layouts {stated} and this build writes {}",
+            wire::LAYOUTS
+        );
         assert!(
             matches!(&refused, Refused::Unreachable(why) if why.contains(&expected)),
             "{refused}"

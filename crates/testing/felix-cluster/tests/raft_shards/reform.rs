@@ -390,17 +390,20 @@ async fn relaxed_followers_lose_power() -> Option<PowerCutGroup> {
 /// a new copy id and must not vote: if the two followers counted as the
 /// voters they were, they would elect with the leader down and could cut
 /// what it acknowledged. The group stays closed until `plan` and `apply`
-/// re-form it, then every voter of the new epoch serves every record at its
-/// offset and no offset is given out again.
+/// re-form it. The followers' roots are not behind the control plane's copy
+/// of their root sequence, so their old copies are kept as power cuts and
+/// their votes count: the plan vouches for the leader's whole log and needs
+/// no loss accepted. Every voter of the new epoch then serves every record
+/// at its offset and no offset is given out again.
 ///
-/// Skipped until #3309 is decided: today a re-form after a relaxed crash
-/// keeps nothing past the saved commit.
+/// Skipped until #3351: the leader restarts alone and stands for election,
+/// and its term-3 vote has no entry, so the vouch rule cuts every tail.
 #[tokio::test]
 #[serial]
 async fn a_group_whose_relaxed_followers_lose_power_re_forms_with_every_ack() {
     if felix_cluster::skip_on_raft_until(
-        3309,
-        "a re-form after a relaxed crash keeps nothing past the saved commit",
+        3351,
+        "a lone candidate's term-3 vote with no entries cuts every tail",
     ) {
         return;
     }
@@ -412,20 +415,43 @@ async fn a_group_whose_relaxed_followers_lose_power_re_forms_with_every_ack() {
     else {
         return;
     };
-    let (voters, _) = plan_and_apply(&cluster).await;
+    let highest = sent
+        .acked
+        .iter()
+        .map(|(offset, _)| *offset)
+        .max()
+        .expect("records before the loss");
+    let before_loss = sent.acked.len();
+    let (voters, planned) = plan_and_apply(&cluster).await;
+    let plan = planned.plan.as_ref().expect("a reform shard has a plan");
+    assert!(
+        plan.marked.is_none() && !plan.needs_accept_loss,
+        "every vote is known, so the plan vouches for the whole tail: {plan:?}"
+    );
     publish_after(&cluster, &voters, &mut sent).await;
+    let first_after = sent.acked[before_loss..]
+        .iter()
+        .map(|(offset, _)| *offset)
+        .min()
+        .expect("records after the re-form");
+    assert!(
+        first_after >= plan.first_index && first_after > highest,
+        "the new epoch starts at {}, above every earlier offset ({highest}); \
+         its first record was acknowledged at {first_after}",
+        plan.first_index
+    );
     for node in &voters {
         holds_every_ack(&cluster, node, &sent, &probes).await;
     }
     cluster.shutdown().await;
 }
 
-/// **The same loss re-forms keeping what the group had saved.** What the
-/// docs promise after a relaxed crash: the re-form starts and completes,
-/// every record acknowledged at or below the saved commit (the plan's base)
-/// is held with its payload by every voter, no offset is given out twice,
-/// and the records the new epoch drops are listed in the plan, which is
-/// marked and needs the loss accepted.
+/// **The same loss re-forms keeping what the group had saved.** Every vote
+/// is known, so the plan is not marked, but the leader's lone election
+/// leaves a vote above its last entry and the plan cuts to the saved commit
+/// (#3351). The re-form completes, every record at or below the saved commit
+/// is held by every voter, no offset is given out twice, and the dropped
+/// records are listed in the plan, which needs the loss accepted.
 #[tokio::test]
 #[serial]
 async fn a_group_whose_relaxed_followers_lose_power_re_forms_keeping_what_was_saved() {
@@ -452,8 +478,12 @@ async fn a_group_whose_relaxed_followers_lose_power_re_forms_keeping_what_was_sa
     let before_loss = sent.acked.len();
 
     assert!(
-        plan.marked.is_some() && plan.needs_accept_loss,
-        "a plan that cannot vouch for the unsaved tail is marked: {plan:?}"
+        plan.marked.is_none(),
+        "the followers' power-cut copies keep their votes: {plan:?}"
+    );
+    assert!(
+        plan.needs_accept_loss,
+        "a plan that cannot vouch for the unsaved tail needs the loss accepted: {plan:?}"
     );
     // Whatever a copy holds past the base is listed per broker.
     assert!(
@@ -478,8 +508,7 @@ async fn a_group_whose_relaxed_followers_lose_power_re_forms_keeping_what_was_sa
         plan.first_index
     );
 
-    // Only what was saved is held for certain; the records past it may be
-    // gone.
+    // Only what was saved is held for certain.
     let mut kept = sent.clone();
     kept.acked
         .retain(|(offset, _)| *offset <= saved || *offset > highest);
