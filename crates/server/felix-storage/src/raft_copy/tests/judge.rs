@@ -893,7 +893,19 @@ async fn after_a_relaxed_crash(
     crashed: Crashed,
     control_plane: impl FnOnce(StorageId, u64) -> Option<(StorageId, u64)>,
 ) -> RotatedBy {
-    use crate::run_state::{BootId, RootCopies, begin_with};
+    after_a_crash_with(crashed, false, None, control_plane).await
+}
+
+/// [`after_a_relaxed_crash`], with the run witness seeded to `witness`
+/// (given the root's sequence) after the machine restart, and with the
+/// directory older than its registration when `restored`.
+async fn after_a_crash_with(
+    crashed: Crashed,
+    restored: bool,
+    witness: Option<fn(u64) -> u64>,
+    control_plane: impl FnOnce(StorageId, u64) -> Option<(StorageId, u64)>,
+) -> RotatedBy {
+    use crate::run_state::{BootId, RootCopies, begin_with, record_registration};
     let root = Root::new();
     let boot = |byte| Some(BootId::from_bytes([byte; 16]));
     let begun = begin_with(
@@ -927,10 +939,21 @@ async fn after_a_relaxed_crash(
     // The machine restarts: the witness is gone, and the run left no clean
     // stop.
     root.forget_witness();
+    if let Some(at) = witness {
+        crate::run_state::witness::record_sequence(
+            root.path(),
+            Some(root.shm.path()),
+            old_id,
+            at(sequence),
+        );
+    }
+    if restored {
+        record_registration(root.path(), 1).expect("registration");
+    }
     let begun = begin_with(
         root.path(),
         true,
-        None,
+        restored.then_some(2),
         RootCopies {
             witness_dir: Some(root.shm.path()),
             control_plane: control_plane(old_id, sequence),
@@ -991,4 +1014,26 @@ async fn a_relaxed_crash_nothing_vouches_for_rotates_as_a_restore() {
         RotatedBy::Restore,
         "a copy put back with an older vote"
     );
+}
+
+/// The run witness is a copy of the root sequence too: one equal to the
+/// root's vouches for its marks, and one ahead of it means the root was put
+/// back from a backup, so the copy rotates as a restore.
+#[tokio::test]
+async fn a_witness_vouches_for_the_marks_only_while_the_root_is_not_behind_it() {
+    let equal = after_a_crash_with(Crashed::Whole, false, Some(|s| s), |_, _| None).await;
+    assert!(matches!(equal, RotatedBy::PowerCut { .. }), "{equal:?}");
+    let ahead = after_a_crash_with(Crashed::Whole, false, Some(|s| s + 1), |_, _| None).await;
+    assert_eq!(ahead, RotatedBy::Restore, "a witness ahead of the root");
+}
+
+/// A directory older than its registration is a restore even when the
+/// control plane's copy would vouch for its marks.
+#[tokio::test]
+async fn a_restored_root_keeps_its_copies_judged_as_restores() {
+    let by = after_a_crash_with(Crashed::Whole, true, None, |id, sequence| {
+        Some((id, sequence))
+    })
+    .await;
+    assert_eq!(by, RotatedBy::Restore);
 }

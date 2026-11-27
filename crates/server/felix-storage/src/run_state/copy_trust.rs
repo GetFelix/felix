@@ -462,8 +462,8 @@ pub(crate) const RAFT_MARKS: &str = "raft-marks";
 
 /// The prefix of the name a mark log set aside by
 /// [`rotate_storage_id_keeping_marks`] takes: `raft-marks-before-<old id>`.
-/// Only the newest one is kept, and any other rotation removes it, so it
-/// never outlives the check that let it stay.
+/// Only the newest one is kept: any other rotation removes it, and clean
+/// runs leave it in place until the next rotation.
 pub(crate) const RAFT_MARKS_BEFORE: &str = "raft-marks-before-";
 
 /// The name of the mark log set aside under `id`.
