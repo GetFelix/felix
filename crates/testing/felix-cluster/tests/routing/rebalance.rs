@@ -814,8 +814,10 @@ async fn continuous_publishing_through_a_move_is_never_refused() {
 }
 
 /// [`continuous_publishing_through_a_move_is_never_refused`] for a `Quorum`
-/// stream fsynced on commit. The `Leader` stream there is fsynced
-/// `periodic`, so the two cover both ack levels and both fsync modes.
+/// stream fsynced on commit, at RF 3 on four brokers: the leader's seat
+/// moves to the fourth broker and back, so each hand-over meets a real
+/// majority. RF 1 adds nothing here the `Leader` case does not cover: its
+/// grown set is two voters either way.
 #[serial]
 #[tokio::test]
 async fn continuous_quorum_publishing_through_a_raft_move_is_never_refused() {
@@ -823,8 +825,8 @@ async fn continuous_quorum_publishing_through_a_raft_move_is_never_refused() {
         return;
     }
     publishing_through_raft_moves(ClusterConfig {
-        nodes: 2,
-        streams: vec![StreamSpec::quorum(STREAM, 1, 1)],
+        nodes: 4,
+        streams: vec![StreamSpec::quorum(STREAM, 1, 3)],
         sync_interval_ms: 2_000,
         broker_env: vec![(
             "FELIX_DURABLE_FSYNC_MODE".to_string(),
@@ -836,9 +838,9 @@ async fn continuous_quorum_publishing_through_a_raft_move_is_never_refused() {
 }
 
 /// **A planned Raft move never answers a publish with a final refusal and
-/// loses or doubles nothing.** Eight cluster clients publish through both
-/// brokers while the shard moves to the other broker and back, each move a
-/// membership change and a leadership hand-over.
+/// loses or doubles nothing.** Eight cluster clients publish through the
+/// leader and a broker outside the set while the leader's seat moves to that
+/// broker and back, each move a membership change and a leadership hand-over.
 ///
 /// The contract (#3330): a refusal the client is meant to retry is retried
 /// and lands; an outcome-unknown answer is allowed and its record is in the
@@ -848,17 +850,27 @@ async fn continuous_quorum_publishing_through_a_raft_move_is_never_refused() {
 async fn publishing_through_raft_moves(config: ClusterConfig) {
     let cluster = Cluster::start(config).await.expect("start cluster");
     let owner = cluster.owner(STREAM).await.expect("owner");
+    let assignment = cluster
+        .shard_assignments()
+        .await
+        .expect("assignments")
+        .into_values()
+        .find(|a| a.leader == owner)
+        .expect("the shard's assignment");
+    // `replicas` never holds the leader.
+    let set = assignment.replicas.len() + 1;
     let destination = cluster
         .node_ids()
         .into_iter()
-        .find(|id| id != &owner)
-        .expect("two brokers");
+        .find(|id| *id != owner && !assignment.replicas.contains(id))
+        .expect("a broker outside the set");
     let stop = std::sync::atomic::AtomicBool::new(false);
 
     let mover = async {
         tokio::time::sleep(Duration::from_millis(300)).await;
-        for to in [&destination, &owner] {
-            raft_move_to(&cluster, to).await;
+        // The leader's seat moves out of the set and back.
+        for (to, leaving) in [(&destination, &owner), (&owner, &destination)] {
+            raft_move_to(&cluster, to, leaving, set).await;
             // Keep publishing past the hand-over, while routes catch up.
             tokio::time::sleep(Duration::from_millis(500)).await;
         }
@@ -920,10 +932,10 @@ async fn publishing_through_raft_moves(config: ClusterConfig) {
     cluster.shutdown().await;
 }
 
-/// Move the stream's one shard to `to` through the operator API, and wait
-/// until the group has handed leadership to it, shrunk to it alone and the
-/// move has ended.
-async fn raft_move_to(cluster: &Cluster, to: &str) {
+/// Move the leader's seat of the stream's one shard from `leaving` to `to`
+/// through the operator API, and wait until `to` leads, the set is back to
+/// `set` members without `leaving`, and the move has ended.
+async fn raft_move_to(cluster: &Cluster, to: &str, leaving: &str, set: usize) {
     let step = cluster
         .start_move(STREAM, 0, to)
         .await
@@ -931,7 +943,7 @@ async fn raft_move_to(cluster: &Cluster, to: &str) {
     assert_eq!(step, "raft_replace", "the move to {to}");
     felix_cluster::wait::until(
         Duration::from_secs(60),
-        &format!("{to} to lead a set of its own"),
+        &format!("{to} to lead a set without {leaving}"),
         || async {
             cluster.place_shards().await;
             cluster.owner(STREAM).await.is_ok_and(|now| now == to)
@@ -940,7 +952,11 @@ async fn raft_move_to(cluster: &Cluster, to: &str) {
                     .await
                     .ok()
                     .flatten()
-                    .is_some_and(|members| members.keys().map(String::as_str).eq([to]))
+                    .is_some_and(|members| {
+                        members.len() == set
+                            && members.contains_key(to)
+                            && !members.contains_key(leaving)
+                    })
         },
     )
     .await
@@ -1028,6 +1044,8 @@ fn hand_over_refusals_are_retryable_and_lost_terms_outcome_unknown() {
         reason: "connection closed".to_string(),
     });
     assert_eq!(answer(&lost), Answer::OutcomeUnknown);
+    let uncoded = anyhow::anyhow!("publisher closed").context("publish");
+    assert_eq!(answer(&uncoded), Answer::Final);
 }
 
 fn answer(err: &anyhow::Error) -> Answer {
@@ -1045,8 +1063,9 @@ fn answer(err: &anyhow::Error) -> Answer {
             felix_wire::RetryClass::OutcomeUnknown => Answer::OutcomeUnknown,
             felix_wire::RetryClass::Fatal => Answer::Final,
         },
-        // No code: the transport failed, possibly after the publish went out.
-        None => Answer::OutcomeUnknown,
+        // A write lost after the send is an `AckLost`, caught above; the
+        // client documents no uncoded error as safe to send again.
+        None => Answer::Final,
     }
 }
 
