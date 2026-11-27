@@ -72,7 +72,10 @@ back. So a clustered broker first gives its shards away, the same way
 2. It keeps accepting and serving while they move. Each move is planned:
    publishes during the switch-over are held and forwarded, and subscriptions
    are told `shard_moved` and resume on the new owner at the offset they had
-   reached.
+   reached. Rarely, a publish already in flight at the moment leadership
+   moves gets an outcome-unknown error (`leadership_lost`) instead of an ack:
+   it may or may not have been written, so treat it like any other unknown
+   outcome. A publish is never acknowledged unless it was committed.
 3. Once it leads no shard, or after `FELIX_SHUTDOWN_HANDOFF_TIMEOUT_MS`
    (default `30000`), it carries on with the shutdown above: the listener
    closes, connections drain, and it deregisters.
