@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795814454659,
+  "lastUpdate": 1795815006576,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -74152,6 +74152,58 @@ window.BENCHMARK_DATA = {
             "range": "52821.18",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 799201.23\nmean: 776598.35\nstdev: 52821.18\ncv: 6.80%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "912009be1d1f4593c449ace772652daa2e660b98",
+          "message": "ci: the README badge shows the latest finished main run, not a dropped one (#3395)\n\n* ci: the README badge shows the latest finished main run, not a dropped one\n\nSpec-Unaffected: CI only\n\n* ci: point the README badge at the published CI badge\n\nSpec-Unaffected: CI only\n\n* ci: the badge workflow uses the same checkout version as the rest\n\nSpec-Unaffected: CI only",
+          "timestamp": "2026-11-27T13:23:05-08:00",
+          "tree_id": "8288a8e145ea6e8992a2a579178c3ab4926cfdff",
+          "url": "https://github.com/GetFelix/felix/commit/912009be1d1f4593c449ace772652daa2e660b98"
+        },
+        "date": 1795815005775,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 358380.41,
+            "range": "15099.34",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 358380.41\nmean: 357225.47\nstdev: 15099.34\ncv: 4.23%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 358380.41,
+            "range": "15099.34",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 358380.41\nmean: 357225.47\nstdev: 15099.34\ncv: 4.23%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 81194.45,
+            "range": "5288.42",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 81194.45\nmean: 79179.64\nstdev: 5288.42\ncv: 6.68%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 811944.54,
+            "range": "52884.22",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 811944.54\nmean: 791796.45\nstdev: 52884.22\ncv: 6.68%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
