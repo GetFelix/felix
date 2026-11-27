@@ -190,14 +190,27 @@ split them: `offset_floor` and `request`'s planned floor in
 `model/shard/raft_reform/abandon.rs`.
 
 **The restore time line moves to offsets.** It rests on a shard giving out
-at most 2^13 offsets per millisecond (`docs/per-shard-raft.md`,
-"Re-forming a group", the restore time line). With one record per entry, the entry rate bounds
-that. With batch entries it does not: a few large entries a millisecond
-pass it. The line and its gap checks (`restore_line_clears`, `LineBehind`)
-are restated in offsets, and the leader enforces the rate: an append that
-would give out more than 2^13 offsets in a millisecond, averaged over a
-short window, waits. At 8 records per microsecond per shard this binds only
-far above measured throughput, but it is now enforced instead of assumed.
+at most 2^13 offsets per millisecond (`docs/per-shard-raft.md`, "Re-forming
+a group", the restore time line). With one record per entry, the entry rate
+bounds that. With batch entries it does not: one 32 MiB entry of 20-byte
+records is about 1.6 million offsets, some 200 ms of the allowance at once.
+The line and its gap checks (`restore_line_clears`, `LineBehind`) are
+restated in offsets, and the rate is enforced instead of assumed:
+
+- **A token bucket per shard, at propose.** It fills at 2^13 offsets per
+  millisecond on a monotonic clock, up to a fixed capacity. A publish takes
+  its record count. A publish may take the bucket into debt by up to one
+  entry, so a batch that is large but within the cap is never refused for
+  its size; every later publish waits until the bucket is positive again.
+- **Only at propose, never in the log append.** Blanks, membership changes,
+  trims, group writes and the commits that ride on heartbeats take no
+  offsets and never wait on the bucket, so the cap cannot stall a leader's
+  own entries or an election.
+- **The line's gap covers the burst.** Over any span of `t` ms a shard gives
+  out at most `2^13 * t` offsets plus the bucket's capacity plus one entry's
+  worth (32 MiB over the smallest record frame). The line rises at twice the
+  rate, so the restore gap is raised by that burst, in offsets.
+
 The index line stays for indexes, whose rate the entry count still bounds.
 
 ## What goes away
@@ -338,59 +351,81 @@ no mixed-version group exists to negotiate with.
 
 ## Pull request sequence
 
-Offset-based re-form and restore bounds must be on main before any entry
-holds more than one record. Until then an offset is never above its index,
-so the index bounds cover offsets too; after it they do not.
+Two rules fix the order. First, every quantity a reader or publisher
+compares with an offset (read bound, publish answer, a conditional's
+`expected`, cache versions and watch offsets, trim and retention floors)
+moves from index to offset in the same step that lets an offset differ from
+its index. Before that step every entry takes at least one offset, so the
+two stay equal. Second, the re-form and restore bounds move to offsets before
+any entry holds more than one record. Until then an offset is never above
+its index, so index bounds still cover offsets.
+
+| After step | Offset of an entry | Read bound, publish answer, `expected`, cache versions, floors | Re-form and restore bounds | Records per entry |
+| --- | --- | --- | --- | --- |
+| 1, 2 | equals its index | index (= offset) | index | 1 |
+| 3 | equals its index: a count-0 entry still advances the offset by one | index (= offset) | index | 1 |
+| 4 | at or below its index: count-0 entries take none | offset | index, which still covers offsets | 1 |
+| 5, 6 | at or below its index | offset | offset | 1 |
+| 7 on | unrelated to its index | offset | offset | 1 or more |
 
 1. **Models.** `FelixRaft`, `FelixRaftReform` and `FelixRaftRestoreRepeated`
    with batch entries, the offset map, relaxed-fsync loss, reservations in
-   offsets, `BatchWhole`, `LossReported` and `ReservedCovers`, run in
-   Actions.
+   offsets, the propose-time rate cap, `BatchWhole`, `LossReported` and
+   `ReservedCovers`, run in Actions.
 2. **Storage frame.** The batch frame in the segment writer, scan,
    recovery, reader and sparse index, used only by Raft logs; unit tests for
    a torn frame and for reads that start inside one. `docs/storage-format.md`.
 3. **Adapter.** `raft_log` stores an entry as a frame, derives and checks
    the base offset, puts the next offset in snapshots, and serves reads by
-   offset. Still one record per entry, but blanks, membership, trims and
-   group writes stop taking offsets, so what readers see changes here: the
+   offset. Every entry advances the offset by `max(count, 1)`, so offsets
+   still equal indexes and behaviour does not change.
+4. **Offsets leave indexes.** Count-0 entries stop taking offsets. In the
+   same step the read bound, the publish answer, a conditional's comparison,
+   cache versions and watch offsets, and trim and retention floors become
+   offsets, with their models (`FelixRaftReads`, `FelixRaftWritten`,
+   `FelixRaftCache`, `FelixRaftGroups`, `FelixHeadTrim`,
+   `FelixRaftStreamPurge`). What readers see changes here: the
    `skipped_before` counts and their tests, the Kafka trailing-run test, and
    the `docs/protocol.md` and `docs/storage-format.md` text on skipped
-   offsets move to this step.
-4. **Re-form and restore in offsets.** Every bound in "Re-form and restore
+   offsets.
+5. **Re-form and restore in offsets.** Every bound in "Re-form and restore
    start in both numbers": `raft_copy/vouch.rs`, `raft-reserved` in
-   offsets, the control plane floor and bases with offsets, the epoch's
-   first offset and lost range, the restore time line in offsets and the
-   leader's offset rate cap, and the split of the folded bounds in
-   `shards/raft/alone_cluster.rs` (`offset_floor`, `request`) and
+   offsets, the epoch's first offset and lost range, the restore time line
+   in offsets, and the propose-time token bucket. The control plane floor:
+   `model/shard/raft_floor.rs` (`offset_floor.max(report.index)`) keeps an
+   offset from the report's next offset, and the broker's copy of it
+   (`shards/watch.rs`, `RaftFloor`) gains the field. The folded bounds split
+   in `shards/raft/alone_cluster.rs` (`offset_floor`, `request`) and
    `raft_reform/abandon.rs`. Gap segments removed. Needs a metadata level.
-5. **Skip reasons on the wire.** `skip_reason` in the 0.8 event batch layout
+6. **Skip reasons on the wire.** `skip_reason` in the 0.8 event batch layout
    and `skipped_reason` on group records and cache watches, as baseline
-   (#3362), the client changes and `docs/protocol.md`. Lands with step 4.
-6. **Propose batches.** A publish is one entry; every member decides a
-   conditional from its own base; idempotent dedupe per batch; the publish
-   answer and read bound in offsets. `FelixRaftBatch`, `FelixRaftIdempotent`,
-   `FelixRaftReads`, `FelixRaftWritten`. Needs steps 4 and 5 on main.
-7. **Delete the piece machinery** listed in "What goes away", and retire
+   (#3362), the client changes and `docs/protocol.md`. Lands with step 5.
+7. **Propose batches.** A publish is one entry; every member decides a
+   conditional from its own base; idempotent dedupe per batch.
+   `FelixRaftBatch`, `FelixRaftIdempotent`. Needs steps 5 and 6 on main.
+8. **Delete the piece machinery** listed in "What goes away", and retire
    `FelixRaftCond`.
-8. **Groups, trims and retention** in offsets, with their models.
-9. **Cache shards**: switch to offsets, then batch writes per entry.
+9. **Cache shards batch writes per entry.** Versions are already offsets
+   from step 4.
 10. **Docs and status**: `docs/durable-storage.md`, `docs/per-shard-raft.md`
    and the docs-site status tables.
 
-Steps 2 to 7 are the large ones and each needs its own adversarial review.
-The perf check (RF 3 cells, instructions per message) runs on step 6, where
-the change in openraft entries per record shows.
+Steps 2 to 8 are the large ones and each needs its own adversarial review.
+Step 4 is the one where a missed index-to-offset conversion exposes
+uncommitted offsets, so its review checks every comparison against a
+committed position. The perf check (RF 3 cells, instructions per message)
+runs on step 7, where the change in openraft entries per record shows.
 
 ## Format v9 freeze
 
-Every step through 9 lands before v9 freezes. Steps 2, 3 and 4 change bytes
+Every step through 9 lands before v9 freezes. Steps 2, 3 and 5 change bytes
 on disk: the frame (with the reserved stream id), the snapshot's next offset,
 `raft-reserved`, the `raft-epoch` file and the control plane's floor and
-bases. Step 7 removes the piece codes, so the frozen format carries no dead
-codes. Steps 6, 8 and 9 add no new fields but change what stored values mean:
-how many records a frame holds, trim floors in offsets and cache versions in
-snapshots. A log written before them would read differently after, which a
-frozen format cannot allow.
+bases. Step 8 removes the piece codes, so the frozen format carries no dead
+codes. Steps 4, 7 and 9 add no new fields but change what stored values mean:
+whether a count-0 entry takes an offset, how many records a frame holds, and
+cache versions in snapshots. A log written before them would read
+differently after, which a frozen format cannot allow.
 
 ## Risks
 
