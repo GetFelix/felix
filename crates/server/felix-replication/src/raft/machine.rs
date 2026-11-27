@@ -21,7 +21,9 @@ use felix_broker::{GroupEntry, GroupTable, ShardGroups};
 use felix_storage::DiskLog;
 use felix_storage::disk_log::CarriedFloor;
 use felix_storage::log::FsyncMode;
-use felix_storage::raft_log::{LogPoint, LogReader, SnapshotId, SnapshotStore, StoredSnapshot};
+use felix_storage::raft_log::{
+    LogPoint, LogReader, SnapshotId, SnapshotStore, StoredReader, StoredSnapshot,
+};
 use felix_storage::waiters::{Queue, Waiters};
 use futures::{Stream, StreamExt};
 use openraft::storage::{EntryResponder, RaftLogReader, RaftSnapshotBuilder, RaftStateMachine};
@@ -604,6 +606,100 @@ async fn fold_through(
         purge,
     }
     .encode())
+}
+
+/// Every change in `[from, tail)` that `keep` takes, in offset order, made
+/// by folding the log above the stored snapshot into a copy of its state.
+/// Apply is deterministic, so the copy makes the changes the live state
+/// made. `tail` is one past the live state's applied index, read after the
+/// watch registered, so only applied and so committed entries are read.
+///
+/// `None` when the snapshot already covers `from`, or the log no longer
+/// holds every entry above it: those changes are compacted away, as a
+/// hybrid shard's are by retention.
+pub(crate) async fn replay_from_log(
+    snapshots: &SnapshotStore,
+    mut reader: LogReader<ShardTypes, ShardCodec>,
+    from: u64,
+    tail: u64,
+    keep: &(dyn Fn(&str) -> bool + Sync),
+) -> io::Result<Option<Vec<super::cache::Change>>> {
+    // A purge after the snapshot was read leaves the log short of it, and
+    // the snapshot that let the purge happen is read on the next try.
+    'fold: for _ in 0..3 {
+        // The covered index is kept in memory: a resume the snapshot covers
+        // is answered without reading the file.
+        if snapshots.covers().is_some_and(|id| id.index >= from) {
+            return Ok(None);
+        }
+        let (start, data) = match snapshots.open_current().await? {
+            Some(reader) => {
+                let start = match reader.last() {
+                    Some(id) if id.index >= from => return Ok(None),
+                    Some(id) => id.index + 1,
+                    None => 0,
+                };
+                (start, read_snapshot_data(reader).await?)
+            }
+            None => (0, Bytes::new()),
+        };
+        let mut state = restore(data, start > 0).await?;
+        if let Some(index) = start.checked_sub(1) {
+            state.restored_through(index);
+        }
+        let changes = parking_lot::Mutex::new(Vec::new());
+        let report = |change: &super::cache::Change| {
+            if change.offset >= from && keep(&change.key) {
+                changes.lock().push(change.clone());
+            }
+            false
+        };
+        let mut next = start;
+        while next < tail {
+            let end = tail.min(next.saturating_add(FOLD_READ));
+            let Ok(entries) = reader.try_get_log_entries(next..end).await else {
+                continue 'fold;
+            };
+            for entry in entries {
+                if entry.log_id.index != next {
+                    continue 'fold;
+                }
+                next += 1;
+                let EntryPayload::Normal(command) = &entry.payload else {
+                    continue;
+                };
+                let decoded = CacheCommand::decode(&command.payload)?;
+                state.apply_reporting(
+                    entry.log_id.index,
+                    command.timestamp_micros,
+                    &decoded,
+                    Some(&report),
+                );
+            }
+            if next < end {
+                break;
+            }
+        }
+        // The log can end short of `tail` only where no entry applied, as
+        // on a member that never formed. Any other shortfall is a purge.
+        if state.applied() + 1 != tail {
+            continue 'fold;
+        }
+        return Ok(Some(changes.into_inner()));
+    }
+    Ok(None)
+}
+
+/// The data of the snapshot `reader` opened, checked against its crc. The
+/// store's install lock is held only to open the file, so a large read
+/// does not hold up an install.
+async fn read_snapshot_data(mut reader: StoredReader) -> io::Result<Bytes> {
+    const CHUNK: usize = 4 << 20;
+    let mut data = bytes::BytesMut::with_capacity(usize::try_from(reader.data_len()).unwrap_or(0));
+    while let Some(chunk) = reader.next_chunk(CHUNK).await? {
+        data.extend_from_slice(&chunk);
+    }
+    Ok(data.freeze())
 }
 
 fn meta(state: &State) -> SnapshotMetaOf<ShardTypes> {

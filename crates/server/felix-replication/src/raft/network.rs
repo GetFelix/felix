@@ -19,7 +19,7 @@ use openraft::raft::{
     AppendEntriesRequest, AppendError, AppendResult, SnapshotResponse, TransferLeaderRequest,
     TransferLeaderResponse, VoteRequest, VoteResponse,
 };
-use openraft::type_config::alias::{SnapshotMetaOf, SnapshotOf, VoteOf};
+use openraft::type_config::alias::{EntryOf, SnapshotMetaOf, SnapshotOf, VoteOf};
 use openraft::{Config, EntryPayload};
 use openraft_multi::{GroupNetworkAdapter, GroupRouter};
 
@@ -39,6 +39,10 @@ use client::Client;
 /// module's business; a transport carries it to [`Self::to`]'s broker.
 pub struct RaftRequest {
     pub(crate) group: GroupId,
+    /// The re-form epoch of the sending copy (its `raft-epoch`, 0 without
+    /// one). A member takes a message only from its own epoch, so a copy a
+    /// re-form left behind never votes in or appends to the new group.
+    pub(crate) reform_epoch: u64,
     pub(crate) to: MemberId,
     /// On a leader's append: the gap it names. Zero on every other message.
     pub(crate) beat: Beat,
@@ -106,6 +110,15 @@ pub(crate) enum Request {
     /// A member serving a cache watch asking its leader to append a
     /// [`super::cache::CacheCommand::Watched`], so every member records.
     Watched,
+    /// A learner of a re-formed stream, `from`, asking a voter for the base
+    /// entries from `start`, at most `max_bytes` and `max_count` of them.
+    /// Sent only to a peer that offered `RAFT_BASE_PULL`.
+    BasePull {
+        from: MemberId,
+        start: u64,
+        max_bytes: u32,
+        max_count: u32,
+    },
 }
 
 impl RaftRequest {
@@ -124,6 +137,13 @@ impl RaftRequest {
     pub fn carries_entries(&self) -> bool {
         matches!(&self.body, Request::Append(append) if !append.entries.is_empty())
     }
+
+    /// Whether this is a learner asking a voter for its re-form base, for a
+    /// test network that holds those back.
+    #[cfg(feature = "testing")]
+    pub fn asks_for_base(&self) -> bool {
+        matches!(self.body, Request::BasePull { .. })
+    }
 }
 
 impl fmt::Debug for RaftRequest {
@@ -137,6 +157,7 @@ impl fmt::Debug for RaftRequest {
             Request::Written { .. } => "written",
             Request::ReadIndex => "read-index",
             Request::Watched => "watched",
+            Request::BasePull { .. } => "base-pull",
         };
         write!(f, "{kind} for {} of {}", self.to, self.group)
     }
@@ -144,6 +165,19 @@ impl fmt::Debug for RaftRequest {
 
 /// The answer to a [`RaftRequest`].
 pub struct RaftReply(pub(crate) Reply);
+
+impl RaftReply {
+    /// Give every entry of a base chunk the next term, as a voter of
+    /// another history would serve it, for a test network.
+    #[cfg(feature = "testing")]
+    pub fn bend_base(&mut self) {
+        if let Reply::Base { entries, .. } = &mut self.0 {
+            for entry in entries {
+                entry.log_id.leader_id.term += 1;
+            }
+        }
+    }
+}
 
 pub(crate) enum Reply {
     Append(AppendResult<ShardTypes>),
@@ -160,6 +194,13 @@ pub(crate) enum Reply {
     },
     /// A watched ask was taken. Whether a mark follows shows in the log.
     Watched,
+    /// Base entries from the asked start, in order, and the lowest index
+    /// the voter serves (`base_pull::BaseChunk::floor`). Empty when that
+    /// floor is above the start.
+    Base {
+        floor: u64,
+        entries: Vec<EntryOf<ShardTypes>>,
+    },
 }
 
 /// Why a message got no answer. Raft treats each the same way: the member
@@ -268,7 +309,7 @@ impl RaftTransport for AgreeingPeers {
                 return Err(Refused::Unreachable("no peer to lead".into()));
             }
             Request::Written { .. } => Reply::Written,
-            Request::ReadIndex | Request::Watched => {
+            Request::ReadIndex | Request::Watched | Request::BasePull { .. } => {
                 return Err(Refused::Unreachable("no peer leads".into()));
             }
         }))
@@ -285,6 +326,8 @@ pub(crate) struct Router {
     reports: Arc<Reports>,
     reach: Arc<Reach>,
     refusals: Arc<Refusals>,
+    /// [`RaftRequest::reform_epoch`] of every message this copy sends.
+    reform_epoch: u64,
     /// openraft's settings, for its usual retry delays.
     config: Arc<Config>,
     /// The members a snapshot could not be sent to, shared by the broker.
@@ -307,6 +350,7 @@ impl Router {
         reports: Arc<Reports>,
         reach: Arc<Reach>,
         refusals: Arc<Refusals>,
+        reform_epoch: u64,
         config: Arc<Config>,
         unsendable: Arc<Unsendable>,
     ) -> Self {
@@ -317,6 +361,7 @@ impl Router {
             reports,
             reach,
             refusals,
+            reform_epoch,
             config,
             unsendable,
             to: None,
@@ -385,6 +430,7 @@ impl Router {
         };
         let request = RaftRequest {
             group,
+            reform_epoch: self.reform_epoch,
             to: to.clone(),
             beat: sent.sent.as_ref().map_or(Beat::default(), |sent| Beat {
                 gap: sent.gap,
@@ -479,7 +525,8 @@ pub(crate) fn named(reply: &Reply, pre_vote: bool) -> Option<u64> {
         | Reply::TransferLeader(_)
         | Reply::Written
         | Reply::ReadIndex { .. }
-        | Reply::Watched => None,
+        | Reply::Watched
+        | Reply::Base { .. } => None,
     }
 }
 

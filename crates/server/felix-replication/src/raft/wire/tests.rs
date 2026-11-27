@@ -60,6 +60,7 @@ fn membership() -> Membership {
 fn request(body: Request) -> RaftRequest {
     RaftRequest {
         group: group(),
+        reform_epoch: 3,
         to: member("b"),
         beat: crate::raft::network::Beat { gap: 2_000, seq: 5 },
         report: crate::raft::network::Ask::Nothing,
@@ -214,7 +215,21 @@ fn every_request() -> Vec<RaftRequest> {
             }))
         },
         request(Request::ReadIndex),
+        request(Request::BasePull {
+            from: member("c"),
+            start: 12,
+            max_bytes: 1 << 20,
+            max_count: 64,
+        }),
     ]
+}
+
+/// The entries of the append in [`every_request`], records among them.
+fn some_entries() -> Vec<EntryOf<ShardTypes>> {
+    match every_request().swap_remove(1).body {
+        Request::Append(rpc) => rpc.entries,
+        _ => unreachable!(),
+    }
 }
 
 fn addressee() -> Box<Addressee> {
@@ -263,6 +278,14 @@ fn every_reply() -> Vec<Result<RaftReply, Refused>> {
         Ok(RaftReply(Reply::Written)),
         Ok(RaftReply(Reply::ReadIndex { index: Some(42) })),
         Ok(RaftReply(Reply::ReadIndex { index: None })),
+        Ok(RaftReply(Reply::Base {
+            floor: 3,
+            entries: some_entries(),
+        })),
+        Ok(RaftReply(Reply::Base {
+            floor: 9,
+            entries: Vec::new(),
+        })),
         Err(Refused::Unreachable("down".into())),
         Err(Refused::NoSuchMember(addressee())),
         Err(Refused::Stopped(addressee(), "fatal".into())),
@@ -336,6 +359,23 @@ fn every_reply_reads_back_as_written() {
                 Ok(RaftReply(Reply::ReadIndex { index: a })),
                 Ok(RaftReply(Reply::ReadIndex { index: b })),
             ) => assert_eq!(a, b),
+            (
+                Ok(RaftReply(Reply::Base {
+                    floor: a,
+                    entries: x,
+                })),
+                Ok(RaftReply(Reply::Base {
+                    floor: b,
+                    entries: y,
+                })),
+            ) => {
+                assert_eq!(a, b);
+                assert_eq!(x.len(), y.len());
+                for (x, y) in x.iter().zip(y) {
+                    assert_eq!(x.log_id, y.log_id);
+                    assert!(x.payload == y.payload, "{:?}", x.payload);
+                }
+            }
             (Err(a), Err(b)) => assert_eq!(a.to_string(), b.to_string()),
             _ => panic!("an answer read back as another kind"),
         }
@@ -377,7 +417,7 @@ fn a_read_index_reads_back_under_its_tags() {
 fn a_vote_matches_its_golden_vector() {
     let written = request(Request::Vote(VoteRequest::new(vote(3, false), None)));
     let expected: Vec<u8> = [
-        &[6, 3][..],
+        &[7, 3][..],
         // the deadline: 200 ms
         &[0, 0, 0, 200][..],
         // the group: tenant, namespace, stream, shard, kind, epoch
@@ -388,6 +428,8 @@ fn a_vote_matches_its_golden_vector() {
         &[0, 0, 0, 3][..],
         &[1][..],
         &[0, 0, 0, 0, 0, 0, 0, 7][..],
+        // the sending copy's re-form epoch
+        &[0, 0, 0, 0, 0, 0, 0, 3][..],
         // the member: broker, copy
         &[0, 1, b'b'][..],
         &[0, 0, 0, 0, 0, 0, 0, 11][..],
@@ -554,7 +596,7 @@ fn a_conditional_entry_is_refused_by_its_tag_on_an_older_build() {
         leader_commit: None,
     }));
     let bytes = encode_request(&written).expect("encode");
-    assert_eq!(bytes[0], 6, "the layout is unchanged");
+    assert_eq!(bytes[0], 7, "the layout is unchanged");
     // The tag, then the expected offset, the append time, the length and the
     // record.
     let at = bytes.len() - payload.len() - 4 - 8 - 8 - 1;
@@ -597,7 +639,7 @@ fn a_trim_entry_is_refused_by_its_tag_on_an_older_build() {
         }))
     };
     let bytes = encode_request(&append(trim(None, None))).expect("encode");
-    assert_eq!(bytes[0], 6, "the layout is unchanged");
+    assert_eq!(bytes[0], 7, "the layout is unchanged");
     // The tag, then the floor, the append time, the length and the headers.
     let at = bytes.len() - payload.len() - 4 - 8 - 8 - 1;
     assert_eq!(bytes[at], ENTRY_TRIM);
@@ -655,7 +697,7 @@ fn a_commit_entry_reads_back_and_is_refused_by_its_tag_on_an_older_build() {
     for publisher in [None, Some(Bytes::from_static(b"alice"))] {
         let written = commit(None, None, publisher);
         let bytes = encode_request(&append(written.clone())).expect("encode");
-        assert_eq!(bytes[0], 6, "the layout is unchanged");
+        assert_eq!(bytes[0], 7, "the layout is unchanged");
         let Request::Append(read) = decode_request(bytes.clone()).expect("decode").body else {
             panic!("not an append");
         };
@@ -715,7 +757,7 @@ fn a_group_entry_reads_back_and_is_refused_by_its_tag_on_an_older_build() {
     };
     let written = group();
     let bytes = encode_request(&append(written.clone())).expect("encode");
-    assert_eq!(bytes[0], 6, "the layout is unchanged");
+    assert_eq!(bytes[0], 7, "the layout is unchanged");
     let Request::Append(read) = decode_request(bytes.clone()).expect("decode").body else {
         panic!("not an append");
     };
@@ -820,7 +862,7 @@ fn an_attributed_entry_reads_back_and_is_refused_by_its_tag_on_an_older_build() 
         for (producer, expected) in [(None, None), (Some(piece), None), (None, Some(10))] {
             let written = record(producer, expected, who.clone(), what.clone());
             let bytes = encode_request(&append(written.clone())).expect("encode");
-            assert_eq!(bytes[0], 6, "the layout is unchanged");
+            assert_eq!(bytes[0], 7, "the layout is unchanged");
             let Request::Append(read) = decode_request(bytes.clone()).expect("decode").body else {
                 panic!("not an append");
             };
@@ -1349,4 +1391,46 @@ fn the_stated_layouts_are_the_ones_written_and_read() {
             "layout {layout}"
         );
     }
+}
+
+/// A base pull goes as request tag 11 and its answer as tag 9. An answer
+/// naming more entries than a chunk may hold is refused before any is read.
+#[test]
+fn a_base_pull_reads_back_under_its_tags_and_its_cap() {
+    let asked = encode_request(&request(Request::BasePull {
+        from: member("c"),
+        start: 12,
+        max_bytes: 7,
+        max_count: 5,
+    }))
+    .expect("encode");
+    assert_eq!(asked[1], 11);
+    let Request::BasePull {
+        from,
+        start,
+        max_bytes,
+        max_count,
+    } = decode_request(asked).expect("decode").body
+    else {
+        panic!("not a base pull");
+    };
+    assert_eq!((from, start, max_bytes, max_count), (member("c"), 12, 7, 5));
+
+    let answer = encode_reply(&Ok(RaftReply(Reply::Base {
+        floor: 3,
+        entries: Vec::new(),
+    })));
+    assert_eq!(answer[1], 9);
+    let blank = EntryOf::<ShardTypes>::new_blank(log_id(2, 8));
+    let mut body = BytesMut::new();
+    body.put_u8(LAYOUT);
+    body.put_u8(9);
+    body.put_u64(3);
+    let over = crate::raft::base_pull::MAX_BASE_ENTRIES + 1;
+    body.put_u32(over);
+    for _ in 0..over {
+        put_entry(&mut body, &blank).expect("entry");
+    }
+    let err = decode_reply(body.freeze()).err().expect("refused");
+    assert!(err.to_string().contains("base entries"), "{err}");
 }

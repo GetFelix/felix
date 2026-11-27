@@ -23,6 +23,7 @@ use super::types::{Command, Membership, ShardTypes};
 use super::*;
 use crate::{ShardKey, ShardKind};
 
+mod base_pull;
 mod beats;
 mod cache;
 mod change;
@@ -260,7 +261,9 @@ fn sender(request: &Request) -> Option<&str> {
         Request::Vote(rpc) | Request::PreVote(rpc) => &rpc.vote,
         Request::Snapshot { vote, .. } => vote,
         Request::TransferLeader(_) => return None,
-        Request::Written { from, .. } => return Some(&from.broker),
+        Request::Written { from, .. } | Request::BasePull { from, .. } => {
+            return Some(&from.broker);
+        }
         Request::ReadIndex | Request::Watched => return None,
     };
     Some(&vote.leader_id().node_id().broker)
@@ -1399,6 +1402,7 @@ async fn a_dropped_append_does_not_keep_its_leader_fast() {
             Duration::from_secs(1),
         )),
         Arc::new(super::reach::Refusals::new(group(0))),
+        0,
         Arc::new(self::timers().raft(ShardKind::Stream).expect("timers")),
         Arc::default(),
     );
@@ -1498,6 +1502,7 @@ async fn a_snapshot_over_the_cap_is_not_sent_and_is_surfaced() {
             Duration::from_secs(1),
         )),
         Arc::new(super::reach::Refusals::new(group(0))),
+        0,
         Arc::new(self::timers().raft(ShardKind::Cache).expect("timers")),
         Arc::new(super::install::Unsendable::capped(16)),
     );
@@ -1578,6 +1583,7 @@ async fn a_slow_answer_does_not_make_openraft_back_off() {
             Duration::from_secs(1),
         )),
         Arc::new(super::reach::Refusals::new(group(0))),
+        0,
         Arc::new(self::timers().raft(ShardKind::Stream).expect("timers")),
         Arc::default(),
     );
@@ -2631,6 +2637,7 @@ async fn a_member_behind_keeps_its_log_and_is_sent_every_record() {
     let leads = LeaderIdOf::<ShardTypes>::new(term, leader.clone());
     let request = RaftRequest {
         group: group(0),
+        reform_epoch: 0,
         to: MemberId::new(behind, 1),
         beat: super::network::Beat::default(),
         report: crate::raft::network::Ask::Nothing,
@@ -2807,6 +2814,7 @@ async fn a_message_for_another_member_is_refused() {
     };
     let request = |group: GroupId, to: MemberId| RaftRequest {
         group,
+        reform_epoch: 0,
         to,
         beat: super::network::Beat::default(),
         report: crate::raft::network::Ask::Nothing,
@@ -2865,6 +2873,7 @@ async fn a_vote_answered_past_the_deadline_still_restarts_the_timer() {
     let vote = <VoteOf<ShardTypes> as RaftVote>::from_leader_id(candidate, false);
     let request = RaftRequest {
         group: group(0),
+        reform_epoch: 0,
         to: MemberId::new("a", 1),
         beat: super::network::Beat::default(),
         report: crate::raft::network::Ask::Nothing,
@@ -2967,6 +2976,7 @@ async fn a_failed_vote_does_not_replace_the_scout() {
             Arc::new(super::written::Reports::new()),
             Arc::clone(&reach),
             Arc::new(super::reach::Refusals::new(id)),
+            0,
             Arc::clone(&config),
             Arc::default(),
         )
@@ -3260,6 +3270,7 @@ async fn an_idle_group_refuses_a_pre_vote_past_the_openraft_lease() {
     let stands = LeaderIdOf::<ShardTypes>::new(status.term + 1, MemberId::new(candidate, 1));
     let pre_vote = |to: &str| RaftRequest {
         group: group(0),
+        reform_epoch: 0,
         to: MemberId::new(to, 1),
         beat: super::network::Beat::default(),
         report: crate::raft::network::Ask::Nothing,
@@ -3367,6 +3378,7 @@ async fn an_idle_group_elects_soon_after_a_transfer_to_a_dead_target() {
     let stands = LeaderIdOf::<ShardTypes>::new(term + 1, leader.clone());
     let pre_vote = || RaftRequest {
         group: group(0),
+        reform_epoch: 0,
         to: MemberId::new(other, 1),
         beat: super::network::Beat::default(),
         report: crate::raft::network::Ask::Nothing,

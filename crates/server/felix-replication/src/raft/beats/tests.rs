@@ -30,6 +30,7 @@ fn append(n: u32, to: &str, entries: Vec<EntryOf<ShardTypes>>) -> RaftRequest {
     let leader = LeaderIdOf::<ShardTypes>::new(1, MemberId::new("a", 1));
     RaftRequest {
         group: group(n),
+        reform_epoch: 0,
         to: MemberId::new(to, 1),
         beat: Beat::default(),
         report: Ask::Nothing,

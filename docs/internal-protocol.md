@@ -170,6 +170,7 @@ never have dialled the one that shipped to it.
 | `1 << 26` | `RECORD_SEQUENCED_FORWARDS` | reads `RecordSequencedForwardPublish`, a sequenced forward whose records each take their own sequence from the one named (see "A forward that names its producer"). A Raft leader proposes them together in one proposal and answers once all commit. An MQTT listener on a member of the shard's group sends a batch that way only to a leader that offered it, and record by record otherwise |
 | `1 << 28` | `RAFT_BEATS` | reads a Raft body that holds many groups' heartbeats (message 9, "Heartbeats together" under "Raft messages") and answers it with one result per heartbeat, in order. Offered with `RAFT` by every listener that runs the group runtime; to a peer without it each heartbeat goes on its own, byte for byte as before |
 | `1 << 27` | `CLIENT_CERTS` | reads a forward wrapped in `ClientCertified` and checks the client's certificate chain against its own client CA (see "Client certificates across a forward"). Offered only by a broker with `FELIX_TLS_CLIENT_CERT_BIND_SUBJECT=true`; a forward goes in the envelope only to a peer that offered it |
+| `1 << 30` | `RAFT_BASE_PULL` | answers a base pull (message 11 under "Raft messages"): the learner of a re-formed stream group asks a voter for the base entries below the gap, which the gap snapshot does not carry. Offered with `RAFT`; a learner asks only a voter that offers it. A start past the base, or a copy with no base, is refused as unreachable |
 | `1 << 29` | `RAFT_LAYOUTS` | answers a `HelloCapable` that offers this bit with the Raft body layouts it reads, when it offers `RAFT` (see "Raft layouts" below). Every current broker offers the bit when it dials |
 
 #### Storage identity
@@ -1337,10 +1338,11 @@ length and UTF-8 bytes, at most 512. An optional value is a `u8` (0 absent,
 
 | Field | Layout |
 | --- | --- |
-| layout | `u8`, 6 (layout 1 had no report byte, layout 2 no snapshot data, layout 3 no target version in a membership, layout 4 no piece entry, layout 5 no send number). A reader refuses any other with an error that names the layout, so two builds on different layouts refuse each other's messages instead of misreading them. A sender checks the layouts the peer stated in its handshake first and sends nothing when they share none (see "Raft layouts" under "Capabilities") |
-| message | `u8`: 1 append with no entries (a heartbeat), 2 append with entries, 3 vote, 4 pre-vote, 5 snapshot, 6 leader transfer, 7 written position, 8 read index, 9 heartbeats together (see below; its header differs after the deadline) |
+| layout | `u8`, 7 (layout 1 had no report byte, layout 2 no snapshot data, layout 3 no target version in a membership, layout 4 no piece entry, layout 5 no send number, layout 6 no re-form epoch). A reader refuses any other with an error that names the layout, so two builds on different layouts refuse each other's messages instead of misreading them. A sender checks the layouts the peer stated in its handshake first and sends nothing when they share none (see "Raft layouts" under "Capabilities") |
+| message | `u8`: 1 append with no entries (a heartbeat), 2 append with entries, 3 vote, 4 pre-vote, 5 snapshot, 6 leader transfer, 7 written position, 8 read index, 9 heartbeats together (see below; its header differs after the deadline), 10 watched, 11 base pull |
 | deadline | `u32`: how long the sender waits for the answer, in milliseconds |
 | group | tenant, namespace, stream (names), shard `u32`, kind `u8` (0 stream, 1 cache), epoch `u64` |
+| re-form epoch | `u64`: the group epoch the sending copy runs in, its `raft-epoch`, 0 without one. A member refuses as unreachable a message whose re-form epoch is not its own copy's, so a copy a re-form left behind cannot vote in, append to or lead the new group (`docs/per-shard-raft.md`, "A copy the record has left is closed") |
 | member | broker (name), copy id `u64` |
 | beat | `u64`: on a leader's append, how long it may now stay silent, in milliseconds; 0 otherwise |
 | send number | `u64`: on a leader's append, its place among the leader's appends in that term. A follower stores the beat only from an append numbered above the last one it stored a beat from. 0 otherwise |
@@ -1428,6 +1430,12 @@ After the report byte comes the message:
   5. A build without it refuses the message (`8 is not a Raft request`),
   so a follower sends one only once the fleet has finalized
   `raft_follower_read`.
+- **Base pull**: the asking learner's member, the first index wanted
+  `u64`, the most bytes `u32` and the most entries `u32`. Sent only to a
+  peer that offered `RAFT_BASE_PULL`. The voter reads it from its log
+  alone and serves nothing past its base. Like every message it carries
+  the sender's re-form epoch, so a copy a re-form left behind can neither
+  pull a base from the new group nor serve one to it.
 
 A membership is a `u8` count of voter sets (two during a joint change), each
 a `u8` count and that many members, then the members that are not voters the
@@ -1444,6 +1452,7 @@ The answer has the same first byte, then:
 | 4 transferred | `u8` 0 accepted; 1 the vote changed (expected and actual votes); 2 the log is not flushed yet (expected and actual last log ids, optional) |
 | 5 written position taken | nothing |
 | 6 read index | the index (optional `u64`): one past the last entry the follower must apply before it reads. Absent when the member cannot give one: it does not lead, or a majority did not confirm in time that it still does |
+| 9 base | the lowest index the voter serves `u64` (the higher of its log's first entry and the trim floor at the base), then a `u32` count (at most 4,096) and that many entries. The entries run in order from the asked index and stop at the base's last entry, at the asked count, or past the asked bytes (8 MiB at most), but always carry the first. Empty when that index is above the asked one, and the learner starts again there |
 | 16 unreachable | a reason (name layout, up to 1,024 bytes) |
 | 17 no such member | the group and member. The broker holds no member for that copy and epoch |
 | 18 stopped | the group and member, and a reason |
@@ -1458,7 +1467,7 @@ off for members on that peer within a short window (1 ms by default) as one
 
 | Field | Layout |
 | --- | --- |
-| layout | `u8`, 6 |
+| layout | `u8`, 7 |
 | message | `u8` 9 |
 | deadline | `u32`: the longest of the heartbeats' deadlines, in milliseconds, where a listener reads every body's |
 | wait | `u32`: how long, in microseconds, the listener waits for a member once another has answered |

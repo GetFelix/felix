@@ -460,6 +460,36 @@ async fn a_quorum_acknowledged_cache_write_survives_its_leader() {
     cluster.shutdown().await;
 }
 
+/// On Raft, whether every listed shard has a formed group holding `want`
+/// voters in the control plane's stored target. Always true on the hybrid,
+/// which has no such group: the replica counts the callers also check stand
+/// for it there.
+async fn raft_groups_formed_with(
+    cluster: &Cluster,
+    shards: &[(&str, ShardKind, u32)],
+    want: usize,
+) -> bool {
+    if !cluster.raft() {
+        return true;
+    }
+    for (name, kind, count) in shards {
+        for shard in 0..*count {
+            let Ok(Some(target)) = cluster.raft_target_of(*kind, name, shard).await else {
+                return false;
+            };
+            if target.len() != want
+                || !cluster
+                    .raft_set_settled_of(*kind, name, shard)
+                    .await
+                    .unwrap_or(false)
+            {
+                return false;
+            }
+        }
+    }
+    true
+}
+
 /// **A `Quorum` cache placed before every broker registered still takes writes
 /// after a broker dies (#1133).**
 ///
@@ -472,21 +502,38 @@ async fn a_quorum_acknowledged_cache_write_survives_its_leader() {
 #[serial]
 #[tokio::test]
 async fn a_quorum_cache_placed_short_takes_writes_after_a_broker_dies() {
-    if felix_cluster::skip_on_raft_until(
-        3285,
-        "a shard placed short is held unformed on Raft, so the start never takes a publish",
-    ) {
-        return;
-    }
     const OPS: &str = "ops";
+    // Nothing is created at start: a shard short of its factor never opens on
+    // Raft, so a start that waits for the shards to serve would not return.
     let mut cluster = Cluster::start(ClusterConfig {
         nodes: 2,
-        streams: vec![StreamSpec::quorum(OPS, 1, 3)],
-        caches: vec![CacheSpec::quorum(CACHE, 1, 3)],
+        streams: Vec::new(),
+        caches: Vec::new(),
         ..Default::default()
     })
     .await
     .expect("start cluster");
+    cluster
+        .create_stream(&StreamSpec::quorum(OPS, 1, 3))
+        .await
+        .expect("create the stream");
+    cluster
+        .create_cache(&CacheSpec::quorum(CACHE, 1, 3))
+        .await
+        .expect("create the cache");
+    felix_cluster::wait::until(
+        Duration::from_secs(60),
+        "the stream and the cache to be placed on the two brokers",
+        || async {
+            cluster.place_shards().await;
+            cluster
+                .shard_assignments()
+                .await
+                .is_ok_and(|assignments| assignments.len() == 2)
+        },
+    )
+    .await
+    .expect("placement on two brokers");
     cluster.add_node().await.expect("start the third broker");
 
     let full = felix_cluster::wait::until(
@@ -502,7 +549,14 @@ async fn a_quorum_cache_placed_short_takes_writes_after_a_broker_dies() {
                     .iter()
                     .any(|(key, a)| key.ends_with(&format!("/{name}/0")) && a.replicas.len() == 2)
             });
-            seated && cluster.moving_shards().await.is_ok_and(|m| m.is_empty())
+            seated
+                && raft_groups_formed_with(
+                    &cluster,
+                    &[(OPS, ShardKind::Stream, 1), (CACHE, ShardKind::Cache, 1)],
+                    3,
+                )
+                .await
+                && cluster.moving_shards().await.is_ok_and(|m| m.is_empty())
         },
     )
     .await;
@@ -511,14 +565,29 @@ async fn a_quorum_cache_placed_short_takes_writes_after_a_broker_dies() {
         full.is_ok(),
         "the restores did not finish; still in flight: {moving:?}",
     );
-
-    // The broker the canvas lost owned its stream, not its cache. When both
-    // landed on one broker here, a follower of the cache goes instead: either
-    // way the cache's owner is left with one of its two followers.
+    // A cache that never took a write could still be one the group has not
+    // opened, and a kill before it opens tests startup, not the loss.
     let cache_owner = cluster
         .shard_owner_of("cache", CACHE, 0)
         .await
         .expect("cache shard owner");
+    felix_cluster::wait::until(
+        Duration::from_secs(60),
+        "the full cache to take a write",
+        || async {
+            cluster.place_shards().await;
+            cluster
+                .cache_put_via(&cache_owner, CACHE, "before", b"before")
+                .await
+                .is_ok()
+        },
+    )
+    .await
+    .expect("the cache never took a write");
+
+    // The broker the canvas lost owned its stream, not its cache. When both
+    // landed on one broker here, a follower of the cache goes instead: either
+    // way the cache's owner is left with one of its two followers.
     let stream_owner = cluster
         .shard_owner_of("stream", OPS, 0)
         .await
@@ -561,22 +630,39 @@ async fn a_quorum_cache_placed_short_takes_writes_after_a_broker_dies() {
 #[serial]
 #[tokio::test]
 async fn shards_placed_on_one_broker_reach_their_factor_once_more_join() {
-    if felix_cluster::skip_on_raft_until(
-        3285,
-        "a shard placed short is held unformed on Raft, so the start never takes a publish",
-    ) {
-        return;
-    }
     const OPS: &str = "ops";
+    // Created after the start: a shard short of its factor never opens on
+    // Raft, so a start that waits for the shards to serve would not return.
     let mut cluster = Cluster::start(ClusterConfig {
         nodes: 1,
-        streams: vec![StreamSpec::quorum(OPS, 3, 3)],
-        caches: vec![CacheSpec::quorum(CACHE, 1, 3)],
+        streams: Vec::new(),
+        caches: Vec::new(),
         ..Default::default()
     })
     .await
     .expect("start cluster");
+    cluster
+        .create_stream(&StreamSpec::quorum(OPS, 3, 3))
+        .await
+        .expect("create the stream");
+    cluster
+        .create_cache(&CacheSpec::quorum(CACHE, 1, 3))
+        .await
+        .expect("create the cache");
     let first = cluster.node_ids()[0].clone();
+    felix_cluster::wait::until(
+        Duration::from_secs(60),
+        "every shard to be placed on the first broker",
+        || async {
+            cluster.place_shards().await;
+            cluster
+                .shard_assignments()
+                .await
+                .is_ok_and(|assignments| assignments.len() == 4)
+        },
+    )
+    .await
+    .expect("placement on one broker");
     let placed = cluster.shard_assignments().await.expect("assignments");
     assert_eq!(placed.len(), 4, "{placed:?}");
     assert!(
@@ -598,17 +684,49 @@ async fn shards_placed_on_one_broker_reach_their_factor_once_more_join() {
                 return false;
             };
             assignments.values().all(|a| a.replicas.len() == 2)
+                && raft_groups_formed_with(
+                    &cluster,
+                    &[(OPS, ShardKind::Stream, 3), (CACHE, ShardKind::Cache, 1)],
+                    3,
+                )
+                .await
                 && cluster.moving_shards().await.is_ok_and(|m| m.is_empty())
         },
     )
     .await;
     let assignments = cluster.shard_assignments().await.unwrap_or_default();
     let moving = cluster.moving_shards().await.unwrap_or_default();
+    // A Raft shard grows in place, so the broker it started on still holds
+    // every one of them. A shard that moved there was rebuilt, not topped up.
+    let mut targets = Vec::new();
+    if cluster.raft() {
+        for (stream, kind, shards) in [(OPS, ShardKind::Stream, 3), (CACHE, ShardKind::Cache, 1)] {
+            for shard in 0..shards {
+                let target = cluster
+                    .raft_target_of(kind, stream, shard)
+                    .await
+                    .ok()
+                    .flatten()
+                    .unwrap_or_default();
+                targets.push((format!("{stream}/{shard}"), target));
+            }
+        }
+    }
+    let raft = cluster.raft();
     cluster.shutdown().await;
     assert!(
         full.is_ok(),
         "shards stayed short: {assignments:?}; in flight: {moving:?}",
     );
+    if raft {
+        for (shard, target) in &targets {
+            assert!(
+                target.contains_key(&first),
+                "{shard} left {first} instead of growing: {target:?}",
+            );
+        }
+        return;
+    }
     // A shard rebalancing moves gets its copies through the move; the ones
     // still on the first broker are the ones a restore had to top up.
     assert!(
@@ -628,12 +746,6 @@ async fn shards_placed_on_one_broker_reach_their_factor_once_more_join() {
 #[serial]
 #[tokio::test]
 async fn a_deposed_cache_leader_rejoins_after_a_failover() {
-    if felix_cluster::skip_on_raft_until(
-        3286,
-        "the rejoin wait reads a hybrid replica report and the hybrid halted metric",
-    ) {
-        return;
-    }
     let mut cluster = Cluster::start(quorum_cache()).await.expect("start cluster");
     let old = cluster
         .shard_owner_of("cache", CACHE, 0)
@@ -720,32 +832,43 @@ async fn a_deposed_cache_leader_rejoins_after_a_failover() {
         .drain_node(&other)
         .await
         .expect("drain the other follower");
-    let level = felix_cluster::wait::until(
-        Duration::from_secs(60),
-        "the old leader to rejoin the replica set",
-        || async {
-            cluster.place_shards().await;
-            let halted = cluster
-                .metric(&new, "felix_broker_replication_halted")
-                .await
-                .ok()
-                .flatten()
-                .unwrap_or(0.0);
-            let report = cluster.cache_replica_report(CACHE, 0).await.ok().flatten();
-            // The report leaves out a halted or stalled follower.
-            halted == 0.0
-                && report.is_some_and(|report| {
-                    report.leader_offset.is_some()
-                        && report.offsets.get(&old).copied() == report.leader_offset
-                })
-        },
-    )
-    .await;
-    let report = cluster.cache_replica_report(CACHE, 0).await.ok().flatten();
-    assert!(
-        level.is_ok(),
-        "{old} did not rejoin after the failover; last report {report:?}",
-    );
+    if cluster.raft() {
+        // The group never dropped the dead broker from its voters, so it
+        // rejoins as the member it was: its log has to be cut back to the
+        // committed prefix and then catch up with the leader.
+        let elected = cluster
+            .wait_for_every_cache_member_level(CACHE, Duration::from_secs(60))
+            .await
+            .unwrap_or_else(|err| panic!("{old} did not rejoin after the failover: {err:#}"));
+        assert_eq!(elected, new, "the group is led by {elected}, not by {new}");
+    } else {
+        let level = felix_cluster::wait::until(
+            Duration::from_secs(60),
+            "the old leader to rejoin the replica set",
+            || async {
+                cluster.place_shards().await;
+                let halted = cluster
+                    .metric(&new, "felix_broker_replication_halted")
+                    .await
+                    .ok()
+                    .flatten()
+                    .unwrap_or(0.0);
+                let report = cluster.cache_replica_report(CACHE, 0).await.ok().flatten();
+                // The report leaves out a halted or stalled follower.
+                halted == 0.0
+                    && report.is_some_and(|report| {
+                        report.leader_offset.is_some()
+                            && report.offsets.get(&old).copied() == report.leader_offset
+                    })
+            },
+        )
+        .await;
+        let report = cluster.cache_replica_report(CACHE, 0).await.ok().flatten();
+        assert!(
+            level.is_ok(),
+            "{old} did not rejoin after the failover; last report {report:?}",
+        );
+    }
 
     // Drain the new leader too, so the only place the shard can go is the
     // broker that rejoined, and read every committed key from it there.

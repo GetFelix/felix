@@ -171,6 +171,19 @@ impl Cluster {
         .await
     }
 
+    /// Create a cache on the running cluster. Nothing is placed or waited
+    /// for, as with [`Self::create_stream`].
+    pub async fn create_cache(&self, spec: &crate::CacheSpec) -> Result<()> {
+        create_cache(
+            &self.http,
+            &self.control_plane().base_url,
+            &self.config,
+            &self.credentials.admin_token(),
+            spec,
+        )
+        .await
+    }
+
     /// Wait for every broker process to report ready.
     async fn await_brokers_ready(&mut self) -> Result<()> {
         // Written as a loop rather than through `wait::until` so a broker that
@@ -529,25 +542,36 @@ async fn seed_metadata(
     }
 
     for spec in &config.caches {
-        let cache = &spec.name;
-        post(
-            http,
-            &format!(
-                "{base}/v1/tenants/{}/namespaces/{}/caches",
-                config.tenant_id, config.namespace
-            ),
-            token,
-            serde_json::json!({
-                "cache": cache,
-                "display_name": cache,
-                "shards": spec.shards,
-                "replication_factor": spec.replication_factor,
-                "consistency": spec.consistency,
-            }),
-        )
-        .await
-        .with_context(|| format!("create cache {cache}"))?;
+        create_cache(http, base, config, token, spec).await?;
     }
+    Ok(())
+}
+
+async fn create_cache(
+    http: &reqwest::Client,
+    base: &str,
+    config: &ClusterConfig,
+    token: &str,
+    spec: &crate::CacheSpec,
+) -> Result<()> {
+    let cache = &spec.name;
+    post(
+        http,
+        &format!(
+            "{base}/v1/tenants/{}/namespaces/{}/caches",
+            config.tenant_id, config.namespace
+        ),
+        token,
+        serde_json::json!({
+            "cache": cache,
+            "display_name": cache,
+            "shards": spec.shards,
+            "replication_factor": spec.replication_factor,
+            "consistency": spec.consistency,
+        }),
+    )
+    .await
+    .with_context(|| format!("create cache {cache}"))?;
     Ok(())
 }
 

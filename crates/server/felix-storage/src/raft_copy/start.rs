@@ -281,10 +281,12 @@ impl CopyRoot {
             }),
             Role::Learner => None,
         };
-        self.mark_log()
-            .for_copy(std::sync::Arc::from(shard), copy)
-            .lower_log(mark)
-            .await?;
+        let marks = self.mark_log().for_copy(std::sync::Arc::from(shard), copy);
+        // The stopped member's log is closed, but the batch still marks its
+        // last flushed position once, which would land over this lowering
+        // and read at the next open as a log below its mark.
+        marks.forget_batched();
+        marks.lower_log(mark).await?;
         let start = Start {
             epoch,
             role,
@@ -418,7 +420,16 @@ pub(super) async fn start_with(
                         kept.display()
                     )));
                 }
-                held::read(kept, &label, index_spacing_bytes)?;
+                let kept_held = held::read(kept, &label, index_spacing_bytes)?;
+                // A base a learner pulled and no install purged over was
+                // never committed there; copied in, it would show as live
+                // entries with no purged id under them.
+                if kept_held.purged.is_none() && crate::raft_log::adopted::held(kept)? {
+                    return Err(invalid(format!(
+                        "{label}: kept directory {} holds an adopted base no snapshot installed over",
+                        kept.display()
+                    )));
+                }
                 commit = commit.max(
                     crate::disk_log::saved_commit(kept)
                         .map_err(io::Error::other)?
@@ -661,7 +672,7 @@ fn prefix_matches(
 /// Remove every segment, index, purged id and snapshot in `dir`, and the
 /// forgotten batches and carried floor. The copy file, votes, reservation
 /// and markers stay.
-fn empty_log(dir: &Path) -> io::Result<()> {
+pub(super) fn empty_log(dir: &Path) -> io::Result<()> {
     // No record holds these, so they would outlive the log they describe:
     // the next log would refuse re-sends of batches its voters never forgot.
     // A snapshot install merges into them rather than replacing them.
@@ -681,6 +692,7 @@ fn empty_log(dir: &Path) -> io::Result<()> {
             // Derived from the records, so it goes with them.
             || name == crate::disk_log::producers_file_name()
             || name.starts_with(crate::raft_log::purged::FILE_NAME)
+            || name.starts_with(crate::raft_log::adopted::FILE_NAME)
             || name.starts_with(crate::raft_log::snapshot::FILE_NAME);
         if log_file {
             crate::fs::remove_file(&path)?;
@@ -746,6 +758,121 @@ fn copy_kept(kept: &Path, dir: &Path, step: &dyn Fn() -> io::Result<()>) -> io::
         step()?;
     }
     Ok(())
+}
+
+/// Present in a copy while a finished staging log moves into it. A start of
+/// the adoption over it rolls forward.
+pub const ADOPTING: &str = "base-adopting";
+
+/// Make the staging log a learner pulled `base` into ([`super::staging`])
+/// `dir`'s log. False, with the staging log discarded and the copy left
+/// as it was, when it is not finished or holds another base. The copy's
+/// log is emptied and its saved commit lowered to zero first, as for
+/// [`copy_kept`]; then [`ADOPTING`] is written, and from there each
+/// segment and the durable mark are renamed in, so a crash before the
+/// marker leaves the copy blank and one after it is rolled forward by
+/// calling this again. Indexes are left behind: they are rebuilt. The log
+/// in `dir` must be closed, and the caller runs this before it opens it.
+pub fn adopt_staged(
+    dir: &Path,
+    base: (u64, u64),
+    step: &dyn Fn() -> io::Result<()>,
+) -> io::Result<bool> {
+    let staging = super::staging::staging_dir(dir);
+    let marker = dir.join(ADOPTING);
+    if !crate::fs::try_exists(&marker)? {
+        // A copy that took a snapshot or entries since the pull began has
+        // caught up another way, and may hold acknowledged records.
+        if super::staging::staged(dir)? != Some(base) || !holds_nothing(dir)? {
+            super::staging::discard(dir)?;
+            return Ok(false);
+        }
+        crate::disk_log::store_saved_commit(dir, 0, 0).map_err(io::Error::other)?;
+        empty_log(dir)?;
+        step()?;
+        let file = crate::fs::File::create(&marker)?;
+        crate::io::sync_all(&file)?;
+        crate::io::sync_dir(dir)?;
+        step()?;
+    }
+    // Before any segment is in, so openraft is never shown the base.
+    crate::raft_log::adopted::store(dir)?;
+    if crate::fs::try_exists(&staging)? {
+        for entry in crate::fs::read_dir(&staging)? {
+            let name = entry?.file_name();
+            let Some(name) = name.to_str() else {
+                continue;
+            };
+            if parse_segment_file_name(name).is_some() || name == durable_mark::mark_file_name() {
+                crate::fs::rename(staging.join(name), dir.join(name))?;
+                step()?;
+            }
+        }
+        crate::io::sync_dir(dir)?;
+        crate::fs::remove_dir_all(&staging)?;
+    }
+    crate::fs::remove_file(&marker)?;
+    crate::io::sync_dir(dir)?;
+    Ok(true)
+}
+
+/// Whether `dir`'s log holds no record, purged id or snapshot: the blank
+/// copy a pulled base may replace.
+fn holds_nothing(dir: &Path) -> io::Result<bool> {
+    for entry in crate::fs::read_dir(dir)? {
+        let entry = entry?;
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else {
+            continue;
+        };
+        if name.starts_with(crate::raft_log::purged::FILE_NAME)
+            || name.starts_with(crate::raft_log::snapshot::FILE_NAME)
+        {
+            return Ok(false);
+        }
+        if parse_segment_file_name(name).is_some()
+            && crate::fs::metadata(entry.path())?.len() > crate::segment::format::SEGMENT_HEADER_LEN
+        {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
+/// Run before `dir`'s log opens, so no open sees a half-adopted copy: an
+/// adoption under way rolls forward, a finished staging log of the copy's
+/// latest base is adopted, and any other staging log is discarded. A base
+/// [`super::request_discard`] asked to drop is dropped first. True when
+/// the copy now holds a base it adopted.
+///
+/// An adopted copy's saved commit is 0, so it applies nothing, head trims
+/// included, until the gap snapshot installs; that install raises its
+/// floor to the one the snapshot carries in one step. Until then its log
+/// shows openraft no entry ([`crate::raft_log::adopted`]).
+pub(crate) fn adopt_pending(dir: &Path) -> io::Result<bool> {
+    // A base asked to be dropped goes before anything staged is looked at,
+    // so the copy is blank for the next pull.
+    super::base_discard::discard_pending(dir)?;
+    let adopting = crate::fs::try_exists(dir.join(ADOPTING))?;
+    if !adopting && !crate::fs::try_exists(super::staging::staging_dir(dir))? {
+        return Ok(false);
+    }
+    let base = epoch_file::load(dir)?
+        .and_then(|file| file.bases.last().and_then(|base| base.base_last))
+        .map(|last| (last.index, last.term));
+    match base {
+        Some(base) => adopt_staged(dir, base, &|| Ok(())),
+        // The marker is written only once the staged base matched the
+        // epoch file, so a copy without one was changed under it.
+        None if adopting => Err(invalid(format!(
+            "{}: a base is being adopted into a copy that names none",
+            dir.display()
+        ))),
+        None => {
+            super::staging::discard(dir)?;
+            Ok(false)
+        }
+    }
 }
 
 /// `dir`'s log, opened under `lock`, which the start holds throughout.

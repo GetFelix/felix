@@ -116,7 +116,14 @@ where
         let broker = Arc::clone(&request.to().broker);
         let unreachable =
             |detail: String| Refused::Unreachable(format!("broker {broker}: {detail}"));
-        let (addr, _) = self.reach(&broker).await.map_err(unreachable)?;
+        let (addr, offered) = self.reach(&broker).await.map_err(unreachable)?;
+        // A build that predates base pulls would refuse the kind; never
+        // asking keeps its refusals out of its logs.
+        if matches!(request.body, super::network::Request::BasePull { .. })
+            && !offered.contains(PeerCapabilities::RAFT_BASE_PULL)
+        {
+            return Err(unreachable("it has not offered base pulls".into()));
+        }
         wire::fit(&mut request);
         let body = wire::encode_request(&request).map_err(|err| unreachable(err.to_string()))?;
         let call = InternalMessage::Raft(RaftCall {

@@ -46,20 +46,39 @@ where
         }
     }
 
+    /// The first page of entries in `start..end`, below the purged id too.
+    /// A re-formed voter's purged id sits at the gap's end with the base
+    /// still on disk below it, which it serves to a learner that pulls it.
+    pub async fn base_page(&self, start: Offset, end: Offset) -> io::Result<Vec<C::Entry>> {
+        self.entries(start, end, false, true).await
+    }
+
     /// Every entry the log holds in `start..end`, or, with `whole` false,
     /// the first page of them. Entries missing at either end of the range
-    /// are left out; a gap between two entries is an error.
+    /// are left out; a gap between two entries is an error. With
+    /// `below_purged`, the range may start below the purged id.
     ///
     /// The newest entries come from memory when the range starts among
     /// them, and the rest from the segments. Memory holds no more than a
     /// page.
-    async fn entries(&self, start: Offset, end: Offset, whole: bool) -> io::Result<Vec<C::Entry>> {
+    async fn entries(
+        &self,
+        start: Offset,
+        end: Offset,
+        whole: bool,
+        below_purged: bool,
+    ) -> io::Result<Vec<C::Entry>> {
         let log = &self.shared.log;
         'read: loop {
             // A cut between two pages could join records from before it to
             // ones written after it, so the read starts again.
             let cuts = log.cuts();
-            let first = self.shared.first_index();
+            let shown = self.shared.first_index();
+            let first = if below_purged {
+                log.base_offset()
+            } else {
+                shown
+            };
             let mut next = start.max(first);
             let mut entries = Vec::new();
             // A closed log refuses a read, and so must this.
@@ -73,7 +92,7 @@ where
                 self.pause().await;
                 // A cut since `cuts` was read may have taken some of them,
                 // and a purge since `first` was read hides some.
-                if log.cuts() != cuts || self.shared.first_index() != first {
+                if log.cuts() != cuts || self.shared.first_index() != shown {
                     continue 'read;
                 }
                 for record in records {
@@ -106,7 +125,7 @@ where
                 // its start, so the read starts again above the new head. A purge
                 // whose segments are still on disk moves the first index
                 // without a cut.
-                if log.cuts() != cuts || self.shared.first_index() != first {
+                if log.cuts() != cuts || self.shared.first_index() != shown {
                     continue 'read;
                 }
                 let page = page.map_err(io::Error::other)?;
@@ -166,7 +185,7 @@ where
         range: RB,
     ) -> Result<Vec<C::Entry>, io::Error> {
         let (start, end) = bounds(&range);
-        self.entries(start, end, true).await
+        self.entries(start, end, true, false).await
     }
 
     async fn limited_get_log_entries(
@@ -174,7 +193,7 @@ where
         start: u64,
         end: u64,
     ) -> Result<Vec<C::Entry>, io::Error> {
-        self.entries(start, end, false).await
+        self.entries(start, end, false, false).await
     }
 
     /// The vote as the ballot file holds it: the accepted generation is the

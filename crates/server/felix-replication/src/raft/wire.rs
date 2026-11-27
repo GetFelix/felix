@@ -32,8 +32,8 @@ use crate::{ShardKey, ShardKind};
 /// on another layout is refused by name rather than misread. 2 added the
 /// report byte to the request header, 3 the data of a snapshot, 4 the target
 /// version to a membership, 5 the piece entry, 6 the send number after the
-/// gap.
-const LAYOUT: u8 = 6;
+/// gap, 7 the sender's re-form epoch after the group.
+const LAYOUT: u8 = 7;
 
 /// The layouts this build reads and writes, which it states in the peer
 /// handshake. A sender writes only [`LAYOUT`], so it sends to a peer whose
@@ -78,6 +78,8 @@ pub(crate) const BEATS: u8 = 9;
 /// A peer that predates it refuses it, and the asking member asks again
 /// later: a mark is never needed for safety.
 const WATCHED: u8 = 10;
+/// Sent only to a peer that offered `RAFT_BASE_PULL`.
+const BASE_PULL: u8 = 11;
 
 /// The second byte of an answer.
 const APPENDED: u8 = 1;
@@ -89,6 +91,7 @@ const READ_INDEX_TAKEN: u8 = 6;
 /// The answer to `BEATS`: one answer body for each heartbeat, in order.
 const BEATS_TAKEN: u8 = 7;
 const WATCHED_TAKEN: u8 = 8;
+const BASE_TAKEN: u8 = 9;
 const UNREACHABLE: u8 = 16;
 const NO_SUCH_MEMBER: u8 = 17;
 const STOPPED: u8 = 18;
@@ -168,7 +171,7 @@ pub(crate) fn append_deadline(deadline: Duration, body: &Request) -> Duration {
 }
 
 /// What one entry costs an append's budget.
-fn entry_bytes(entry: &EntryOf<ShardTypes>) -> usize {
+pub(crate) fn entry_bytes(entry: &EntryOf<ShardTypes>) -> usize {
     ENTRY_OVERHEAD
         + match &entry.payload {
             EntryPayload::Normal(command) => command_bytes(command),
@@ -223,10 +226,12 @@ pub(crate) fn encode_request(request: &RaftRequest) -> io::Result<Bytes> {
         Request::Written { .. } => WRITTEN,
         Request::ReadIndex => READ_INDEX,
         Request::Watched => WATCHED,
+        Request::BasePull { .. } => BASE_PULL,
     });
     // At a fixed place, so a listener reads it without reading the rest.
     buf.put_u32(u32::try_from(request.deadline.as_millis()).unwrap_or(u32::MAX));
     put_group(&mut buf, &request.group)?;
+    buf.put_u64(request.reform_epoch);
     put_member(&mut buf, &request.to)?;
     buf.put_u64(request.beat.gap);
     buf.put_u64(request.beat.seq);
@@ -284,6 +289,17 @@ pub(crate) fn encode_request(request: &RaftRequest) -> io::Result<Bytes> {
             buf.put_u64(at.term);
             buf.put_u64(at.index);
         }
+        Request::BasePull {
+            from,
+            start,
+            max_bytes,
+            max_count,
+        } => {
+            put_member(&mut buf, from)?;
+            buf.put_u64(*start);
+            buf.put_u32(*max_bytes);
+            buf.put_u32(*max_count);
+        }
         Request::ReadIndex | Request::Watched => {}
     }
     Ok(buf.freeze())
@@ -294,6 +310,7 @@ pub(crate) fn decode_request(mut buf: Bytes) -> io::Result<RaftRequest> {
     let tag = take_u8(&mut buf)?;
     let deadline = Duration::from_millis(u64::from(take_u32(&mut buf)?));
     let group = take_group(&mut buf)?;
+    let reform_epoch = take_u64(&mut buf)?;
     let to = take_member(&mut buf)?;
     let beat = Beat {
         gap: take_u64(&mut buf)?,
@@ -387,11 +404,18 @@ pub(crate) fn decode_request(mut buf: Bytes) -> io::Result<RaftRequest> {
         }
         READ_INDEX => Request::ReadIndex,
         WATCHED => Request::Watched,
+        BASE_PULL => Request::BasePull {
+            from: take_member(&mut buf)?,
+            start: take_u64(&mut buf)?,
+            max_bytes: take_u32(&mut buf)?,
+            max_count: take_u32(&mut buf)?,
+        },
         other => return Err(invalid(format!("{other} is not a Raft request"))),
     };
     expect_empty(&buf)?;
     Ok(RaftRequest {
         group,
+        reform_epoch,
         to,
         beat,
         report,
@@ -447,6 +471,14 @@ fn put_reply(buf: &mut BytesMut, reply: &Result<RaftReply, Refused>) -> io::Resu
         }
         Ok(RaftReply(Reply::Written)) => buf.put_u8(WRITTEN_TAKEN),
         Ok(RaftReply(Reply::Watched)) => buf.put_u8(WATCHED_TAKEN),
+        Ok(RaftReply(Reply::Base { floor, entries })) => {
+            buf.put_u8(BASE_TAKEN);
+            buf.put_u64(*floor);
+            buf.put_u32(len_u32(entries.len())?);
+            for entry in entries {
+                put_entry(buf, entry)?;
+            }
+        }
         Ok(RaftReply(Reply::ReadIndex { index })) => {
             buf.put_u8(READ_INDEX_TAKEN);
             match index {
@@ -512,6 +544,18 @@ pub(crate) fn decode_reply(mut buf: Bytes) -> io::Result<Result<RaftReply, Refus
         })),
         WRITTEN_TAKEN => Ok(Reply::Written),
         WATCHED_TAKEN => Ok(Reply::Watched),
+        BASE_TAKEN => {
+            let floor = take_u64(&mut buf)?;
+            let count = take_count(&mut buf, MIN_ENTRY_BYTES)?;
+            if count > super::base_pull::MAX_BASE_ENTRIES as usize {
+                return Err(invalid(format!("{count} base entries in one answer")));
+            }
+            let mut entries = Vec::with_capacity(entry_room(count, buf.remaining()));
+            for _ in 0..count {
+                entries.push(take_entry(&mut buf)?);
+            }
+            Ok(Reply::Base { floor, entries })
+        }
         READ_INDEX_TAKEN => Ok(Reply::ReadIndex {
             index: match take_u8(&mut buf)? {
                 0 => None,

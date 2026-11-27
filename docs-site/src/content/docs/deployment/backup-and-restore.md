@@ -190,10 +190,10 @@ offset gap above). Run these in order.
    [Taking a backup](#taking-a-backup). A broker that led nothing in the
    point stays empty. These empty copies come back as learners of the
    re-formed group. A cache shard's learner catches up from the leader's
-   snapshot and becomes a voter again. A stream shard's learner cannot catch
-   up yet, so a restored stream shard runs on its one cut copy until
-   [#3005](https://github.com/GetFelix/felix/issues/3005) lands: it serves and
-   takes writes, but with no second copy.
+   snapshot and becomes a voter again. A stream shard's learner first pulls
+   the records below the re-form's gap from the leader's copy, then takes the
+   snapshot and becomes a voter. Until then the shard serves and takes
+   writes on its one cut copy and shows as under-replicated.
 
 3. **Cut each leader's copy to the point**, on the broker that holds it, with
    the broker stopped. `--node` takes the broker's own id from the manifest.

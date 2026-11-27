@@ -877,6 +877,78 @@ async fn a_copy_reopens_at_once_after_a_close_under_load() {
     }
 }
 
+/// #3005: an adopted base raises no mark, but once an install purges over
+/// it a batched append is marked as on any copy, so losing that append
+/// still reads as a log below its mark and rotates.
+#[tokio::test]
+async fn an_installed_learner_that_loses_a_marked_append_rotates() {
+    use openraft::storage::RaftLogStorage;
+
+    let root = Root::new();
+    let copies = root.open();
+    let dir = root.shard_dir();
+    let mode = LogMarkMode::Batched(std::time::Duration::from_secs(3600));
+    let opened = open_copy(&copies, &dir).await;
+    let mut log = Log::new(opened.log.clone(), Codec).expect("a Raft log");
+    append(
+        &mut log,
+        &[normal(1, 0, "a"), normal(1, 1, "b"), normal(1, 2, "c")],
+    )
+    .await
+    .expect("append")
+    .await
+    .expect("flush");
+    drop(log);
+    let copy = close(opened).await;
+    crate::raft_log::adopted::store(&dir).expect("adopted");
+
+    let opened = open_copy(&copies, &dir).await;
+    let mut log = Log::new(opened.log.clone(), Codec).expect("a Raft log");
+    log.mark_with(opened.marks.clone(), mode).expect("marks");
+    log.mark_recovered().await.expect("recovered");
+    assert_eq!(root.marks_on_disk().expect("marks").log, None);
+    log.purge(crate::raft_log::tests::log_id(2, 7))
+        .await
+        .expect("install");
+    drop(log);
+    close(opened).await;
+    let backup = tempfile::tempdir().expect("backup");
+    copy_tree(&dir, backup.path());
+
+    // The first append is marked by the reopen's recovery, the second by
+    // the batch.
+    for (index, by_batch) in [(8, false), (9, true)] {
+        let opened = open_copy(&copies, &dir).await;
+        assert_eq!((opened.copy, opened.rotation.clone()), (copy, None));
+        let mut log = Log::new(opened.log.clone(), Codec).expect("a Raft log");
+        log.mark_with(opened.marks.clone(), mode).expect("marks");
+        log.mark_recovered().await.expect("recovered");
+        if by_batch {
+            assert_eq!(root.marks_on_disk().expect("marks").log, Some(point(3, 8)));
+        }
+        append(&mut log, &[normal(3, index, "next")])
+            .await
+            .expect("append")
+            .await
+            .expect("flush");
+        if by_batch {
+            copies.mark_log().mark_batched().await.expect("batch");
+            assert_eq!(root.marks_on_disk().expect("marks").log, Some(point(3, 9)));
+        }
+        drop(log);
+        close(opened).await;
+    }
+
+    restore(backup.path(), &dir);
+    let restored = open_copy(&copies, &dir).await;
+    assert_eq!(
+        restored.rotation.clone().map(|rotation| rotation.reason),
+        Some(RotateReason::LogBelowMark)
+    );
+    assert_ne!(restored.copy, copy);
+    close(restored).await;
+}
+
 /// What the copy of `SHARD` holds when a relaxed run's machine crashes.
 enum Crashed {
     /// The vote it saved last.

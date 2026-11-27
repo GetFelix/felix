@@ -96,11 +96,17 @@ where
     Ok(C::Entry::new(log_id::<C>(term, offset), payload))
 }
 
+/// An entry of `C`'s log as [`record_from_entry`] takes it.
+pub(crate) type LogEntry<C> = Entry<
+    CommittedLeaderIdOf<C>,
+    EntryPayload<<C as RaftTypeConfig>::D, <C as RaftTypeConfig>::Membership>,
+>;
+
 /// The record that holds `entry`, and the generation to stamp it with. The
 /// record goes at offset `entry.log_id.index`.
-pub(super) fn record_from_entry<C, K>(
+pub(crate) fn record_from_entry<C, K>(
     codec: &K,
-    entry: &Entry<CommittedLeaderIdOf<C>, EntryPayload<C::D, C::Membership>>,
+    entry: &LogEntry<C>,
     timestamp_micros: u64,
 ) -> io::Result<(AppendRecord, u64)>
 where

@@ -445,6 +445,7 @@ impl Led {
     async fn report(&self, from: &str, at: LogPoint) {
         let request = RaftRequest {
             group: group(0),
+            reform_epoch: 0,
             to: self.leader.clone(),
             beat: crate::raft::network::Beat::default(),
             report: crate::raft::network::Ask::Nothing,
@@ -481,6 +482,7 @@ impl Led {
         rpc.leadership_transfer_from = Some(following);
         let request = RaftRequest {
             group: group(0),
+            reform_epoch: 0,
             to: member(voter),
             beat: crate::raft::network::Beat::default(),
             report: crate::raft::network::Ask::Nothing,

@@ -478,6 +478,7 @@ fn judge_dir(
             dir.display()
         )));
     }
+    super::start::adopt_pending(dir)?;
     match judge_files(marks, shard, dir)? {
         // Every other reason rotates it anyway, which is the rejoin.
         (Some(_), None) if let Some(stopped) = super::stop_file::stopped(dir)? => {

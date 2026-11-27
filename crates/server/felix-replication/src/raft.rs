@@ -22,6 +22,7 @@
 //!
 //! openraft types stay inside this module and `felix_storage::raft_log`.
 
+mod base_pull;
 mod beats;
 mod cache;
 mod codec;

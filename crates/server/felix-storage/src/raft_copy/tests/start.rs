@@ -159,6 +159,31 @@ async fn a_voter_starts_from_a_kept_copy() {
     }));
 }
 
+/// A kept learner that adopted a base and never installed over it is no
+/// source of records: the start is refused and the voter's own log stays.
+/// One whose install landed holds a purged id and is copied as any other.
+#[tokio::test]
+async fn a_voter_never_starts_from_a_kept_adopted_base() {
+    let kept = tempfile::tempdir().expect("kept");
+    log_of(kept.path(), 5).await;
+    crate::raft_log::adopted::store(kept.path()).expect("mark");
+    let dir = tempfile::tempdir().expect("dir");
+    log_of(dir.path(), 5).await;
+    let own = held::read(dir.path(), "t", SPACING).expect("read");
+    let mut from_kept = start(Role::Voter);
+    from_kept.kept = Some(kept.path().to_path_buf());
+    let err = start_copy(dir.path(), &from_kept, &config())
+        .await
+        .expect_err("an adopted base is no source");
+    assert!(err.to_string().contains("adopted base"), "{err}");
+    assert_eq!(held::read(dir.path(), "t", SPACING).expect("read"), own);
+
+    crate::raft_log::store_purged(kept.path(), 4, 2).expect("purged");
+    start_copy(dir.path(), &from_kept, &config())
+        .await
+        .expect("an installed base is copied");
+}
+
 /// Whether `dir` holds no file copied in and left unrenamed.
 fn no_temporaries(dir: &Path) -> bool {
     std::fs::read_dir(dir).expect("ls").all(|entry| {
@@ -968,5 +993,159 @@ async fn a_second_re_form_after_a_crash_in_the_first_append_keeps_the_base() {
         .map(|record| record.offset)
         .collect();
     assert_eq!(offsets, [0, 1, 2, 3, 4, 16]);
+    raft.disk_log().close().await.expect("close");
+}
+
+/// A learner's pulled base goes in when its copy opens: a finished staging
+/// log is adopted, an adoption a crash cut is rolled forward, and an
+/// unfinished staging log is dropped. No open sees a half-adopted copy.
+#[tokio::test]
+async fn an_open_adopts_a_staged_base_or_rolls_its_adoption_forward() {
+    use crate::raft_copy::epoch_file::EpochLogId;
+    use crate::raft_copy::staging::{STAGING_DIR, Staging};
+
+    let last = EpochLogId {
+        index: 4,
+        epoch: 0,
+        term: 1,
+    };
+    let entries: Vec<_> = (0..=4).map(|index| normal(1, index, "base")).collect();
+    for (case, held) in [("finished", 5), ("cut", 5), ("unfinished", 0)] {
+        let root = Root::new();
+        let dir = root.shard_dir();
+        std::fs::create_dir_all(&dir).expect("dir");
+        let opened = root
+            .open()
+            .open_copy("orders/0", &dir, "t/ns/orders/0", config())
+            .await
+            .expect("first open");
+        opened.log.close().await.expect("close");
+        epoch_file::store(
+            &dir,
+            &EpochFile {
+                incarnation: 1,
+                bases: vec![EpochBase {
+                    base_last: Some(last),
+                    first_index: 8,
+                }],
+            },
+        )
+        .expect("epoch");
+
+        let mut staging = Staging::begin(&dir, 0, &config()).await.expect("begin");
+        staging
+            .append::<Types, Codec>(&Codec, &entries, 5)
+            .await
+            .expect("append");
+        match case {
+            "finished" => staging.finish(last).await.expect("finish"),
+            "cut" => {
+                staging.finish(last).await.expect("finish");
+                let steps = std::cell::Cell::new(0);
+                let crash = || {
+                    steps.set(steps.get() + 1);
+                    if steps.get() == 3 {
+                        return Err(io::Error::other("crash"));
+                    }
+                    Ok(())
+                };
+                adopt_staged(&dir, (4, 1), &crash).expect_err("cut");
+                assert!(dir.join(ADOPTING).exists());
+            }
+            _ => drop(staging),
+        }
+
+        let opened = root
+            .open()
+            .open_copy("orders/0", &dir, "t/ns/orders/0", config())
+            .await
+            .expect("open");
+        assert_eq!(
+            crate::log::AppendOnlyLog::tail_offset(&opened.log)
+                .await
+                .expect("tail"),
+            held,
+            "{case}"
+        );
+        opened.log.close().await.expect("close");
+        assert!(!dir.join(ADOPTING).exists(), "{case}");
+        assert!(!dir.join(STAGING_DIR).exists(), "{case}");
+        // Hidden from openraft until the gap snapshot installs.
+        assert_eq!(
+            crate::raft_log::adopted::held(&dir).expect("mark"),
+            held > 0,
+            "{case}"
+        );
+    }
+}
+
+/// **A staged base is never adopted over a copy that caught up another
+/// way.** The member took entries (or a snapshot) while its pull ran, then
+/// the pull finished and the member reopened, or crashed between the two:
+/// the open discards the staging log and leaves the log as it was.
+#[tokio::test]
+async fn an_open_discards_a_staged_base_over_a_copy_that_holds_records() {
+    use crate::raft_copy::epoch_file::EpochLogId;
+    use crate::raft_copy::staging::{STAGING_DIR, Staging};
+
+    let last = EpochLogId {
+        index: 4,
+        epoch: 0,
+        term: 1,
+    };
+    let root = Root::new();
+    let dir = root.shard_dir();
+    std::fs::create_dir_all(&dir).expect("dir");
+    let opened = root
+        .open()
+        .open_copy("orders/0", &dir, "t/ns/orders/0", config())
+        .await
+        .expect("first open");
+    opened.log.close().await.expect("close");
+    log_in_terms(&dir, &[2, 2, 2]).await;
+    epoch_file::store(
+        &dir,
+        &EpochFile {
+            incarnation: 1,
+            bases: vec![EpochBase {
+                base_last: Some(last),
+                first_index: 8,
+            }],
+        },
+    )
+    .expect("epoch");
+    let entries: Vec<_> = (0..=4).map(|index| normal(1, index, "base")).collect();
+    let mut staging = Staging::begin(&dir, 0, &config()).await.expect("begin");
+    staging
+        .append::<Types, Codec>(&Codec, &entries, 5)
+        .await
+        .expect("append");
+    staging.finish(last).await.expect("finish");
+
+    assert!(!adopt_staged(&dir, (4, 1), &|| Ok(())).expect("adopt"));
+    assert!(!dir.join(STAGING_DIR).exists());
+    let opened = root
+        .open()
+        .open_copy("orders/0", &dir, "t/ns/orders/0", config())
+        .await
+        .expect("open");
+    assert_eq!(
+        crate::log::AppendOnlyLog::tail_offset(&opened.log)
+            .await
+            .expect("tail"),
+        3
+    );
+    opened.log.close().await.expect("close");
+    let log = DiskLog::open(&dir, "t/ns/orders/0", config()).expect("open");
+    let raft = RaftLog::<Types, Codec>::new(log, Codec).expect("a Raft log");
+    let mut reader = raft.reader();
+    let held = openraft::storage::RaftLogReader::try_get_log_entries(&mut reader, 0..3)
+        .await
+        .expect("read");
+    let terms: Vec<u64> = held
+        .iter()
+        .map(|entry| entry.log_id.leader_id.term)
+        .collect();
+    assert_eq!(terms, [2, 2, 2], "the copy's own records were replaced");
     raft.disk_log().close().await.expect("close");
 }

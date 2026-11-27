@@ -31,7 +31,7 @@ pub struct CacheReplay {
     /// Changes from this offset on reach the watch live.
     pub tail: u64,
     /// Every change in `[from, tail)` the watch takes, in offset order, or
-    /// `None` when the member no longer keeps them all and the watch has to
+    /// `None` when the member's snapshot covers `from` and the watch has to
     /// be handed the current values instead.
     pub changes: Option<Vec<CacheReplayed>>,
 }
