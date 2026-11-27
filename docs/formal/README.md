@@ -2388,8 +2388,10 @@ tests yet (#2297 tracks that). The model states what the adapter has to
 guarantee, and reviews of the adapter are checked against it.
 
 Three brokers run elections and replicate a log of three kinds of entry: a
-leader's blank entry, a membership entry and a client record. The offset is
-the Raft index and the record's generation is its term. Votes are openraft's
+leader's blank entry, a membership entry and a client record. In the
+configurations below the offset is the Raft index, as the code has it today,
+and the record's generation is its term. "Batch entries" below has the
+configurations where the two numbers come apart. Votes are openraft's
 with one leader per term (`leader_id_std`): a term, a broker and a committed
 flag, where a committed vote is above every
 uncommitted vote of its term. A restarted broker is a follower even when its
@@ -2531,6 +2533,87 @@ install takes no other step until the three writes land or it crashes. The
 `SnapshotTwoRenames` rule is dropped for a snapshot the broker builds, not
 for one it installs. The order of writes inside one adapter call is left to
 the simulator's power-loss crash points.
+
+### Batch entries: an offset apart from its index
+
+[Raft entries as record batches](../raft-batch-entries-design.md) makes a Raft
+entry one record batch and separates a record's offset from its entry's index.
+Step 1 of its pull request sequence is this model, in three modules. The
+batch rules are set by override in a cfg, so the configurations above keep
+their state spaces.
+
+What the extended model checks:
+
+- **No offset reuse.** No offset is given out with two records, inside one
+  group (`FelixRaft`, `OffsetNeverReused` restated over offset ranges),
+  across a re-form (`FelixRaftReform`) and across repeated restores
+  (`FelixRaftRestoreRepeated`).
+- **No acknowledged record lost** under `Quorum` acks with fsync on commit
+  (`FelixRaft`, `AckedSurvive`), and with relaxed fsync, where a power cut
+  takes an entry a copy counted before its fsync (`FelixRaftReform` with
+  `Kept`, and `FelixRaftRestoreRepeated`). There a record is lost only as a
+  documented re-form loss, and its offsets are never given out again
+  (`ReservedCovers`) and are reported to readers (`LossReported`).
+- **A batch commits or is cut whole** (`BatchWhole`).
+
+What it does not check: `Leader`-level acknowledgements, a group shared by
+several streams, cache versions, the wire encoding of the skip reason, and
+the bucket's clock: a tick is true time, and only the restore planner's clock
+is skewed.
+
+In `FelixRaft.tla` an entry holds `n` records (blank and membership entries
+hold none) and carries the base offset its leader stamped. Every member
+derives it: entry `i` starts where entry `i - 1` ends. A follower refuses an
+append whose stamp differs from what it derives. A purge keeps the next offset
+after the purged entry and a snapshot carries the next offset after its last
+entry, so a log that starts at either derives from there. A subscriber is
+given one committed batch at a time, from its next offset to the batch's end.
+`ZeroTakesOffset` (on by default) gives an entry with no record one offset,
+which is the code today; `ZeroTakesOffsetOff` is the design.
+
+In `FelixRaftReform.tla`, `Batch` adds the new leader's blank entry, makes
+blank, membership and gap entries take no offset, and lets a write hold up to
+`MaxBatch` records. The floor and every reservation carry an offset beside the
+index, and an epoch starts at a first index and a first offset, each the
+highest of its own bounds: the base, the floor, every reservation read and,
+for an abandon, the time line and every earlier epoch. A jump in offsets the
+index padding does not carry is one more gap entry; in the frame it is the
+epoch's first entry starting past the previous end. Each epoch record keeps
+the end of its lost range, and `LossReported` holds it to the floor.
+
+In `FelixRaftRestoreRepeated.tla`, `Batch` replaces the assumed rate with the
+propose-time token bucket: it fills at `Rate` per tick up to `Capacity`, a
+publish takes its count when the bucket is positive and may leave it in debt
+by up to one entry, and a new leader's bucket starts empty. An entry is
+counted before it is synced, a reservation raise covers the entry and `Step`
+offsets past it, and a power cut re-forms the shard at the higher of its
+synced end and its reservation.
+
+The two places that set a start, snapshot install and epoch start, are where
+the design says a bug would hide:
+
+- **Snapshot install.** `FelixRaftEntriesSnapNextIsLast.cfg` has the snapshot
+  carry its last record's offset instead of the one after it, with followers
+  that take the leader's stamp: a broker that installed it is elected and
+  stamps a record at an offset a committed one holds. With the follower's
+  check on (`...Checked.cfg`) the same bug stops the group instead: every
+  follower refuses the new leader's appends.
+- **Epoch start.** `FelixRaftReformBatchAloneBase.cfg` is step 4's
+  relaxed-crash example, small: the base ends at index 1 (a blank) with next
+  offset 1, a record at offset 1 is acknowledged and then cut by a power cut,
+  `raft-reserved` pads the index to 3, and an epoch whose offsets start at the
+  base's next offset gives out offset 1 again. Starting them at the first
+  index (`OffsetBounds = "index"`, step 4's rule) passes with one record per
+  entry (`...IndexOne.cfg`) and fails with two (`...Index.cfg`,
+  `...IndexReuse.cfg`): two batches of two end at index 3 and offset 5.
+
+#### What it does not cover yet
+
+`FelixRaftBatch`, `FelixRaftIdempotent`, `FelixRaftCond`, `FelixRaftCache` and
+the read, trim and group models still have the offset equal to the index; the
+design's table says which code step changes each. `FelixRaftReform` with
+`Batch` is checked for a group of one and for two re-forms with kept copies;
+the other re-form configurations run with the offset as the index.
 
 ### Raft election liveness
 
