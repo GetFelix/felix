@@ -249,10 +249,18 @@ answered, so a held root does not keep the broker from serving its other
 shards. Until the root passes, no Raft member opens, a request for a Raft
 shard placed here is answered "not ready", and the log says once why the
 root is held. When it passes, the routing feed is woken and the members
-open. A broker that started from its saved control-plane view, with the
-control plane down, has not had its restore check answered yet. Under the
-unified fence, the default, its Raft members wait for the control plane
-too, even with a witness: a restarted broker counts for nothing until the
+open. They also wait for the broker's registration to say which fleet
+features are enabled, because a member reads `raft_written_commit` (its
+fsync mode) and `raft_alone_reform` once, at its open. Opened before the
+answer, a member on a relaxed broker would fsync on commit until it next
+opened. A start from the saved view whose features already decide both
+does not wait, nor does a standalone broker, which is its own fleet, nor a
+start whose members vote before the restore check (below). If no answer
+comes within 10 s, the members open on what is known, the strict side of
+both, and the log says so. A broker that started from its saved
+control-plane view, with the control plane down, has not had its restore
+check answered yet. Under the unified fence, the default, its Raft
+members wait for the control plane too, even with a witness: a restarted broker counts for nothing until the
 control plane has checked it, as on the hybrid engine. With
 `FELIX_UNIFIED_FENCE=0` they open on the witness.
 
@@ -3124,7 +3132,10 @@ fails fast and the client's retry deadline decides when to stop.
 A publisher's wait and a commit wait end when the watcher says the term is
 lost. The watcher hears of an election a moment after openraft does, so
 neither wait takes "not leading" on the watcher's word alone: openraft's
-own role is read as well.
+own role is read as well. A term closed for a transfer is not lost to them
+while openraft still leads it. A write already in that term's log can still
+commit, and its waiter is answered by the commit, not told the outcome is
+unknown.
 
 > `crates/server/felix-replication/src/raft/tests/commit.rs`,
 > `a_leader_opens_only_once_its_blank_entry_commits`,
@@ -5093,10 +5104,10 @@ later by no report a Raft shard sends:
   acknowledge on its own, and the brokers placed later would form the full
   set again on empty logs, elect each other and overwrite what the first
   group acknowledged. On a short set every member waits and the shard
-  answers "not ready". Placement fills a short set only after the shard's
-  leader has reported to it, which a Raft shard does not do, so today a
-  shard placed short stays short: create a stream once as many brokers as
-  its replication factor are registered. The hold is not silent: the broker
+  answers "not ready". The control plane takes no copy id for a short set
+  either, so it never stores a target for one. Once enough brokers are
+  live, placement writes the full set in one step (`raft_fill`, below) and
+  the brokers form the group on it. The hold is not silent: the broker
   warns once per shard and placement generation, naming the shard, the
   replication factor and the brokers placed, and counts held shards in
   `felix_broker_raft_shards_short_placement`. The control plane's create
@@ -5209,9 +5220,16 @@ move from an older control plane added:
   member of three down, and is refused (`member_down`) when fewer than a
   majority are serving (#3234).
 - A drain moves every shard the draining broker leads to a live member, so
-  its shutdown hand-off finishes. A shard with no other live member, such
-  as one at replication factor 1, keeps its leader and shows as waiting
-  with "no live node can take this shard".
+  its shutdown hand-off finishes. The draining broker still serves, so a
+  shard with no live member keeps it as leader and voter while it gets
+  one. An RF 1 shard moves the way an operator move does: one write grows
+  the set to the draining broker and a live broker outside it, and the
+  shrink below ends the move once the new copy votes. A larger set whose
+  members all drain swaps a follower for a live broker first, and the lead
+  moves to it on a later pass. Each write takes a slot from the budget of
+  16 set changes and a pause holds it. With no live broker outside the set
+  the shard shows as waiting with "no live node can take this shard". A
+  drain cancelled mid-move does not undo it: the move finishes.
 - A follower that must leave is replaced: one on a draining broker, on a
   node marked internal, or on a broker down or gone for
   `restore_after_millis`. One write swaps it for a live node outside the
@@ -5219,9 +5237,29 @@ move from an older control plane added:
   set and every other member is serving, so the group's leader adds the new
   member as a learner and then changes the voters (see "Membership"). A lost
   member goes first. With no such node the set stays and the shard waits.
-- A set with fewer members than the replication factor is topped up
-  (`raft_top_up`). An abandon leaves a set like this, since it places the
-  leader alone, and so does a shard placed while too few brokers were live.
+- A set placed on fewer brokers than the replication factor, whose group
+  never formed, is placed in full in one write (`raft_fill`): it keeps the
+  leader and every serving follower that need not leave and adds live
+  brokers outside the set, under the same pause and budget as a swap. Its
+  group cannot have formed: a group forms only on a stored target, the
+  control plane stores one only from copy ids, and it takes a copy id only
+  while the set names as many brokers as the factor. Placement checks that
+  from the epoch's record of every broker placed (`placed`, "Re-forming a
+  group"): while it names fewer brokers than the factor, no set of the
+  epoch was full. It also requires epoch 0 and no other trace of a group: no
+  target, no counter kept from a dropped one, no formed mark, no reported
+  voters or floor, no epoch seed or re-form base, and no ordered target. A
+  shard with no `placed` record, such as a restored one, is not filled.
+  A leader that is down, lost, draining or internal is dropped like a
+  follower, and a kept follower, else a broker the write adds, leads: with
+  no target ever stored it holds no record, and if it comes back it is in
+  no set and forms nothing, as a broker forms only on a target naming its
+  copy. A dropped broker does not count toward the brokers the fill needs.
+  With too few live brokers the shard waits, counted as under-replicated,
+  and the control plane logs why at info about once a minute.
+- A set with fewer members than the replication factor whose group formed
+  is topped up (`raft_top_up`). An abandon leaves a set like this, since it
+  places the leader alone.
   Each write adds one live broker from outside the set, under the same
   checks as a follower replacement and from the same budget. The new member
   joins as a learner and votes once it has caught up, and the next is added
@@ -5288,7 +5326,8 @@ move from an older control plane added:
   operator moves the shard back to the old broker (step `raft_move_undone`).
   The store takes that write because the old broker is a reported voter.
   This is also how a drain of the old broker gets past a move that cannot
-  finish. A draining destination that already votes is undone the same way,
+  finish: the next pass starts the move again to another live broker. A
+  draining destination that already votes is undone the same way,
   since it still serves and can vote for its own removal.
 - Once the destination votes, the group has two voters and either set of one
   needs both. If the destination is then down, placement waits and says why
@@ -5761,18 +5800,34 @@ A leader hands over only when all of these hold:
 6. The last transfer is not inside its backoff, and the broker's budget has
    a permit.
 
-The transfer closes the shard for the term first (the lease is given up),
-waits up to the shortest election timeout for the target to hold the whole
-log, then asks openraft. Publishes in that window are told the shard is not
-ready. The refusal is retryable and nothing was written, so the client sends
-every publish kind again under its reconnect policy (a plain one too, since
+The transfer closes the shard for the term first (the lease is given up).
+It then waits, up to the shortest election timeout, until the target holds
+the whole log and the leader has applied all of it, and only then asks
+openraft. Publishes in that window are told the shard is not ready. The
+refusal is retryable and nothing was written, so the client sends every
+publish kind again under its reconnect policy (a plain one too, since
 nothing of it was applied); a hand-over that outlasts the policy returns the
-refusal. A write already proposed when the hand-over began is different: it
-may commit under the new leader, which the old one cannot confirm, so it is
-answered `leadership_lost` (outcome unknown), and a plain publish returns
-that rather than risk a duplicate. The target campaigns while the other
-followers still hear the old leader, so their pre-vote check lets a
-transfer target through.
+refusal. A write in flight when the hand-over began is answered by its
+commit if it commits before the hand-over, which the wait for the apply
+lets the old leader see. Two cases still end in `leadership_lost` (outcome
+unknown). A batch already queued for openraft can be appended in the short
+window after the leader's last check and before it asks for the transfer.
+And if the wait runs out first, the transfer is asked anyway, since the
+term cannot open again, with writes still in flight. Such a write may
+commit under the new leader, which the old one cannot confirm, or be
+truncated by it; either way the publisher is told the outcome is unknown,
+and a plain publish returns that rather than risk a duplicate. A write is
+acknowledged only when its entry committed in the term that wrote it,
+never for one that did not. A transfer a membership step asks for (a move off the leader)
+waits the same way. The target campaigns while the other followers still
+hear the old leader, so their pre-vote check lets a transfer target
+through.
+
+> `crates/server/felix-replication/src/raft/tests/commit.rs`,
+> `a_placed_transfer_waits_for_its_terms_writes_to_be_answered`,
+> `a_placed_transfer_with_nothing_in_flight_is_not_held`,
+> `a_closed_terms_write_the_new_leader_truncates_is_not_acked` and
+> `a_closed_terms_waiter_is_told_promptly_once_a_later_term_is_seen`.
 
 A new group goes through this once: the broker that formed it leads its
 first term, then hands over. The test harness's
@@ -6132,7 +6187,8 @@ What placement does not do yet for a Raft shard:
   new copy caught up. A Raft leader reports nothing to placement yet, and
   a shard that switched to Raft is not placed at all.
 - **A short set forms nothing.** A group forms only once placement names
-  as many brokers as the stream's replica count ("Forming a group").
+  as many brokers as the stream's replica count ("Forming a group"); a set
+  placed short is written in full once enough brokers are live.
 - **Requests to a broker with no member go by placement.** A broker with
   a member routes by its group's leader hint. One without a member still
   sends to the leader placement names, which can be wrong mid-move.

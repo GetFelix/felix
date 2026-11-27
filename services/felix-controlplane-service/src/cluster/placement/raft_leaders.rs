@@ -67,16 +67,23 @@ pub(super) fn on_raft(existing: &ShardAssignment, raft_streams: bool, durable: b
 ///   [`RAFT_OPERATOR_LEADER_MILLIS`]: its group's leader does hand over to
 ///   it while a majority is caught up ([`operator_leader`]).
 /// - A down leader with no live member stays named, with no alert: the
-///   group cannot elect either until a member is back.
+///   group cannot elect either until a member is back. A serving leader
+///   that must leave with no live member stays leader and gives the shard
+///   one ([`leave_without_member`]): an RF 1 shard starts the move an
+///   operator would.
 /// - A follower that must leave (`leaving`: an internal, draining or lost
 ///   broker) is replaced by a live node outside the set, one at a time,
 ///   through the group's membership target. With no such node it stays and
 ///   the shard waits, shown to the operator. A seat whose broker died before
 ///   its copy opened is given away the same way, though no target was ever
 ///   stored for it ([`dead_seat`]).
-/// - A set short of the replication factor, as an abandon or a placement
-///   on too few brokers leaves it, grows by a live node outside the set
-///   ([`top_up`]), one member a write.
+/// - A set short of the replication factor whose group formed, as an
+///   abandon leaves it, grows by a live node outside the set ([`top_up`]),
+///   one member a write. A set placed on too few brokers never formed, and
+///   is placed in full in one write once enough are live
+///   ([`fill_unformed`]). That write also drops a leader that is down or
+///   must leave, since it holds no record, instead of the leave rules
+///   waiting on a target the set never gets.
 /// - A live leader leading two or more shards over a live member moves to
 ///   it, the stream's spread first and then the cluster's, while nothing is
 ///   recovering. With no such member, a live broker outside the set takes a
@@ -135,6 +142,22 @@ pub(super) fn raft_step<'a>(
         && let Some(to) = elected
     {
         return rename(existing, to, true, counted, leaders, moves);
+    }
+    // Before the swaps, the top-up and the leave rules, which wait for a
+    // target this set can never get. A leader that is down or must leave
+    // is dropped by the fill like any other member.
+    if let Some(decision) = fill_unformed(
+        existing,
+        replication_factor,
+        is_serving,
+        counted,
+        leaders,
+        leaving,
+        eligible,
+        load,
+        moves,
+    ) {
+        return decision;
     }
     // A leader that must leave is renamed first, below; it is swapped out
     // as a follower on a later pass.
@@ -202,7 +225,20 @@ pub(super) fn raft_step<'a>(
         match elected.or_else(|| fewest(&|node| leaders.total(node))) {
             Some(to) => to,
             None if down => return Decision::Kept,
-            None => return Decision::Waiting(Blocked::NoDestination),
+            None => {
+                return leave_without_member(
+                    existing,
+                    replication_factor,
+                    is_serving,
+                    counted,
+                    leaders,
+                    leaving,
+                    eligible,
+                    load,
+                    moves,
+                )
+                .unwrap_or(Decision::Waiting(Blocked::NoDestination));
+            }
         }
     };
     rename(existing, to, down, counted, leaders, moves)
@@ -588,6 +624,64 @@ pub(super) fn single_move_undone(
     ))
 }
 
+/// A serving leader that must leave (draining, internal, outside the
+/// stream's region) with no live member to hand to. It still serves, so it
+/// stays leader and voter and runs the change that gives the shard one:
+///
+/// - An RF 1 shard grows to the leader and a live broker outside the set
+///   ([`grown`]), as an operator move does. [`finish_single_move`] shrinks
+///   it to that broker, leading, only once the group reports its copy
+///   voting, so the old copy is a voter until the new one holds every
+///   acknowledged record.
+/// - A larger set swaps a follower that must leave for a live broker
+///   ([`replace_leaving`]); a later pass renames the leader to it.
+///
+/// `None` when neither applies, and the shard waits for a live broker.
+#[allow(clippy::too_many_arguments)]
+fn leave_without_member<'a>(
+    existing: &'a ShardAssignment,
+    replication_factor: u32,
+    is_serving: &dyn Fn(&str) -> bool,
+    counted: &dyn Fn(&str) -> bool,
+    leaders: &mut Leadership<'a>,
+    leaving: &dyn Fn(&str) -> Option<Leaving>,
+    eligible: &[&'a Node],
+    load: &mut HashMap<&'a str, u32>,
+    moves: &mut Moves,
+) -> Option<Decision> {
+    let leader = existing.leader.as_str();
+    let why = leaving(leader)?;
+    if replication_factor.max(1) > 1 || !existing.replicas.is_empty() {
+        return replace_leaving(existing, is_serving, leaving, eligible, load, moves);
+    }
+    let to = match replacement(existing, leader, is_serving, eligible, load) {
+        Ok(to) => to,
+        Err(Blocked::NoReplacement { .. }) => return None,
+        Err(Blocked::MemberDown { node, .. }) => {
+            return Some(Decision::Waiting(Blocked::MemberDown { node, why }));
+        }
+        Err(blocked) => return Some(Decision::Waiting(blocked)),
+    };
+    let next = grown(existing, to);
+    // The store refuses the write on the same check (#2905).
+    if existing.holds_formed_set(&next.nodes().cloned().collect()) {
+        return Some(Decision::Waiting(Blocked::Unapplied));
+    }
+    let step = MoveStep::RaftReplace {
+        from: leader.to_string(),
+        to: to.to_string(),
+    };
+    let decision = spend_replacement(moves, step, next);
+    if matches!(decision, Decision::Move(..)) {
+        *load.entry(to).or_default() += 1;
+        if counted(leader) {
+            leaders.remove(Owner::of(&existing.key), leader);
+        }
+        leaders.add(Owner::of(&existing.key), to);
+    }
+    Some(decision)
+}
+
 /// Takes a set change's slot for this pass, or says why it waits.
 fn spend_replacement(moves: &mut Moves, step: MoveStep, next: ShardAssignment) -> Decision {
     if moves.paused() {
@@ -718,16 +812,33 @@ fn newcomer<'a>(
     eligible: &[&'a Node],
     load: &HashMap<&'a str, u32>,
 ) -> Option<&'a str> {
-    let key = &existing.key;
     let staying: Vec<&str> = existing
         .nodes()
         .map(String::as_str)
         .filter(|node| Some(*node) != from)
         .collect();
+    newcomer_beside(
+        &existing.key,
+        &staying,
+        &|id| existing.nodes().any(|member| member == id),
+        eligible,
+        load,
+    )
+}
+
+/// [`newcomer`] for a set given as the brokers `staying` in it, skipping
+/// any broker `taken` names.
+fn newcomer_beside<'a>(
+    key: &crate::model::ShardKey,
+    staying: &[&str],
+    taken: &dyn Fn(&str) -> bool,
+    eligible: &[&'a Node],
+    load: &HashMap<&'a str, u32>,
+) -> Option<&'a str> {
     eligible
         .iter()
         .map(|node| node.node_id.as_str())
-        .filter(|id| !existing.nodes().any(|member| member == id))
+        .filter(|id| !taken(id))
         .min_by_key(|id| {
             (
                 staying
@@ -741,8 +852,8 @@ fn newcomer<'a>(
 }
 
 /// Grows a set short of its replication factor by one live node outside
-/// it. Nothing else adds a copy to a Raft set: a swap keeps the size, and
-/// an abandoned or thinly placed shard would otherwise acknowledge
+/// it. Nothing else adds a copy to a formed Raft set: a swap keeps the
+/// size, and an abandoned shard would otherwise acknowledge
 /// `Quorum` writes on fewer copies than its factor for good.
 ///
 /// One member a write, so the voters the leader reported always hold at
@@ -809,6 +920,122 @@ pub(super) fn seat_open(existing: &ShardAssignment) -> Result<(), Blocked> {
         return Err(Blocked::Unformed);
     }
     Ok(())
+}
+
+/// Places a set short of its replication factor in full, in one write,
+/// when its group never formed. A broker forms nothing on a short set and
+/// the store takes no copy id for one, so such a set never gets a target
+/// and [`top_up`] would wait on [`seat_open`] for good (#3331). With no
+/// group there is no record to keep: the write keeps every serving member
+/// that need not leave, and adds live brokers outside the set until it is
+/// full. The brokers then form the group as on a shard placed in full from
+/// the start.
+///
+/// The leader keeps the lead when it stays. One that is down, lost or must
+/// leave is dropped like a follower, and a kept follower, else the first
+/// broker added, leads: with no target stored it never formed a group, so
+/// it holds no record and can form nothing if it comes back.
+///
+/// Held by a pause and from the replacement budget, as a top-up is. `None`
+/// when the set is full or its group may have formed ([`never_formed`]).
+#[allow(clippy::too_many_arguments)]
+fn fill_unformed<'a>(
+    existing: &'a ShardAssignment,
+    replication_factor: u32,
+    is_serving: &dyn Fn(&str) -> bool,
+    counted: &dyn Fn(&str) -> bool,
+    leaders: &mut Leadership<'a>,
+    leaving: &dyn Fn(&str) -> Option<Leaving>,
+    eligible: &[&'a Node],
+    load: &mut HashMap<&'a str, u32>,
+    moves: &mut Moves,
+) -> Option<Decision> {
+    let needed = replication_factor.max(1) as usize;
+    if existing.nodes().count() >= needed || !never_formed(existing, needed) {
+        return None;
+    }
+    let held = |blocked| {
+        Decision::Waiting(Blocked::Unfilled {
+            held: Box::new(blocked),
+        })
+    };
+    // The leader first, so it keeps the lead when it stays.
+    let mut set: Vec<&'a str> = existing
+        .nodes()
+        .map(String::as_str)
+        .filter(|node| is_serving(node) && leaving(node).is_none())
+        .collect();
+    let kept = set.len();
+    while set.len() < needed {
+        // Not a broker this write drops: it is down or must leave.
+        let taken = |id: &str| set.contains(&id) || existing.nodes().any(|node| node == id);
+        let Some(to) = newcomer_beside(&existing.key, &set, &taken, eligible, load) else {
+            let outside = eligible
+                .iter()
+                .filter(|node| !existing.nodes().any(|member| *member == node.node_id))
+                .count();
+            return Some(held(Blocked::TooFewBrokers {
+                eligible: (kept + outside) as u32,
+                needed: needed as u32,
+            }));
+        };
+        set.push(to);
+    }
+    let next = ShardAssignment {
+        leader: set[0].to_string(),
+        replicas: set[1..].iter().map(|node| node.to_string()).collect(),
+        ..existing.renamed()
+    };
+    let added = &set[kept..];
+    let step = MoveStep::RaftFill {
+        to: added.iter().map(|to| to.to_string()).collect(),
+    };
+    match spend_replacement(moves, step, next) {
+        Decision::Waiting(blocked) => Some(held(blocked)),
+        decision => {
+            for to in added {
+                *load.entry(to).or_default() += 1;
+            }
+            let leader = existing.leader.as_str();
+            if set[0] != leader {
+                if counted(leader) {
+                    leaders.remove(Owner::of(&existing.key), leader);
+                }
+                leaders.add(Owner::of(&existing.key), set[0]);
+            }
+            Some(decision)
+        }
+    }
+}
+
+/// Whether `existing`'s group cannot have formed, so its set may change in
+/// any way. A group forms only on a stored target, and the store takes a
+/// copy id, the only thing that stores a target, only while the set names
+/// `needed` brokers. `placed` lists every broker placed in the epoch, so
+/// fewer than `needed` on it means no set of the epoch was ever full.
+///
+/// A shard with no `placed` record (restored, or older than the record)
+/// does not count, nor one past a re-form, which starts from copies that
+/// hold records. Every other trace a group leaves is checked too, so a
+/// record that lost `placed`'s guarantee still holds: a target, a counter
+/// kept from a dropped one, a formed mark, reported voters or floor, an
+/// epoch seed, or an ordered target.
+fn never_formed(existing: &ShardAssignment, needed: usize) -> bool {
+    existing
+        .placed
+        .as_ref()
+        .is_some_and(|placed| placed.epoch == 0 && placed.brokers.len() < needed)
+        && existing.raft_target.is_none()
+        && existing.raft_target_counter == 0
+        && existing.raft_formed.is_none()
+        && existing.raft_voters.is_none()
+        && existing.raft_floor.is_none()
+        && existing.raft_seed.is_none()
+        && existing.raft_bases.is_none()
+        && existing
+            .raft_ordered
+            .as_ref()
+            .is_none_or(|ordered| !ordered.lost && ordered.targets.is_empty())
 }
 
 /// `existing` with its leader's seat given to `to`, a broker outside the
