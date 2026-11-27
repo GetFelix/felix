@@ -16,6 +16,8 @@ use felix_cluster::{Cluster, ClusterConfig, Fault, StreamSpec};
 use felix_wire::{AckMode, ErrorCode, RetryClass};
 use serial_test::serial;
 
+#[path = "raft_shards/moves.rs"]
+mod moves;
 #[path = "raft_shards/reform.rs"]
 mod reform;
 

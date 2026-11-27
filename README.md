@@ -35,7 +35,7 @@ starts three brokers, kills the leader mid-write, and checks from outside that n
 
 <p align="center">
   <a href="https://github.com/GetFelix/felix/actions/workflows/ci.yml">
-    <img src="https://github.com/GetFelix/felix/actions/workflows/ci.yml/badge.svg?branch=main&event=push" alt="CI status" />
+    <img src="https://raw.githubusercontent.com/GetFelix/felix/badges-ci/ci.svg" alt="CI status" />
   </a>
   <a href="https://github.com/GetFelix/felix/actions/workflows/coverage.yml">
     <img src="https://raw.githubusercontent.com/GetFelix/felix/badges/coverage.svg" alt="Coverage" />
