@@ -77,10 +77,14 @@ differs; that is a bug, never a guess. Two places set a start that is not
 derived: a snapshot carries the next offset after its last entry, and a new
 re-form epoch carries the next offset of its base (see "Re-form" below).
 
-**A conditional batch is decided once, at the leader's append.** Its
-`expected` offset is compared with the base offset it would take. If they
-differ, the leader stores a refused entry, which followers copy. The whole
-batch lands or none of it does, so the publisher hears one answer.
+**Every member decides a conditional batch from its own derived base.**
+The entry carries the batch and its `expected` offset. Each member, leader
+and follower alike, compares `expected` with the base offset it derived for
+the entry and stores either the batch or a refused entry. A follower does
+not take the outcome from the leader's stamp; it checks the stamp against
+its own decision, and a disagreement is an error. The decision depends only
+on the entry and the log before it, so every member reaches the same one.
+The whole batch lands or none of it does, so the publisher hears one answer.
 
 **A batch is at most one append.** The cap is `MAX_APPEND_BYTES`
 (32 MiB) less framing, as for one record now. A larger publish is refused
@@ -143,18 +147,58 @@ What this keeps and what it changes:
 | trim floor, retention | offset = index | an offset; a sealed segment is deleted once its last offset is below the floor |
 | snapshot | last log id | last log id and next offset |
 | `raft-marks`, vouch rule | last log id | unchanged: both are about log ids |
-| control plane floor | `offset_floor` is an index | `offset_floor` is the highest committed next offset; the exact log id stays an index |
+| control plane floor | `offset_floor` is an index | `offset_floor` is the highest committed next offset; the exact log id stays an index and its report adds the entry's next offset |
+| `raft-reserved` | the highest index a copy may count as flushed | that index and the highest next offset, both synced before a count |
+| re-form and restore start | one index from every bound below | a first index and a first offset, each from its own bounds |
 | backup point | a committed offset | a committed offset, always at a frame end |
 
 A subscriber that starts inside a batch gets the rest of it. Fanout keeps one
 `DeliveryEnvelope` per committed batch; a late subscriber that starts inside
 one gets a slice of it, encoded separately.
 
-**Re-form.** The base is still chosen by log id, as `FelixRaftReform` checks.
-The new epoch's next offset is the larger of the base's next offset and the
-`offset_floor`, and it goes in the epoch record and the `raft-epoch` file
-with the first index. The index needs no padding: a new epoch can start at
-the base's next index, because no client sees it.
+**Re-form and restore start in both numbers.** The base is still chosen by
+log id, as `FelixRaftReform` checks. Today one first index is the maximum of
+several bounds (`raft_copy/vouch.rs`, `first_index`), and while an offset is
+an index each bound also stands in for an offset. Once an entry holds many
+records that stops being true: a relaxed copy can count an entry of 1000
+records before its fsync, a power cut takes it, and a bound kept in indexes
+would pad by one where 1000 offsets were handed out. So every bound gets an
+offset form, and the epoch starts at a first index and a first offset, each
+the maximum of its own column:
+
+| Bound | First index from | First offset from |
+| --- | --- | --- |
+| the base | the base's next index | the base's next offset |
+| control plane floor | the reported log id's index plus one | `offset_floor`, and the reported entry's next offset |
+| `raft-reserved` | reserved index plus one | reserved next offset |
+| carried trim floor | the trim entry's index plus one | the trim's floor |
+| any copy's end (`held`) | the copy's next index | the copy's next offset |
+| earlier epochs | each base's first index | each base's first offset |
+| restore time line | the index line | the offset line (below) |
+
+`raft-reserved` keeps its job in offsets: a raise covers the entry that
+needs it plus `STEP` offsets past its end, so a single large entry never
+outruns its own reservation, and the file gains the offset (a new version).
+The rotation carries both. The epoch record, the `raft-epoch` file and the
+bases the control plane keeps gain the first offset and the end of the lost
+range (see "What goes away").
+
+Three places outside `vouch.rs` fold the two numbers into one today and must
+split them: `offset_floor` and `request`'s planned floor in
+`felix-broker-service` `shards/raft/alone_cluster.rs`, and the abandon bound
+(`floor.index.max(floor.offset_floor)`) in `felix-controlplane-service`
+`model/shard/raft_reform/abandon.rs`.
+
+**The restore time line moves to offsets.** It rests on a shard giving out
+at most 2^13 offsets per millisecond (`docs/per-shard-raft.md`,
+"Re-forming a group", the restore time line). With one record per entry, the entry rate bounds
+that. With batch entries it does not: a few large entries a millisecond
+pass it. The line and its gap checks (`restore_line_clears`, `LineBehind`)
+are restated in offsets, and the leader enforces the rate: an append that
+would give out more than 2^13 offsets in a millisecond, averaged over a
+short window, waits. At 8 records per microsecond per shard this binds only
+far above measured throughput, but it is now enforced instead of assumed.
+The index line stays for indexes, whose rate the entry count still bounds.
 
 ## What goes away
 
@@ -162,25 +206,34 @@ On the Raft path: `Piece`, `CondPiece` and the `Continues` refusal;
 `log::conditional` (`resolve`, `read_range`, `read_bound`); `OpenBatch`,
 `Holds::Piece` and the quiet runs in `raft/commit.rs`; the `Skips` table and
 `SkipClaim`; the "send the rest" path for an idempotent batch (`NOT_THE_REST`,
-`position`); gap segments; and the Kafka empty batch that moves a consumer
-past a trailing run of skipped offsets.
+`position`); and gap segments. The Kafka empty batch that moves a consumer
+past a trailing run of offsets with no record stays (`felix-kafka`
+`records.rs`, used from `api/fetch.rs`): internal entries no longer cause
+such a run, but a re-form jump or a trim at the end of a page still does.
 
 **`skipped_before` stays, with a different job.** It no longer counts
 entries, because no entry that holds no record takes an offset. It counts
-offsets the broker settled without delivering, for one of two reasons:
+offsets the broker settled without delivering, for one of three reasons:
 
 - **removed**: retention or a trim deleted them before the reader got
   there, which is what a group record's count already covers.
-- **lost in re-form**: a re-form started its epoch past the base's next
-  offset because the offset floor was higher, so acknowledged records at
-  those offsets were lost (a documented loss, `docs/per-shard-raft.md`,
-  "Re-forming a group").
+- **lost in re-form**: offsets in `[base next offset, offset_floor)`. The
+  control plane saw them committed, and the re-form's base does not hold
+  them, so acknowledged records there were lost (a documented loss,
+  `docs/per-shard-raft.md`, "Re-forming a group").
+- **skipped by re-form**: the rest of the jump, from `offset_floor` (or the
+  base's next offset, if higher) to the epoch's first offset. These are the
+  padding bounds: reservations, a copy's end, earlier epochs, the time line.
+  No one saw them committed. Some may have held a record a relaxed copy
+  counted before a power cut took it, so a reader must not read them as
+  empty either; the reason says only that the broker cannot tell.
 
-A reader is never left to take a re-form loss for a drop it caused itself,
-nor for a hole that was always empty. The broker knows the reason from the
-log: a jump at the first entry of an epoch, where that entry's base offset is
-above the previous entry's end, is a re-form loss, and every other skipped
-run is a removal. How the reason reaches a client is under "Wire and client
+A reader is never left to take a re-form jump for a drop it caused itself,
+nor for a hole that was always empty. The broker knows the split from the
+epoch's start: the first offset and the end of the lost range are stored
+with it, and the first entry of the epoch reads them. Every other skipped
+run is a removal. A batch whose skipped run holds more than one reason is
+split, so each batch names one. How the reason reaches a client is under "Wire and client
 impact".
 
 ## Batch atomicity under a leader change
@@ -218,12 +271,13 @@ Each code PR changes its models in the same PR.
 | `FelixRaftBatch` | Most of it models pieces, cuts and finishing a cut batch. Shrinks to whole-batch dedupe, and its cut knobs go |
 | `FelixRaftCond` | Retired. Its two checks become trivial; the refused entry is checked in `FelixRaft` |
 | `FelixRaftIdempotent` | Dedupe per batch, not per piece |
-| `FelixRaftReform` | The floor is an offset; the base carries a next offset; no index padding |
+| `FelixRaftReform` | The floor is an offset; the epoch starts at a first index and a first offset, each the maximum of its own bounds; entries hold several records; relaxed fsync, so a power cut takes an entry counted before its fsync; `raft-reserved` in offsets |
 | `FelixRaftPlacement` | `OffsetNeverReused` restated in offsets |
 | `FelixRaftCache` | Version is the write's offset; `FloorCountsBlank` goes |
 | `FelixRaftGroups`, `FelixHeadTrim`, `FelixRaftStreamPurge` | Trim floor in offsets, purge in indexes, and a purge never removes a batch at or above the floor |
 | `FelixRaftReads`, `FelixRaftWritten` | Read bound and written answer in offsets |
-| `FelixRaftRestore`, `FelixRaftRestoreRepeated` | A restore point is a frame end |
+| `FelixRaftRestore` | A restore point is a frame end |
+| `FelixRaftRestoreRepeated` | The time line and its gap checks in offsets, the leader's offset rate cap, relaxed-fsync loss and `raft-reserved` in offsets |
 
 The invariants, restated:
 
@@ -240,8 +294,13 @@ The invariants, restated:
 - **OffsetsDense**: a reader's next offset is the last one plus one, plus
   `skipped_before`. Within an epoch the count is only ever a removal; at an
   epoch's first entry it may be a re-form loss, and the reason says which.
-- **LossReported** (new, `FelixRaftReform`): every offset a re-form skips
-  is delivered to a reader as a lost-in-re-form count, never as nothing.
+- **LossReported** (new, `FelixRaftReform`): every offset in
+  `[base next offset, offset_floor)` is delivered to a reader as a
+  lost-in-re-form count, every other offset the re-form skips as a
+  skipped-by-re-form count, and none as nothing.
+- **ReservedCovers** (new, `FelixRaftReform`, `FelixRaftRestoreRepeated`):
+  every offset a copy counted toward a commit is below a synced reservation,
+  so no re-form or restore gives it out again.
 
 ## Wire and client impact
 
@@ -257,11 +316,12 @@ peer to stay compatible with, so every 0.8 client and broker speaks it and
 there is no bit to offer and no path for a client without it.
 
 - **Event batches.** The 0.8 layout of a batch with `skipped_before`
-  (`0x0800`) has a `u8 skip_reason` after it: 0 removed, 1 lost in re-form.
+  (`0x0800`) has a `u8 skip_reason` after it: 0 removed, 1 lost in re-form,
+  2 skipped by re-form.
   A count that would hold both kinds of run is split across two batches,
   so one batch carries one reason.
-- **Group records.** A `skipped_reason` field (`"removed"` or
-  `"lost_in_reform"`) beside `skipped_before`, sent whenever the count is
+- **Group records.** A `skipped_reason` field (`"removed"`,
+  `"lost_in_reform"` or `"skipped_by_reform"`) beside `skipped_before`, sent whenever the count is
   not 0.
 - **Cache watches** get the same field on their change frames.
 - **The clients** (Rust, and the others in `clients/`) surface the reason
@@ -278,46 +338,59 @@ no mixed-version group exists to negotiate with.
 
 ## Pull request sequence
 
-1. **Models.** `FelixRaft` and `FelixRaftReform` with batch entries, the
-   offset map and `BatchWhole`, run in Actions.
+Offset-based re-form and restore bounds must be on main before any entry
+holds more than one record. Until then an offset is never above its index,
+so the index bounds cover offsets too; after it they do not.
+
+1. **Models.** `FelixRaft`, `FelixRaftReform` and `FelixRaftRestoreRepeated`
+   with batch entries, the offset map, relaxed-fsync loss, reservations in
+   offsets, `BatchWhole`, `LossReported` and `ReservedCovers`, run in
+   Actions.
 2. **Storage frame.** The batch frame in the segment writer, scan,
    recovery, reader and sparse index, used only by Raft logs; unit tests for
    a torn frame and for reads that start inside one. `docs/storage-format.md`.
 3. **Adapter.** `raft_log` stores an entry as a frame, derives and checks
    the base offset, puts the next offset in snapshots, and serves reads by
-   offset. One record per entry still, so behaviour does not change.
-4. **Propose batches.** A publish is one entry; the conditional decision
-   moves to the base offset; idempotent dedupe per batch; the publish answer
-   and read bound in offsets. `FelixRaftBatch`, `FelixRaftIdempotent`,
-   `FelixRaftReads`, `FelixRaftWritten`.
-5. **Delete the piece machinery** listed in "What goes away", and retire
+   offset. Still one record per entry, but blanks, membership, trims and
+   group writes stop taking offsets, so what readers see changes here: the
+   `skipped_before` counts and their tests, the Kafka trailing-run test, and
+   the `docs/protocol.md` and `docs/storage-format.md` text on skipped
+   offsets move to this step.
+4. **Re-form and restore in offsets.** Every bound in "Re-form and restore
+   start in both numbers": `raft_copy/vouch.rs`, `raft-reserved` in
+   offsets, the control plane floor and bases with offsets, the epoch's
+   first offset and lost range, the restore time line in offsets and the
+   leader's offset rate cap, and the split of the folded bounds in
+   `shards/raft/alone_cluster.rs` (`offset_floor`, `request`) and
+   `raft_reform/abandon.rs`. Gap segments removed. Needs a metadata level.
+5. **Skip reasons on the wire.** `skip_reason` in the 0.8 event batch layout
+   and `skipped_reason` on group records and cache watches, as baseline
+   (#3362), the client changes and `docs/protocol.md`. Lands with step 4.
+6. **Propose batches.** A publish is one entry; every member decides a
+   conditional from its own base; idempotent dedupe per batch; the publish
+   answer and read bound in offsets. `FelixRaftBatch`, `FelixRaftIdempotent`,
+   `FelixRaftReads`, `FelixRaftWritten`. Needs steps 4 and 5 on main.
+7. **Delete the piece machinery** listed in "What goes away", and retire
    `FelixRaftCond`.
-6. **Re-form in offsets.** The control plane floor as an offset, the epoch's
-   next offset, gap segments removed. Needs a metadata level.
-   `LossReported` in `FelixRaftReform`.
-6a. **Skip reason on the wire.** `skip_reason` in the 0.8 event batch
-   layout and `skipped_reason` on group records and cache watches, as
-   baseline (#3362), the client changes and `docs/protocol.md`. Lands with
-   or right after step 6, and before any release that can re-form in
-   offsets.
-7. **Groups, trims and retention** in offsets, with their models.
-8. **Cache shards**: switch to offsets, then batch writes per entry.
-9. **Docs and status**: `docs/protocol.md`, `docs/durable-storage.md`,
-   `docs/per-shard-raft.md` and the docs-site status tables.
+8. **Groups, trims and retention** in offsets, with their models.
+9. **Cache shards**: switch to offsets, then batch writes per entry.
+10. **Docs and status**: `docs/durable-storage.md`, `docs/per-shard-raft.md`
+   and the docs-site status tables.
 
-Steps 2 to 6 are the large ones and each needs its own adversarial review.
-The perf check (RF 3 cells, instructions per message) runs on step 4, where
+Steps 2 to 7 are the large ones and each needs its own adversarial review.
+The perf check (RF 3 cells, instructions per message) runs on step 6, where
 the change in openraft entries per record shows.
 
 ## Format v9 freeze
 
-Steps 2, 3 and 6 change bytes on disk: the frame (with the reserved stream
-id), the snapshot's next offset, the `raft-epoch` file and the meaning of
-the control plane floor.
-They must land before v9 freezes. Step 5 removes the piece codes, which
-should also land first so the frozen format does not carry dead codes. Steps
-4, 7 and 8 change behaviour inside a format that already allows them and
-could follow the freeze, though landing them first is simpler.
+Every step through 9 lands before v9 freezes. Steps 2, 3 and 4 change bytes
+on disk: the frame (with the reserved stream id), the snapshot's next offset,
+`raft-reserved`, the `raft-epoch` file and the control plane's floor and
+bases. Step 7 removes the piece codes, so the frozen format carries no dead
+codes. Steps 6, 8 and 9 add no new fields but change what stored values mean:
+how many records a frame holds, trim floors in offsets and cache versions in
+snapshots. A log written before them would read differently after, which a
+frozen format cannot allow.
 
 ## Risks
 
