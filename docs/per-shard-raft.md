@@ -6859,8 +6859,10 @@ on the hybrid.
   oldest kept change past it. A resume from past the
   edge, an offset a member further ahead gave out, waits for this one to
   apply that far, up to the publish quorum timeout, and is then refused as
-  retryable. A snapshot install, and a member left with no leader, end the
-  shard's watches as lagged at the first change they were not told of.
+  retryable. A snapshot install ends the shard's watches as lagged at the
+  first change they were not told of. A member left with no leader ends
+  them at the same change as moved, with no new owner named, for a client
+  that follows moves, and as lagged for one that does not.
   Closing a member, when its cache is deleted or made again, ends them
   outright.
   See [cache-on-log.md](cache-on-log.md#watch).

@@ -382,13 +382,43 @@ impl Client {
         .with_context(|| format!("follow shard {shard} of {stream} after it moved"))
     }
 
+    /// The `rotation`th broker of the entry broker and then every other
+    /// known one, falling back to the entry broker when it cannot be dialled.
+    async fn rotated_entry(&self, rotation: usize) -> Arc<Connection> {
+        let entry = self.client().await;
+        if rotation == 0 {
+            return entry;
+        }
+        let entry_addr = entry.dialled();
+        let mut book = vec![entry_addr];
+        book.extend(
+            self.endpoints()
+                .await
+                .into_iter()
+                .filter(|addr| *addr != entry_addr),
+        );
+        let addr = book[rotation % book.len()];
+        if addr == entry_addr {
+            return entry;
+        }
+        match self.connect_to(addr).await {
+            Ok(client) => client,
+            Err(err) => {
+                tracing::debug!(error = %err, %addr, "broker unreachable; asking the entry broker");
+                entry
+            }
+        }
+    }
+
     /// Open a reader of a moved shard on its new owner with `open`, given the
     /// broker to ask first.
     ///
     /// The broker named in `moved` is asked first, since it is usually right;
     /// otherwise the entry broker, which redirects. The new owner can refuse
     /// until it has taken over, so this retries with backoff until the
-    /// policy's deadline.
+    /// policy's deadline. Without a named owner, a broker that refuses with
+    /// `shard_unavailable` or does not answer gives way to the next known
+    /// broker.
     pub(crate) async fn on_new_owner<T, F, Fut>(&self, moved: &ShardMoved, open: F) -> Result<T>
     where
         F: Fn(Arc<Connection>) -> Fut,
@@ -401,6 +431,10 @@ impl Client {
         };
         let mut hinted: Option<Arc<Connection>> = None;
         let mut attempt = 0usize;
+        // Which known broker to ask when no owner is named. A move with none
+        // can come from a member that lost its leader, and the entry broker
+        // may be that member, cut off with no leader to hear of.
+        let mut rotation = 0usize;
         loop {
             let (first, via_entry) = match (&hinted, hint) {
                 (Some(client), _) => (Arc::clone(client), false),
@@ -412,7 +446,7 @@ impl Client {
                         (self.client().await, true)
                     }
                 },
-                (None, None) => (self.client().await, true),
+                (None, None) => (self.rotated_entry(rotation).await, true),
             };
             let error = match open(Arc::clone(&first)).await {
                 Ok(opened) => return Ok(opened),
@@ -420,6 +454,9 @@ impl Client {
             };
             if next_step(&error, Attempt::default()) == Next::Fail {
                 return Err(error);
+            }
+            if via_entry && moved_on_from(&error) {
+                rotation += 1;
             }
             let delay = self.policy.delay_before(attempt);
             if Instant::now() + delay >= deadline {
@@ -436,6 +473,15 @@ impl Client {
             }
             attempt += 1;
         }
+    }
+}
+
+/// Whether a broker asked for a moved shard should give way to the next one
+/// known: it cannot serve the shard yet, or did not answer.
+fn moved_on_from(error: &anyhow::Error) -> bool {
+    match error.downcast_ref::<crate::BrokerError>() {
+        Some(broker) => broker.code == felix_wire::ErrorCode::ShardUnavailable,
+        None => true,
     }
 }
 
