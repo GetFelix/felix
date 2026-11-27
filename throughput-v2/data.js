@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795740219880,
+  "lastUpdate": 1795741806271,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -72592,6 +72592,58 @@ window.BENCHMARK_DATA = {
             "range": "59122.18",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1235534.96\nmean: 1212443.66\nstdev: 59122.18\ncv: 4.88%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1018-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "5e537ad0276f362285fe02dd1dfce50a6eeecf4b",
+          "message": "fix(raft): a cache watch on a broker whose member is not open is refused retryably, not served from an empty store (#3030) (#3287)\n\n* fix(raft): a cache watch on a Raft broker with no member open is refused retryably (#3030)\n\nOn a Raft broker with no member of the cache shard open, handle_cache_watch_message\nfell through to the hybrid branch and served the watch from the broker's own cache\nstore, which nothing writes on Raft. The watch joined an empty log: a retained\nwatch got retained_count 0, a resume got InFuture or a storage error.\n\nIt now answers retryable shard_unavailable, as a cache put does. Tests cover the\nrefusal for live, retained and resume opens, and a writer racing watch opens to\npin register-before-read. The cache failover and sharded watch cluster tests run\non Raft, with a Raft wait for every cache member in place of hybrid reports.\n\nSpec-Unaffected: the watch open path is not modelled; no apply-path change.\n\n* test(cluster): the three cache skips left on Raft name their own issues (#3285, #3286)\n\nSpec-Unaffected: test skip reasons and a doc line only.\n\n* test(cluster): a Raft cache failover test kills the elected leader, not a follower (#3030)\n\nSpec-Unaffected: test wait only.\n\n* fix(raft): a cache watch on a follower carries on when its leader dies (#3030)\n\nA Raft member left without a leader ended its cache watches as lagged,\nwhich ends a cluster client's watch, so a watch on a healthy follower ended\nwhenever the shard's leader died. It now ends them at the same edge as\nshard_moved with no owner named, for a client that follows moves, and the\nwatch reopens wherever the shard is served. Clients that do not follow\nmoves still get cache_watch_lagged.\n\nThe sharded state-phase test killed the Raft leader, while a follower\nserved the watch, so the kill never cut the state phase. On Raft it now\nkills the follower the watch entered through.\n\nSpec-Unaffected: client-facing watch ending signal only; no replicated state, commit or apply change\n\n* fix(client): a move that names no owner is followed past a not-ready entry broker (#3030)\n\nA Raft member that lost its leader ends cache watches with shard_moved and\nno owner. The client then asked only its entry broker, which can be that\nmember, and one cut off in the minority answers shard_unavailable until the\nfollow deadline. A refusal of that kind, or no answer, now moves the next\nattempt to the next known broker, with the same backoff and deadline.\n\nprotocol.md describes the move with no owner.\n\nSpec-Unaffected: client reader routing and docs only; no replicated state change",
+          "timestamp": "2026-11-27T01:03:36Z",
+          "tree_id": "c47a6f77e0e77e6bd1aaa2d361d878821bffe2e7",
+          "url": "https://github.com/GetFelix/felix/commit/5e537ad0276f362285fe02dd1dfce50a6eeecf4b"
+        },
+        "date": 1795741805619,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 755440.54,
+            "range": "46700.90",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 755440.54\nmean: 726910.37\nstdev: 46700.90\ncv: 6.42%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 755440.54,
+            "range": "46700.90",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 755440.54\nmean: 726910.37\nstdev: 46700.90\ncv: 6.42%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 172211.6,
+            "range": "2335.61",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 172211.60\nmean: 171638.65\nstdev: 2335.61\ncv: 1.36%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1722116.01,
+            "range": "23356.12",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1722116.01\nmean: 1716386.48\nstdev: 23356.12\ncv: 1.36%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
