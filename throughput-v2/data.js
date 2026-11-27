@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795756716154,
+  "lastUpdate": 1795758273492,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -73008,6 +73008,58 @@ window.BENCHMARK_DATA = {
             "range": "3613.69",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 816925.37\nmean: 814367.24\nstdev: 3613.69\ncv: 0.44%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "54c10683ae784af4040d996717f949539ce6a9c1",
+          "message": "fix(cache): a forwarded Raft cache write whose answer is lost is reported in doubt, never retried (#3338) (#3345)\n\n* fix(cache): a forwarded Raft cache write in doubt is never answered as retryable (#3338)\n\nOn a Raft cache shard, the owner answered every error of a forwarded cache\nop in the publish error's shape. The forwarder read that as an unexpected\nanswer and refused with no code, which the client sees as retryable\nshard_unavailable. A write the leader appended and then could not commit\nwas re-sent under a new producer id and could apply twice.\n\n- The Raft cache owner answers ForwardCacheError. Refusals before the log\n  took the entry are Unavailable; a write the log took is LeadershipLost or\n  StorageFailed, both outcome-unknown at the client.\n- forward_cache reports any answer it cannot read to a write as\n  indeterminate, and a plain delete is no longer re-sent after a lost answer.\n- forward_publish reports an unexpected answer kind as indeterminate.\n\nSpec-Unaffected: broker error mapping on the forward path; no modelled state or ordering changes\n\n* fix(cache): sort forward errors by whether the frame was sent; a lease-lapsed cache write stays retryable (#3338)\n\n- A request the pool had already sent when it shut down came back as\n  ShuttingDown, which forward_cache and forward_publish treated as\n  never sent. It is now PeerError::Abandoned, and both forward paths ask\n  PeerError::may_have_been_sent (Disconnected, Timeout, Abandoned) to\n  decide whether a write is in doubt.\n- cache_commit carries the not-appended refusal through Unacknowledged::told,\n  so a cache write a leader refused on a lapsed lease is answered retryable\n  instead of leadership lost.\n- A forwarded cache write too large for the group's appends is answered with\n  the new internal TooLarge code and reaches the client as invalid_request,\n  as the same write sent directly does.\n- Docs and changelog say what the client receives in each case.\n\nSpec-Unaffected: broker error classification on the forward path and one refusal kept distinct; no modelled state or ordering changes",
+          "timestamp": "2026-11-27T05:30:14Z",
+          "tree_id": "63fa033f33773845b82b8fd17c57c9134160f20c",
+          "url": "https://github.com/GetFelix/felix/commit/54c10683ae784af4040d996717f949539ce6a9c1"
+        },
+        "date": 1795758272701,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 534847.26,
+            "range": "41764.62",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 534847.26\nmean: 537091.69\nstdev: 41764.62\ncv: 7.78%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 534847.26,
+            "range": "41764.62",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 534847.26\nmean: 537091.69\nstdev: 41764.62\ncv: 7.78%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 119222.36,
+            "range": "2269.55",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 119222.36\nmean: 119696.73\nstdev: 2269.55\ncv: 1.90%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1192223.58,
+            "range": "22695.48",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1192223.58\nmean: 1196967.35\nstdev: 22695.48\ncv: 1.90%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
