@@ -1154,7 +1154,7 @@ async fn reuse_a_sequence_over_json(
             first,
             Some(Message::PublishOk {
                 request_id: 2,
-                offset: None
+                offset: Some(0)
             })
         ),
         "first: {first:?}"
