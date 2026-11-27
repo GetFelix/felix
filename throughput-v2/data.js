@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795800182668,
+  "lastUpdate": 1795801385911,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -73788,6 +73788,58 @@ window.BENCHMARK_DATA = {
             "range": "146208.90",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1631171.66\nmean: 1560942.18\nstdev: 146208.90\ncv: 9.37%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "d9cbcf5752cf5d96e9d89af54c37ae3ffc3cf9b5",
+          "message": "fix(raft): a heartbeat batch waits briefly for groups a little behind the first answer (#3032) (#3377)\n\n* fix(raft): a heartbeat batch waits for members a little behind the first answer (#3032)\n\nA follower answering a batch of heartbeats waited 1 ms (the sender's\nbatching window) past the latest answer, then answered every member still\nworking as slow. On a broker stalled by bulk shard creation the members come\nback a few ms apart, so most of the batch was refused, the leader counted\nthose heartbeats as failed, and read-index rounds found no quorum and\nretried for 0.5 to 1.8 s.\n\nThe sender now asks for a wait of a quarter of its heartbeat (never under\nthe window), and the receiver counts it from the first answer, so one stuck\nmember still holds the rest up by at most that. Every ack is still the\nmember's own answer; openraft stamps a heartbeat ack with its send time, so\na later answer cannot lengthen a lease or confirm a read for a deposed\nleader.\n\nSpec-Unaffected: no TLA model covers how a batch of heartbeats is answered\n\n* fix(raft): a heartbeat batch's wait for the rest ends before its deadline (#3032)\n\nThe receiver now reads the batch deadline it was already sent and stops\nwaiting for stragglers one wait before it, so a first answer that comes\nlate still leaves the answer time to get back instead of the whole batch\ntiming out at the sender.\n\nSpec-Unaffected: no TLA model covers how a batch of heartbeats is answered",
+          "timestamp": "2026-11-27T17:37:21Z",
+          "tree_id": "b45095186b4ded9556fcb53d74caba2834771760",
+          "url": "https://github.com/GetFelix/felix/commit/d9cbcf5752cf5d96e9d89af54c37ae3ffc3cf9b5"
+        },
+        "date": 1795801385218,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 533653.59,
+            "range": "43873.11",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 533653.59\nmean: 527452.80\nstdev: 43873.11\ncv: 8.32%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 533653.59,
+            "range": "43873.11",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 533653.59\nmean: 527452.80\nstdev: 43873.11\ncv: 8.32%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 120867.06,
+            "range": "1857.19",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 120867.06\nmean: 120327.68\nstdev: 1857.19\ncv: 1.54%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1208670.59,
+            "range": "18571.94",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1208670.59\nmean: 1203276.79\nstdev: 18571.94\ncv: 1.54%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
