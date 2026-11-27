@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795775859778,
+  "lastUpdate": 1795788702642,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -73528,6 +73528,58 @@ window.BENCHMARK_DATA = {
             "range": "18944.71",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1613169.79\nmean: 1604811.39\nstdev: 18944.71\ncv: 1.18%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "8a370d61ce164fdf3846b39b2f3b2ff78892c44a",
+          "message": "fix(raft): a new shard's copy opens off the runtime workers (#3032) (#3353)\n\nDuring a bulk create each broker opens hundreds of Raft copies, one after\nanother. CopyRoot::open_copy ran the directory lock, the rotation and the\nlog open, about six fsyncs, inline on a runtime worker, so every task\nqueued there (the peer transport among them) waited them out, and the\nlease cache's reads on existing shards took 2 to 2.8 s. The file work now\nruns on the blocking pool in the same order, as the hybrid's opens have\nsince #1942.\n\nSpec-Unaffected: moves file I/O to the blocking pool in the same order; no change to votes, reads, leases or what is written",
+          "timestamp": "2026-11-27T14:05:53Z",
+          "tree_id": "fec72005d686709a91050f210fcde36c053be85c",
+          "url": "https://github.com/GetFelix/felix/commit/8a370d61ce164fdf3846b39b2f3b2ff78892c44a"
+        },
+        "date": 1795788701834,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 494431.78,
+            "range": "28588.31",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 494431.78\nmean: 493469.66\nstdev: 28588.31\ncv: 5.79%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 494431.78,
+            "range": "28588.31",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 494431.78\nmean: 493469.66\nstdev: 28588.31\ncv: 5.79%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 116894.51,
+            "range": "819.67",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 116894.51\nmean: 117042.58\nstdev: 819.67\ncv: 0.70%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1168945.13,
+            "range": "8196.76",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1168945.13\nmean: 1170425.79\nstdev: 8196.76\ncv: 0.70%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
