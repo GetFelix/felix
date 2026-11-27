@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795756711846,
+  "lastUpdate": 1795758270067,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -92730,6 +92730,72 @@ window.BENCHMARK_DATA = {
             "range": "773.58",
             "unit": "us",
             "extra": "trials: 5\nmedian: 499.00\nmean: 868.00\nstdev: 773.58\ncv: 89.12%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "54c10683ae784af4040d996717f949539ce6a9c1",
+          "message": "fix(cache): a forwarded Raft cache write whose answer is lost is reported in doubt, never retried (#3338) (#3345)\n\n* fix(cache): a forwarded Raft cache write in doubt is never answered as retryable (#3338)\n\nOn a Raft cache shard, the owner answered every error of a forwarded cache\nop in the publish error's shape. The forwarder read that as an unexpected\nanswer and refused with no code, which the client sees as retryable\nshard_unavailable. A write the leader appended and then could not commit\nwas re-sent under a new producer id and could apply twice.\n\n- The Raft cache owner answers ForwardCacheError. Refusals before the log\n  took the entry are Unavailable; a write the log took is LeadershipLost or\n  StorageFailed, both outcome-unknown at the client.\n- forward_cache reports any answer it cannot read to a write as\n  indeterminate, and a plain delete is no longer re-sent after a lost answer.\n- forward_publish reports an unexpected answer kind as indeterminate.\n\nSpec-Unaffected: broker error mapping on the forward path; no modelled state or ordering changes\n\n* fix(cache): sort forward errors by whether the frame was sent; a lease-lapsed cache write stays retryable (#3338)\n\n- A request the pool had already sent when it shut down came back as\n  ShuttingDown, which forward_cache and forward_publish treated as\n  never sent. It is now PeerError::Abandoned, and both forward paths ask\n  PeerError::may_have_been_sent (Disconnected, Timeout, Abandoned) to\n  decide whether a write is in doubt.\n- cache_commit carries the not-appended refusal through Unacknowledged::told,\n  so a cache write a leader refused on a lapsed lease is answered retryable\n  instead of leadership lost.\n- A forwarded cache write too large for the group's appends is answered with\n  the new internal TooLarge code and reaches the client as invalid_request,\n  as the same write sent directly does.\n- Docs and changelog say what the client receives in each case.\n\nSpec-Unaffected: broker error classification on the forward path and one refusal kept distinct; no modelled state or ordering changes",
+          "timestamp": "2026-11-27T05:30:14Z",
+          "tree_id": "63fa033f33773845b82b8fd17c57c9134160f20c",
+          "url": "https://github.com/GetFelix/felix/commit/54c10683ae784af4040d996717f949539ce6a9c1"
+        },
+        "date": 1795758256239,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 95,
+            "range": "0.71",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 95.00\nmean: 95.00\nstdev: 0.71\ncv: 0.74%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 126,
+            "range": "1.64",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 126.00\nmean: 126.20\nstdev: 1.64\ncv: 1.30%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 163,
+            "range": "18.09",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 163.00\nmean: 172.20\nstdev: 18.09\ncv: 10.50%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 132,
+            "range": "0.84",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 132.00\nmean: 132.20\nstdev: 0.84\ncv: 0.63%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 258,
+            "range": "5.72",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 258.00\nmean: 259.20\nstdev: 5.72\ncv: 2.21%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 372,
+            "range": "445.76",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 372.00\nmean: 605.60\nstdev: 445.76\ncv: 73.61%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
