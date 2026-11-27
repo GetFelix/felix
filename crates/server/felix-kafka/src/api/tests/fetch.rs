@@ -261,6 +261,46 @@ async fn a_partition_led_elsewhere_sends_the_client_back_to_metadata() {
     );
 }
 
+/// A fetch parked while this broker led is refused once it stops leading,
+/// even though a Raft follower still has a commit point to read to, and
+/// returns nothing appended after the lead moved.
+#[tokio::test]
+async fn a_parked_fetch_is_refused_once_this_broker_stops_leading() {
+    let fixture = Fixture::anonymous().await;
+    fixture.stream("orders", "created", 1, true).await;
+    fixture.publish("orders", "created", 0, &["before"]).await;
+    let mut client = fixture.connect();
+
+    let pending = tokio::spawn(async move {
+        client
+            .call(&request(&[("orders.created", 0, 1)], 1, 20_000), 11)
+            .await
+    });
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert!(!pending.is_finished(), "a fetch at the tail waits");
+
+    fixture.cluster.place(
+        "created",
+        0,
+        Placement::Remote {
+            leader: REMOTE.to_string(),
+            replicas: Vec::new(),
+        },
+    );
+    fixture.publish("orders", "created", 0, &["after"]).await;
+
+    let response = tokio::time::timeout(Duration::from_secs(5), pending)
+        .await
+        .expect("answered when woken, not at the 20 s wait")
+        .expect("task");
+    let partition = only(&response);
+    assert_eq!(
+        partition.error_code,
+        kafka_protocol::ResponseError::NotLeaderOrFollower.code()
+    );
+    assert!(records(partition).is_empty(), "{:?}", records(partition));
+}
+
 #[tokio::test]
 async fn unknown_topics_and_partitions_are_reported() {
     let fixture = Fixture::anonymous().await;

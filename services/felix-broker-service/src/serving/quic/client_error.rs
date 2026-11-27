@@ -362,8 +362,11 @@ impl ClientError {
                 Some(Internal::Unauthorized) => Self::forbidden(message),
                 Some(Internal::StorageFailed) => Self::new(ErrorCode::Storage, message),
                 Some(Internal::CacheFull) => Self::cache_full(message),
-                // Only a sequenced forward is answered with it, and
-                // `forward_publish` reports that as indeterminate.
+                // As a direct write of the same record is answered.
+                Some(Internal::TooLarge) => Self::invalid(message).with_retry(RetryClass::Fatal),
+                // The write may be in the log. `forward_publish` and
+                // `forward_cache` report it as indeterminate before it gets
+                // here; this arm is the same answer for any other path.
                 Some(Internal::LeadershipLost) => Self::new(ErrorCode::Unacknowledged, message),
                 Some(
                     Internal::ProtocolVersion

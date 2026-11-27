@@ -637,6 +637,12 @@ registered, run by a workflow, nor listed there.
 | `FelixRaftReformDead.cfg` | one broker declared dead and gone, one more disk may be lost; the command re-forms from the two it reaches | pass `OneLeaderPerTerm`, `AckedSurvive`, `StateMachineSafety` (1.8M distinct states) |
 | `FelixRaftReformDeadReforms.cfg` | a witness: the group re-forms without the dead broker and commits | violate `NeverReformsWithoutDead` |
 | `FelixRaftReformDeadLoses.cfg` | a witness: a record only the dead broker held is lost | violate `NothingLost` |
+| `FelixRaftReformAbandon.cfg` | `Abandon`: one replica, its broker a declared dead, the log abandoned in one store step: the next epoch starts on b with an empty base, its first index above the floor, every earlier first index and the restore time line (an oracle here). Before that a's copy may rotate and re-form or start by itself; a can come back with its copy afterwards and does not open. The floor is exact: with the trailing one, a plain re-form of the rotated copy reuses an offset, the accepted residual `FelixRaftReformTwoRotatedOffsetsTrailing.cfg` pins (#2305) | pass `OneLeaderPerTerm`, `AbandonedNotLed`, `AckedSurvive`, `StateMachineSafety`, `OffsetNeverReused` |
+| `FelixRaftReformAbandonHappens.cfg` | a witness: the abandoned epoch elects b and commits | violate `NeverAbandonCommits` |
+| `FelixRaftReformAbandonOutside.cfg` | the dead check in a step before the write; a comes back and leads its old group in between | violate `AbandonedNotLed` |
+| `FelixRaftReformAbandonAtFloor.cfg` | the first index just above the floor, with no time line; the floor trails the commits | violate `OffsetNeverReused` |
+| `FelixRaftReformAbandonFromZero.cfg` | the blank copy forms the group from index 0 | violate `OffsetNeverReused` |
+| `FelixRaftReformAbandonOpen.cfg` | a copy behind the abandoned epoch opens: a comes back and leads its old group | violate `AbandonedNotLed` |
 | `FelixRaftReformWrongDeclaration.cfg` | two brokers declared dead are alive, and elect and acknowledge in the old epoch after the third re-formed | violate `AckedSurvive`: what the command cannot protect against, pinned |
 | `FelixRaftReformBeforeAll.cfg` | the command goes on while a placed broker has not answered and is not declared dead | violate `AckedSurvive` |
 | `FelixRaftReformEpochNotChecked.cfg` | a member takes a late append from the old epoch. It cannot cut the base out of the log: a member starting the new epoch saves the end of the base as its commit index before it takes any append (#2419), and the log refuses a cut below that | pass `AckedSurvive` (3.0M distinct states). It rests on that save alone, so the epoch check on appends is a second guard |
@@ -3286,6 +3292,8 @@ What is checked:
 - `BootIsRecorded` and `PlacedIsRecorded`, in every passing config. The
   second says every broker a membership of the current epoch names is in
   `everPlaced`.
+- `AbandonedNotLed`: no live broker leads an epoch behind an abandoned
+  one. With `OneLeaderPerTerm` the shard has one leader.
 
 Each knob drops one rule: `ReformBeforeAll` (go on while a placed broker
 has not answered and is not declared dead), `EpochNotChecked` (a member
@@ -3302,6 +3310,25 @@ cut) and `CutToCommit` (a cut base ends at the saved commit index on every
 copy).
 `RetireNotDurable` needs two restarts to fail, and
 `FelixRaftReformTwoRestarts.cfg` is the same bounds with the rule on.
+
+`Abandon` models giving the log up when every copy is gone (#3096). `"on"`
+is the design: in one store step, refused unless every broker placed in
+the epoch or named by the assignment is declared dead, the next epoch is
+written with an empty base on one live broker, its first index above the
+floor, every earlier epoch's first index and the restore time line. The
+time line is an oracle here, above every offset given out so far;
+`FelixRaftRestoreRepeated.tla` checks the clock argument behind it. So this
+model assumes the control-plane clocks agree and does not check the
+refusal: the code refuses the abandon until the line is a full gap (2^32)
+above the floor and every earlier first index, which covers clocks that
+agree within about four minutes, and unit tests cover it
+(`an_abandon_just_above_a_skewed_first_index_is_refused`). Only
+the blank copy the epoch names as its voter starts it, at the first index,
+and a copy behind an abandoned epoch never opens. A broker declared dead
+can come back with its copy (`Comeback`). Each other value drops one rule:
+`"outside"` (the dead check in a step before the write), `"floor"` (the
+first index just above the floor), `"zero"` (the blank copy forms from
+index 0) and `"open"` (a copy behind the abandoned epoch opens).
 
 Three constants are not knobs. `WaitPlaced` is the command's list: on, the
 placed brokers; off, the voters in the control plane's own record of the

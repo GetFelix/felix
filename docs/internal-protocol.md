@@ -633,10 +633,25 @@ a stored empty value stays distinguishable from a miss. The two mean different
 things, and one encoding for both would make a cached empty value read as
 absent forever.
 
-A `Get` and a `Delete` are safe to re-send after an indeterminate answer,
-because both land on the same state twice. A `Put` is not: re-sending one with a
-TTL restarts its clock. So a lost answer to a write is reported as
-indeterminate rather than retried, and the caller decides.
+Only a read (`Get`, a versioned `Get`, `CounterGet`) is safe to re-send after
+an indeterminate answer. A write is not: a `Put` with a TTL restarts its clock,
+a counter add counts twice, a conditional write is refused by the version it
+wrote, and a `Delete` answers that nothing was removed, or removes a value
+written in between. So for a write, a lost answer, and any answer other than
+`ForwardCacheOk`, `NotLeader`, `ForwardCacheError` or an `UnsupportedKind`
+refusal, is reported as indeterminate rather than retried, and the caller
+decides.
+
+An owner answers a retryable code (`Unavailable`, `StaleRoute`, `Overload`)
+only when the write was refused before anything was written. On a Raft shard
+that means before the group's log took the entry: not leading the term, or
+refused by the engine before the append because the leader's lease had lapsed.
+Two other refusals before the append are definite and not retried: the shard
+full (`CacheFull`) and a record too large for the group's appends
+(`TooLarge`). A write the log took and did not see commit (leadership lost,
+the commit wait timed out, the group or member stopped, an answer the state
+machine did not expect) may still commit, and is answered `LeadershipLost` or
+`StorageFailed`, which the requester reports to its client as unknown.
 
 A conditional put or delete, or a get that wants the value's version, travels
 as `ConditionalForwardCacheOp` (34): the `AuthorizedForwardCacheOp` body with
@@ -1604,13 +1619,14 @@ Typed, because they need different responses:
 | `Overload` | the owner is shedding load | retry with backoff |
 | `ProtocolVersion` | version not understood | do not retry; close |
 | `Malformed` | the body did not decode | do not retry; close |
-| `StorageFailed` | the responder tried and its own disk failed | do not retry; nothing is wrong with the request |
+| `StorageFailed` | the responder tried and its own disk failed, or a write it handed to a Raft group's log did not commit in time | do not retry; nothing is wrong with the request, and the write may have landed: report a write indeterminate |
 | `LogGap` | a replication batch starts past the follower's tail, or past its uncompared older-generation records | resume from `expected_offset` |
 | `LogConflict` | a replication batch disagrees with stored bytes | do not retry; the logs have diverged |
 | `FencedEpoch` | the sender named an epoch older than the responder's | do not retry; it is no longer the leader |
 | `UnsupportedKind` | the responder predates the kind that was sent | do not retry with that kind; a forwarder falls back to the legacy forward kind once |
 | `StaleSet` | the responder counts a newer replica set than the sender's fence or batch named; its generation is in `expected_offset`. Sent only to a peer that offered `ELECTION` | do not retry; stop leading or standing at that set |
-| `LeadershipLost` (13) | the owner wrote a `SequencedForwardPublish` and stopped leading the shard before a majority held it. Sent only in answer to a sequenced forward (kind 52 or 64) | the batch may be in the log: report it indeterminate; the MQTT listener sends it again under the same sequence to whoever leads now |
+| `LeadershipLost` (13) | the owner wrote a `SequencedForwardPublish`, or a cache write on a Raft shard, and stopped leading the shard before a majority held it. Sent only in answer to a sequenced forward (kind 52 or 64) or a forwarded cache op | the batch may be in the log: report it indeterminate; the MQTT listener sends it again under the same sequence to whoever leads now |
+| `TooLarge` (15) | the owner refused a forwarded cache write whose record is larger than its Raft group's appends carry; nothing was written. Sent only in answer to a forwarded cache op on a Raft shard | answer the client `invalid_request` with `fatal`, as a direct write of the same record is answered; do not resend. A requester that predates the code cannot decode the frame and reports the write indeterminate, as for `CacheFull` |
 | `CacheFull` (14) | the owner refused a forwarded cache put or counter add because the shard's Raft group is at its state bound; nothing was written. Sent only in answer to a forwarded cache op on a Raft shard | answer the client `limit_exceeded` with `detail.reason` = `cache_full`; do not resend until deletes or expiries of values free room (counters are never freed, [#3243](https://github.com/GetFelix/felix/issues/3243)). A requester that predates the code cannot decode the frame: its reader ends that one lane (`peer/pool/connection.rs`, `open_stream`), the waiter gets no answer and times out after the forward timeout, and a put or add, which is not idempotent, is reported to its client as indeterminate without a retry (`serving/forward.rs`, `forward_cache`). Other requests in flight on that lane time out the same way, and the next one sent to it finds it ended, fails as disconnected and replaces it. Nothing was written |
 
 ### Refusal reasons
@@ -1692,7 +1708,7 @@ way to tell the two apart.
 | `NotLeader` | No, the refusal is the evidence | Yes, against the owner it names |
 | `StaleRoute`, `Unavailable`, `Overload` | No, refused before writing | Yes |
 | `Unauthorized`, `Malformed`, `StorageFailed` | Refused, or tried and failed | No |
-| Connection dropped, request timed out | **Unknown** | **No** |
+| Connection dropped, request timed out, this broker shut down while it waited | **Unknown** | **No** |
 
 The last row is the important one. The batch may be on the owner's disk, and no
 answer is coming. The publish is reported as *indeterminate* rather than failed,

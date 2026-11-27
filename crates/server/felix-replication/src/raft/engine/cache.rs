@@ -207,7 +207,9 @@ impl RaftEngine {
     /// one there is no such guarantee: the write is applied at most once
     /// per call, and a retry after an error may apply it again.
     ///
-    /// An error is an unknown outcome: the write may still commit.
+    /// An error is an unknown outcome, so the write may still commit,
+    /// except [`CommitError::NotAppended`] and [`CommitError::TooLarge`]:
+    /// both are refused before the log took anything.
     pub async fn write_cache(
         &self,
         shard: &ShardKey,

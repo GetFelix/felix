@@ -370,11 +370,12 @@ pub async fn forward_publish(
                 // that reaches here refused before writing.
                 sleep_within(retry_delay(attempt), deadline).await;
             }
+            // Nothing else answers a forwarded publish, so this says nothing
+            // about whether the batch was written.
             Ok(other) => {
-                metrics::record_forward(metrics::OUTCOME_REFUSED);
-                return Err(ForwardError::Refused {
-                    stream: key.stream.clone(),
-                    code: None,
+                metrics::record_forward(metrics::OUTCOME_INDETERMINATE);
+                return Err(ForwardError::Indeterminate {
+                    node_id: target.node_id,
                     detail: format!("owner answered with an unexpected {:?}", other.kind()),
                 });
             }
@@ -383,7 +384,7 @@ pub async fn forward_publish(
                 last_code = None;
                 sleep_within(retry_delay(attempt), deadline).await;
             }
-            Err(err @ (PeerError::Disconnected { .. } | PeerError::Timeout { .. })) => {
+            Err(err) if err.may_have_been_sent() => {
                 // The batch is out there. Retrying would duplicate it, and this
                 // broker cannot tell whether it landed.
                 metrics::record_forward(metrics::OUTCOME_INDETERMINATE);
@@ -559,15 +560,13 @@ impl CacheRequest {
 
     /// Whether re-sending this operation after an indeterminate answer is safe.
     ///
-    /// A `Get` is a read and a `Delete` removes a named key, so re-sending
-    /// either lands on the same state. A `Put` with a TTL does not: the second
-    /// attempt restarts the clock. Treating a write as indeterminate rather
-    /// than retrying it keeps the caller in charge of that decision.
-    ///
-    /// A conditional write is not: a lost answer may hide a write that was
-    /// made, and the retry would then be refused by the version it wrote.
+    /// Only a read is. A `Put` with a TTL restarts the clock, a counter add
+    /// counts twice, and a conditional write is refused by the version it
+    /// wrote. A `Delete` re-sent answers that nothing was removed, and would
+    /// remove a value written in between. A lost or unreadable answer to any
+    /// of them is reported as unknown, never retried.
     fn is_idempotent(&self) -> bool {
-        matches!(self, Self::Get | Self::Delete | Self::GetVersioned)
+        matches!(self, Self::Get | Self::GetVersioned | Self::CounterGet)
     }
 }
 
@@ -813,6 +812,30 @@ async fn forward_cache(
                 }
                 tokio::time::sleep(retry_delay(attempt)).await;
             }
+            // An owner that does not know the kind refused it unread.
+            Ok(InternalMessage::ForwardPublishError(err))
+                if err.code == ErrorCode::UnsupportedKind =>
+            {
+                metrics::record_forward(metrics::OUTCOME_REFUSED);
+                return Err(ForwardError::Refused {
+                    stream: key.stream.clone(),
+                    code: Some(err.code),
+                    detail: format!("{:?}: {}", err.code, err.detail),
+                });
+            }
+            // A cache op is answered in the cache's shape. Any other answer
+            // says nothing this broker can trust about a write, which may
+            // have been made: re-sent, it could apply twice.
+            Ok(other) if !request.is_idempotent() => {
+                metrics::record_forward(metrics::OUTCOME_INDETERMINATE);
+                return Err(ForwardError::Indeterminate {
+                    node_id: target.node_id,
+                    detail: format!(
+                        "owner answered a cache write with an unexpected {:?}",
+                        other.kind()
+                    ),
+                });
+            }
             Ok(other) => {
                 metrics::record_forward(metrics::OUTCOME_REFUSED);
                 return Err(ForwardError::Refused {
@@ -826,9 +849,7 @@ async fn forward_cache(
                 last_code = None;
                 tokio::time::sleep(retry_delay(attempt)).await;
             }
-            Err(err @ (PeerError::Disconnected { .. } | PeerError::Timeout { .. }))
-                if !request.is_idempotent() =>
-            {
+            Err(err) if err.may_have_been_sent() && !request.is_idempotent() => {
                 metrics::record_forward(metrics::OUTCOME_INDETERMINATE);
                 return Err(ForwardError::Indeterminate {
                     node_id: target.node_id,

@@ -428,7 +428,7 @@ take `node.view:cluster:*`; the rest take `node.manage:cluster:*`.
 | `POST /v1/shard-moves` | start moving a shard's leadership to a node |
 | `DELETE /v1/shard-moves/{tenant_id}/{namespace}/{name}/{shard}` | cancel a shard's move; `?kind=cache` for a cache shard |
 | `POST /v1/placement/pause`, `POST /v1/placement/resume` | stop and restart placement's own moves |
-| `POST /v1/placement/abandon/{tenant_id}/{namespace}/{name}/{shard}` | give up a stranded durable shard's log and place the shard afresh. **This loses data**: records only the old leader held are gone, acknowledged ones included. 409 `not_stranded` if the leader is serving or a replica can take over |
+| `POST /v1/placement/abandon/{tenant_id}/{namespace}/{name}/{shard}` | give up a stranded durable shard's log and place the shard afresh. **This loses data**: records only the old leader held are gone, acknowledged ones included. 409 `not_stranded` if the leader is serving or a replica can take over. On Raft it starts the next group epoch empty on one copy, whatever the replication factor; 409 `not_declared_dead` until every broker placed in the epoch is declared dead, `abandon_unsupported` until the fleet finalizes `raft_abandon`, `abandon_refused` when the store refuses the write, including until the restore time line is a full gap (2^32) above the last epoch's start: about four and a half minutes after that epoch began when the control-plane clocks agree within about four minutes, longer if its clock ran ahead (see per-shard-raft.md, "Abandoning a lost group") |
 | `POST /v1/placement/seal/{tenant_id}/{namespace}/{name}/{shard}` | order the seal that starts a stream shard's switch to the Raft engine. The shard is closed until its leader reports the seal or gives it up. 409 `raft_unavailable` until the fleet has finalized `shard_raft` (no release reports it yet), `not_sealable` for a shard that is not active, is moving, already switched, or led by a node with no copy id among the assignment's members. A second order on a sealed shard seals it again at the next generation and gives up the first. Stream shards only |
 
 ```http
@@ -471,7 +471,9 @@ and `not_a_member` while the destination is still being added. A one-member
 group first grows to its leader and the destination; placement drops the old
 broker once the destination votes. Moving it back to the old broker before
 then is answered with step `raft_move_undone`, and is 409 `member_down` once
-the destination votes and is not serving. A start on an in-memory stream's
+the destination votes and is not serving, or `set_unsettled` until the grown
+set's copy ids and voters are reported. A write the store refuses as the shard
+stands is 409 `conflict`; read the shard and retry. A start on an in-memory stream's
 shard names the destination its owner in one write, answered with step
 `owner_replaced`; the new owner starts empty. Under `replica_election`, a start is
 409 `set_change_pending` while a cut-over's change of replica set waits for

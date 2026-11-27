@@ -468,8 +468,9 @@ impl ShardOwnership {
                         current.targets_withheld = withheld;
                     }
                     let reformed = take_reformed_epoch(current, &next);
+                    let seeded = take_epoch_seed(current, &next);
                     let raised = take_raised_floor(current, &next);
-                    if retargeted || reformed || raised {
+                    if retargeted || reformed || seeded || raised {
                         self.changed();
                         return true;
                     }
@@ -723,6 +724,34 @@ fn take_reformed_epoch(current: &mut ShardAssignment, next: &ShardAssignment) ->
     current.raft_seed.clone_from(&next.raft_seed);
     current.raft_formed = next.raft_formed;
     current.raft_voters.clone_from(&next.raft_voters);
+    true
+}
+
+/// Take `next`'s seed for the held epoch when none is held for it. An
+/// abandon starts its epoch with no seed, and the first copy id report
+/// writes one in place at the same generation and epoch; dropped, no blank
+/// copy ever starts. The control plane seeds an epoch once, so a held seed
+/// is never replaced.
+fn take_epoch_seed(current: &mut ShardAssignment, next: &ShardAssignment) -> bool {
+    let epoch = current.group_epoch();
+    if next.incarnation != current.incarnation || next.group_epoch() != epoch {
+        return false;
+    }
+    let Some(seed) = next
+        .raft_seed
+        .as_ref()
+        .filter(|seed| seed.incarnation == current.incarnation && seed.epoch == epoch)
+    else {
+        return false;
+    };
+    let held = current
+        .raft_seed
+        .as_ref()
+        .is_some_and(|held| held.incarnation == current.incarnation && held.epoch == epoch);
+    if held {
+        return false;
+    }
+    current.raft_seed = Some(seed.clone());
     true
 }
 
