@@ -624,9 +624,14 @@ pub(crate) fn purged_point(dir: &std::path::Path) -> io::Result<Option<LogPoint>
 
 /// The last entry `log` holds as a Raft log, or the purged id when it holds
 /// none above it. What a member opening the directory would report as its
-/// last log id.
+/// last log id: none for an adopted base no install has purged over.
 pub(crate) async fn last_point(log: &DiskLog) -> io::Result<Option<LogPoint>> {
     let purged = purged::load(log.dir())?;
+    // The base is hidden from openraft, so no mark may claim it: a discard
+    // that drops it would read as a log below its mark.
+    if purged.is_none() && adopted::held(log.dir())? {
+        return Ok(None);
+    }
     let first = match purged {
         Some(purged) => log.base_offset().max(purged.index + 1),
         None => log.base_offset(),

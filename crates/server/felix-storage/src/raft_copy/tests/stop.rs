@@ -317,6 +317,39 @@ async fn a_started_learner_opens_under_its_own_copy_id_in_the_new_epoch() {
     );
 }
 
+/// The stopped member's batch still marks its log's last flushed position
+/// once after the close. Landing over the start's lowering, it put the
+/// mark above the emptied learner and the open rotated it as a power cut.
+#[tokio::test]
+async fn a_closed_logs_batch_does_not_raise_a_started_learners_mark() {
+    use crate::raft_log::LogPositions;
+
+    let root = Root::new();
+    let copies = root.open();
+    let dir = root.shard_dir();
+    let copy = stopped_copy(&copies, &dir).await;
+    let (positions, receiver) = tokio::sync::watch::channel(LogPositions::default());
+    positions.send_modify(|at| at.flushed = Some(point(1, 1)));
+    copies
+        .mark_log()
+        .for_copy(Arc::from(SHARD), copy)
+        .batch_from(receiver, std::time::Duration::from_secs(3600));
+
+    start_stopped(&copies, &dir, bases(0), &learner())
+        .await
+        .expect("start");
+    drop(positions);
+    copies.mark_log().mark_batched().await.expect("batch");
+    assert_eq!(root.marks_on_disk().expect("marks").log, None);
+    let opened = root
+        .open()
+        .open_copy(SHARD, &dir, LABEL, config())
+        .await
+        .expect("open");
+    assert_eq!(opened.rotation.map(|rotation| rotation.reason), None);
+    assert_eq!(opened.copy, copy);
+}
+
 #[tokio::test]
 async fn a_started_voter_keeps_its_copy_id_and_its_base() {
     let root = Root::new();

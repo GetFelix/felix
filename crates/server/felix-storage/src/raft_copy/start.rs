@@ -276,10 +276,12 @@ impl CopyRoot {
             }),
             Role::Learner => None,
         };
-        self.mark_log()
-            .for_copy(std::sync::Arc::from(shard), copy)
-            .lower_log(mark)
-            .await?;
+        let marks = self.mark_log().for_copy(std::sync::Arc::from(shard), copy);
+        // The stopped member's log is closed, but the batch still marks its
+        // last flushed position once, which would land over this lowering
+        // and read at the next open as a log below its mark.
+        marks.forget_batched();
+        marks.lower_log(mark).await?;
         let start = Start {
             epoch,
             role,
@@ -413,7 +415,16 @@ pub(super) async fn start_with(
                         kept.display()
                     )));
                 }
-                held::read(kept, &label, index_spacing_bytes)?;
+                let kept_held = held::read(kept, &label, index_spacing_bytes)?;
+                // A base a learner pulled and no install purged over was
+                // never committed there; copied in, it would show as live
+                // entries with no purged id under them.
+                if kept_held.purged.is_none() && crate::raft_log::adopted::held(kept)? {
+                    return Err(invalid(format!(
+                        "{label}: kept directory {} holds an adopted base no snapshot installed over",
+                        kept.display()
+                    )));
+                }
                 commit = commit.max(
                     crate::disk_log::saved_commit(kept)
                         .map_err(io::Error::other)?

@@ -159,6 +159,31 @@ async fn a_voter_starts_from_a_kept_copy() {
     }));
 }
 
+/// A kept learner that adopted a base and never installed over it is no
+/// source of records: the start is refused and the voter's own log stays.
+/// One whose install landed holds a purged id and is copied as any other.
+#[tokio::test]
+async fn a_voter_never_starts_from_a_kept_adopted_base() {
+    let kept = tempfile::tempdir().expect("kept");
+    log_of(kept.path(), 5).await;
+    crate::raft_log::adopted::store(kept.path()).expect("mark");
+    let dir = tempfile::tempdir().expect("dir");
+    log_of(dir.path(), 5).await;
+    let own = held::read(dir.path(), "t", SPACING).expect("read");
+    let mut from_kept = start(Role::Voter);
+    from_kept.kept = Some(kept.path().to_path_buf());
+    let err = start_copy(dir.path(), &from_kept, &config())
+        .await
+        .expect_err("an adopted base is no source");
+    assert!(err.to_string().contains("adopted base"), "{err}");
+    assert_eq!(held::read(dir.path(), "t", SPACING).expect("read"), own);
+
+    crate::raft_log::store_purged(kept.path(), 4, 2).expect("purged");
+    start_copy(dir.path(), &from_kept, &config())
+        .await
+        .expect("an installed base is copied");
+}
+
 /// Whether `dir` holds no file copied in and left unrenamed.
 fn no_temporaries(dir: &Path) -> bool {
     std::fs::read_dir(dir).expect("ls").all(|entry| {
