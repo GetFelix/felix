@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795754515110,
+  "lastUpdate": 1795756184721,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -72904,6 +72904,58 @@ window.BENCHMARK_DATA = {
             "range": "9196.62",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1205154.41\nmean: 1209305.07\nstdev: 9196.62\ncv: 0.76%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "1688ba23d9f37a1b963888081b57b3919e2e144c",
+          "message": "fix(kafka): a parked fetch is refused once this broker stops leading (#3318) (#3321)\n\nA fetch resolves placement once, then may long-poll. On Raft a follower\nstill answers a commit point, so a fetch parked while this broker led could\nreturn records after the lead moved and hear \"not leader\" one wait late.\nEach pass after a wait now asks placement again, after the mark, and\nanswers NOT_LEADER_OR_FOLLOWER once this broker no longer leads.\n\nkcat_follows_a_moved_shard (and spread_and_publish) now wait in\nmove_shard until the Raft group has elected the placed leader before\npublishing, so records cannot commit on the old leader first.\n\nSpec-Unaffected: Kafka fetch admission is not modelled in TLA",
+          "timestamp": "2026-11-27T05:03:48Z",
+          "tree_id": "144885e5e627eed9507c291a0ae1b12bbd3dec38",
+          "url": "https://github.com/GetFelix/felix/commit/1688ba23d9f37a1b963888081b57b3919e2e144c"
+        },
+        "date": 1795756183986,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 729132.14,
+            "range": "129241.36",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 729132.14\nmean: 735792.07\nstdev: 129241.36\ncv: 17.56%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 729132.14,
+            "range": "129241.36",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 729132.14\nmean: 735792.07\nstdev: 129241.36\ncv: 17.56%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 170310.53,
+            "range": "9947.94",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 170310.53\nmean: 167789.06\nstdev: 9947.94\ncv: 5.93%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1703105.32,
+            "range": "99479.45",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1703105.32\nmean: 1677890.62\nstdev: 99479.45\ncv: 5.93%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
