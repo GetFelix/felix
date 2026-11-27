@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795762301879,
+  "lastUpdate": 1795765006516,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -93060,6 +93060,72 @@ window.BENCHMARK_DATA = {
             "range": "699.49",
             "unit": "us",
             "extra": "trials: 5\nmedian: 1545.00\nmean: 1582.60\nstdev: 699.49\ncv: 44.20%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "7739901a2acd8aa3d02787fd24453c1c4a41039c",
+          "message": "fix(raft): a copy a re-form left behind cannot vote or lead in its old membership (#3289) (#3352)\n\n* fix(raft): a copy the re-form never read cannot rejoin its old membership (#3289)\n\nA copy that names an older group epoch than the control plane's record,\nand that a re-form neither stopped nor is starting, was read by no\nre-form and still holds its old membership. Two brokers wrongly declared\ndead, or one copy whose old voter set had one voter, could elect\nthemselves beside the re-formed group.\n\n- The broker refuses to open such a copy and closes its member on any\n  feed pass (restart, partition heal, late join). Before, only a copy\n  behind an abandoned epoch was closed. A copy ahead of the record is\n  never closed. The two #2995 tests that pinned \"still votes and may\n  lead\" now expect the member closed and not listed.\n- Raft messages carry the sending copy's re-form epoch (wire layout 7),\n  and a member refuses a message from any other epoch, so an old-epoch\n  vote or append never reaches a re-formed member.\n\nThe window before a cut-off copy sees the new record stays open; the\ncontrol-plane lease for it is #3343.\n\nSpec-Unaffected: docs/formal/FelixRaftReform.tla already models this: its Elect takes votes only from copies at the candidate's epoch, and FelixRaftReformWrongDeclaration.cfg still pins the partition window as an expected violation. This brings the code in line with the model.\n\n* fix(raft): close a stale member from its open epoch; check outsiders before epochs (#3289)\n\nThe feed-pass close read a cached raft-epoch that a failed second read left\nempty, so such a member was never closed. It now asks the open group.\nAdmission refuses a broker outside the group before naming an epoch.\n\nSpec-Unaffected: the close only removes behaviours; admission order of refusals",
+          "timestamp": "2026-11-27T07:30:07Z",
+          "tree_id": "c5b1b5549ad7d08ef7338d9c648172a6bcd8d4ec",
+          "url": "https://github.com/GetFelix/felix/commit/7739901a2acd8aa3d02787fd24453c1c4a41039c"
+        },
+        "date": 1795764989781,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 154,
+            "range": "1.00",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 154.00\nmean: 154.00\nstdev: 1.00\ncv: 0.65%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 209,
+            "range": "9.99",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 209.00\nmean: 212.40\nstdev: 9.99\ncv: 4.70%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 266,
+            "range": "717.20",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 266.00\nmean: 582.20\nstdev: 717.20\ncv: 123.19%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 201,
+            "range": "1.14",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 201.00\nmean: 201.40\nstdev: 1.14\ncv: 0.57%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 403,
+            "range": "11.15",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 403.00\nmean: 399.40\nstdev: 11.15\ncv: 2.79%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 591,
+            "range": "224.04",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 591.00\nmean: 664.40\nstdev: 224.04\ncv: 33.72%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
