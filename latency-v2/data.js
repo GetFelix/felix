@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795815001970,
+  "lastUpdate": 1795815816658,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -94248,6 +94248,72 @@ window.BENCHMARK_DATA = {
             "range": "648.43",
             "unit": "us",
             "extra": "trials: 5\nmedian: 549.00\nmean: 889.20\nstdev: 648.43\ncv: 72.92%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "f081343030069708482b8d38d0811bfaeed04ceb",
+          "message": "test(cluster): the last planned-move tests run on Raft (#3004) (#3384)\n\n* test(cluster): the last move tests run on Raft or retire with the hybrid fence (#3004)\n\nSpec-Unaffected: test only\n\n* test(cluster): the retired refusal test names the issue for the Raft contract (#3004)\n\nSpec-Unaffected: test only",
+          "timestamp": "2026-11-27T21:37:46Z",
+          "tree_id": "ea135c886522f3091b5f085b3c7fc23d8ed191b2",
+          "url": "https://github.com/GetFelix/felix/commit/f081343030069708482b8d38d0811bfaeed04ceb"
+        },
+        "date": 1795815804294,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 72,
+            "range": "0.55",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 72.00\nmean: 71.60\nstdev: 0.55\ncv: 0.76%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1018-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 126,
+            "range": "2.59",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 126.00\nmean: 125.20\nstdev: 2.59\ncv: 2.07%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1018-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 155,
+            "range": "394.17",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 155.00\nmean: 434.40\nstdev: 394.17\ncv: 90.74%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1018-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 88,
+            "range": "0.00",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 88.00\nmean: 88.00\nstdev: 0.00\ncv: 0.00%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1018-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 181,
+            "range": "5.77",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 181.00\nmean: 181.60\nstdev: 5.77\ncv: 3.18%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1018-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 257,
+            "range": "570.69",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 257.00\nmean: 495.60\nstdev: 570.69\ncv: 115.15%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1018-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
