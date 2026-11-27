@@ -693,6 +693,17 @@ pub(super) async fn apply_pass(
                 "a shard's copy must move and no live node can take its place",
             );
         }
+        if matches!(reason, super::Blocked::Unfilled { .. })
+            && clock.held_log_due(key, Instant::now())
+        {
+            tracing::info!(
+                kind = %key.kind,
+                name = %key.stream,
+                shard = key.shard,
+                reason = %reason,
+                "a Raft shard is held unformed",
+            );
+        }
         // Waiting on a catch-up or a drain is what a move in progress looks
         // like; the gauge below is what an operator watches.
         tracing::debug!(
