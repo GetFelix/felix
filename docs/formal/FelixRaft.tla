@@ -5,10 +5,27 @@
 (* `raft_log` adapter over `DiskLog`. The adapter is built; each config's  *)
 (* evidence line cites the tests that enforce its rules.                   *)
 (*                                                                         *)
-(* The offset is the Raft index and the record's generation is its term.   *)
-(* A leader's blank entry and a membership entry are records that readers  *)
-(* skip, so they hold an index but no event. Three kinds of entry:         *)
-(* "blank", "member" and "record".                                         *)
+(* The record's generation is its term. Three kinds of entry: "blank",     *)
+(* "member" and "record". A record entry is one batch of `n` records       *)
+(* (docs/raft-batch-entries-design.md); blank and membership entries hold  *)
+(* none. Each entry carries the base offset its leader stamped, and every  *)
+(* member derives it: entry i starts where entry i - 1 ends. A follower    *)
+(* refuses an append whose stamp differs from what it derives. A purge     *)
+(* keeps the next offset after the purged entry, and a snapshot carries    *)
+(* the next offset after its last entry, so a log that starts at either    *)
+(* derives from there.                                                     *)
+(*                                                                         *)
+(* How many offsets an entry takes (`Adv`) is set by override in a cfg:    *)
+(*                                                                         *)
+(*   ZeroTakesOffset -- TRUE, as the code is today: an entry with no       *)
+(*                      record still takes one offset, so with MaxBatch 1  *)
+(*                      the offset is the index and blank and membership   *)
+(*                      entries are skipped offsets. ZeroTakesOffsetOff:   *)
+(*                      the design, they take none.                        *)
+(*   MaxBatch        -- 1, or MaxBatchTwo: records in one batch.           *)
+(*                                                                         *)
+(* A subscriber is delivered one committed batch at a time, from its next  *)
+(* offset to the batch's end.                                              *)
 (*                                                                         *)
 (* What a broker keeps, and what a crash does to it:                       *)
 (*                                                                         *)
@@ -66,8 +83,11 @@
 (*   OffsetsDense            -- delivered offsets, less the skipped ones   *)
 (*                              each serving broker reports from its own   *)
 (*                              log, have no gap.                          *)
-(*   OffsetNeverReused       -- a delivered offset holds that record in    *)
-(*                              the committed sequence.                    *)
+(*   OffsetNeverReused       -- no two committed batches share an offset,  *)
+(*                              and a delivered offset holds that record   *)
+(*                              in the committed sequence.                 *)
+(*   BatchWhole              -- no committed log and no read holds a       *)
+(*                              proper prefix of a proposed batch.         *)
 (*   DeliveredInOrder        -- the k-th delivery is the k-th committed    *)
 (*                              record.                                    *)
 (*   VoteNeverLowers         -- the stored vote only rises.                *)
@@ -111,6 +131,18 @@
 (*                             commit index.                               *)
 (*   SkipsNotCounted        -- a batch does not report the offsets that    *)
 (*                             blank and membership entries hold.          *)
+(*                                                                         *)
+(* Three more are set by override, so the other cfgs stay as they are:     *)
+(*                                                                         *)
+(*   SnapNextIsLast  -- a snapshot carries the base offset of its last     *)
+(*                      entry, not the offset after it. A broker that      *)
+(*                      installs it derives the next batch's offset below  *)
+(*                      where it is.                                       *)
+(*   StampNotChecked -- a follower stores the leader's stamp without       *)
+(*                      deriving its own.                                  *)
+(*   SplitBatch      -- a batch is appended as one entry per record, as    *)
+(*                      the code does today, so a leader change can        *)
+(*                      commit a prefix of it.                             *)
 (*                                                                         *)
 (* Not modelled yet (issue 2198 lists them): membership changes that alter *)
 (* the voter set, the leader lease, disk loss and storage ids, the switch  *)
@@ -173,13 +205,30 @@ Max(a, b) == IF a >= b THEN a ELSE b
 MaxOf(S) == CHOOSE x \in S : \A y \in S : y <= x
 Quorum(Q) == 2 * Cardinality(Q) > Cardinality(Servers)
 
-Blank(t) == [term |-> t, kind |-> "blank", val |-> 0]
+\* Set by override in a cfg (see the header).
+ZeroTakesOffset == TRUE
+ZeroTakesOffsetOff == FALSE
+MaxBatch == 1
+MaxBatchTwo == 2
+SnapNextIsLast == FALSE
+StampNotChecked == FALSE
+SplitBatch == FALSE
+Yes == TRUE
+
+\* An entry: `n` records from position `pos` of batch `val`, which holds
+\* `of`, and the base offset `off` its leader stamped.
+Entry(t, k, v, p, n, of, o) ==
+    [term |-> t, kind |-> k, val |-> v, pos |-> p, n |-> n, of |-> of, off |-> o]
+Blank(t, o) == Entry(t, "blank", 0, 0, 0, 0, o)
 NoVote == [term |-> 0, node |-> Nobody, committed |-> FALSE]
 NoTail == [from |-> 0, tail |-> <<>>]
-NoSnap == [idx |-> 0, term |-> 0, state |-> <<>>]
+NoSnap == [idx |-> 0, term |-> 0, next |-> 1, state |-> <<>>]
 NoInstall == [step |-> "none", snap |-> NoSnap]
 \* What a shard's state machine holds where its log lost an applied entry.
-Lost == [term |-> 0, kind |-> "lost", val |-> 0]
+Lost == Entry(0, "lost", 0, 0, 0, 0, 0)
+
+\* The offsets an entry takes.
+Adv(e) == IF ZeroTakesOffset THEN Max(e.n, 1) ELSE e.n
 
 \* openraft's order on votes with one leader per term (`leader_id_std`,
 \* which docs/replication-engine.md pins). Two uncommitted votes
@@ -199,6 +248,12 @@ EntryAt(s, i) == log[s][i - base[s].idx]
 TermAt(s, i) == IF i = base[s].idx THEN base[s].term ELSE EntryAt(s, i).term
 \* The entries of `s` at indexes from + 1 .. to.
 Entries(s, from, to) == [x \in 1..(to - from) |-> EntryAt(s, from + x)]
+
+\* The offset after entry i, as `s` derives it. Defined from the purged id
+\* up to the last entry.
+NextAfter(s, i) ==
+    IF i = base[s].idx THEN base[s].next ELSE EntryAt(s, i).off + Adv(EntryAt(s, i))
+NextOff(s) == NextAfter(s, LastIdx(s))
 
 \* Where two logs agree by (index, term), which is all a follower checks.
 Common(i, j) ==
@@ -220,7 +275,7 @@ Init ==
     /\ granted = [s \in Servers |-> {}]
     /\ elected = {}
     /\ log = [s \in Servers |-> <<>>]
-    /\ base = [s \in Servers |-> [idx |-> 0, term |-> 0]]
+    /\ base = [s \in Servers |-> [idx |-> 0, term |-> 0, next |-> 1]]
     /\ flushed = [s \in Servers |-> 0]
     /\ synced = [s \in Servers |-> 0]
     /\ stale = [s \in Servers |-> NoTail]
@@ -271,7 +326,7 @@ BecomeLeader(c) ==
     /\ SaveVote(c, [vote[c] EXCEPT !.committed = TRUE])
     /\ role' = [role EXCEPT ![c] = "leader"]
     /\ elected' = elected \cup {<<vote[c].term, c>>}
-    /\ log' = [log EXCEPT ![c] = Append(@, Blank(vote[c].term))]
+    /\ log' = [log EXCEPT ![c] = Append(@, Blank(vote[c].term, NextOff(c)))]
     /\ flushed' = IF AckBeforeFlush THEN [flushed EXCEPT ![c] = LastIdx(c) + 1] ELSE flushed
     /\ match' = [match EXCEPT ![c] = [t \in Servers |-> 0]]
     /\ UNCHANGED <<granted, base, synced, stale, machine, reader, used, inst>>
@@ -289,22 +344,31 @@ AcceptLeader(i, j) ==
     /\ granted' = [granted EXCEPT ![j] = {}]
     /\ UNCHANGED <<elected, storage, machine, reader, match, used, inst>>
 
-LeaderAppend(i, e) ==
+\* The leader appends `es` in one call, each stamped where the one before
+\* it ends.
+LeaderAppend(i, es) ==
     /\ role[i] = "leader"
-    /\ log' = [log EXCEPT ![i] = Append(@, e)]
-    /\ flushed' = IF AckBeforeFlush THEN [flushed EXCEPT ![i] = LastIdx(i) + 1] ELSE flushed
+    /\ log' = [log EXCEPT ![i] = @ \o es]
+    /\ flushed' = IF AckBeforeFlush THEN [flushed EXCEPT ![i] = LastIdx(i) + Len(es)] ELSE flushed
     /\ UNCHANGED <<election, base, synced, stale, machine, reader, match, inst>>
 
+\* A publish of n records is one entry, or with SplitBatch one per record.
 AppendRecord(i) ==
     /\ used.writes < MaxWrites
-    /\ LeaderAppend(i, [term |-> vote[i].term, kind |-> "record", val |-> used.writes + 1])
+    /\ \E n \in 1..MaxBatch :
+        LET t == vote[i].term
+            v == used.writes + 1
+            o == NextOff(i)
+        IN LeaderAppend(i, IF SplitBatch
+                           THEN [p \in 1..n |-> Entry(t, "record", v, p - 1, 1, n, o + p - 1)]
+                           ELSE <<Entry(t, "record", v, 0, n, n, o)>>)
     /\ used' = [used EXCEPT !.writes = @ + 1]
 
 \* A membership entry holds an index like any other. The voter set stays as
 \* it is: this model asks only what the entry does to offsets.
 AppendMember(i) ==
     /\ used.members < MaxMembers
-    /\ LeaderAppend(i, [term |-> vote[i].term, kind |-> "member", val |-> 0])
+    /\ LeaderAppend(i, <<Entry(vote[i].term, "member", 0, 0, 0, 0, NextOff(i))>>)
     /\ used' = [used EXCEPT !.members = @ + 1]
 
 \* One fsync covers everything appended so far, and the callback fires.
@@ -319,13 +383,15 @@ Flush(s) ==
 
 \* AppendEntries with one entry, after the highest index the two logs agree
 \* on. A follower holding something else there cuts it off first, and the
-\* cut is on disk before `truncate_after` returns.
+\* cut is on disk before `truncate_after` returns. The follower refuses an
+\* entry whose stamped offset is not the one it derives.
 Replicate(i, j) ==
     /\ Following(i, j)
     /\ Common(i, j) # {}
     /\ LET p == MaxOf(Common(i, j))
            cut == p < LastIdx(j)
        IN /\ p < LastIdx(i)
+          /\ StampNotChecked \/ EntryAt(i, p + 1).off = NextAfter(j, p)
           /\ log' = [log EXCEPT ![j] = Append(SubSeq(@, 1, p - base[j].idx), EntryAt(i, p + 1))]
           /\ flushed' = [flushed EXCEPT ![j] = IF AckBeforeFlush THEN p + 1 ELSE Min(@, p)]
           /\ synced' = [synced EXCEPT ![j] = Min(@, p)]
@@ -385,9 +451,11 @@ BuildSnapshot(s) ==
         /\ half => SnapshotTwoRenames
         /\ snap' = [snap EXCEPT ![s] =
                 IF half THEN [@ EXCEPT !.state = applied[s]]
-                ELSE [idx |-> Len(applied[s]),
-                      term |-> applied[s][Len(applied[s])].term,
-                      state |-> applied[s]]]
+                ELSE LET last == applied[s][Len(applied[s])]
+                     IN [idx |-> Len(applied[s]),
+                         term |-> last.term,
+                         next |-> IF SnapNextIsLast THEN last.off ELSE last.off + Adv(last),
+                         state |-> applied[s]]]
     /\ used' = [used EXCEPT !.snaps = @ + 1]
     /\ UNCHANGED <<election, storage, applied, committed, acked, reader, match, inst>>
 
@@ -398,7 +466,7 @@ Purge(s) ==
     /\ LET k == IF PurgeBeforeSnapshot THEN Len(applied[s]) ELSE snap[s].idx
        IN /\ k > base[s].idx
           /\ k <= LastIdx(s)
-          /\ base' = [base EXCEPT ![s] = [idx |-> k, term |-> TermAt(s, k)]]
+          /\ base' = [base EXCEPT ![s] = [idx |-> k, term |-> TermAt(s, k), next |-> NextAfter(s, k)]]
           /\ log' = [log EXCEPT ![s] = SubSeq(@, k - base[s].idx + 1, Len(@))]
     /\ UNCHANGED <<election, flushed, synced, stale, machine, reader, match, used, inst>>
 
@@ -440,7 +508,8 @@ InstallState(j) ==
 \* so the purge is past the log's end and the log restarts there.
 InstallPurge(j) ==
     /\ inst[j].step = "purge"
-    /\ base' = [base EXCEPT ![j] = [idx |-> inst[j].snap.idx, term |-> inst[j].snap.term]]
+    /\ base' = [base EXCEPT ![j] =
+            [idx |-> inst[j].snap.idx, term |-> inst[j].snap.term, next |-> inst[j].snap.next]]
     /\ log' = [log EXCEPT ![j] = <<>>]
     /\ flushed' = [flushed EXCEPT ![j] = inst[j].snap.idx]
     /\ synced' = [synced EXCEPT ![j] = inst[j].snap.idx]
@@ -481,7 +550,9 @@ Restart(s) ==
               THEN /\ base' = [base EXCEPT ![s] =
                           [idx |-> last,
                            term |-> IF last = snap[s].idx THEN snap[s].term
-                                    ELSE applied[s][last].term]]
+                                    ELSE applied[s][last].term,
+                           next |-> IF last = snap[s].idx THEN snap[s].next
+                                    ELSE applied[s][last].off + Adv(applied[s][last])]]
                    /\ log' = [log EXCEPT ![s] = <<>>]
                    /\ flushed' = [flushed EXCEPT ![s] = last]
                    /\ synced' = [synced EXCEPT ![s] = last]
@@ -504,28 +575,37 @@ Restart(s) ==
     /\ used' = [used EXCEPT !.crashes = @ + 1]
     /\ UNCHANGED <<voteDisk, elected, snap, committed, acked, reader>>
 
-\* The subscriber resumes after the last offset it received.
-LastOff == IF got = <<>> THEN 0 ELSE got[Len(got)].off
+\* The subscriber resumes at the offset after the last one it received.
+LastEnd == IF got = <<>> THEN 1 ELSE got[Len(got)].off + got[Len(got)].cnt
 
-\* The offsets directly below `o` that hold no event in `s`'s own log. The
-\* serving broker knows nothing else: not what an earlier leader delivered.
-SkippedBefore(s, o) ==
-    Cardinality({i \in (base[s].idx + 1)..(o - 1) :
-        \A k \in i..(o - 1) : EntryAt(s, k).kind # "record"})
+\* The offsets directly below entry i that hold no event in `s`'s own log.
+\* The serving broker knows nothing else: not what an earlier leader
+\* delivered.
+SkippedBefore(s, i) ==
+    LET recs == {k \in (base[s].idx + 1)..(i - 1) : EntryAt(s, k).kind = "record"}
+        from == IF recs = {} THEN base[s].next ELSE NextAfter(s, MaxOf(recs))
+    IN EntryAt(s, i).off - from
 
-\* A broker that believes it leads reads the subscriber the next record in
-\* its log, up to the commit index. A blank or membership entry is not
-\* delivered; the record's batch reports it in `skipped_before`.
+\* A broker that believes it leads reads the subscriber the next batch in
+\* its log, up to the commit index, from the subscriber's next offset to the
+\* batch's end. A blank or membership entry is not delivered; with
+\* ZeroTakesOffset the batch after it reports its offset in
+\* `skipped_before`.
 Deliver(s) ==
     /\ Consumer
     /\ role[s] = "leader"
-    /\ base[s].idx <= LastOff
+    /\ base[s].next <= LastEnd
     /\ LET bound == IF DeliverUncommitted THEN LastIdx(s) ELSE Min(Len(applied[s]), LastIdx(s))
-           recs == {i \in (LastOff + 1)..bound : EntryAt(s, i).kind = "record"}
+           recs == {i \in (base[s].idx + 1)..bound :
+                        EntryAt(s, i).kind = "record" /\ EntryAt(s, i).off + EntryAt(s, i).n > LastEnd}
        IN /\ recs # {}
-          /\ LET o == CHOOSE i \in recs : \A k \in recs : i <= k
-             IN got' = Append(got, [off |-> o, val |-> EntryAt(s, o).val,
-                                    skipped |-> IF SkipsNotCounted THEN 0 ELSE SkippedBefore(s, o),
+          /\ LET i == MaxOf({k \in recs : \A j \in recs : k <= j})
+                 e == EntryAt(s, i)
+                 o == Max(e.off, LastEnd)
+             IN got' = Append(got, [off |-> o, cnt |-> e.off + e.n - o, val |-> e.val,
+                                    pos |-> e.pos + o - e.off, tail |-> e.pos + e.n = e.of,
+                                    skipped |-> IF SkipsNotCounted \/ o > e.off THEN 0
+                                                ELSE SkippedBefore(s, i),
                                     by |-> vote[s].term])
     /\ UNCHANGED <<election, storage, machine, match, used, inst>>
 
@@ -546,6 +626,11 @@ Spec == Init /\ [][Next]_vars
 
 ----------------------------------------------------------------------------
 
+\* The offset after the committed sequence.
+CommittedNext ==
+    IF committed = <<>> THEN 1
+    ELSE committed[Len(committed)].e.off + Adv(committed[Len(committed)].e)
+
 TypeOK ==
     /\ \A s \in Servers :
         /\ role[s] \in {"follower", "candidate", "leader"}
@@ -556,7 +641,7 @@ TypeOK ==
         /\ inst[s].step \in {"none", "install", "purge"}
         /\ ~Idle(s) => LastIdx(s) < inst[s].snap.idx
     /\ acked \subseteq 1..MaxWrites
-    /\ LastOff <= Len(committed) \/ DeliverUncommitted
+    /\ LastEnd <= CommittedNext \/ DeliverUncommitted
 
 OneLeaderPerTerm == \A a, b \in elected : a[1] = b[1] => a[2] = b[2]
 
@@ -616,16 +701,37 @@ PurgedCoveredBySnapshot == \A s \in Servers : base[s].idx <= snap[s].idx
 \* record from what the subscriber was given.
 OffsetsDense ==
     \A k \in 1..Len(got) :
-        got[k].off = (IF k = 1 THEN 0 ELSE got[k - 1].off) + got[k].skipped + 1
+        got[k].off = (IF k = 1 THEN 1 ELSE got[k - 1].off + got[k - 1].cnt) + got[k].skipped
 
+IsBatch(c) == c.e.kind = "record"
+
+\* An offset names a committed batch and a position in it. No two committed
+\* batches share one, and a delivered offset names the record delivered.
 OffsetNeverReused ==
-    \A k \in 1..Len(got) : got[k].off <= Len(committed) =>
-        IsRecord(committed[got[k].off].e, got[k].val)
+    /\ \A x, y \in 1..Len(committed) :
+        (x < y /\ IsBatch(committed[x]) /\ IsBatch(committed[y])) =>
+            committed[x].e.off + committed[x].e.n <= committed[y].e.off
+    /\ \A k \in 1..Len(got) : got[k].off < CommittedNext =>
+        \E x \in 1..Len(committed) :
+            LET c == committed[x].e
+            IN /\ IsBatch(committed[x]) /\ c.val = got[k].val
+               /\ c.off <= got[k].off /\ got[k].off < c.off + c.n
+               /\ c.pos + got[k].off - c.off = got[k].pos
+
+\* The committed entries of a batch hold all of it, and every read ends at
+\* a batch's end: a reader that starts inside one gets the rest of it.
+BatchWhole ==
+    /\ \A x \in 1..Len(committed) : IsBatch(committed[x]) =>
+        LET v == committed[x].e.val
+            mine == {y \in 1..Len(committed) : IsBatch(committed[y]) /\ committed[y].e.val = v}
+        IN UNION {{committed[y].e.pos + q : q \in 0..(committed[y].e.n - 1)} : y \in mine}
+                = 0..(committed[x].e.of - 1)
+    /\ \A k \in 1..Len(got) : got[k].tail
 
 \* Counting only records gives the dense numbering consumers rely on.
 DeliveredInOrder ==
     LET recs == SelectSeq(committed, LAMBDA c : c.e.kind = "record")
-    IN \A k \in 1..Len(got) : got[k].off <= Len(committed) =>
+    IN \A k \in 1..Len(got) : got[k].off < CommittedNext =>
         k <= Len(recs) /\ recs[k].e.val = got[k].val
 
 VoteNeverLowers == [][\A s \in Servers : VoteGE(voteDisk'[s], voteDisk[s])]_vars
@@ -643,7 +749,8 @@ QuiescentServed ==
         /\ \A s \in Servers : applied[s] = applied[l]
         /\ (Consumer /\ MaxSnapshots = 0) =>
                 \A i \in 1..Len(log[l]) : log[l][i].kind = "record" =>
-                    \E k \in 1..Len(got) : got[k].off = i
+                    LET last == log[l][i].off + log[l][i].n - 1
+                    IN \E k \in 1..Len(got) : got[k].off <= last /\ last < got[k].off + got[k].cnt
 
 \* What the subscriber is owed: once nothing more can happen under a leader
 \* no broker has outvoted, it holds every acknowledged record. Without a
