@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795807827443,
+  "lastUpdate": 1795808259710,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -93852,6 +93852,72 @@ window.BENCHMARK_DATA = {
             "range": "25.94",
             "unit": "us",
             "extra": "trials: 5\nmedian: 538.00\nmean: 525.20\nstdev: 25.94\ncv: 4.94%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "a287ffdc937dfb92371670762d785f4216587d06",
+          "message": "design: a Raft entry is a record batch, and the offset is no longer the Raft index (#3359) (#3374)\n\n* docs: design for Raft entries as record batches (#3359)\n\nA Raft entry becomes one record batch with its base offset and count in\nthe header, so index and offset separate, internal entries take no\noffsets and a batch commits or is cut whole. Covers the frame, the offset\nmap for reads, trims, snapshots and re-form, what replaces pieces and\nskipped_before, groups and cache shards, the TLA changes, the PR sequence\nand what must land before format v9 freezes.\n\nSpec-Unaffected: design doc only\n\n* docs: fold the #3359 decisions into the batch entries design\n\nRefused cache writes keep their offsets, a re-form loss is reported\nthrough skipped_before with a reason (negotiated on the wire, withheld\nfrom clients that cannot read it), the 32 MiB cap stays and a stream id\nis reserved in the frame header.\n\nSpec-Unaffected: design doc only\n\n* docs(storage): conditional pieces and membership records are written\n\nstorage-format.md said nothing writes a conditional piece and that client\nreads do not resolve one, and RecordMark::Membership said nothing writes\none. A Raft shard writes both, and the read paths resolve pieces.\n\nSpec-Unaffected: doc and comment fixes only\n\n* docs: the #3359 skip reason is 0.8 baseline wire, not negotiated\n\nPer #3362 every 0.8 client gets the reason; drop the extended bit, the\nfeature bit and the path for a client that did not negotiate it.\n\nSpec-Unaffected: design doc only\n\n* docs: #3359 design review fixes: re-form and restore bounds in offsets\n\nEvery re-form and restore start bound gets an offset form, with\nraft-reserved, the time line and the folded bounds in alone_cluster.rs\nand abandon.rs restated; offset bounds land before any entry holds more\nthan one record; the re-form jump splits into lost and skipped reasons;\nthe Kafka empty batch stays; each member decides a conditional from its\nown base; step 3's reader-visible changes move into step 3; everything\nlands before the v9 freeze.\n\nSpec-Unaffected: design doc only\n\n* docs: #3359 design: offsets leave indexes in one step; rate cap at propose\n\nCount-0 entries keep taking an offset until the step that moves the read\nbound, publish answer, conditional comparison, cache versions and floors\nto offsets, with a per-step table of which number each uses. The rate cap\nis a token bucket at propose that lets one entry run into debt, with the\nburst in the restore gap. Names raft_floor.rs and the broker's RaftFloor.\n\nSpec-Unaffected: design doc only\n\n* docs: #3359 design: last review fixes\n\nStep 4 starts a new epoch's offset at its first index and keeps gap\npadding until step 5, is one unsplittable PR after step 3 moves every\nconsumer to offset-typed calls, and takes the per-member conditional\ndecision. A new leader's token bucket starts empty, and the restore gap\nmust cover the burst, which the 2^32 MIN_OFFSET_GAP does.\n\nSpec-Unaffected: design doc only",
+          "timestamp": "2026-11-27T19:31:24Z",
+          "tree_id": "4513b1ea3b40af852267b565ceb5a169f1eb9e4f",
+          "url": "https://github.com/GetFelix/felix/commit/a287ffdc937dfb92371670762d785f4216587d06"
+        },
+        "date": 1795808232961,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 97,
+            "range": "0.84",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 97.00\nmean: 96.80\nstdev: 0.84\ncv: 0.86%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 131,
+            "range": "1.14",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 131.00\nmean: 131.40\nstdev: 1.14\ncv: 0.87%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 178,
+            "range": "17.01",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 178.00\nmean: 179.80\nstdev: 17.01\ncv: 9.46%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 134,
+            "range": "0.71",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 134.00\nmean: 134.00\nstdev: 0.71\ncv: 0.53%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 268,
+            "range": "7.19",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 268.00\nmean: 269.80\nstdev: 7.19\ncv: 2.67%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 632,
+            "range": "617.50",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 632.00\nmean: 836.00\nstdev: 617.50\ncv: 73.86%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
