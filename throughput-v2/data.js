@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795738007221,
+  "lastUpdate": 1795738486954,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -72436,6 +72436,58 @@ window.BENCHMARK_DATA = {
             "range": "4175.18",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 811177.74\nmean: 809810.30\nstdev: 4175.18\ncv: 0.52%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "31ea4540f120d88cdfdcef5abcb36a8b949c5eb6",
+          "message": "fix(raft): a restore re-form on one copy is refused when its start does not clear earlier epochs (#3297) (#3311)\n\n* fix(raft): a restore waits until its time line clears the floor and every earlier epoch (#3291)\n\nA re-form from a backup point took the larger of the time line plus gap\nand the earlier epochs' first indexes. Being just above an earlier first\nindex is not enough when the clock that planned it ran ahead, or when it\nwas planned with a larger gap: the restore could start below offsets that\nepoch had acknowledged and give them out again.\n\nThe planner now refuses a restore (LineBehind) unless its line plus gap\nis more than 2^32 + (2^40 - gap) above the floor and every earlier first\nindex, which covers any earlier gap up to 2^40 and clocks within about\nfour minutes. The control plane refuses an offset_gap above 2^40, which\nthat bound and the abandon's assume.\n\nSpec-Unaffected: the change only refuses restore plans; every behaviour left is one FelixRaftRestore and FelixRaftRestoreRepeated already allow\n\n* fix(raft): a group of one re-formed after a restore waits until its time line clears every earlier epoch (#3297)\n\nThe standalone and cluster-led RF 1 re-form after a restore took its first\nindex from max(first, line) on the broker's clock and never refused. After\nthe clock stepped back by S, or on a host whose clock was S behind, a plan\nmade within 2S of an earlier epoch's start put the line below offsets that\nepoch had acknowledged.\n\nThe plan is now refused unless the line clears the copy's last index, the\ncontrol plane's offset floor (in a cluster) and every earlier epoch's first\nindex by 2^32, the margin a backup-point restore takes (restore_line_clears).\nThat is about 4.4 minutes of clock. The shard stays closed, the copy is not\nstopped, and the next pass plans again. Re-forms after a relaxed crash are\nnot on the clock and never wait.\n\nThe LineBehind refusal now carries the gap and says how long to wait, how\nmuch of that a short gap adds, and when the wait points at a clock behind.\nfelixctl refuses an --offset-gap above 2^40 before sending.\n\nSpec-Unaffected: the change only refuses plans; every start left is one FelixRaftRestoreRepeated's Line rule with the broker's clock already allows\n\n* fix(raft): scope the restore line claim to epochs the copy holds, and test the retry (#3297)\n\nThe docs now say the check sees only epochs in the restored copy (or the\ncontrol plane's record), name the standalone old-backup case the code does\nnot enforce, and keep the advice to fix a clock set back. The wait is shown\nin tenths of a minute, so the log and the docs both say 4.4 minutes. A test\nchecks that a refused restore is refused again on the next pass, then\nre-forms on the line once the clock passes the bound.\n\nSpec-Unaffected: docs, log text and a test only",
+          "timestamp": "2026-11-27T00:08:35Z",
+          "tree_id": "e5f3094b4de95b605ab270b3b44f1fdf0f91a719",
+          "url": "https://github.com/GetFelix/felix/commit/31ea4540f120d88cdfdcef5abcb36a8b949c5eb6"
+        },
+        "date": 1795738486265,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 517635.96,
+            "range": "38288.71",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 517635.96\nmean: 511942.44\nstdev: 38288.71\ncv: 7.48%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 517635.96,
+            "range": "38288.71",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 517635.96\nmean: 511942.44\nstdev: 38288.71\ncv: 7.48%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 118892.57,
+            "range": "1907.79",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 118892.57\nmean: 119097.91\nstdev: 1907.79\ncv: 1.60%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1188925.74,
+            "range": "19077.90",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1188925.74\nmean: 1190979.12\nstdev: 19077.90\ncv: 1.60%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
