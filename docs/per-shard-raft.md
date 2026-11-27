@@ -475,6 +475,12 @@ the top term is kept whole. Offsets are not reused: the vouch rule, the
 floor and the reservations are unchanged. A record that every copy lost in
 the power cut is still lost, as relaxed fsync allows.
 
+One case still cuts to the saved commit (issue #3351). A leader that
+restarts while its followers are held stands for election alone, so its
+vote is in a term above every entry read. T is that vote's term, no copy
+is kept whole, and the plan needs the loss accepted even though every vote
+is known.
+
 **Per directory, not only per root.** The check above judges a data root,
 and the copy id is per shard directory, so two more things are checked when
 a member opens its directory:
