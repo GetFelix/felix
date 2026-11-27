@@ -478,6 +478,7 @@ async fn a_wiped_copy_comes_back_under_a_new_id_that_does_not_vote() {
 
     let request = RaftRequest {
         group: group(0),
+        reform_epoch: 0,
         to: old.clone(),
         beat: crate::raft::network::Beat::default(),
         report: crate::raft::network::Ask::Nothing,
@@ -1638,6 +1639,7 @@ async fn flush_failed_copy(name: &str, marker_fails: bool) {
     assert_ne!(new.copy, old.copy);
     let request = RaftRequest {
         group: group(0),
+        reform_epoch: 0,
         to: old.clone(),
         beat: crate::raft::network::Beat::default(),
         report: crate::raft::network::Ask::Nothing,
@@ -1969,6 +1971,7 @@ async fn a_copy_stopped_by_an_unfinished_reform_rejoins_under_a_new_id() {
     // A vote for a candidate far ahead is refused, not granted.
     let ask_vote = || RaftRequest {
         group: group(0),
+        reform_epoch: 0,
         to: old.clone(),
         beat: crate::raft::network::Beat::default(),
         report: crate::raft::network::Ask::Nothing,

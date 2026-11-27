@@ -105,6 +105,9 @@ impl GroupRuntime {
         }
         let admission = self.admission(&request.group);
         match self.addressed(request) {
+            Some(member) if member.reform_epoch != request.reform_epoch => {
+                Err(other_epoch(&member, request))
+            }
             Some(member) => match member
                 .outsider(from, sender(&request.body), admission.as_deref())
                 .await
@@ -136,6 +139,7 @@ impl GroupRuntime {
     ) -> Result<RaftReply, Refused> {
         let RaftRequest {
             group,
+            reform_epoch: _,
             to,
             beat,
             report,
@@ -197,6 +201,23 @@ fn impersonation(from: &str, request: &RaftRequest) -> Option<Refused> {
         }
         _ => None,
     }
+}
+
+/// The refusal of a message from another re-form epoch than `member`'s
+/// copy. A copy the record's epoch has left still holds its old membership,
+/// and taking its vote or append would let it lead beside the new group or
+/// cut the new group's log (#3289).
+fn other_epoch(member: &Group, request: &RaftRequest) -> Refused {
+    tracing::debug!(
+        group = %request.group(),
+        ours = member.reform_epoch,
+        theirs = request.reform_epoch,
+        "refusing a Raft message from another re-form epoch",
+    );
+    Refused::Unreachable(format!(
+        "the member here is of re-form epoch {} and the message is from epoch {}",
+        member.reform_epoch, request.reform_epoch
+    ))
 }
 
 /// The member `body` says sent it. A read index names none.

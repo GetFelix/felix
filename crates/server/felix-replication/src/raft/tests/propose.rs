@@ -625,6 +625,7 @@ async fn a_token_does_not_leave_with_an_append() {
             Duration::from_millis(200),
         )),
         Arc::new(super::super::reach::Refusals::new(group(0))),
+        0,
         Arc::new(timers().raft(ShardKind::Stream).expect("timers")),
         Arc::default(),
     );
@@ -752,6 +753,7 @@ async fn a_record_past_the_heartbeat_gets_the_time_it_needs() {
             Duration::from_millis(200),
         )),
         Arc::new(super::super::reach::Refusals::new(group(0))),
+        0,
         Arc::new(timers().raft(ShardKind::Stream).expect("timers")),
         Arc::default(),
     );

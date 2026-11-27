@@ -198,19 +198,13 @@ pub(crate) struct RaftShards {
     alone_later: parking_lot::Mutex<HashMap<ShardKey, u64>>,
 }
 
-/// Whether a copy of `copy_epoch` is left behind by a record at `epoch`
-/// with `bases`: an epoch after it starts from an empty base, as an
-/// abandon's does, so the copy holds a log the group gave up. Bases that do
-/// not cover every epoch say nothing about how each started, so any later
-/// epoch counts.
-fn left_behind(epoch: u64, bases: Option<&[EpochBase]>, copy_epoch: u64) -> bool {
-    let after = usize::try_from(copy_epoch).unwrap_or(usize::MAX);
+/// Whether a copy of `copy_epoch` is left behind by a record at `epoch`.
+/// Every re-form stops the copies it reads and starts them in the new
+/// epoch, so a copy that is neither stopped nor mid-start and names an
+/// older epoch was never read: it holds its old membership and would elect
+/// itself in it. A copy ahead of the record is a stale view, never closed.
+fn left_behind(epoch: u64, copy_epoch: u64) -> bool {
     copy_epoch < epoch
-        && bases.is_none_or(|bases| {
-            bases
-                .get(after..)
-                .is_some_and(|later| later.iter().any(|base| base.base_last.is_none()))
-        })
 }
 
 /// A shard directory an earlier build wrote as a member with no copy id.
@@ -226,9 +220,10 @@ pub(crate) struct CarriedOver {
     dir: String,
 }
 
-/// A copy of a group epoch an operator has since abandoned. Opened, it
-/// would elect itself in its old membership and serve a log the group
-/// gave up, so it stays closed. Its data is left for the operator.
+/// A copy of a group epoch the shard's record has left, which no re-form
+/// read. Opened, it would elect itself in its old membership and serve a
+/// log the group moved on from, so it stays closed. Its data is left for
+/// the operator, and a later re-form that reads it starts it as a learner.
 #[derive(Debug, thiserror::Error)]
 #[error(
     "{dir} is a copy of group epoch {copy_epoch}, and the shard's record is at epoch {epoch}; \
@@ -773,7 +768,6 @@ impl RaftShards {
         let epoch = assignment.group_epoch();
         let behind = {
             let dir = dir.clone();
-            let bases = assignment.epoch_bases();
             tokio::task::spawn_blocking(move || -> std::io::Result<Option<u64>> {
                 if felix_storage::raft_copy::stopped(&dir)?.is_some()
                     || felix_storage::raft_copy::start_due(&dir, epoch)?
@@ -781,7 +775,7 @@ impl RaftShards {
                     return Ok(None);
                 }
                 let copy_epoch = felix_storage::raft_copy::group_epoch(&dir)?.unwrap_or(0);
-                Ok(left_behind(epoch, bases.as_deref(), copy_epoch).then_some(copy_epoch))
+                Ok(left_behind(epoch, copy_epoch).then_some(copy_epoch))
             })
             .await
             .context("epoch check task")??
@@ -1708,23 +1702,20 @@ impl EngineShards for RaftShards {
                     self.close_with_stream(&key, member).await;
                 }
             }
-            // A member open in an epoch the operator has since abandoned,
-            // as on a broker cut off meanwhile, keeps its old membership and
-            // would go on leading it. The open below refuses it.
+            // A member open in an epoch the record has left, as on a broker
+            // cut off while the group re-formed without it, keeps its old
+            // membership and would go on leading it. The open below refuses
+            // it.
             let left: Vec<ShardKey> = {
                 let epochs = self.epochs.lock();
                 open.iter()
                     .filter(|(key, member)| {
                         fed.get(*key).is_some_and(|(assignment, _)| {
-                            // The same test as the open, short bases included,
-                            // so a member the open would refuse is not kept.
+                            // The same test as the open, so a member the open
+                            // would refuse is not kept.
                             member.incarnation == assignment.incarnation
                                 && epochs.get(*key).is_some_and(|epoch| {
-                                    left_behind(
-                                        assignment.group_epoch(),
-                                        assignment.epoch_bases().as_deref(),
-                                        epoch.unwrap_or(0),
-                                    )
+                                    left_behind(assignment.group_epoch(), epoch.unwrap_or(0))
                                 })
                         })
                     })
@@ -2122,11 +2113,11 @@ impl EngineShards for RaftShards {
     /// between never reports an older term's marks under the new one.
     ///
     /// Every member open here is listed, not only the ones the copy id
-    /// report holds: that set leaves out a member at an unproven epoch or
-    /// off placement, which still votes and may lead. A shard no broker
-    /// listed would be read as a hybrid one on placement's leader, which
-    /// does not lead it (#2995), and a leader left out would hide its term
-    /// from the collector's newest-term check.
+    /// report holds: that set leaves out a member off placement, which
+    /// still votes and may lead. A shard no broker listed would be read as
+    /// a hybrid one on placement's leader, which does not lead it (#2995),
+    /// and a leader left out would hide its term from the collector's
+    /// newest-term check.
     fn backup_members(&self) -> Vec<super::routing::BackupMember> {
         self.runtime
             .held_groups()

@@ -1180,6 +1180,7 @@ async fn a_snapshot_in_pieces_is_installed_at_the_last() {
     let piece = |term, data_len: u64, offset: usize, data: Bytes| {
         let request = RaftRequest {
             group: group(N),
+            reform_epoch: 0,
             to: MemberId::new(behind, 1),
             beat: crate::raft::network::Beat::default(),
             report: crate::raft::network::Ask::Nothing,
@@ -1228,6 +1229,7 @@ async fn a_snapshot_in_pieces_is_installed_at_the_last() {
 fn sent(broker: &str, body: super::super::network::Request) -> RaftRequest {
     RaftRequest {
         group: group(N),
+        reform_epoch: 0,
         to: MemberId::new(broker, 1),
         beat: crate::raft::network::Beat::default(),
         report: crate::raft::network::Ask::Nothing,
@@ -1420,6 +1422,7 @@ async fn a_snapshot_this_member_cannot_read_is_refused_and_it_keeps_running() {
     let vote = <VoteOf<ShardTypes> as RaftVote>::from_leader_id(leads, true);
     let request = RaftRequest {
         group: group(N),
+        reform_epoch: 0,
         to: MemberId::new(behind, 1),
         beat: crate::raft::network::Beat::default(),
         report: crate::raft::network::Ask::Nothing,
