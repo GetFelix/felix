@@ -32,9 +32,10 @@ impl Connection {
     /// apart.
     ///
     /// Bound to this broker: a shard led elsewhere is refused with a
-    /// [`crate::NotLeaderError`], which a [`crate::Client`] follows. Fails
-    /// with [`TrimError::Unsupported`], sending nothing, when the broker did
-    /// not advertise [`felix_wire::FEATURE_HEAD_TRIM`].
+    /// [`crate::NotLeaderError`], which a [`crate::Client`] follows.
+    /// [`felix_wire::FEATURE_HEAD_TRIM`] is in the baseline, so the client
+    /// always sends the trim; a broker that has not finalized `head_trim`
+    /// refuses it with `feature_not_enabled`.
     #[allow(clippy::too_many_arguments)]
     pub async fn trim_before(
         &self,

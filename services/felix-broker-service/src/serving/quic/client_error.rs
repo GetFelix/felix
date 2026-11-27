@@ -1,9 +1,9 @@
 //! What a client is told when its request fails.
 //!
 //! Every failure site states a code through [`ClientError`], and the writer
-//! decides per control stream whether the code reaches the wire: only a client
-//! that offered `FEATURE_ERROR_CODES` gets it, so every other client sees the
-//! same frames it always did. See the error-code table in `docs/protocol.md`.
+//! decides per control stream how the code reaches the wire. Every client is
+//! in the baseline and offers `FEATURE_ERROR_CODES`, so every client gets the
+//! code. See the error-code table in `docs/protocol.md`.
 
 use felix_wire::{ErrorCode, ErrorDetail, Message, RetryClass};
 

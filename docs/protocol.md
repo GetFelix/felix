@@ -330,18 +330,18 @@ on `subscribed`. A client sends it only to a broker that advertised
 `FEATURE_SUBSCRIBE_QUEUE`, since an older broker ignores the field. There is
 no matching field for the overflow policy: under `block` a subscriber's full
 queue makes every publisher on the shard wait, so it stays an operator setting
-for the stream. A reader that cannot tolerate gaps relies on
-`subscription_lagged` and a resume from the log instead.
+for the stream. `DropNew` still drops, but every subscription ends with
+`subscription_lagged` at its first dropped batch, so a reader resumes from the
+log instead of continuing past a gap.
 
 `end` (optional, `u64`) bounds the subscription: it delivers `[start, end)` of a
 durable stream shard and then ends with [`subscription_ended`](#subscriptionended-server---client).
-It needs negotiated event offsets and a durable stream, and is refused with
+It needs a durable stream, and is refused with
 `invalid_request` otherwise. An `end` at or below where the history ends (`live_offset`) is read from
 history alone and never joins fanout; one above it replays up to the tail, then
 follows live delivery and cuts the batch that crosses `end`. A bounded
-subscription also ends at its first queue drop with `subscription_lagged`,
-whether or not the client offered `FEATURE_SUBSCRIPTION_LAGGED`, because a hole
-below `end` would break what it asked for. A client sends `end` only to a broker
+subscription ends at its first queue drop with `subscription_lagged`, like
+every subscription, because a hole below `end` would break what it asked for. A client sends `end` only to a broker
 that advertised `FEATURE_SUBSCRIBE_END`: an older broker ignores the field and
 would run on into live delivery. `end` should be one past the offset of a record
 (for example a `live_offset` or a page's `next_offset`); an `end` that falls on
@@ -491,9 +491,10 @@ latter. The broker sends it as
 soon as the events queued before the drop are written, not when the next
 publish arrives, and finishes the stream after it.
 
-Sent only to a client that offered `FEATURE_SUBSCRIPTION_LAGGED` and negotiated
-`FLAG_EVENT_BATCH_OFFSETS`. Any other client keeps its subscription after a drop
-and sees it only as a jump in offsets on a later event. When the shard also
+Every subscription ends this way at its first dropped batch: both
+`FEATURE_SUBSCRIPTION_LAGGED` and `FLAG_EVENT_BATCH_OFFSETS` are in the baseline,
+so every client reads it. `DropNew` still drops, but a client can no longer keep
+going and see the drop as a jump in offsets. When the shard also
 moved, this frame is sent rather than `shard_moved`, since resuming where the
 move says would skip the dropped records.
 
@@ -2700,8 +2701,9 @@ Two uses:
 - **Checkpointing.** A client records the offset it last handled and resumes at
   that offset plus one after a reconnect.
 - **Detecting loss.** Subscriber queues drop under `DropNew`, so consecutive
-  delivered batches can have a gap. Without offsets that loss is invisible; with
-  them it is a discontinuity the client can see and act on. Not every offset
+  delivered batches can have a gap, which the offsets make visible. A
+  subscription ends with `subscription_lagged` at its first dropped batch, so
+  the gap is normally the last thing a client sees on it. Not every offset
   holds an event, though (below), so the number of events dropped between an
   event at `previous` and the next at `offset` is
   `offset - previous - 1 - skipped_before`. Before the first event there is no

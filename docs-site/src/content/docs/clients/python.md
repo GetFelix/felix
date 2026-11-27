@@ -794,8 +794,7 @@ and the subscription resubscribes after the last record it delivered,
 catching up from the log. A shard reader of a sharded subscription reports the
 shard lost and recovered while it does.
 
-Against a broker that predates that, or on an in-memory stream, a subscriber
-can still silently miss records. On a durable stream every
+On an in-memory stream a subscriber can still silently miss records. On a durable stream every
 delivered event carries its log offset, and **a jump in them is a drop**. The
 exception is the generation-start record a leader writes when it takes or
 reopens the shard, which takes an offset; the next event reports it in `skipped_before`:

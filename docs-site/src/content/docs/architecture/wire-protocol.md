@@ -511,9 +511,9 @@ queue on the broker dropped records; the broker ends the stream after it.
 ```
 
 **Semantics**:
-- Sent only to a client that offered `FEATURE_SUBSCRIPTION_LAGGED` and
-  negotiated event offsets. Any other client keeps the subscription and sees a
-  drop only as a jump in offsets on a later event
+- Every subscription ends with it at its first dropped batch. The feature and
+  event offsets are in the baseline, so every client reads it. The queue still
+  drops under `DropNew`, but a client cannot keep going past the gap
 - `resume_from` is the first offset the subscriber's queue dropped (or where a
   resumed subscription's catch-up ended, if the drops before it were filled
   from disk). Nothing at or above it was sent. A frame below it can still have
@@ -604,8 +604,8 @@ refuses reads (`fenced`), both retryable. A `ClusterSubscription` that loses
 its connection resumes an idle plain subscription from that `start_offset`, so
 without a gap, and can fail with a `too_old` cursor if retention passed it in
 the meantime. `publish_ok` answers an acked publish and `cache_ok` a
-cache write that carried a `request_id`. Plain `ok` answers `auth` from a client
-that offered no flags, and a cache write without a `request_id`.
+cache write that carried a `request_id`. Plain `ok` answers a cache write
+without a `request_id`.
 
 #### Error
 
@@ -621,15 +621,16 @@ A request failed.
 }
 ```
 
-`message` is prose for people. `code`, `retry` and `detail` are sent only to a
-client that offered `FEATURE_ERROR_CODES`, and `detail` may be absent even then.
+`message` is prose for people. `code` and `retry` go to every client, and
+`detail` may be absent.
 `publish_error` carries the same fields next to its `request_id`.
 
 `code` is one of `unauthenticated`, `forbidden`, `not_found`,
 `invalid_request`, `shard_unavailable`, `not_leader`, `quorum_timeout`,
 `leadership_lost`, `unacknowledged`, `overloaded`, `limit_exceeded`,
 `draining`, `internal`, `storage`, `stale_claim`, `revoked`,
-`stale_width`, `feature_not_enabled` or `stream_has_commits`. A client must
+`stale_width`, `feature_not_enabled`, `stream_has_commits` or
+`below_baseline`. A client must
 accept a code it does not know. An `error` can also be the last frame on a
 subscription's or cache watch's event stream, as when the credential it was
 opened with is revoked. `retry` says what the client may do next: send again, wait
@@ -825,21 +826,16 @@ The client offers its set, and the broker answers with its own:
 
 The client must decide encodings from the *advertised* value, never from its own set.
 
-Both directions degrade cleanly, because decoders ignore unknown fields:
+Every 0.8 client and broker has to offer the whole baseline: the frame flags and
+features listed in the [specification](https://github.com/GetFelix/felix/blob/main/docs/protocol.md#08-baseline).
+A broker refuses an `auth` that is missing a baseline bit, or carries no
+`client_flags`, with a fatal `below_baseline` error (code 20), before it checks
+the token. A client refuses an `auth_ok` that is short of the broker baseline.
+There is no plain `ok` answer to `auth`, so there is no older behaviour to fall
+back to.
 
-| Client | Broker | Outcome |
-| --- | --- | --- |
-| negotiating | negotiating | `auth_ok`; the client may use any advertised bit |
-| negotiating | legacy | `client_flags` ignored, plain `ok` returned; client assumes `ORIGINAL_V1_FLAGS` and sends acked publishes as JSON |
-| legacy | negotiating | nothing offered, so the broker replies `ok` and never sends a frame the client cannot parse |
-| legacy | legacy | unchanged |
-
-`ORIGINAL_V1_FLAGS` (`0x0001 | 0x0002 | 0x0004`) is what an absent advertisement
-resolves to: the bits that predate negotiation. It is frozen; adding to
-it would make clients assume support that older brokers lack.
-
-The broker sends `auth_ok` only in reply to an `auth` that offered `client_flags`, so
-a client too old to know the variant can never receive it.
+`ORIGINAL_V1_FLAGS` (`0x0001 | 0x0002 | 0x0004`) is frozen and no longer stands
+for anything a peer can send.
 
 ### Feature bits
 

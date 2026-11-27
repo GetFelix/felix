@@ -204,14 +204,14 @@ pub(super) async fn authenticate(
                             // Likewise answered for a durable stream and
                             // refused for an in-memory one.
                             | felix_wire::FEATURE_STREAM_READ
-                            // Codes are sent only to a client that offered
-                            // the bit; advertising it tells that client an
-                            // error without one is not a gap in this broker.
+                            // Part of the baseline: codes go to every
+                            // client.
                             | felix_wire::FEATURE_ERROR_CODES
-                            // Sent only to a client that offered it, when a
-                            // shard it reads moves away.
+                            // Sent to every client when a shard it reads
+                            // moves away.
                             | felix_wire::FEATURE_SHARD_MOVED
-                            // Likewise, when a subscriber's queue drops.
+                            // Every subscription ends with it at its first
+                            // dropped batch.
                             | felix_wire::FEATURE_SUBSCRIPTION_LAGGED
                             // An unknown request is answered, not fatal, for a
                             // client that offered the bit.
