@@ -332,9 +332,15 @@ least 2^14 per millisecond of the broker's clock plus 2^40. A consumer that
 kept an offset from after the copy finds no record there, and no new record
 ever takes it. This holds under every fsync mode, as long as a shard
 averaged at most 2^13 offsets per millisecond since its last restore and the
-broker's clock has not gone back between the two restores. If the clock was
-set back, fix it, or wait until it is past the time of the last restore,
-before starting the broker.
+broker's clock has not gone back between the two restores.
+
+A shard whose copy holds an epoch that began less than about 4.4 minutes of
+clock before the restore waits until that time has passed, then starts by
+itself; the log says how long. A much longer wait means the clock is behind
+the one that started that epoch. The broker sees only epochs in the restored
+copy: a backup taken before the last restore knows nothing of that restore's
+epoch, so nothing checks it. If the clock was set back, fix it, or wait
+until it is past the time of the last restore, before starting the broker.
 
 :::caution[Always run the tool]
 Step 3 is what tells the broker the directory was put back. Nothing inside

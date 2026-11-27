@@ -5965,7 +5965,12 @@ target counter (metadata level 36):
   counter the dropped target reached (`raft_target_counter`, metadata level
   50), so the next target is newer than the membership the group already
   made. A leader takes only a newer version, so a count started again would
-  leave the group on its old voters. A placement write that
+  leave the group on its old voters. A new broker that dies before it
+  reports would hold the target dropped for good, so placement gives its
+  seat to another live broker once it is lost, provided the group formed and
+  its reported voters do not name it (`docs/control-plane.md`, "Raft
+  shards"). The group never heard of the set that named it, and the next
+  set still needs a majority of the reported voters. A placement write that
   keeps the set, a leader report and a doomed-set write leave it alone. So
   within one incarnation a version names exactly one member set.
 - **It counts within one stream incarnation.** A stream deleted and
@@ -6507,7 +6512,8 @@ operator command ("Re-forming a group"). See Questions, 1.
 In a cluster, a copy that a relaxed crash rotated re-forms itself through
 the control plane ("A cluster's RF 1 shard re-forms itself"), and needs no
 operator while the fleet has finalized `raft_alone_reform`. Until it has, the
-shard stays not ready, as before, for an operator's re-form.
+shard stays not ready for an operator's re-form, and re-forms itself once the
+fleet finalizes it.
 
 ### A cluster's RF 1 shard re-forms itself
 
@@ -6542,6 +6548,15 @@ where an operator's own stop leaves it, so an operator's re-form still
 works: its stop round answers, and the next pass starts the copy from the
 epoch the operator's re-form wrote.
 
+The open may run before it can decide: before registration has said which
+fleet features are enabled, before the broker can reach the control plane,
+or on an assignment that does not yet name this broker the group's only
+broker. The member then opens held, with its copy rotated and the old one
+kept, and the broker logs why. The feed pass checks those conditions again
+and, once they all hold, closes the member and opens it again, and that open
+re-forms it. Only a member that never formed is reopened, so nothing it
+served is lost, and the reopen runs every check above again.
+
 Why it is safe:
 
 - An RF 1 shard acks on its one copy, so the ack level does not matter.
@@ -6555,6 +6570,10 @@ Why it is safe:
 - An RF 3 group that lost members is refused by the control plane's atomic
   check, and the broker only asks when membership and placement both name
   only itself.
+- After a restore the plan's line is read from the broker's clock, as on a
+  standalone broker, and the same refusal applies, with the offset floor
+  the broker's assignment carries as one more index the line must clear.
+  The control plane checks only that the first index is above the floor.
 - A directory restored from before an earlier re-form plans an epoch the
   record already holds, for another copy, so the broker neither asks nor
   stops it. A start from that record's seed would be refused anyway: the
@@ -6594,11 +6613,47 @@ re-forms the same way, in every fsync mode:
    re-form of its own. So when a restore is among the rotations since the
    kept copy was minted, the epoch also starts no lower than the time line
    a backup-point restore uses ("A restore from a backup point is a
-   re-form"), read from the broker's own clock. That assumes the clock at a
-   later restore is not behind the clock at an earlier one by more than the
-   offsets written in between could cover. If the clock was set back, fix
+   re-form"), read from the broker's own clock, with the default gap.
+
+   Being above an earlier epoch is not enough when the clock is behind the
+   one that planned it: after the clock steps back by S, or on a host whose
+   clock is S behind the old one, a plan made a true time E after that
+   epoch began has moved the line only `2^14 * (E - S)`, while the epoch
+   can have given out `2^13 * E`. Any E up to 2S gives offsets out again.
+   So the plan is refused unless its line clears the copy's last index,
+   the control plane's offset floor in a cluster, and every earlier epoch's
+   first index by 2^32, the margin a backup-point restore takes. That is
+   2^18 ms, about 4.4 minutes of clock. The broker leaves the shard closed,
+   with the copy not stopped, and plans again on each pass, so the shard
+   starts by itself once the line clears. The log line says how long that
+   is. If the wait is longer than about 4.4 minutes, the clock is behind
+   the one that planned the last epoch; fix it, or wait.
+
+   Why it is safe: the check sees only epochs the restored copy holds, or,
+   in a cluster, the control plane's record holds. For such an epoch, with
+   S at most 2^18 ms, a plan let through has `E - S > 2^18 ms >= S`, so
+   E > 2S and the line is past everything that epoch gave out. It assumes,
+   as every restore does, a shard that gives out at most 2^13 offsets per
+   millisecond, and a clock never more than about 4.4 minutes behind the
+   one that planned an earlier epoch. A clock further behind is refused for
+   as long as it reads below that epoch's plan time plus the margin, but
+   not for the whole 2S.
+
+   What the code does not enforce: a standalone broker restored from a
+   backup taken before its last restore's epoch has no record of that
+   epoch, so nothing refuses a plan made too soon after it. In a cluster
+   the control plane's record holds it, and a plan that does not lead to
+   that record is refused. On a standalone broker the line alone covers it
+   only when the clock has not gone back. If the clock was set back, fix
    it, or wait until it has passed the time of the last restore, before
-   starting the broker. The tool writes
+   starting the broker.
+
+   Only restores wait: a relaxed crash's epoch starts past the copy's own
+   reservation, not on the clock, so an RF 1 shard that crashes twice in a
+   minute re-forms each time with no wait. A second restore within about
+   4.4 minutes of the first waits out the rest of that time.
+
+   The tool writes
    `restore-pending` first and removes it last, and a start that finds it
    refuses, so a crash part way through the tool never starts the restored
    data under its old id. A copy put back without the tool, by hand or by
