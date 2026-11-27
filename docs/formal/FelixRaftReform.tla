@@ -108,8 +108,9 @@
 (*                         With Kept a loss is any record no copy read     *)
 (*                         vouched for; KeptLossBound bounds that.         *)
 (*   KeptLossBound      -- with Kept, in an unmarked group where no vote   *)
-(*                         read is above every entry read, no record a     *)
-(*                         read copy holds below its epoch's cap is lost.  *)
+(*                         that a majority reached is above every entry    *)
+(*                         read, no record a read copy holds below its     *)
+(*                         epoch's cap is lost.                            *)
 (*   StateMachineSafety -- no index is committed with two different        *)
 (*                         entries, in one epoch or across epochs, except  *)
 (*                         over a documented loss.                         *)
@@ -167,6 +168,16 @@
 (*                         first index just above the floor, "zero" has    *)
 (*                         the blank copy form from index 0, and "open"    *)
 (*                         lets a copy behind the abandoned epoch open.    *)
+(*                                                                         *)
+(* Two more are set by override in a cfg, so the other cfgs stay as they   *)
+(* are:                                                                    *)
+(*                                                                         *)
+(*   Campaigns      -- FALSE, or CampaignsOn: a voter can stand for        *)
+(*                     election and lose, keeping the vote it gave itself  *)
+(*                     (Campaign).                                         *)
+(*   LoneVoteCounts -- FALSE, or LoneVoteCountsOn: removes a rule. Every   *)
+(*                     vote read counts toward T, not only one a majority  *)
+(*                     of some voter set reached (#3351).                  *)
 (*                                                                         *)
 (* Three constants are not knobs:                                          *)
 (*                                                                         *)
@@ -428,6 +439,24 @@ Elect(b, Q) ==
     /\ UNCHANGED diskVars
 
 Leads(l) == role[l] = "leader" /\ ~retired[l] /\ Alive(l)
+
+Campaigns == FALSE
+CampaignsOn == TRUE
+
+\* A voter stands for election and loses. Its vote for itself in the next
+\* term is persisted though no quorum followed, so a vote can sit above
+\* every entry with no leader behind it (#3351).
+Campaign(b) ==
+    /\ Campaigns
+    /\ Alive(b)
+    /\ ~retired[b]
+    /\ role[b] = "follower"
+    /\ term[b] < MaxTerm
+    /\ Mid(b) \in Voters(Config(b))
+    /\ term' = [term EXCEPT ![b] = @ + 1]
+    /\ UNCHANGED <<ep, cid, role, log, commit, match, retired, boot, msgs, acked, elected>>
+    /\ UNCHANGED <<cpVars, counters>>
+    /\ UNCHANGED diskVars
 
 ClientWrite(l) ==
     /\ Leads(l)
@@ -902,10 +931,8 @@ MaxKey(K) == CHOOSE k \in K : \A j \in K : ~KeyLess(k, j)
 MinOf(X) == CHOOSE x \in X : \A y \in X : x <= y
 MaxOf(X) == CHOOSE x \in X : \A y \in X : y <= x
 
-\* T: the highest key of any vote read, of any entry read, and of the floor.
-\* Only a voter of epoch E raises a term of E, so T is sound when every
-\* broker placed in E has its epoch-E vote read.
-Top(R) == MaxKey({c.vote : c \in R} \cup {LastKey(c.log) : c \in R} \cup {<<cpFloor.e, cpFloor.t>>})
+LoneVoteCounts == FALSE
+LoneVoteCountsOn == TRUE
 
 \* An epoch-e copy agrees with today's log only up to the lowest base end of
 \* the epochs after e: above it each later epoch put its gap and entries.
@@ -931,6 +958,25 @@ VoteRead(m, E, R) ==
     /\ m[1] \notin dead
     /\ ~\E k \in keptLogs[m[1]] : k.e = E /\ k.by = "restore"
     /\ \E c \in R \cap Copies(m[1]) : c.e = E /\ (VoteByBroker \/ c.cid = m[2]) /\ c.by \in {"current", "power-cut"}
+
+\* Member m of E voted at or above key k, or its vote is not read. Any copy
+\* of its broker counts, which can only count more.
+VotedFrom(m, k, E, R) ==
+    \/ ~VoteRead(m, E, R)
+    \/ \E c \in R \cap Copies(m[1]) : ~KeyLess(c.vote, k)
+
+\* A majority of some voter set of E voted at or above k. A term that no
+\* majority reached elected nobody, so no entry carries it.
+Reached(k, E, R) ==
+    \E V \in VoterSets(E, R) : 2 * Cardinality({m \in V : VotedFrom(m, k, E, R)}) > Cardinality(V)
+
+\* T: the highest key of any entry read, of the floor, and of any vote read
+\* that a majority reached (all of them with `any`). Only a voter of epoch E
+\* raises a term of E, so T is sound when every broker placed in E has its
+\* epoch-E vote read.
+Top(E, R, any) ==
+    MaxKey({c.vote : c \in {x \in R : any \/ Reached(x.vote, E, R)}}
+               \cup {LastKey(c.log) : c \in R} \cup {<<cpFloor.e, cpFloor.t>>})
 
 \* The epoch-E mark: the votes not read are a majority of some voter set of
 \* E, so an election of E may have taken none the re-form read.
@@ -958,7 +1004,7 @@ ReformKept(p, src) ==
     LET e == p.e
         S == DOMAIN p.facts
         R == UNION {Copies(b) : b \in S}
-        T == Top(R)
+        T == Top(e, R, LoneVoteCounts)
         mk == Marked(e, R)
         \* One broker, placed alone, in every voter set of the epoch.
         one == /\ Alone # "off"
@@ -969,8 +1015,8 @@ ReformKept(p, src) ==
         voters == {<<b, cid[b]>> : b \in {x \in S : \E c \in Copies(x) : IsPrefix(base, c.log)}}
         top == Max(Len(base), Max(IF Floor = "none" THEN 0 ELSE cpFloor.i,
                                    MaxOf({c.res : c \in R})))
-        \* Unmarked, and no vote read is above every entry read.
-        tEntry == ~mk /\ T = MaxKey({LastKey(c.log) : c \in R})
+        \* Unmarked, and no vote a majority reached is above every entry read.
+        tEntry == ~mk /\ Top(e, R, FALSE) = MaxKey({LastKey(c.log) : c \in R})
         held == IF tEntry \/ one
                 THEN {x \in acked \ lost : x.e <= e /\ \E c \in R : Has(c.log, x) /\ x.i <= Cap(c.e, e)}
                 ELSE {}
@@ -1125,7 +1171,7 @@ Next ==
     \/ \E l, f \in Brokers : Replicate(l, f)
     \/ \E f \in Brokers : \E m \in msgs : Receive(f, m)
     \/ \E l \in Brokers : \E i \in 1..Len(log[l]) : Commit(l, i)
-    \/ \E b \in Brokers : StepDown(b) \/ Restart(b) \/ RetiredRejoins(b)
+    \/ \E b \in Brokers : StepDown(b) \/ Restart(b) \/ RetiredRejoins(b) \/ Campaign(b)
     \/ \E b \in Brokers : \E n \in 0..Len(log[b]) : Rotate(b, n) \/ PowerCutRotate(b, n)
     \/ \E b \in Brokers : Sync(b) \/ Return(b)
     \/ \E b \in Brokers : Place(b) \/ Unplace(b) \/ CpObserve(b) \/ ReportFloor(b)
@@ -1189,8 +1235,8 @@ ElectedGroupLeftAlone ==
             \A l \in Brokers : ~(Leads(l) /\ ep[l] = ep[b])]_vars
 
 \* With Kept, AckedSurvive allows any record the vouch rule left out. This
-\* bounds it: in an unmarked group where no vote read is above every entry
-\* read, or in a group of one under Alone, no acknowledged record a read
+\* bounds it: in an unmarked group where no vote a majority of some voter set
+\* reached is above every entry read, or in a group of one under Alone, no acknowledged record a read
 \* copy holds below its epoch's cap is lost.
 KeptLossBound ==
     [][\A f \in forms' \ forms : f.held \cap lost' = {}]_vars

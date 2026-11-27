@@ -568,6 +568,8 @@ expectations=(
   "FelixRaftReformKeptOldKept pass"
   "FelixRaftReformKeptOldKeptCap violates NeverCaps"
   "FelixRaftReformKeptTermsT violates NeverVouchesByT"
+  "FelixRaftReformKeptCampaign pass"
+  "FelixRaftReformKeptCampaignLoneVote violates KeptLossBound"
   "FelixRaftReformReplacedDiskByBroker violates OffsetNeverReused"
   "FelixRaftReformReplacedDiskLost violates OffsetNeverReused"
   "FelixRaftReformEpochNotChecked pass"
