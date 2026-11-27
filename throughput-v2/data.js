@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795762307000,
+  "lastUpdate": 1795765010714,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -73268,6 +73268,58 @@ window.BENCHMARK_DATA = {
             "range": "5339.08",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 821071.83\nmean: 822095.49\nstdev: 5339.08\ncv: 0.65%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "7739901a2acd8aa3d02787fd24453c1c4a41039c",
+          "message": "fix(raft): a copy a re-form left behind cannot vote or lead in its old membership (#3289) (#3352)\n\n* fix(raft): a copy the re-form never read cannot rejoin its old membership (#3289)\n\nA copy that names an older group epoch than the control plane's record,\nand that a re-form neither stopped nor is starting, was read by no\nre-form and still holds its old membership. Two brokers wrongly declared\ndead, or one copy whose old voter set had one voter, could elect\nthemselves beside the re-formed group.\n\n- The broker refuses to open such a copy and closes its member on any\n  feed pass (restart, partition heal, late join). Before, only a copy\n  behind an abandoned epoch was closed. A copy ahead of the record is\n  never closed. The two #2995 tests that pinned \"still votes and may\n  lead\" now expect the member closed and not listed.\n- Raft messages carry the sending copy's re-form epoch (wire layout 7),\n  and a member refuses a message from any other epoch, so an old-epoch\n  vote or append never reaches a re-formed member.\n\nThe window before a cut-off copy sees the new record stays open; the\ncontrol-plane lease for it is #3343.\n\nSpec-Unaffected: docs/formal/FelixRaftReform.tla already models this: its Elect takes votes only from copies at the candidate's epoch, and FelixRaftReformWrongDeclaration.cfg still pins the partition window as an expected violation. This brings the code in line with the model.\n\n* fix(raft): close a stale member from its open epoch; check outsiders before epochs (#3289)\n\nThe feed-pass close read a cached raft-epoch that a failed second read left\nempty, so such a member was never closed. It now asks the open group.\nAdmission refuses a broker outside the group before naming an epoch.\n\nSpec-Unaffected: the close only removes behaviours; admission order of refusals",
+          "timestamp": "2026-11-27T07:30:07Z",
+          "tree_id": "c5b1b5549ad7d08ef7338d9c648172a6bcd8d4ec",
+          "url": "https://github.com/GetFelix/felix/commit/7739901a2acd8aa3d02787fd24453c1c4a41039c"
+        },
+        "date": 1795765009957,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 356284.93,
+            "range": "12285.76",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 356284.93\nmean: 359352.60\nstdev: 12285.76\ncv: 3.42%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 356284.93,
+            "range": "12285.76",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 356284.93\nmean: 359352.60\nstdev: 12285.76\ncv: 3.42%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 80889.61,
+            "range": "628.83",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 80889.61\nmean: 80931.31\nstdev: 628.83\ncv: 0.78%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 808896.1,
+            "range": "6288.23",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 808896.10\nmean: 809313.10\nstdev: 6288.23\ncv: 0.78%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
