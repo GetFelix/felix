@@ -168,6 +168,19 @@ impl PlannedPass {
         self.no_nodes
     }
 
+    /// This pass with `vouched` as the copy ids placement reports, and
+    /// `shards` as what it decided.
+    #[cfg(test)]
+    pub(super) fn with_plan(
+        mut self,
+        shards: Vec<super::ShardPlan>,
+        vouched: Vec<super::plan::VouchedCopy>,
+    ) -> Self {
+        self.plan.shards = shards;
+        self.plan.vouched = vouched;
+        self
+    }
+
     /// This pass as if planned at `fence`, for a test of the generation
     /// check alone.
     #[cfg(test)]
@@ -666,6 +679,46 @@ pub(super) async fn apply_pass(
                     "could not persist a shard move step; retrying next pass",
                 );
             }
+        }
+    }
+
+    // Not fenced: the store decides each against the record it lands on,
+    // as it does a broker's own report. Skipped once another writer got in,
+    // since the pass was planned from what that writer replaced.
+    for vouched in plan.vouched.iter().filter(|_| !outcome.fenced) {
+        match store
+            .record_raft_copy_id(
+                &vouched.key,
+                &vouched.node_id,
+                vouched.registered_at_millis,
+                vouched.node_incarnation,
+                vouched.copy_id,
+                Some(vouched.shard_incarnation),
+                Some(vouched.group_epoch),
+            )
+            .await
+        {
+            Ok(changed) => {
+                if changed {
+                    wakes.assignment_written();
+                    tracing::info!(
+                        kind = %vouched.key.kind,
+                        name = %vouched.key.stream,
+                        shard = vouched.key.shard,
+                        node = %vouched.node_id,
+                        copy_id = vouched.copy_id,
+                        "recorded a down voter's Raft copy id from the group's reported voters",
+                    );
+                }
+            }
+            Err(err) => tracing::debug!(
+                kind = %vouched.key.kind,
+                name = %vouched.key.stream,
+                shard = vouched.key.shard,
+                node = %vouched.node_id,
+                error = %err,
+                "could not record a down voter's Raft copy id; retrying next pass",
+            ),
         }
     }
 

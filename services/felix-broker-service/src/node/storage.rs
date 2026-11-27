@@ -229,7 +229,11 @@ fn start_run(
     // is what tells a crash of this directory from a lost copy.
     let before = felix_storage::storage_identity::load(root)
         .with_context(|| format!("read the storage id under {}", root.display()))?;
-    let begun = begin_run(root, log, registered.map(|r| r.incarnation))?;
+    let copies = felix_storage::run_state::RootCopies {
+        witness_dir: witness,
+        control_plane: registered.and_then(|r| r.root_sequence),
+    };
+    let begun = begin_run_with(root, log, registered.map(|r| r.incarnation), copies)?;
     felix_storage::run_state::witness::witness(
         root,
         witness,
@@ -548,16 +552,21 @@ pub(crate) fn storage_id(root: Option<&Path>) -> Result<StorageId> {
 /// counted, and a directory older than the node's last registration may hold
 /// fewer than they counted, so either comes back with a new id. On Linux a
 /// process crash in the same boot keeps it. See `felix_storage::run_state`.
-fn begin_run(
+///
+/// `copies` are the copies of the Raft root sequence kept outside the root,
+/// which decide whether a relaxed crash keeps the Raft marks.
+fn begin_run_with(
     root: &Path,
     log: &felix_storage::log::LogConfig,
     registered: Option<u64>,
+    copies: felix_storage::run_state::RootCopies<'_>,
 ) -> Result<felix_storage::run_state::Begun> {
     let relaxed = felix_storage::run_state::relaxed(&log.fsync_mode);
-    let begun = felix_storage::run_state::begin(
+    let begun = felix_storage::run_state::begin_with(
         root,
         relaxed,
         registered,
+        copies,
         this_boot_of(root),
         || felix_storage::inspect::any_repair_pending(root, log),
         fresh_storage_id,
@@ -572,6 +581,16 @@ fn begin_run(
         );
     }
     Ok(begun)
+}
+
+/// [`begin_run_with`] with no copy of the root sequence.
+#[cfg(test)]
+fn begin_run(
+    root: &Path,
+    log: &felix_storage::log::LogConfig,
+    registered: Option<u64>,
+) -> Result<felix_storage::run_state::Begun> {
+    begin_run_with(root, log, registered, Default::default())
 }
 
 /// Where run witnesses are kept. See `felix_storage::run_state::witness`.

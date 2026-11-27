@@ -14,7 +14,7 @@ use felix_storage::log::{FsyncMode, LogConfig};
 use felix_storage::raft_copy::{CopyRoot, Evidence, Gate, check};
 use felix_storage::storage_identity;
 
-const FLUSH: Duration = Duration::from_millis(100);
+const FLUSH: Duration = Duration::from_millis(300);
 
 fn copy_root(root: &Path) -> CopyRoot {
     storage_identity::load_or_create(root, || [1; 16]).expect("storage id");

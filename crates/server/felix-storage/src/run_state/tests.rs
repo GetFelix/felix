@@ -1383,3 +1383,33 @@ fn a_crash_during_a_restore_refuses_the_start_until_it_is_run_again() {
         );
     }
 }
+
+/// A directory older than its registration is a restore even when its last
+/// run was a relaxed crash, so the evidence a standalone broker re-forms on
+/// says so, and a re-form starts above every offset the backup could miss.
+#[test]
+fn a_restored_directory_whose_last_run_crashed_relaxed_is_recorded_as_a_restore() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let mut fresh = counter(0);
+    let first = begin_on(dir.path(), PERIODIC, &mut fresh);
+    record_registration(dir.path(), 1).expect("registration");
+    // The run crashes, and the directory comes back from before the node
+    // registered again.
+    let next = begin(
+        dir.path(),
+        PERIODIC,
+        Some(2),
+        REBOOTED,
+        no_repair,
+        &mut fresh,
+    )
+    .expect("begin");
+    assert!(next.rotated);
+    assert_eq!(
+        reform_evidence(dir.path()).expect("read"),
+        vec![Rotated {
+            id: first.id,
+            restore: true
+        }]
+    );
+}

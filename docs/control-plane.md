@@ -2049,6 +2049,20 @@ down broker the voters do name may hold acknowledged records, and it keeps
 the usual rule: it is replaced only on a stored target, through the group's
 joint change. Without a voter report the seat waits.
 
+Such a voter can still leave the target unstored: a set change drops the
+copy ids, and the voter dies before it reports again
+([#3313](https://github.com/GetFelix/felix/issues/3313)). Placement then
+reports its copy for it, the copy id the reported voters name it under,
+when it is the one member that has not reported and every other member
+serves. The target for the set is stored, the group's leader makes the
+joint change to it, and once the group reports voting on the new set the
+dead voter is swapped out like any other. The id reported is the one the
+group's voters name. If the broker comes back with another copy, it reports
+that itself and keeps reporting until the target names it, and a copy
+answers only for its own member id, so a target naming a stale copy forms
+nothing. With a second member down nothing
+is reported, since the joint change would need its vote too.
+
 An operator move outside the set is refused with `set_unsettled` while the
 target is not stored for the current set or the group has not formed,
 `member_down` while a member is not serving, and `not_a_member` while the
@@ -2096,7 +2110,22 @@ An RF 1 shard grows to the draining broker and a live broker outside the
 set, then shrinks to that broker once its copy votes, so the old copy
 holds every acknowledged record until the new one does. A larger set whose
 members all drain swaps a follower for a live broker first and names it
-leader on a later pass. Each write takes a slot from the per-pass budget
+leader on a later pass. A set short of its factor with no follower to swap,
+such as an RF 3 shard down to its draining leader after an abandon, grows
+by one live broker as a top-up does (#3303). The lead moves to that broker
+once the group reports its copy voting, never before, then the old copy is
+swapped out as a follower and the top-up refills the set. A grown copy
+whose broker goes down before it votes holds the shard (`member_down`)
+until it is back or lost, and a lost one's seat goes to another live
+broker with the draining broker still leading. If the draining broker
+crashes first, it keeps its name: a copy that does not vote yet cannot be
+elected, so the shard waits for the draining broker to come back, or for
+an operator to re-form the group. From the grow until the refill votes,
+an RF 3 shard on this path runs on two voters, and a group of two needs
+both: losing either stops writes until that broker returns or the group
+is re-formed. Placement takes that window so the draining broker leaves
+once two copies exist; topping up to three first would make the drain
+wait for one more full copy of the log. Each write takes a slot from the per-pass budget
 and a pause holds it. With no live broker outside the set the shard waits
 (`NoDestination`). A destination that goes down before it votes is
 dropped, and the next pass picks another. One that goes down after it

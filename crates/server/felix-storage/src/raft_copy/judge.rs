@@ -7,15 +7,16 @@ use std::sync::Arc;
 use super::copy_file::{self, CopyFile};
 use super::epoch_file::{self, EpochFile};
 use super::gate::GatePassed;
-use super::marks::{CopyMarks, MarkLog};
+use super::marks::{self, CopyMarks, MarkLog};
 use super::rotated_by::{self, RotatedBy};
-use super::{VoteMark, log_below};
+use super::{ShardMarks, VoteMark, log_below};
 use crate::disk_log::dir_lock::DirLock;
 use crate::disk_log::layout::{KEPT_DIR, kept_name, kept_of};
 use crate::disk_log::{crash_point, engine_marker};
 use crate::log::LogConfig;
 use crate::raft_log::{held, reserved, state_file};
 use crate::{DiskLog, StorageId};
+use felix_common::random::HashMap;
 
 /// Longer shard names do not fit a mark.
 const MAX_SHARD_NAME: usize = 4096;
@@ -24,8 +25,13 @@ const MAX_SHARD_NAME: usize = 4096;
 pub struct CopyRoot {
     root: PathBuf,
     marks: MarkLog,
+    /// The marks a relaxed crash's rotation set aside, with the storage id
+    /// they were written under ([`marks::marks_before`]).
+    before: Arc<MarksBefore>,
     mint: Arc<dyn Fn() -> u64 + Send + Sync>,
 }
+
+type MarksBefore = Option<(StorageId, HashMap<Arc<str>, ShardMarks>)>;
 
 /// A shard directory opened as a copy.
 pub struct OpenedCopy {
@@ -89,6 +95,10 @@ enum Judged {
     Keep(CopyFile, DiskLog),
     /// It rotates, under the lock it was judged under.
     Rotate(RotateReason, DirLock),
+    /// It was minted under the storage id a relaxed crash rotated and meets
+    /// the marks the root set aside for it. It rotates, and is kept as a
+    /// power cut if its log, open here, still holds this vote.
+    CheckVote(VoteMark, DiskLog),
 }
 
 impl CopyRoot {
@@ -105,9 +115,11 @@ impl CopyRoot {
     ) -> Self {
         let root = root.into();
         crate::run_state::watch_poison(passed.marks.root());
+        let before = Arc::new(marks::marks_before(passed.marks.root()));
         Self {
             root,
             marks: passed.marks,
+            before,
             mint: Arc::new(mint),
         }
     }
@@ -193,10 +205,13 @@ impl CopyRoot {
         }
         let shard: Arc<str> = Arc::from(shard);
         let judged = {
-            let (marks, shard) = (self.marks.clone(), Arc::clone(&shard));
-            let (dir, label, config) = (dir.to_path_buf(), label.clone(), config.clone());
-            off_runtime(move || judge_dir(&marks, &shard, &dir, &label, config, lock)).await?
+            let (marks, before) = (self.marks.clone(), Arc::clone(&self.before));
+            let (shard, dir) = (Arc::clone(&shard), dir.to_path_buf());
+            let (label, config) = (label.clone(), config.clone());
+            off_runtime(move || judge_dir(&marks, &before, &shard, &dir, &label, config, lock))
+                .await?
         };
+        let mut vote_kept = false;
         let (reason, lock) = match judged {
             Judged::Keep(found, log) => match judge_log(&log, &self.marks, &shard).await {
                 Ok(None) => {
@@ -220,8 +235,22 @@ impl CopyRoot {
                 }
             },
             Judged::Rotate(reason, lock) => (reason, lock),
+            Judged::CheckVote(mark, log) => {
+                let (generation, leader, committed) = log.accepted_vote();
+                vote_kept = VoteMark {
+                    generation,
+                    leader,
+                    committed,
+                }
+                .at_or_above(&mark);
+                let kept = log.close_keeping_lock().await;
+                let lock = kept.map_err(io::Error::other)?.ok_or_else(|| {
+                    io::Error::other(format!("{}: closed while judged", dir.display()))
+                })?;
+                (RotateReason::StorageId, lock)
+            }
         };
-        self.rotate_and_open(shard, dir, label, config, reason, lock)
+        self.rotate_and_open(shard, dir, label, config, reason, vote_kept, lock)
             .await
     }
 
@@ -262,11 +291,16 @@ impl CopyRoot {
             label.into(),
             config,
             RotateReason::Stopped,
+            false,
             lock,
         )
         .await
     }
 
+    /// `vote_kept` says the copy was judged against the marks a relaxed
+    /// crash set aside and still holds its newest vote, so it is kept as a
+    /// power cut whatever `reason` says.
+    #[allow(clippy::too_many_arguments, reason = "each is one fact about the open")]
     async fn rotate_and_open(
         &self,
         shard: Arc<str>,
@@ -274,6 +308,7 @@ impl CopyRoot {
         label: String,
         config: LogConfig,
         reason: RotateReason,
+        vote_kept: bool,
         lock: DirLock,
     ) -> io::Result<OpenedCopy> {
         let (replaced, copy, kept, lock) = {
@@ -283,7 +318,7 @@ impl CopyRoot {
                 let mut lock = lock;
                 let replaced = copy_file::load(&dir).ok().flatten().map(|found| found.copy);
                 let (copy, kept) = rotate(
-                    &shard, &dir, replaced, reason, &mut lock, &*mint, storage_id,
+                    &shard, &dir, replaced, reason, vote_kept, &mut lock, &*mint, storage_id,
                 )?;
                 Ok((replaced, copy, kept, lock))
             })
@@ -429,6 +464,7 @@ async fn judge_log(
 /// let it keep its copy id.
 fn judge_dir(
     marks: &MarkLog,
+    before: &MarksBefore,
     shard: &str,
     dir: &Path,
     label: &str,
@@ -448,9 +484,30 @@ fn judge_dir(
             Err(io::Error::other(stopped))
         }
         (Some(found), None) => Ok(Judged::Keep(found, open_log(dir, label, config, lock)?)),
+        // Before the catch-all below, which would rotate it as a restore.
+        (Some(found), Some(RotateReason::StorageId))
+            if let Some(mark) = mark_before(before, shard, &found)
+                && super::stop_file::stopped(dir)?.is_none()
+                && !crate::disk_log::left_poisoned(dir)? =>
+        {
+            let vote = mark.vote.clone();
+            Ok(Judged::CheckVote(vote, open_log(dir, label, config, lock)?))
+        }
         (_, Some(reason)) => Ok(Judged::Rotate(reason, lock)),
         (None, None) => unreachable!("a directory with no copy file has a reason"),
     }
+}
+
+/// The marks set aside for `found`'s copy of `shard`, when a relaxed
+/// crash's rotation kept them for the storage id it was minted under.
+fn mark_before<'a>(
+    before: &'a MarksBefore,
+    shard: &str,
+    found: &CopyFile,
+) -> Option<&'a ShardMarks> {
+    let (id, marks) = before.as_ref()?;
+    let mark = marks.get(shard)?;
+    (*id == found.minted && mark.copy == found.copy).then_some(mark)
 }
 
 /// The checks that need no log: the copy file and the marks.
@@ -482,11 +539,16 @@ fn judge_files(
 /// Move the old directory aside and make a new one with a copy id from
 /// `mint`, for the caller to write fresh marks for. Each step is synced
 /// before the next.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "each is one fact about the rotation"
+)]
 fn rotate(
     shard: &Arc<str>,
     dir: &Path,
     replaced: Option<u64>,
     reason: RotateReason,
+    vote_kept: bool,
     lock: &mut DirLock,
     mint: &dyn Fn() -> u64,
     storage_id: StorageId,
@@ -530,7 +592,12 @@ fn rotate(
         // A crash before copy_file::store below leaves this naming a copy id
         // that was never written. The retry mints a new id, so a real power cut
         // reads as a restore and only asks for --accept-loss.
-        rotated_by::store(&kept, RotatedBy::of(reason, copy))?;
+        let by = if vote_kept {
+            RotatedBy::PowerCut { to: copy }
+        } else {
+            RotatedBy::of(reason, copy)
+        };
+        rotated_by::store(&kept, by)?;
         step()?;
         crate::incarnation::kept_gauges::refresh(&parent);
         Some(kept)

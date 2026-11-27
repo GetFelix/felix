@@ -50,9 +50,10 @@ pub enum ErrorCode {
     /// The owner wrote a sequenced forward and stopped leading the shard
     /// before a majority held it. The batch may be in the log; sent again
     /// under the same sequence, it is answered from whoever leads now. Sent
-    /// only in answer to a sequenced forward (`SequencedForwardPublish` or
-    /// `PlainSequencedForwardPublish`). Not retryable as a
-    /// refusal.
+    /// in answer to a sequenced forward (`SequencedForwardPublish` or
+    /// `PlainSequencedForwardPublish`), and to a cache write on a Raft shard,
+    /// which has no sequence and whose outcome is simply unknown. Not
+    /// retryable as a refusal.
     LeadershipLost = 13,
     /// The owner refused a cache put or counter add because the shard's
     /// Raft group is at its state bound. Nothing was written. Sent only in
@@ -60,6 +61,11 @@ pub enum ErrorCode {
     /// deletes or expiries of values free room; counters are never freed
     /// (#3243).
     CacheFull = 14,
+    /// The owner refused a forwarded cache write whose record is larger
+    /// than its Raft group's appends carry. Nothing was written. Sent only
+    /// in answer to a forwarded cache op on a Raft shard. Not retryable: it
+    /// cannot fit later.
+    TooLarge = 15,
 }
 
 impl ErrorCode {
@@ -80,6 +86,7 @@ impl ErrorCode {
             12 => Ok(ErrorCode::StaleSet),
             13 => Ok(ErrorCode::LeadershipLost),
             14 => Ok(ErrorCode::CacheFull),
+            15 => Ok(ErrorCode::TooLarge),
             other => Err(Error::UnknownInternalErrorCode(other)),
         }
     }

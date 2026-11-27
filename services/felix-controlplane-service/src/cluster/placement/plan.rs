@@ -35,6 +35,22 @@ pub struct Plan {
     /// Seated copies their leader reports halted. Counted in
     /// `missing_copies` too.
     pub halted_copies: u32,
+    /// Copy ids placement reports for down Raft voters
+    /// ([`raft_leaders::vouched_copy`]).
+    pub(crate) vouched: Vec<VouchedCopy>,
+}
+
+/// A copy id reported for a down member of a Raft shard's set, with the
+/// registration and group the store checks a broker's own report against.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct VouchedCopy {
+    pub(crate) key: ShardKey,
+    pub(crate) node_id: String,
+    pub(crate) registered_at_millis: u64,
+    pub(crate) node_incarnation: u64,
+    pub(crate) copy_id: u64,
+    pub(crate) shard_incarnation: u64,
+    pub(crate) group_epoch: u64,
 }
 
 impl Plan {
@@ -422,6 +438,7 @@ fn plan_once(
     let counted = |id: &str| is_live(id);
     let mut shards = Vec::with_capacity(keys.len());
     let mut unspread = Vec::new();
+    let mut vouched = Vec::new();
     for key in keys {
         let placeable = placeable_of.get(owner_of(&key).as_str()).copied();
         let replication_factor = placeable.map_or(1, |p| p.replication_factor);
@@ -516,6 +533,21 @@ fn plan_once(
                 &mut load,
                 now,
             );
+            // Not beside a write, which may change the set the id is for.
+            if !matches!(decision, Decision::Move(..))
+                && let Some((node_id, copy_id)) = raft_leaders::vouched_copy(existing, &is_serving)
+                && let Some(node) = nodes.iter().find(|node| node.node_id == node_id)
+            {
+                vouched.push(VouchedCopy {
+                    key: key.clone(),
+                    node_id: node_id.to_string(),
+                    registered_at_millis: node.status.registered_at_millis,
+                    node_incarnation: node.status.incarnation,
+                    copy_id,
+                    shard_incarnation: existing.incarnation,
+                    group_epoch: existing.group_epoch(),
+                });
+            }
             shards.push(ShardPlan { key, decision });
             note_spread(&mut unspread, shards.last(), &current, &eligible);
             continue;
@@ -801,6 +833,7 @@ fn plan_once(
         }
     }
     shards.sort_by(|a, b| order(&a.key).cmp(&order(&b.key)));
+    vouched.sort_by(|a, b| order(&a.key).cmp(&order(&b.key)));
     unspread.sort_by(|a, b| order(a).cmp(&order(b)));
     let stream_wanted = moves.stream_wanted;
     (
@@ -810,6 +843,7 @@ fn plan_once(
             under_replicated,
             missing_copies,
             halted_copies,
+            vouched,
         },
         stream_wanted,
     )
