@@ -299,6 +299,16 @@ pub(crate) async fn handle_cache_watch_message(
         let overflowed = watch.lagged().is_some() && watch.moved().is_none();
         if overflowed {
             watch = register();
+            // An ending that landed after the old watch's moved check is
+            // missed by the new one, as on the first registration.
+            if let Some(refusal) =
+                super::redirect::stopped_serving(publish_ctx.ingress.as_deref(), &shard_key)
+            {
+                drop(watch);
+                subscriptions.release();
+                responder.send(refusal).await?;
+                return Ok(true);
+            }
         }
         if !overflowed
             && let Some(replay) = replay
