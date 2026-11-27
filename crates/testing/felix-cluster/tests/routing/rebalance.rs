@@ -1109,12 +1109,6 @@ async fn a_move_that_cannot_copy_is_abandoned_after_its_timeout() {
 #[serial]
 #[tokio::test]
 async fn a_move_onto_a_restarted_broker_does_not_wait_for_the_catalog_tick() {
-    if felix_cluster::skip_on_raft_until(
-        3337,
-        "a move onto a restarted broker waits for the catalog tick on Raft",
-    ) {
-        return;
-    }
     const SYNC_INTERVAL: Duration = Duration::from_secs(10);
     let mut cluster = Cluster::start(ClusterConfig {
         nodes: 2,
