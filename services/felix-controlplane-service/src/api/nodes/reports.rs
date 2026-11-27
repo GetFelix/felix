@@ -334,6 +334,11 @@ pub(crate) async fn report_raft_copy_id(
                     "recorded a broker's Raft copy id",
                 );
                 state.placement_wakes.assignment_written();
+                // The id may complete the set's target, or make a voter the
+                // leader already reported count: either can let a waiting
+                // set step go ahead.
+                state.placement_wakes.forget_raft_voters(&request.key);
+                state.placement_wakes.request_pass();
             }
             Ok(Json(RaftCopyIdResponse { changed }))
         }
@@ -379,12 +384,30 @@ pub(crate) async fn report_raft_floors(
             "at most {MAX_RAFT_FLOORS} floors in one request"
         )));
     }
+    // Judged only once the store took the batch, so a refused one wakes
+    // nothing and is news again when it is retried.
+    let with_voters: Vec<_> = request
+        .floors
+        .iter()
+        .filter(|floor| floor.voters.is_some())
+        .cloned()
+        .collect();
     match state
         .store
         .record_raft_floors(&node_id, request.floors)
         .await
     {
-        Ok(raised) => Ok(Json(RaftFloorsResponse { raised })),
+        Ok(raised) => {
+            // A Raft set step waits on the voters the leader reports, so
+            // placement runs now rather than at its next tick.
+            if state
+                .placement_wakes
+                .raft_voters_reported(&node_id, &with_voters)
+            {
+                state.placement_wakes.request_pass();
+            }
+            Ok(Json(RaftFloorsResponse { raised }))
+        }
         Err(StoreError::Conflict(ref message)) => Err(api_conflict("conflict", message)),
         Err(ref err) => Err(api_internal("record the Raft offset floors", err)),
     }
