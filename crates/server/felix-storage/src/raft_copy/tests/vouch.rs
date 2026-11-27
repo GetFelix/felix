@@ -143,6 +143,86 @@ fn a_kept_vote_above_every_entry_cuts_to_the_floor() {
     assert_eq!(plan.voters.len(), 3);
 }
 
+/// #3351: `a` led t1 and wrote three entries, `b` and `c` lost power with
+/// only the first, and `a` then stood for election alone in t2 and lost.
+/// Its t2 vote is the highest key read, but no majority voted at or above
+/// t2, so t2 elected nobody and holds no entry. T is t1 and `a` vouches for
+/// its whole log.
+#[test]
+fn a_lone_candidates_vote_never_cuts_the_tail() {
+    let rec = record(&["a", "b", "c"], &[], &[], None);
+    let cut = |name| {
+        kept(
+            copy(name, &[1], Some(0), Some(1)),
+            RotatedBy::PowerCut { to: 1 },
+        )
+    };
+    let plan = plan(
+        &rec,
+        vec![
+            ("a", report(copy("a", &[1, 1, 1], Some(0), Some(2)), vec![])),
+            ("b", report(blank(), vec![cut("b")])),
+            ("c", report(blank(), vec![cut("c")])),
+        ],
+    );
+    assert_eq!(plan.marked, None);
+    assert_eq!(plan.top, (0, 1));
+    assert_eq!(plan.base_end(), 3, "a keeps every entry");
+    assert!(!plan.cut_by_vote);
+    assert!(!plan.needs_accept_loss());
+}
+
+/// The same with `c` declared dead: its vote is unknown, so with `a` it can
+/// be the majority that elected t2, and `a` is cut to its saved commit.
+#[test]
+fn a_lone_vote_counts_when_an_unknown_vote_can_make_the_majority() {
+    let rec = record(&["a", "b", "c"], &["c"], &[], None);
+    let b = kept(
+        copy("b", &[1], Some(0), Some(1)),
+        RotatedBy::PowerCut { to: 1 },
+    );
+    let plan = plan(
+        &rec,
+        vec![
+            ("a", report(copy("a", &[1, 1, 1], Some(0), Some(2)), vec![])),
+            ("b", report(blank(), vec![b])),
+        ],
+    );
+    assert_eq!(plan.marked, None);
+    assert_eq!(plan.top, (0, 2));
+    assert_eq!(plan.base_end(), 1, "cut to the saved commit");
+    assert!(plan.cut_by_vote);
+}
+
+/// The #3351 trace, but `a` also reads a membership naming only itself, as
+/// a copy with no `raft-epoch` adds every membership it holds. In that set
+/// `a`'s vote is a majority, so t2 counts and `a` is cut to its saved
+/// commit. Cautious: it costs the unsaved tail, never safety (#3357).
+#[test]
+fn a_one_voter_membership_makes_a_lone_vote_count() {
+    let rec = record(&["a", "b", "c"], &[], &[], None);
+    let cut = |name| {
+        kept(
+            copy(name, &[1], Some(0), Some(1)),
+            RotatedBy::PowerCut { to: 1 },
+        )
+    };
+    let mut a = report(copy("a", &[1, 1, 1], Some(0), Some(2)), vec![]);
+    a.memberships = Some(vec![set(&["a"])]);
+    let plan = plan(
+        &rec,
+        vec![
+            ("a", a),
+            ("b", report(blank(), vec![cut("b")])),
+            ("c", report(blank(), vec![cut("c")])),
+        ],
+    );
+    assert_eq!(plan.marked, None);
+    assert_eq!(plan.top, (0, 2));
+    assert_eq!(plan.base_end(), 1, "cut to the saved commit");
+    assert!(plan.needs_accept_loss());
+}
+
 /// The same with `b` and `c` restored from before t2: their votes say t1,
 /// so T alone would vouch for `a`'s Z. A restored copy of the epoch marks
 /// the group, and a marked group vouches only to the commit or the floor.

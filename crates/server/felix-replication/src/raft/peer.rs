@@ -216,7 +216,7 @@ impl GroupRuntime {
     /// A `BEATS` body: each heartbeat answered as on its own, in order.
     async fn answer_beats(&self, from: Option<Arc<str>>, body: Bytes) -> Bytes {
         let refused = |reason: String| wire::encode_reply(&Err(Refused::Unreachable(reason)));
-        let (beats, wait) = match wire::decode_beats(body) {
+        let (beats, wait, deadline) = match wire::decode_beats(body) {
             Ok(read) => read,
             Err(err) => return refused(format!("the message does not read: {err}")),
         };
@@ -224,7 +224,8 @@ impl GroupRuntime {
             return refused("the connection has not said which broker it is".to_owned());
         };
         let answers =
-            super::beats::answer_each(beats, wait, |beat| self.handle_from(&from, beat)).await;
+            super::beats::answer_each(beats, wait, deadline, |beat| self.handle_from(&from, beat))
+                .await;
         wire::encode_beats_reply(&answers)
     }
 }

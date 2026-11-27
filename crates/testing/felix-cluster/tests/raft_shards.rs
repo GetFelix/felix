@@ -2244,6 +2244,118 @@ async fn a_raft_cache_entry_expires_on_time_across_a_failover() {
     }
 }
 
+/// **A member that misses more of a Raft cache shard's log than its leader
+/// keeps catches up by installing the leader's snapshot, and then serves the
+/// values and counter the group acknowledged.** The cache snapshots every 32
+/// entries and keeps 8 under each snapshot, so the 240 writes made while the
+/// member is down are gone from every log by the time it is back. The member
+/// killed is the placed leader: it comes back a follower, and once it has
+/// caught up placement hands it the leadership, so the reads after that are
+/// answered from the state it installed rather than forwarded elsewhere.
+#[tokio::test]
+#[serial]
+async fn a_raft_cache_member_behind_the_snapshot_catches_up_by_installing_it() {
+    if !opted_in() {
+        return;
+    }
+    const WRITES: usize = 120;
+    const INSTALLED: &str = "felix_broker_raft_snapshots_installed_total{kind=\"cache\"}";
+    let config = ClusterConfig {
+        nodes: 3,
+        streams: Vec::new(),
+        caches: vec![felix_cluster::CacheSpec::quorum(CACHE, 1, 3)],
+        broker_env: vec![
+            engine("raft"),
+            (
+                "FELIX_SHARD_RAFT_CACHE_SNAPSHOT_EVERY".to_string(),
+                "32".to_string(),
+            ),
+            (
+                "FELIX_SHARD_RAFT_CACHE_LOG_KEEP".to_string(),
+                "8".to_string(),
+            ),
+        ],
+        ..Default::default()
+    };
+    let mut cluster = Cluster::start(config).await.expect("start cluster");
+    let nodes = cluster.node_ids();
+    let behind = leader_among(&cluster, &nodes).await;
+    cache_put_acked(&cluster, &behind, "before", b"before").await;
+    counter_add_acked(&cluster, &behind, "hits").await;
+
+    cluster.kill_node(&behind).expect("kill the placed leader");
+    let survivors: Vec<String> = nodes.iter().filter(|n| **n != behind).cloned().collect();
+    let interim = leader_among(&cluster, &survivors).await;
+    let mut acked = 1;
+    let mut unknown = 0;
+    for i in 0..WRITES {
+        let key = format!("k{i}");
+        cache_put_acked(&cluster, &interim, &key, key.as_bytes()).await;
+        let (sum, failed) = counter_add_acked(&cluster, &interim, "hits").await;
+        (acked, unknown) = (sum, unknown + failed);
+    }
+    let counted = cluster
+        .counter_get_via(&interim, CACHE, "hits")
+        .await
+        .expect("read the counter on the interim leader")
+        .expect("the counter exists");
+    assert!(
+        (acked..=acked + unknown).contains(&counted),
+        "the leader counts {counted}, acknowledged {acked} with {unknown} unknown adds"
+    );
+
+    cluster.restart_node(&behind).await.expect("restart");
+    felix_cluster::wait::until(
+        ELECTED_WITHIN,
+        "the restarted member to install a snapshot",
+        || async { metric(&cluster, &behind, INSTALLED).await >= 1.0 },
+    )
+    .await
+    .expect("the member behind the purge was sent the leader's snapshot");
+    felix_cluster::wait::until(
+        Duration::from_secs(120),
+        "the restarted member to lead",
+        || async { leading_now(&cluster, &nodes).await == [behind.clone()] },
+    )
+    .await
+    .expect("placement hands the leadership back once the member caught up");
+
+    let get = |key: String| {
+        let cluster = &cluster;
+        let behind = behind.clone();
+        async move {
+            felix_cluster::wait::until_some(ELECTED_WITHIN, "a cache read", || async {
+                cluster.cache_get_via(&behind, CACHE, &key).await.ok()
+            })
+            .await
+            .expect("read")
+        }
+    };
+    assert_eq!(
+        get("before".to_string()).await.as_deref(),
+        Some(b"before".as_slice())
+    );
+    for i in 0..WRITES {
+        let key = format!("k{i}");
+        assert_eq!(
+            get(key.clone()).await.as_deref(),
+            Some(key.as_bytes()),
+            "{key}"
+        );
+    }
+    let installed = felix_cluster::wait::until_some(ELECTED_WITHIN, "a counter read", || async {
+        cluster.counter_get_via(&behind, CACHE, "hits").await.ok()
+    })
+    .await
+    .expect("read")
+    .expect("the counter exists");
+    assert_eq!(
+        installed, counted,
+        "the installed counter differs from the leader's"
+    );
+    cluster.shutdown().await;
+}
+
 /// Bytes of segment files under `node`'s storage: what its logs hold on disk.
 fn segment_bytes(cluster: &Cluster, node: &str) -> u64 {
     fn walk(dir: &std::path::Path) -> u64 {

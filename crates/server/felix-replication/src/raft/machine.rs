@@ -67,6 +67,10 @@ pub(crate) type FoldGate = Arc<
 /// Entries read from the log per chunk while folding up to a purge point.
 const FOLD_READ: u64 = 1024;
 
+/// Snapshots a member of this broker was sent and installed, by `kind`
+/// (`cache` or `stream`). One a member builds itself is not counted.
+pub(crate) const INSTALLED_TOTAL: &str = "felix_broker_raft_snapshots_installed_total";
+
 #[derive(Clone, Default)]
 struct State {
     last_applied: Option<LogIdOf<ShardTypes>>,
@@ -1252,6 +1256,12 @@ impl RaftStateMachine<ShardTypes> for Machine {
                 self.wake();
             }
         }
+        let kind = if self.cache.is_some() {
+            "cache"
+        } else {
+            "stream"
+        };
+        metrics::counter!(INSTALLED_TOTAL, "kind" => kind).increment(1);
         Ok(())
     }
 

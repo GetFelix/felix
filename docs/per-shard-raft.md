@@ -204,6 +204,11 @@ records, in each of these cases:
 - The directory fails the restore check below.
 - The copy's log was poisoned in its last run ("A poisoned log" below).
 
+A normal open's file work (the lock, the checks, a rotation's syncs and the log's
+open) runs on the blocking pool. A bulk create opens hundreds of copies on
+each broker, and on a runtime worker each open's fsyncs would stall every task
+queued behind it.
+
 **Votes are always fsynced.** The vote, the copy id and the membership are
 synced before they are answered. Votes are rare, so this costs nothing on
 the write path. The log is fsync on commit and refuses any other mode
@@ -475,11 +480,10 @@ the top term is kept whole. Offsets are not reused: the vouch rule, the
 floor and the reservations are unchanged. A record that every copy lost in
 the power cut is still lost, as relaxed fsync allows.
 
-One case still cuts to the saved commit (issue #3351). A leader that
-restarts while its followers are held stands for election alone, so its
-vote is in a term above every entry read. T is that vote's term, no copy
-is kept whole, and the plan needs the loss accepted even though every vote
-is known.
+A leader that restarts while its followers are held stands for election
+alone, so its vote is in a term above every entry read. No majority voted
+in that term, so it does not count toward T (see "When a copy vouches for
+its whole log" below), and the leader's copy is still kept whole (#3351).
 
 **Per directory, not only per root.** The check above judges a data root,
 and the copy id is per shard directory, so two more things are checked when
@@ -1632,6 +1636,22 @@ marked. Every elected term took votes from a majority of some voter set of
 the epoch, and a vote is fsynced before the reply and kept across a power
 cut, so while the unknown votes are a minority of every voter set, some
 vote read is at least as new as every elected term.
+
+A vote's term counts toward T only when a majority of some voter set voted
+at or above it. A candidate that stands for election and loses still saves
+the vote it gave itself, so without this one lone candidate would put T
+above every entry and cut every copy to its saved commit (#3351). A term no
+majority reached elected nobody and holds no entry, so leaving it out keeps
+T at least as new as every elected term. An unknown vote counts as at or
+above the term, and so does any copy of the voter's broker, so the rule
+only ever counts more. `FelixRaftReformKeptCampaign.cfg` adds lost
+elections and passes `KeptLossBound`; counting every vote instead
+(`FelixRaftReformKeptCampaignLoneVote.cfg`) cuts an acknowledged record a
+read copy holds.
+
+> `crates/server/felix-storage/src/raft_copy/tests/vouch.rs`,
+> `a_lone_candidates_vote_never_cuts_the_tail`,
+> `a_lone_vote_counts_when_an_unknown_vote_can_make_the_majority`.
 
 A voter is a copy, named by its broker and copy id, not a broker. A broker
 whose disk was replaced runs a new copy that never gave the old one's votes,
@@ -3102,7 +3122,8 @@ A cache shard is the other way round. Its state is its snapshot plus the
 entries above it, so its log is cut to the snapshot:
 
 - Each member snapshots by itself once `cache_snapshot_every` entries
-  (16,384) have committed since its last snapshot. openraft checks that
+  (16,384, `FELIX_SHARD_RAFT_CACHE_SNAPSHOT_EVERY` on a broker) have
+  committed since its last snapshot. openraft checks that
   after each batch of messages, so it needs no tick.
 - Building a snapshot does not hold apply. Between two entries the state
   machine freezes its maps as they are, without copying them, and the
@@ -3136,12 +3157,15 @@ entries above it, so its log is cut to the snapshot:
   wait, so many groups snapshotting or restarting together do not take
   the blocking threads that disk flushes need.
 - The member then purges the entries the snapshot covers, except the newest
-  `cache_log_keep` (1,024). A member a little behind still catches up from
-  the log.
+  `cache_log_keep` (1,024, `FELIX_SHARD_RAFT_CACHE_LOG_KEEP`). A member a
+  little behind still catches up from the log.
 - A member behind its leader's purge is sent the leader's snapshot and
   installs it. The snapshot goes in pieces, each sized like an append, and
-  the member installs it when the last piece arrives. How it is bounded is
-  in [the replication engine](replication-engine.md), "Sending a snapshot".
+  the member installs it when the last piece arrives, and counts
+  `felix_broker_raft_snapshots_installed_total{kind="cache"}`. How it is
+  bounded is in [the replication engine](replication-engine.md), "Sending a
+  snapshot". `a_raft_cache_member_behind_the_snapshot_catches_up_by_installing_it`
+  (felix-cluster, `raft_shards`) runs this through three brokers.
 
 A shard's log therefore holds at most about `cache_snapshot_every` plus
 `cache_log_keep` entries, whatever the shard has written.
@@ -3267,10 +3291,15 @@ carries entries never waits.
   each heartbeat on its own, the bytes it always read, and so is a batch of
   one.
 - **One group cannot hold up the rest.** The receiver hands every
-  heartbeat to its member at once. Once one has answered, a member that stays
-  silent for one window past the latest answer is answered *slow*, which the
-  leader counts as not answered, with the broker up. A failure for one
-  group's heartbeat is that group's alone.
+  heartbeat to its member at once. Once one has answered, a member still
+  silent a quarter of the heartbeat (50 ms by default) after that first answer
+  is answered *slow*, which the leader counts as not answered, with the broker
+  up. A failure for one group's heartbeat is that group's alone. The wait is
+  that long because a stalled broker's members come back a few milliseconds
+  apart. Answered slow, each would fail its heartbeat, and a read-index round
+  that needed it would find no quorum and start again. The sender puts the
+  wait in the message. The wait also ends one wait before the batch's
+  deadline, so a late first answer still gets back in time.
 - **Off.** `beat_window` zero sends each heartbeat on its own. It must be
   shorter than `heartbeat`; the runtime refuses a config where it is not.
 
@@ -5239,8 +5268,11 @@ log, stored as group records (`docs/storage-format.md`, "Group records").
 Every member folds them, in log order, into the same group table, so a
 new leader serves the group from exactly the state the old one committed.
 `docs/formal/FelixRaftGroups.tla` models the rules the fold follows; it
-leaves out discard, which only drops a dead letter, and `if_new`, which the
-leader decides before it proposes the seek.
+leaves out discard, which only drops a dead letter, `if_new`, which the
+leader decides before it proposes the seek, and claims: the model has no
+claim entries, visibility timeouts or attempt counts. That a new leader
+holds every claim a consumer was told about is checked by tests only
+(`queue/raft/tests.rs`, `a_claim_survives_a_change_of_leader`).
 
 The group table is the shard's consumer groups as one member has applied
 them: per group, its creation token, its cursor (everything below it is
@@ -6189,6 +6221,7 @@ before.
 | `felix_broker_raft_placed_transfers_total` | By `outcome`: `landed` (this member stopped leading), `failed` (it still led a later term), `held` (counted once per reason, `why`: `unsettled`, `lagging`, `degraded`, `budget`) |
 | `felix_broker_raft_snapshot_unsendable_total` | Snapshot sends a leader refused, one per attempt, because the snapshot was over the 1 GiB a member takes, for stream and cache groups; each is also logged with the group and member, once a minute per member ("How big a cache group gets") |
 | `felix_broker_raft_held_base_refusals_total` | Gap snapshots a re-formed stream group's learner refused although it held its pulled base, by `reason`: `held_above_floor`, `floor_past_base`, `not_gap_end` or `unreadable` ("A new member of a re-formed group") |
+| `felix_broker_raft_snapshots_installed_total` | Snapshots members of this broker were sent by their leader and installed, by `kind`: `cache` or `stream`. A cache member counts one each time it fell behind its leader's purge |
 
 #### Where a target comes from
 
