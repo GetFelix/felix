@@ -554,10 +554,24 @@ impl Canary {
     /// Read `key` back, timed.
     async fn read(&self, key: &str, loaded: bool) -> Read {
         let started = Instant::now();
+        let wall = || {
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_or(0, |d| d.as_millis())
+        };
+        let wall_started = wall();
         let get = self
             .client
             .cache_get_versioned(&self.tenant_id, &self.namespace, CACHE, key);
         let answer = tokio::time::timeout(TTL, get).await;
+        if started.elapsed() > READ_BOUND {
+            eprintln!(
+                "DIAG3032 slow read {key} loaded={loaded} took={:?} unix_ms {wall_started}..{} ok={}",
+                started.elapsed(),
+                wall(),
+                matches!(answer, Ok(Ok(_)))
+            );
+        }
         self.record(Op::Read, loaded, started.elapsed());
         match answer {
             Ok(Ok(Some(value))) => Read::Live(value.version),

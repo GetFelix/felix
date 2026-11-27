@@ -2477,7 +2477,11 @@ impl Group {
         // the election timeout instead, a leader cut off from every peer
         // keeps each group call waiting that long before it can refuse.
         let round_limit = Duration::from_millis(timers.lease.max(timers.heartbeat)).min(patience);
+        let mut rounds = 0u32;
+        let mut lease_expired = 0u32;
         loop {
+            rounds += 1;
+            let round_began = tokio::time::Instant::now();
             let raft = self.raft.clone();
             let stop = self.stop.clone();
             let entered = self.reads.enter(
@@ -2502,6 +2506,9 @@ impl Group {
                     Err(_) => return Err(unanswered()),
                 },
             };
+            if started.elapsed() > Duration::from_millis(500) {
+                tracing::warn!(group = %self.id, member = %self.member, term, rounds, lease_expired, round_ms = round_began.elapsed().as_millis() as u64, total_ms = started.elapsed().as_millis() as u64, round = ?round, "DIAG3032 slow read-index round");
+            }
             match round {
                 Round::Leads { term: leads, index } if leads == term => return Ok(index),
                 Round::Leads { .. } => {
@@ -2509,7 +2516,7 @@ impl Group {
                         "this broker leads a later term than the read began in",
                     ));
                 }
-                Round::LeaseExpired => {}
+                Round::LeaseExpired => lease_expired += 1,
                 Round::NotLeader => return Err(lost("this broker does not lead the shard")),
                 Round::QuorumNotEnough => return Err(unanswered()),
                 Round::Stopped => return Err(propose::stopped()),
@@ -2755,13 +2762,15 @@ impl Group {
             detail: "this broker does not have the shard open",
         };
         let term = self.open_term().ok_or(lost)?;
+        let began = tokio::time::Instant::now();
         let bound = self.read_index(term).await?;
+        let indexed = began.elapsed();
         // Applied through `bound - 1`; a bound of 0 holds at once.
         let index = bound.saturating_sub(1);
         let applied = self.applied.wait_for(&self.commits, index, |commits| {
             (commits.applied_end() >= bound).then_some(())
         });
-        tokio::select! {
+        let result = tokio::select! {
             biased;
             () = self.stop.cancelled() => Err(propose::stopped()),
             applied = applied => applied.map(|_| cache).map_err(|_| propose::stopped()),
@@ -2769,7 +2778,13 @@ impl Group {
                 what: "read",
                 timeout,
             }),
+        };
+        let total = began.elapsed();
+        if total > Duration::from_millis(500) {
+            let applied_end = self.commits.borrow().applied_end();
+            tracing::warn!(group = %self.id, member = %self.member, term, bound, applied_end, read_index_ms = indexed.as_millis() as u64, apply_wait_ms = (total - indexed).as_millis() as u64, ok = result.is_ok(), "DIAG3032 slow cache read");
         }
+        result
     }
 
     /// A cache watch's live edge on this member, one past the last entry

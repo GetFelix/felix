@@ -136,13 +136,13 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Compress broker logs
-        if: failure() || matrix.variant == 'failover'
+        if: always()
         run: |
           find "$RUNNER_TEMP/cluster-logs" -type f -name '*.log*' ! -name '*.gz' -exec gzip -f {} + || true
           du -sh "$RUNNER_TEMP/cluster-logs" || true
 
       - name: Upload broker logs
-        if: failure() || matrix.variant == 'failover'
+        if: always()
         uses: actions/upload-artifact@v7
         with:
           name: scale-logs-${{ matrix.variant }}-${{ github.run_attempt }}
