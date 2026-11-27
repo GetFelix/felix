@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795771997262,
+  "lastUpdate": 1795775556375,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -73424,6 +73424,58 @@ window.BENCHMARK_DATA = {
             "range": "46941.59",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1174661.77\nmean: 1152799.20\nstdev: 46941.59\ncv: 4.07%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "6ec545e67dbd4b3529509471a1b662094f03aca7",
+          "message": "test(cluster): Raft tests for a hand-over under every kind of write, a move undone after the voters changed, and a move cut short by kills (#3330) (#3333)\n\nThree opt-in Raft shard tests that match the hybrid move tests in strength:\n\n- a_raft_hand_over_keeps_every_kind_of_acknowledged_write: cache puts and\n  deletes, counter adds and group claims and finishes run while operator\n  moves hand the stream's and the cache's leaders back and forth. Each\n  counter add has its own power-of-four amount, so its key's sum says how\n  many times each add landed: acknowledged exactly once, in doubt at most\n  once.\n- a_raft_move_cancelled_after_the_voters_changed_loses_no_acknowledged_write:\n  a move outside the set runs until the group reports the new voters, then\n  a move back undoes it, under a publisher and a subscriber from offset 0.\n  The subscriber must see every offset once, in order, with each gap told\n  by skipped_before, since blank and membership entries take offsets.\n- a_raft_move_cut_short_by_kills_keeps_what_was_acknowledged: the old\n  leader and the destination are killed once the group's first change has\n  made the destination a voter, with one follower held short of the log.\n\nreplay_holding now reads through replay_at, which keeps offsets and tracks\nwhat is owed in a set.\n\nSpec-Unaffected: test only",
+          "timestamp": "2026-11-27T10:26:49Z",
+          "tree_id": "8c3675a4835625bfe240582c497fd4346663ce78",
+          "url": "https://github.com/GetFelix/felix/commit/6ec545e67dbd4b3529509471a1b662094f03aca7"
+        },
+        "date": 1795775555430,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 515948.98,
+            "range": "23509.22",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 515948.98\nmean: 512974.78\nstdev: 23509.22\ncv: 4.58%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 515948.98,
+            "range": "23509.22",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 515948.98\nmean: 512974.78\nstdev: 23509.22\ncv: 4.58%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 119870.03,
+            "range": "1440.47",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 119870.03\nmean: 119777.42\nstdev: 1440.47\ncv: 1.20%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1198700.25,
+            "range": "14404.70",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1198700.25\nmean: 1197774.22\nstdev: 14404.70\ncv: 1.20%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
