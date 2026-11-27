@@ -5209,9 +5209,16 @@ move from an older control plane added:
   member of three down, and is refused (`member_down`) when fewer than a
   majority are serving (#3234).
 - A drain moves every shard the draining broker leads to a live member, so
-  its shutdown hand-off finishes. A shard with no other live member, such
-  as one at replication factor 1, keeps its leader and shows as waiting
-  with "no live node can take this shard".
+  its shutdown hand-off finishes. The draining broker still serves, so a
+  shard with no live member keeps it as leader and voter while it gets
+  one. An RF 1 shard moves the way an operator move does: one write grows
+  the set to the draining broker and a live broker outside it, and the
+  shrink below ends the move once the new copy votes. A larger set whose
+  members all drain swaps a follower for a live broker first, and the lead
+  moves to it on a later pass. Each write takes a slot from the budget of
+  16 set changes and a pause holds it. With no live broker outside the set
+  the shard shows as waiting with "no live node can take this shard". A
+  drain cancelled mid-move does not undo it: the move finishes.
 - A follower that must leave is replaced: one on a draining broker, on a
   node marked internal, or on a broker down or gone for
   `restore_after_millis`. One write swaps it for a live node outside the
@@ -5288,7 +5295,8 @@ move from an older control plane added:
   operator moves the shard back to the old broker (step `raft_move_undone`).
   The store takes that write because the old broker is a reported voter.
   This is also how a drain of the old broker gets past a move that cannot
-  finish. A draining destination that already votes is undone the same way,
+  finish: the next pass starts the move again to another live broker. A
+  draining destination that already votes is undone the same way,
   since it still serves and can vote for its own removal.
 - Once the destination votes, the group has two voters and either set of one
   needs both. If the destination is then down, placement waits and says why
@@ -6876,8 +6884,10 @@ on the hybrid.
   oldest kept change past it. A resume from past the
   edge, an offset a member further ahead gave out, waits for this one to
   apply that far, up to the publish quorum timeout, and is then refused as
-  retryable. A snapshot install, and a member left with no leader, end the
-  shard's watches as lagged at the first change they were not told of.
+  retryable. A snapshot install ends the shard's watches as lagged at the
+  first change they were not told of. A member left with no leader ends
+  them at the same change as moved, with no new owner named, for a client
+  that follows moves, and as lagged for one that does not.
   Closing a member, when its cache is deleted or made again, ends them
   outright.
   See [cache-on-log.md](cache-on-log.md#watch).

@@ -202,6 +202,41 @@ impl CacheWatchHub {
         ended
     }
 
+    /// End the shard's watchers as lagged at `at`, and as `moved` when given.
+    /// Removing them drops their senders, so each drains what was queued and
+    /// then reports how it ended.
+    fn end_at(
+        &self,
+        tenant_id: &str,
+        namespace: &str,
+        cache: &str,
+        shard: u32,
+        at: u64,
+        moved: Option<ShardMoved>,
+    ) {
+        let key = (
+            tenant_id.to_string(),
+            namespace.to_string(),
+            cache.to_string(),
+            shard,
+        );
+        let Some(watchers) = self.stripe(&key).lock().remove(&key) else {
+            return;
+        };
+        self.watching.fetch_sub(watchers.len(), Ordering::AcqRel);
+        for watcher in watchers.iter() {
+            let _ = watcher.state.lagged_at.compare_exchange(
+                NOT_LAGGED,
+                at,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            );
+            if let Some(moved) = &moved {
+                let _ = watcher.state.moved.set(moved.clone());
+            }
+        }
+    }
+
     fn remove(&self, key: &WatchShardKey, exact: Option<&str>, id: u64) {
         let mut shards = self.stripe(key).lock();
         if let Some(watchers) = shards.get_mut(key) {
@@ -223,24 +258,22 @@ impl felix_storage::CacheObserver for CacheWatchHub {
     /// Ends the shard's watchers as lagged at `at`. Removing them drops
     /// their senders, so each drains what was queued and then reports `at`.
     fn cache_reset(&self, tenant_id: &str, namespace: &str, cache: &str, shard: u32, at: u64) {
-        let key = (
-            tenant_id.to_string(),
-            namespace.to_string(),
-            cache.to_string(),
-            shard,
-        );
-        let Some(watchers) = self.stripe(&key).lock().remove(&key) else {
-            return;
+        self.end_at(tenant_id, namespace, cache, shard, at, None);
+    }
+
+    /// Ends them as lagged at `at`, and also as moved with nowhere named, so
+    /// a client that follows moves carries on at whichever broker serves the
+    /// shard rather than ending its watch.
+    fn cache_unserved(&self, tenant_id: &str, namespace: &str, cache: &str, shard: u32, at: u64) {
+        let moved = ShardMoved {
+            resume_from: Some(at),
+            to: crate::handoff::ShardHandoff {
+                node_id: None,
+                addr: None,
+                generation: 0,
+            },
         };
-        self.watching.fetch_sub(watchers.len(), Ordering::AcqRel);
-        for watcher in watchers.iter() {
-            let _ = watcher.state.lagged_at.compare_exchange(
-                NOT_LAGGED,
-                at,
-                Ordering::AcqRel,
-                Ordering::Acquire,
-            );
-        }
+        self.end_at(tenant_id, namespace, cache, shard, at, Some(moved));
     }
 
     /// Called with the shard's write lock held, so it must not block: every

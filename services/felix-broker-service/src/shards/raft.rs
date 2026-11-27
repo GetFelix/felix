@@ -1404,8 +1404,9 @@ impl EngineShards for RaftShards {
                         .await;
                 }
                 // A cache watch here would go quiet, which reads as a quiet
-                // key. It ends as lagged, so the client re-watches from
-                // where it stopped once some member follows a leader.
+                // key. It ends as moved, or as lagged for a client that does
+                // not follow moves, so the watch carries on from where it
+                // stopped once some member follows a leader.
                 if leaderless
                     && key.kind == ShardKind::Cache
                     && let Some(hub) = self.broker.cache_watches()
