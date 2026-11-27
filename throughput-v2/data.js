@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795801385911,
+  "lastUpdate": 1795807832865,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -73840,6 +73840,58 @@ window.BENCHMARK_DATA = {
             "range": "18571.94",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1208670.59\nmean: 1203276.79\nstdev: 18571.94\ncv: 1.54%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "14027797c4367619881ad8143ca1c5c9f7eca94a",
+          "message": "fix(raft): a re-form counts a vote's term only when a majority of some voter set reached it (#3351) (#3375)\n\n* spec(reform): a vote's term counts toward T only when a majority reached it (#3351)\n\nFelixRaftReform.tla gains Campaign: a voter stands for election and\nloses, keeping the vote it gave itself. Top now counts a vote only when\na majority of some voter set voted at or above it, and KeptLossBound\nholds on that. FelixRaftReformKeptCampaign checks the rule;\nFelixRaftReformKeptCampaignLoneVote counts every vote (LoneVoteCounts)\nand must violate KeptLossBound.\n\n* fix(raft): a lone candidate's vote no longer cuts every tail at a re-form (#3351)\n\nThe vouch rule took T over every vote read, so a leader that restarted\nalone and stood for election put T in a term with no entry, and the\nplan cut every copy to its saved commit. A vote's term now counts only\nwhen a majority of some voter set voted at or above it, with unknown\nvotes counted as reaching it (FelixRaftReform.tla, Top). The cluster\ntest skipped for this runs again, and the test that pinned the cut is\ngone.\n\n* test(raft): pin that a one-voter membership makes a lone vote count (#3351)\n\nAdds a unit test for the cautious case filed as #3357, gives\nFelixRaftReformKeptCampaign its measured weight, and puts the run's\nnumbers in the formal README.\n\nSpec-Unaffected: tests, docs and the TLC weight table only\n\n* spec(reform): Top asks Reached only of a vote above every entry (#3351)\n\nSame T, so the same states. Every ReformKept candidate evaluated\nReached for every vote read, which made FelixRaftReformTwoRotatedFull\nrun about half again as long as on main (31 min, 40.55M distinct\nstates) and past a pull request job's hour beside its shard.\n\n* ci(tla): weigh the re-form configurations by their measured times\n\nFelixRaftReformTwoRotatedFull took 47 min on a pull request runner\n(40,553,930 distinct states, the same as main's 31 min run), so it ran\npast its shard's hour at weight 15. At 47 a pull request checks it in a\njob of its own. FelixRaftReform, TwoRotated and KeptOldKept get their\nmeasured times too.\n\nSpec-Unaffected: CI weights and README numbers only",
+          "timestamp": "2026-11-27T19:21:39Z",
+          "tree_id": "4198c7029ce6bc93de033ca05ee3bc1412332a06",
+          "url": "https://github.com/GetFelix/felix/commit/14027797c4367619881ad8143ca1c5c9f7eca94a"
+        },
+        "date": 1795807831850,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 375815.72,
+            "range": "8996.49",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 375815.72\nmean: 375782.59\nstdev: 8996.49\ncv: 2.39%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 375815.72,
+            "range": "8996.49",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 375815.72\nmean: 375782.59\nstdev: 8996.49\ncv: 2.39%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 81789.12,
+            "range": "4171.45",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 81789.12\nmean: 80104.55\nstdev: 4171.45\ncv: 5.21%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 817891.23,
+            "range": "41714.50",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 817891.23\nmean: 801045.47\nstdev: 41714.50\ncv: 5.21%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
