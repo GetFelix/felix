@@ -298,6 +298,14 @@ pub trait CacheObserver: Debug + Send + Sync {
     /// one by one. Each watcher of the shard ends as lagged at `at`.
     fn cache_reset(&self, _tenant_id: &str, _namespace: &str, _cache: &str, _shard: u32, _at: u64) {
     }
+
+    /// This member can no longer say the shard's state is current, as when
+    /// it has lost its Raft leader. Each watcher ends at `at`, the first
+    /// change it was not told of, to carry on wherever the shard is served
+    /// now. As lagged, unless the observer can say more.
+    fn cache_unserved(&self, tenant_id: &str, namespace: &str, cache: &str, shard: u32, at: u64) {
+        self.cache_reset(tenant_id, namespace, cache, shard, at);
+    }
 }
 
 /// One applied cache write, as an observer sees it.
