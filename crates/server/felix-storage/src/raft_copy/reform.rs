@@ -182,6 +182,27 @@ pub(crate) fn read_copy(
     let held = held::read(path, &label, index_spacing_bytes)?;
     let epoch = epoch_file::load(path)?;
     let mut purged = crate::raft_log::purged_point(path).map_err(named)?;
+    let vote = crate::disk_log::saved_vote_generation(path)
+        .map_err(io::Error::other)?
+        .checked_sub(1);
+    // A base a learner pulled and no install purged over is hidden from its
+    // log and refused by a start, so it reads as no entries, as an open
+    // shows it, and is never counted or picked.
+    if purged.is_none() && crate::raft_log::adopted::held(path)? {
+        return Ok(CopyRead {
+            path: path.to_path_buf(),
+            copy: None,
+            epoch,
+            last: None,
+            purged: None,
+            committed: None,
+            vote,
+            reserved: reserved::load(path)?,
+            floor: None,
+            rotated_by: None,
+            terms: probes.iter().map(|index| (*index, None)).collect(),
+        });
+    }
     let mut last = match held.last_record {
         Some((index, generation)) if purged.is_none_or(|purged| index > purged.index) => {
             Some(LogPoint {
@@ -232,9 +253,6 @@ pub(crate) fn read_copy(
         .into_iter()
         .flatten()
         .max_by_key(|floor| floor.floor);
-    let vote = crate::disk_log::saved_vote_generation(path)
-        .map_err(io::Error::other)?
-        .checked_sub(1);
     let mut terms = BTreeMap::new();
     for &index in probes {
         let term = match purged {

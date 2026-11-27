@@ -553,3 +553,57 @@ async fn a_stop_and_a_fresh_epoch_are_refused_while_a_log_holds_the_copy() {
     member.close().await.expect("close");
     stop(&dir, Some(1)).expect("stop once closed");
 }
+
+/// #3005: the start forgets the stopped log's batch and lowers its mark,
+/// but a batched append after it is marked as on any copy, so losing that
+/// append still reads as a log below its mark and rotates.
+#[tokio::test]
+async fn a_started_copy_that_loses_a_marked_append_rotates() {
+    let root = Root::new();
+    let copies = root.open();
+    let dir = root.shard_dir();
+    let copy = stopped_copy(&copies, &dir).await;
+    let voter = WireStart {
+        voter: Some(copy),
+        ..learner()
+    };
+    start_stopped(&copies, &dir, bases(0), &voter)
+        .await
+        .expect("start");
+    let backup = tempfile::tempdir().expect("backup");
+    copy_tree(&dir, backup.path());
+
+    let opened = copies
+        .open_copy(SHARD, &dir, LABEL, config())
+        .await
+        .expect("open");
+    assert_eq!((opened.copy, opened.rotation.clone()), (copy, None));
+    let mut log = Log::new(opened.log.clone(), Codec).expect("a Raft log");
+    log.mark_with(
+        opened.marks.clone(),
+        LogMarkMode::Batched(std::time::Duration::from_secs(3600)),
+    )
+    .expect("marks");
+    log.mark_recovered().await.expect("recovered");
+    append(&mut log, &[normal(2, 10, "c")])
+        .await
+        .expect("append")
+        .await
+        .expect("flush");
+    copies.mark_log().mark_batched().await.expect("batch");
+    assert_eq!(root.marks_on_disk().expect("marks").log, Some(point(2, 10)));
+    drop(log);
+    opened.log.close().await.expect("close");
+
+    restore(backup.path(), &dir);
+    let restored = copies
+        .open_copy(SHARD, &dir, LABEL, config())
+        .await
+        .expect("open");
+    assert_eq!(
+        restored.rotation.clone().map(|rotation| rotation.reason),
+        Some(RotateReason::LogBelowMark)
+    );
+    assert_ne!(restored.copy, copy);
+    restored.log.close().await.expect("close");
+}

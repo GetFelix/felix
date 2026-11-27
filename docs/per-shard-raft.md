@@ -1656,7 +1656,9 @@ refuses it and gets the records first:
    shown an empty log: no entry, no last log id, no purged id, as on a
    blank learner. Raft cannot append to, truncate or purge into the base,
    and the learner reports nothing from it in an election. The mark is on
-   disk, so a restart before the install keeps the base hidden.
+   disk, so a restart before the install keeps the base hidden. A
+   re-form's survey reads such a copy, current or kept, as blank too, so
+   a plan never counts it or takes it as a source.
 4. **The gap snapshot installs over the base.** It now skips only the
    gap, so the learner takes it, acknowledges it, and the leader appends
    the epoch from the first index and promotes the learner. The install's
