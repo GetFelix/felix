@@ -204,11 +204,12 @@ pub(super) fn raft_step<'a>(
             Some(to) => to,
         }
     } else {
-        // A serving leader hands over only to a voter, so a member that the
-        // reported voters leave out is not named: if it died before it
+        // Only a voter can be handed the lead or elected, so a member the
+        // reported voters leave out is not named. If it died before it
         // voted, a name on it would leave the shard on a down leader that
-        // never led, with nothing to move it on.
-        let voting = |node: &str| down || existing.may_be_voting(node);
+        // never led, with nothing to move it on. A down leader keeps its
+        // name and the shard waits for it.
+        let voting = |node: &str| existing.may_be_voting(node);
         match elected.or_else(|| fewest(&|node| leaders.total(node), &voting)) {
             Some(to) => to,
             None if down => return Decision::Kept,

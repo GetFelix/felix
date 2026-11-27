@@ -659,3 +659,119 @@ fn a_short_drain_is_paused_and_paced() {
         "{plan:?}"
     );
 }
+
+/// **A draining leader that crashes while its newcomer learns keeps its
+/// name.** A learner cannot be elected, so naming it would leave the shard
+/// on it if it then died too, with nothing to move it on. The shard waits
+/// for the old leader; once it is back and the newcomer votes, the drain
+/// goes on.
+#[test]
+fn a_short_drain_keeps_a_crashed_leader_named_over_a_learner() {
+    let streams = vec![replicated_stream("orders", 1, 3)];
+    let learning = shard_on(0, "broker-a", &["broker-b"], &["broker-a"]);
+    let crashed = a_is(NodeLifecycle::Down, &["broker-a", "broker-b", "broker-c"]);
+    let plan = plan_with(
+        &streams,
+        &[],
+        &crashed,
+        std::slice::from_ref(&learning),
+        &NothingCaughtUp,
+        raft(),
+    );
+    assert_eq!(plan.moves().count(), 0, "{plan:?}");
+
+    // Back and still draining, with the learner down: no rename onto it.
+    let mut back = a_is(
+        NodeLifecycle::Draining,
+        &["broker-a", "broker-b", "broker-c"],
+    );
+    back[1].status.lifecycle = NodeLifecycle::Down;
+    let plan = plan_with(
+        &streams,
+        &[],
+        &back,
+        std::slice::from_ref(&learning),
+        &NothingCaughtUp,
+        raft(),
+    );
+    assert!(matches!(
+        only_waits(&plan).as_slice(),
+        [Blocked::MemberDown { .. }]
+    ));
+
+    back[1].status.lifecycle = NodeLifecycle::Live;
+    let voting = shard_on(0, "broker-a", &["broker-b"], &["broker-a", "broker-b"]);
+    let plan = plan_with(&streams, &[], &back, &[voting], &NothingCaughtUp, raft());
+    let (step, renamed) = the_move(&plan);
+    assert!(matches!(step, MoveStep::RaftLeader { .. }), "{step:?}");
+    assert_eq!(renamed.leader, "broker-b");
+}
+
+/// **A voter report from before the grow still holds the old copy.** The
+/// grow write carries the report of the set of one forward. Until a report
+/// at the grown set names the newcomer voting, no write drops the draining
+/// broker or names the newcomer, and the store refuses a set without it.
+#[test]
+fn a_short_drain_holds_on_a_voter_report_from_before_the_grow() {
+    let streams = vec![replicated_stream("orders", 1, 3)];
+    let nodes = a_is(
+        NodeLifecycle::Draining,
+        &["broker-a", "broker-b", "broker-c"],
+    );
+    let plan = plan_with(
+        &streams,
+        &[],
+        &nodes,
+        &[single(0)],
+        &NothingCaughtUp,
+        raft(),
+    );
+    let (_, grown) = the_move(&plan);
+    assert_eq!(grown.replicas, vec!["broker-b".to_string()]);
+
+    // As the store leaves the write: copy ids and target dropped, then b's
+    // copy reported and the target stored, the old report kept throughout.
+    let mut unreported = grown.clone();
+    unreported.raft_target = None;
+    unreported
+        .raft_copy_ids
+        .retain(|node, _| node == "broker-a");
+    let mut stored = grown.clone();
+    stored.raft_copy_ids.insert("broker-b".to_string(), 7);
+    stored.raft_target = Some(RaftTarget {
+        counter: 3,
+        members: stored.raft_copy_ids.clone(),
+    });
+    for stale in [&unreported, &stored] {
+        assert_eq!(
+            stale.raft_voters.as_ref().map(|v| v.members.len()),
+            Some(1),
+            "the report from before the grow"
+        );
+        let plan = plan_with(
+            &streams,
+            &[],
+            &nodes,
+            std::slice::from_ref(stale),
+            &NothingCaughtUp,
+            raft(),
+        );
+        for (_, step, next) in plan.moves() {
+            assert_eq!(next.leader, "broker-a", "{step:?}");
+            assert!(next.raft_set().contains("broker-a"), "{step:?}");
+        }
+        for without_a in [&["broker-b"][..], &["broker-b", "broker-c"]] {
+            let set = without_a.iter().map(|n| n.to_string()).collect();
+            assert!(stale.holds_formed_set(&set), "{without_a:?}");
+        }
+    }
+
+    let mut reported = stored.clone();
+    let voters = reported.raft_voters.as_mut().unwrap();
+    voters.index += 1;
+    voters.members = reported.raft_copy_ids.clone();
+    let plan = plan_with(&streams, &[], &nodes, &[reported], &NothingCaughtUp, raft());
+    let (step, renamed) = the_move(&plan);
+    assert!(matches!(step, MoveStep::RaftLeader { .. }), "{step:?}");
+    assert_eq!(renamed.leader, "broker-b");
+}
