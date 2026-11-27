@@ -38,12 +38,7 @@ where
 /// no broker code (a lost connection) may have been applied, so they stay final.
 fn is_retryable(err: &anyhow::Error) -> bool {
     err.downcast_ref::<felix_client::BrokerError>()
-        .is_some_and(|broker| {
-            matches!(
-                broker.retry,
-                RetryClass::Retry | RetryClass::RetryAfter | RetryClass::Redirect
-            )
-        })
+        .is_some_and(|broker| matches!(broker.retry, RetryClass::Retry | RetryClass::RetryAfter))
 }
 
 impl Cluster {
