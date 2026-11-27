@@ -54,7 +54,7 @@ mod written;
 
 pub use crate::disk_log::CarriedFloor;
 pub use codec::EntryCodec;
-pub(crate) use codec::record_from_entry;
+pub(crate) use codec::{LogEntry, record_from_entry};
 /// The leader id in a log id: for this log, the term. Named in the bounds
 /// of everything generic over [`LogTypes`].
 pub use openraft::type_config::alias::CommittedLeaderIdOf;

@@ -9,13 +9,10 @@ use std::io;
 use std::ops::Deref;
 use std::path::{Path, PathBuf};
 
-use openraft::entry::{Entry, EntryPayload};
-use openraft::type_config::alias::CommittedLeaderIdOf;
-
 use super::epoch_file::EpochLogId;
 use crate::DiskLog;
 use crate::log::{Epoch, LogConfig, WrittenBy};
-use crate::raft_log::{EntryCodec, LogTypes, record_from_entry};
+use crate::raft_log::{CommittedLeaderIdOf, EntryCodec, LogEntry, LogTypes, record_from_entry};
 
 /// The staging log's directory, inside the copy's.
 pub(crate) const STAGING_DIR: &str = "base-staging";
@@ -23,11 +20,6 @@ pub(crate) const STAGING_DIR: &str = "base-staging";
 /// Written in the staging directory once every entry of the base is in it
 /// and synced: the base's last index and term.
 pub(crate) const STAGED: &str = "base-staged";
-
-type StagedEntry<C> = Entry<
-    CommittedLeaderIdOf<C>,
-    EntryPayload<<C as openraft::RaftTypeConfig>::D, <C as openraft::RaftTypeConfig>::Membership>,
->;
 
 /// A staging log being filled.
 pub struct Staging {
@@ -75,7 +67,7 @@ impl Staging {
     pub async fn append<C, K>(
         &mut self,
         codec: &K,
-        entries: &[StagedEntry<C>],
+        entries: &[LogEntry<C>],
         now: u64,
     ) -> io::Result<()>
     where
