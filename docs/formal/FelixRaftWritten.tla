@@ -654,19 +654,23 @@ JointReformScope ==
 
 \* The one trace the directed configuration walks, so TLC reaches it in
 \* seconds: the broker leaving the voter set leads term 1 and is the one
-\* power cut; a broker staying or joining leads term 2 and the dead come
-\* from those two; nothing is fsynced; a report names its sender's last
-\* entry. Every other interleaving is dropped; no invariant is changed.
+\* power cut; a broker staying or joining leads term 2, after the cut, and
+\* the dead come from those two once it has committed; nothing is fsynced;
+\* a report names its sender's last entry. Every other interleaving is
+\* dropped; no invariant is changed.
 Outgoing == InitVoters \ NewVoters
 Incoming == NewVoters \ InitVoters
 Staying == InitVoters \cap NewVoters
 DirectedScope ==
     /\ JointReformScope
     /\ \A c \in Servers : (term'[c] > term[c] /\ role'[c] = "candidate") =>
-            c \in (IF term'[c] = 1 THEN Outgoing ELSE Staying \cup Incoming)
+            IF term'[c] = 1 THEN c \in Outgoing
+            ELSE c \in Staying \cup Incoming /\ used.cuts = 1
     /\ \A s \in Servers : synced'[s] <= synced[s]
     /\ used'.cuts > used.cuts => \E s \in Outgoing : log[s] # <<>> /\ log'[s] = <<>>
-    /\ dead' # dead => dead' \subseteq Staying \cup Incoming
+    /\ dead' # dead =>
+            /\ dead' \subseteq Staying \cup Incoming
+            /\ \E k \in 1..Len(committed) : committed[k].by = 2
     /\ \A i, j \in Servers : wrote'[i][j] # wrote[i][j] =>
             wrote'[i][j] = NoId \/ wrote'[i][j].idx = LastIdx(j)
 
