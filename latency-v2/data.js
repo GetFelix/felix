@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795760094623,
+  "lastUpdate": 1795761904816,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -92928,6 +92928,72 @@ window.BENCHMARK_DATA = {
             "range": "173.25",
             "unit": "us",
             "extra": "trials: 5\nmedian: 570.00\nmean: 591.20\nstdev: 173.25\ncv: 29.30%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "ee94e71121964c5f9952cf3178f38958e2ad2063",
+          "message": "fix(raft): a dead voter that has not reported its copy no longer blocks placement (#3313) (#3323)\n\n* fix(raft): a voter that dies after a set change no longer blocks placement (#3313)\n\nA set change drops the copy ids, and no target is stored until every\nmember reports one. A voter that died before it reported again held the\ntarget, and with it every later swap, for good; dead_seat does not apply\nbecause the reported voters name it.\n\nPlacement now records the dead voter's copy id for it, the one the\ngroup's reported voters name it under at this incarnation and epoch,\nwhen it is the one member that has not reported and every other member\nserves. It goes through the existing copy-id report with the broker's\ncurrent registration, so the replicated apply is unchanged and needs no\nmetadata level.\n\nSpec-Unaffected: placement-side proposal of an existing command; no modelled apply or broker behaviour changes\n\n* test(controlplane): the vouched copy id write is pinned at the store and the pass (#3313)\n\nCorrect the docs: a vouched id is the one the group's voters name, and a\nbroker that returns with another copy reports it itself.\n\nSpec-Unaffected: tests and docs only",
+          "timestamp": "2026-11-27T06:39:20Z",
+          "tree_id": "7d0f69218a3b8723ac0b43496ec73c901d925b32",
+          "url": "https://github.com/GetFelix/felix/commit/ee94e71121964c5f9952cf3178f38958e2ad2063"
+        },
+        "date": 1795761890148,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 96,
+            "range": "0.55",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 96.00\nmean: 96.40\nstdev: 0.55\ncv: 0.57%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 129,
+            "range": "3.05",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 129.00\nmean: 130.60\nstdev: 3.05\ncv: 2.34%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 174,
+            "range": "170.83",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 174.00\nmean: 249.80\nstdev: 170.83\ncv: 68.38%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 133,
+            "range": "0.84",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 133.00\nmean: 133.20\nstdev: 0.84\ncv: 0.63%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 269,
+            "range": "9.58",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 269.00\nmean: 267.40\nstdev: 9.58\ncv: 3.58%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 412,
+            "range": "49.53",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 412.00\nmean: 399.00\nstdev: 49.53\ncv: 12.41%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
