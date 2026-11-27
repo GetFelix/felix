@@ -1283,20 +1283,27 @@ OldKeptShape ==
     /\ returns' # returns => cpEpoch = 1
     /\ elected' # elected => cpEpoch = 0
 
-\* The shape of the SnapshotMembership configs (ACTION_CONSTRAINT). Epoch 0
-\* finishes its move and its writes before a copy is lost, a broker is
-\* declared dead, a snapshot purges or the command plans: the StaleMembership
-\* configs check faults during a move. ChangeOut takes no append, so the
-\* voter sets come from the copies of the brokers that stay. With no power
-\* cut, how far a log is synced decides nothing, so Sync does not run.
-\* The purge takes its snapshot at the saved commit and purges through it:
-\* a lower snapshot or a kept tail leaves the re-form more membership
-\* entries to read, so it can only add voter sets and mark the plan.
-SnapshotShape ==
+\* The shape of FelixRaftReformSnapshotMembershipOneWrite.cfg (ACTION_CONSTRAINT).
+\* Epoch 0 finishes its move and its writes before a copy is lost, a broker
+\* is declared dead, a snapshot purges or the command plans: the
+\* StaleMembership configs check faults during a move. ChangeOut takes no
+\* append, so the voter sets come from the copies of the brokers that stay.
+\* With no power cut, how far a log is synced decides nothing, so Sync does
+\* not run.
+SnapshotOneWriteShape ==
     /\ (rotations' # rotations \/ dead' # dead \/ plans' # plans \/ purges' # purges)
           => (writes = MaxWrites /\ steps = MaxChangeSteps)
     /\ log'[ChangeOut] = log[ChangeOut]
     /\ synced' # synced => (purges' # purges \/ log' # log)
+
+\* The shape of the two-write SnapshotMembership configs. On top of the above,
+\* the writes finish before the move starts, and the purge takes its snapshot
+\* at the saved commit and purges through it: a lower snapshot or a kept tail
+\* leaves the re-form more membership entries to read, so it can only add
+\* voter sets and mark the plan. The one-write config checks both.
+SnapshotShape ==
+    /\ SnapshotOneWriteShape
+    /\ steps' # steps => writes = MaxWrites
     /\ purges' # purges =>
           \A b \in Brokers : snap'[b] # snap[b] => snap'[b] = [at |-> commit[b], purged |-> commit[b]]
 ================================================================================

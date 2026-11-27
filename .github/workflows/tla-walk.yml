@@ -38,6 +38,7 @@ on:
     paths:
       - .github/workflows/tla-walk.yml
       - docs/formal/FelixCrossShardCommit*
+      - docs/formal/FelixRaftReformSnapshotMembershipLogOnly.cfg
 
 permissions:
   contents: read
@@ -67,6 +68,12 @@ jobs:
           - family: reform-gate-twins
             configs: FelixRaftWrittenCommitsReformJointDeadOneSet
             report-only: true
+          # The re-form reading memberships only from log entries (#2689),
+          # too big to check exhaustively. It must find its violation. The
+          # seed is fixed so a run can be repeated; a dispatch seed wins.
+          - family: reform-snapshot-twin
+            configs: FelixRaftReformSnapshotMembershipLogOnly
+            seed: "2689"
           # The cross-shard commit design (docs/cross-shard-commit.md), not
           # built yet. Each twin drops one rule and must find its violation.
           - family: cross-shard
@@ -98,7 +105,7 @@ jobs:
         env:
           TLA_SIM_MINUTES: ${{ inputs.minutes || '25' }}
           TLA_DEPTH: ${{ inputs.depth || '300' }}
-          TLA_SEED: ${{ inputs.seed }}
+          TLA_SEED: ${{ inputs.seed || matrix.seed }}
           CONFIGS: ${{ matrix.configs }}
         # Word splitting is wanted: the matrix entry is a list of names. An
         # empty TLA_SEED is unset so the script draws one.

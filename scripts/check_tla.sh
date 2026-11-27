@@ -571,7 +571,7 @@ expectations=(
   "FelixRaftReformReplacedDiskByBroker violates OffsetNeverReused"
   "FelixRaftReformReplacedDiskLost violates OffsetNeverReused"
   "FelixRaftReformSnapshotMembership pass"
-  "FelixRaftReformSnapshotMembershipLogOnly violates OffsetNeverReused"
+  "FelixRaftReformSnapshotMembershipOneWrite pass"
   "FelixRaftReformEpochNotChecked pass"
   "FelixRaftReformRejoin pass"
   "FelixRaftReformStaleMembershipIntact pass"
@@ -802,6 +802,7 @@ expectations=(
 # reach its violation within the budget.
 walks=(
   "FelixRaftWrittenCommitsReformJointDeadOneSet violates BaseAgrees"
+  "FelixRaftReformSnapshotMembershipLogOnly violates OffsetNeverReused"
   "FelixCrossShardCommit pass"
   "FelixCrossShardCommitLive pass"
   "FelixCrossShardCommitNoFirstWins violates Atomicity"
@@ -879,6 +880,9 @@ fi
 # dispatch run gives its declared outcome.
 # FelixRaftPlacementPlacedTarget, Placed with one target change, is not
 # registered until a dispatch run passes it.
+# FelixRaftReformSnapshotMembershipLogOnly is walked, not registered: its
+# dispatch (run 45880709492) filled the runner's disk at depth 18 (482M
+# distinct states) before reaching the violation.
 # FelixHeadTrim is not registered: its dispatch (run 43870273108) passed 29 of
 # 30 shards and shard 0 hit the six hour limit at depth 34 with no violation
 # (1.75B states, 244M distinct).
@@ -892,8 +896,8 @@ fi
 # `--plan-heavy`: give a new heavy one its weight.
 weights=(
   "FelixRaftReformKeptOldKept 12"
-  "FelixRaftReformSnapshotMembership 120"
-  "FelixRaftReformSnapshotMembershipLogOnly 120"
+  "FelixRaftReformSnapshotMembership 240"
+  "FelixRaftReformSnapshotMembershipOneWrite 120"
   "FelixRaftReformKeptOldKeptCap 6"
   "FelixShardMoveGiveUpKeep 22"
   "FelixShardMoveGiveUpKeepLive 22"
