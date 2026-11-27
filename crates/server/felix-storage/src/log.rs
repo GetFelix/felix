@@ -137,8 +137,8 @@ pub enum RecordMark {
     /// `docs/storage-format.md`, "Trim records".
     Trim { floor: Offset },
     /// A change to the shard's replica set, committed through the log. The
-    /// payload is the engine's. Only a v9 segment holds one, and nothing
-    /// writes one yet.
+    /// payload is the engine's. Only a v9 segment holds one, and only a
+    /// Raft log writes one, for each membership entry.
     Membership,
     /// A signed add to a counter, for a cache shard whose counters share its
     /// log. The payload is the counter store's. v9 only, and nothing writes

@@ -677,7 +677,8 @@ Only a v9 segment holds a conditional piece, and only a Raft log writes
 one: a stream log refuses the append (`Unsupported`). Every build before v9
 reads the bits as `RecordFlags`, and so does a v9 build from before
 conditional pieces, so a member must not write one until the whole group
-reads them. Nothing writes one yet.
+reads them. A Raft shard writes one for each record of a conditional batch
+of more than one record (`felix-replication`, `raft/propose.rs`).
 
 ### Record kinds
 
@@ -692,8 +693,9 @@ predicate, `RecordMark::is_data`, makes that call at each of those sites, so
 a new kind must be decided once and cannot be missed at one site. A
 conditional piece is the one exception: `is_data` says yes, and whether its
 batch is whole needs the records after it, which is
-`log::conditional`'s call. The client read paths do not make it yet, so
-nothing may write a conditional piece until they do.
+`log::conditional`'s call. `StreamLog::read_log_from` (`felix-broker`,
+`durable.rs`) makes it for pages read from the log, and a Raft shard's
+delivery makes the same call as it applies entries (`raft/commit.rs`).
 
 A skipped record still holds its offset, so a reader sees a gap there. A
 subscriber that negotiated event offsets and skip counts (`docs/protocol.md`,
