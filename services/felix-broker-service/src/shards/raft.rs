@@ -41,6 +41,7 @@ use crate::cluster::lease::{Head, LeaseState};
 
 pub(crate) mod alone_cluster;
 pub(crate) mod copy_id;
+mod fleet_wait;
 pub(crate) mod floor;
 mod groups;
 pub(crate) mod reform_survey;
@@ -89,6 +90,11 @@ pub(crate) struct RaftShards {
     /// Whether the fleet finalized `raft_written_commit`, read at each
     /// open: a member opened strict stays strict until it opens again.
     fleet: Arc<FleetGate>,
+    /// Holds member opens until the fleet's features are known.
+    fleet_wait: parking_lot::Mutex<fleet_wait::FleetWait>,
+    /// Set by [`Self::stand_after`]: these members open before the control
+    /// plane answers, so they do not wait for the fleet.
+    votes_unchecked: std::sync::atomic::AtomicBool,
     leading: Arc<Leading>,
     /// Set when a member's log failed to close: its last sync may not have
     /// run, so the broker must not record a clean stop.
@@ -186,6 +192,10 @@ pub(crate) struct RaftShards {
     /// re-formed epoch. Unset on a standalone broker and in a build with
     /// no control plane link.
     alone_writer: std::sync::OnceLock<Arc<dyn alone_cluster::AloneWriter>>,
+    /// Held RF 1 shards whose re-form could not be decided when they
+    /// opened, by the incarnation opened. The feed pass opens each again
+    /// once it can be.
+    alone_later: parking_lot::Mutex<HashMap<ShardKey, u64>>,
 }
 
 /// A shard directory an earlier build wrote as a member with no copy id.
@@ -294,6 +304,8 @@ impl RaftShards {
             runtime,
             local,
             fleet,
+            fleet_wait: parking_lot::Mutex::default(),
+            votes_unchecked: std::sync::atomic::AtomicBool::new(false),
             leading,
             close_failed: std::sync::atomic::AtomicBool::new(false),
             placed: parking_lot::Mutex::default(),
@@ -333,6 +345,7 @@ impl RaftShards {
             held_copies: parking_lot::Mutex::default(),
             alone: std::sync::atomic::AtomicBool::new(false),
             alone_writer: std::sync::OnceLock::new(),
+            alone_later: parking_lot::Mutex::default(),
         });
         shards
             .broker
@@ -356,6 +369,7 @@ impl RaftShards {
     /// Members that open before `registered` is cancelled vote but do not
     /// lead until it is ([`replication::raft::GroupRuntime::stand_after`]).
     pub(crate) fn stand_after(&self, registered: tokio_util::sync::CancellationToken) {
+        self.votes_unchecked.store(true, Ordering::Release);
         self.runtime.stand_after(registered);
     }
 
@@ -623,16 +637,23 @@ impl RaftShards {
         let (dir, config) = claim.context("claim task")??;
         let retention_interval = config.retention_check_interval;
         let mut sent = None;
+        let mut later = None;
         if self.alone.load(Ordering::Acquire) {
             self.reform_alone(key, incarnation, root, &dir, &config)
                 .await
                 .context("re-form the group of one after a relaxed crash")?;
         } else {
-            sent = self
+            match self
                 .reform_alone_in_cluster(key, assignment, root, &dir, &config)
                 .await
-                .context("re-form the group of one through the control plane")?;
+                .context("re-form the group of one through the control plane")?
+            {
+                alone_cluster::AloneReform::Recorded(answer) => sent = Some(*answer),
+                alone_cluster::AloneReform::Done => {}
+                alone_cluster::AloneReform::Later(why) => later = Some(why),
+            }
         }
+        let only_here = assignment.replicas.iter().all(|b| *b == self.local);
         let assignment = sent.as_ref().unwrap_or(assignment);
         self.start_reformed(key, assignment, root, &dir, &config)
             .await
@@ -643,6 +664,17 @@ impl RaftShards {
             .open_copy(GroupId::new(key.clone(), incarnation), &dir, config, root)
             .await
             .context("open the Raft member")?;
+        // A kept copy holds records this one lacks, so the shard serves
+        // nothing until it is re-formed.
+        match later {
+            Some(why) if only_here && !opened.kept.held.is_empty() => {
+                tracing::info!(shard = ?key, why, "a held one-replica shard is not re-formed yet; it opens again once it can be");
+                self.alone_later.lock().insert(key.clone(), incarnation);
+            }
+            _ => {
+                self.alone_later.lock().remove(key);
+            }
+        }
         let epoch = {
             let dir = dir.clone();
             tokio::task::spawn_blocking(move || felix_storage::raft_copy::group_epoch(&dir)).await
@@ -1381,8 +1413,9 @@ impl EngineShards for RaftShards {
                         .await;
                 }
                 // A cache watch here would go quiet, which reads as a quiet
-                // key. It ends as lagged, so the client re-watches from
-                // where it stopped once some member follows a leader.
+                // key. It ends as moved, or as lagged for a client that does
+                // not follow moves, so the watch carries on from where it
+                // stopped once some member follows a leader.
                 if leaderless
                     && key.kind == ShardKind::Cache
                     && let Some(hub) = self.broker.cache_watches()
@@ -1488,6 +1521,35 @@ impl EngineShards for RaftShards {
                     .insert(key.clone(), StoppedCopy { term, error: why });
                 self.close_with_stream(&key, member).await;
             }
+            // A held group of one whose re-form could not be decided at its
+            // open is closed once it can be, and the open below re-forms it.
+            // It never formed, so it served nothing.
+            let reform: Vec<ShardKey> = {
+                let mut later = self.alone_later.lock();
+                later.retain(|key, incarnation| {
+                    open.get(key)
+                        .is_some_and(|member| member.incarnation == *incarnation)
+                });
+                later
+                    .keys()
+                    .filter(|key| {
+                        fed.get(*key)
+                            .is_some_and(|(assignment, _)| self.alone_blocked(assignment).is_none())
+                            && self.runtime.status(key).is_some_and(|status| {
+                                status.term == 0 && status.last_index.is_none()
+                            })
+                    })
+                    .cloned()
+                    .collect()
+            };
+            for key in reform {
+                self.alone_later.lock().remove(&key);
+                let Some(member) = open.remove(&key) else {
+                    continue;
+                };
+                tracing::info!(shard = ?key, "re-forming a held one-replica shard: what kept it from re-forming at its open has cleared");
+                self.close_with_stream(&key, member).await;
+            }
             self.restarts.lock().retain(|key| fed.contains_key(key));
             self.runtime.retain_admitted(|key| fed.contains_key(key));
             *self.unplaced.lock() = fed
@@ -1502,6 +1564,8 @@ impl EngineShards for RaftShards {
             // One probe per pass: every shard shares the root, and each heal
             // costs a write, an fsync and a directory sync.
             let mut healed: Option<Result<(), String>> = None;
+            // Asked once per pass, and only if a member would open.
+            let mut fleet_known: Option<bool> = None;
             for (key, (assignment, full)) in &fed {
                 let brokers = brokers_of(assignment);
                 let held = || ShortShard {
@@ -1523,6 +1587,14 @@ impl EngineShards for RaftShards {
                         }
                         continue;
                     };
+                    // Held for the fleet like the restore gate holds
+                    // them: the pass after it is known opens the members.
+                    if !*fleet_known.get_or_insert_with(|| self.fleet_known()) {
+                        if keep {
+                            short.push(held());
+                        }
+                        continue;
+                    }
                     if !brokers.contains(self.local.as_str())
                         && !self.claimed(key, assignment.incarnation, &mut reads).await
                     {

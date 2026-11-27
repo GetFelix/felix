@@ -233,3 +233,42 @@ async fn a_sharded_subscription_resumes_past_brokers_that_are_not_ready() -> Res
     assert!(resumed.iter().all(|(_, offset)| *offset == Some(6)));
     Ok(())
 }
+
+/// **A move that names no owner is followed past an entry broker that stays
+/// not ready.** A Raft member that lost its leader ends its readers that
+/// way, and when it is cut off in the minority it never hears a leader
+/// again, so asking it until the deadline would hold the reader for nothing.
+#[tokio::test]
+#[serial_test::serial]
+async fn an_unowned_move_is_followed_past_an_entry_broker_that_stays_not_ready() -> Result<()> {
+    let (config, cert) = build_server_config()?;
+    let entry = serves_then_not_ready(config.clone(), 1, 5)?;
+    entry.set_events(|_, _| {
+        vec![
+            event(5),
+            Message::ShardMoved {
+                subscription_id: 0,
+                resume_from: Some(6),
+                node_id: None,
+                addr: None,
+                generation: 0,
+            },
+        ]
+    });
+    let leader = serving(config)?;
+    let cluster = client(&[&entry, &leader], cert).await?;
+    let mut feed = cluster.subscribe("t1", "default", "orders").await?;
+    let first = feed.next_event().await?.context("ended")?;
+    assert_eq!(first.offset, Some(5));
+
+    let resumed = tokio::time::timeout(Duration::from_secs(10), feed.next_event())
+        .await
+        .context("never resumed past the entry broker")??
+        .context("ended")?;
+    assert_eq!(resumed.offset, Some(6));
+    assert_eq!(
+        leader.subscribe_starts()[0].1,
+        Some(StartPosition::Offset(6))
+    );
+    Ok(())
+}

@@ -74,6 +74,7 @@ confirmed when stream shards on Raft (#2233) lands.
 | `node/cluster.rs`, `node/startup.rs`, `node/peer_dispatch.rs` | | Part | Wire one engine. No `Hybrid::start`, no read-round binding, no election table |
 | `node/handoff.rs` | 218 | Part | Shutdown handoff becomes a Raft leadership transfer |
 | `shards/routing/hold.rs`, `shards/watch.rs` | | Kept | The move hold and the assignment watch |
+| `serving/quic/handlers/cache_watch.rs` | | Part | A watch joins the Raft member's applied edge. The branch that reads the hybrid shard log, its commit gate and `snapshot_entries` go. A Raft broker with no member of the shard open refuses the watch as retryable and never reaches that branch |
 
 ### Storage
 
@@ -317,7 +318,7 @@ The order, decided with Raft as the default:
 - The code deletion pull requests (#2259 to #2265) start when single-voter
   Raft (#3000) merges, because a standalone broker keeps its durable streams
   on the hybrid path until then.
-- The skipped Raft gaps (#3030, #3032, #3001, #3005) are fixed along
+- The skipped Raft gaps (#3285, #3286, #3032, #3001, #3005) are fixed along
   the way. A cluster test tracked by an issue skips on Raft and says so.
 - Raft performance still has to match the v0.7.0 release binary on the
   gate's cells (#2646). The comparison is against v0.7.0, not against the
