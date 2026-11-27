@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795733275407,
+  "lastUpdate": 1795738003035,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -91938,6 +91938,72 @@ window.BENCHMARK_DATA = {
             "range": "25.69",
             "unit": "us",
             "extra": "trials: 5\nmedian: 260.00\nmean: 272.80\nstdev: 25.69\ncv: 9.42%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "8b6a3868667911b34153e86b0c2a2accbfa7b986",
+          "message": "fix(raft): a broker applies a re-formed epoch written in place, with the cluster tests that caught it (#2250, #2510) (#3282)\n\n* test(raft): cluster acceptance for re-forming a group that lost its voters\n\nThree felix-cluster tests on Raft brokers:\n\n- Two of three periodic brokers lose power while the leader's process is\n  killed. The followers come back under new ids, the group elects nothing\n  and acknowledges nothing until plan and apply re-form it, and the new\n  epoch's voters hold every acknowledged record at its offset with no\n  offset given out twice.\n- A follower's data directory restored from a copy, beside a follower that\n  lacks the same records, never votes: nothing leads until the leader\n  returns, and then every record is served at its offset.\n- An RF 2 shard whose only other copy was wiped re-forms from the copy\n  left, as its only voter.\n\nThe harness can now cut the power to chosen brokers (power_off_nodes).\n\nSpec-Unaffected: tests and harness only\n\n* test(raft): the power-cut re-form test skips off Linux\n\nSpec-Unaffected: tests only\n\n* fix(raft): a re-form's epoch write reaches the brokers (#2250)\n\nThe control plane writes a re-form's next epoch in place, at the\ngeneration the shard already has. The broker's watch dropped any change\nat its held generation unless the Raft target moved, so it never saw\nthe new epoch, its bases or seed. Every stopped copy then refused to\nopen as stopped in epoch 0 and the apply stayed at `starting`, which is\nwhy the two re-form cluster tests timed out.\n\nA change at the held generation now takes the Raft record when its\ngroup epoch is later. The epoch only grows within an incarnation, so a\nlate copy is still dropped.\n\nSpec-Unaffected: broker-side delivery of an already-modelled epoch write; no protocol or apply rule changes\n\n* fix(raft): an in-place epoch from another incarnation is dropped, and the placed epoch is cloned\n\nSpec-Unaffected: broker-side delivery of an already-modelled epoch write\n\n* fix(raft): a Raft floor raised in place reaches the brokers\n\nThe control plane raises a leader's floor in place, within an epoch as\nwell as across one. The broker dropped that change at its held\ngeneration, so a group of one planned its re-form from a stale floor and\nthe control plane refused it as FloorRaised. A change at the held\ngeneration now takes a floor past the held one, by epoch then index, at\nthe same incarnation.\n\nSpec-Unaffected: broker-side delivery of a stored floor; the control plane's floor and re-form rules are unchanged\n\n* test(cluster): skip the strict relaxed re-form test until #3309, and test the documented contract\n\nSpec-Unaffected: test only",
+          "timestamp": "2026-11-27T00:00:06Z",
+          "tree_id": "5c355b3406b170738d4293c3fe6eb13add5af1ff",
+          "url": "https://github.com/GetFelix/felix/commit/8b6a3868667911b34153e86b0c2a2accbfa7b986"
+        },
+        "date": 1795737986602,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 152,
+            "range": "0.89",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 152.00\nmean: 152.40\nstdev: 0.89\ncv: 0.59%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 214,
+            "range": "6.04",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 214.00\nmean: 212.00\nstdev: 6.04\ncv: 2.85%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 627,
+            "range": "297.45",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 627.00\nmean: 590.20\nstdev: 297.45\ncv: 50.40%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 199,
+            "range": "1.00",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 199.00\nmean: 199.00\nstdev: 1.00\ncv: 0.50%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 389,
+            "range": "5.67",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 389.00\nmean: 390.80\nstdev: 5.67\ncv: 1.45%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 578,
+            "range": "48.12",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 578.00\nmean: 585.40\nstdev: 48.12\ncv: 8.22%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
