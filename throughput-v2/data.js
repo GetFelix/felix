@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795765010714,
+  "lastUpdate": 1795765658657,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -73320,6 +73320,58 @@ window.BENCHMARK_DATA = {
             "range": "6288.23",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 808896.10\nmean: 809313.10\nstdev: 6288.23\ncv: 0.78%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "4f48bf26849c02810db68608e863e6f600181bb5",
+          "message": "test(cluster): the cache failover and rejoin tests run on Raft (#3285, #3286) (#3327)\n\n* fix(raft): a cache watch on a Raft broker with no member open is refused retryably (#3030)\n\nOn a Raft broker with no member of the cache shard open, handle_cache_watch_message\nfell through to the hybrid branch and served the watch from the broker's own cache\nstore, which nothing writes on Raft. The watch joined an empty log: a retained\nwatch got retained_count 0, a resume got InFuture or a storage error.\n\nIt now answers retryable shard_unavailable, as a cache put does. Tests cover the\nrefusal for live, retained and resume opens, and a writer racing watch opens to\npin register-before-read. The cache failover and sharded watch cluster tests run\non Raft, with a Raft wait for every cache member in place of hybrid reports.\n\nSpec-Unaffected: the watch open path is not modelled; no apply-path change.\n\n* test(cluster): the three cache skips left on Raft name their own issues (#3285, #3286)\n\nSpec-Unaffected: test skip reasons and a doc line only.\n\n* test(cluster): a Raft cache failover test kills the elected leader, not a follower (#3030)\n\nSpec-Unaffected: test wait only.\n\n* fix(raft): a cache watch on a follower carries on when its leader dies (#3030)\n\nA Raft member left without a leader ended its cache watches as lagged,\nwhich ends a cluster client's watch, so a watch on a healthy follower ended\nwhenever the shard's leader died. It now ends them at the same edge as\nshard_moved with no owner named, for a client that follows moves, and the\nwatch reopens wherever the shard is served. Clients that do not follow\nmoves still get cache_watch_lagged.\n\nThe sharded state-phase test killed the Raft leader, while a follower\nserved the watch, so the kill never cut the state phase. On Raft it now\nkills the follower the watch entered through.\n\nSpec-Unaffected: client-facing watch ending signal only; no replicated state, commit or apply change\n\n* fix(client): a move that names no owner is followed past a not-ready entry broker (#3030)\n\nA Raft member that lost its leader ends cache watches with shard_moved and\nno owner. The client then asked only its entry broker, which can be that\nmember, and one cut off in the minority answers shard_unavailable until the\nfollow deadline. A refusal of that kind, or no answer, now moves the next\nattempt to the next known broker, with the same backoff and deadline.\n\nprotocol.md describes the move with no owner.\n\nSpec-Unaffected: client reader routing and docs only; no replicated state change\n\n* test(cluster): the short-placed and rejoin cache tests run on Raft (#3285, #3286)\n\nThe two short-placement tests create their shards after a start with fewer\nbrokers than the factor, and wait for the group to grow to three voters\nand form before they kill or write. The rejoin test waits for every member\nof the Raft group to hold the log through its leader instead of reading a\nhybrid report and metric.\n\nSpec-Unaffected: test only",
+          "timestamp": "2026-11-27T07:42:34Z",
+          "tree_id": "55369044f440f10dbbc013c750786144509bc55d",
+          "url": "https://github.com/GetFelix/felix/commit/4f48bf26849c02810db68608e863e6f600181bb5"
+        },
+        "date": 1795765657951,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 738894.57,
+            "range": "57970.40",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 738894.57\nmean: 704475.08\nstdev: 57970.40\ncv: 8.23%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 738894.57,
+            "range": "57970.40",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 738894.57\nmean: 704475.08\nstdev: 57970.40\ncv: 8.23%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 157575.26,
+            "range": "7043.32",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 157575.26\nmean: 157562.03\nstdev: 7043.32\ncv: 4.47%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1575752.56,
+            "range": "70433.17",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1575752.56\nmean: 1575620.24\nstdev: 70433.17\ncv: 4.47%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
