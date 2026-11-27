@@ -3124,7 +3124,10 @@ fails fast and the client's retry deadline decides when to stop.
 A publisher's wait and a commit wait end when the watcher says the term is
 lost. The watcher hears of an election a moment after openraft does, so
 neither wait takes "not leading" on the watcher's word alone: openraft's
-own role is read as well.
+own role is read as well. A term closed for a transfer is not lost to them
+while openraft still leads it. A write already in that term's log can still
+commit, and its waiter is answered by the commit, not told the outcome is
+unknown.
 
 > `crates/server/felix-replication/src/raft/tests/commit.rs`,
 > `a_leader_opens_only_once_its_blank_entry_commits`,
@@ -5761,18 +5764,27 @@ A leader hands over only when all of these hold:
 6. The last transfer is not inside its backoff, and the broker's budget has
    a permit.
 
-The transfer closes the shard for the term first (the lease is given up),
-waits up to the shortest election timeout for the target to hold the whole
-log, then asks openraft. Publishes in that window are told the shard is not
-ready. The refusal is retryable and nothing was written, so the client sends
-every publish kind again under its reconnect policy (a plain one too, since
+The transfer closes the shard for the term first (the lease is given up).
+It then waits, up to the shortest election timeout, until the target holds
+the whole log and the leader has applied all of it, and only then asks
+openraft. Publishes in that window are told the shard is not ready. The
+refusal is retryable and nothing was written, so the client sends every
+publish kind again under its reconnect policy (a plain one too, since
 nothing of it was applied); a hand-over that outlasts the policy returns the
-refusal. A write already proposed when the hand-over began is different: it
-may commit under the new leader, which the old one cannot confirm, so it is
-answered `leadership_lost` (outcome unknown), and a plain publish returns
-that rather than risk a duplicate. The target campaigns while the other
-followers still hear the old leader, so their pre-vote check lets a
-transfer target through.
+refusal. A write already proposed when the hand-over began is answered by
+its commit, which the wait for the apply lets the old leader see. If the
+wait runs out first, the transfer is asked anyway, since the term cannot
+open again. A write still in flight then may commit under the new leader,
+which the old one cannot confirm, so it is answered `leadership_lost`
+(outcome unknown), and a plain publish returns that rather than risk a
+duplicate. A transfer a membership step asks for (a move off the leader)
+waits the same way. The target campaigns while the other followers still
+hear the old leader, so their pre-vote check lets a transfer target
+through.
+
+> `crates/server/felix-replication/src/raft/tests/commit.rs`,
+> `a_placed_transfer_waits_for_its_terms_writes_to_be_answered` and
+> `a_placed_transfer_with_nothing_in_flight_is_not_held`.
 
 A new group goes through this once: the broker that formed it leads its
 first term, then hands over. The test harness's

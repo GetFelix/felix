@@ -4,6 +4,7 @@
 //! "Membership".
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::time::Duration;
 
 use openraft::error::{ChangeMembershipError, ClientWriteError, RaftError};
 use openraft::raft::Precondition;
@@ -15,8 +16,8 @@ use super::Group;
 use crate::raft::membership::TargetVersion;
 use crate::raft::types::{MemberId, Membership, MembershipEdit, ShardTypes};
 
-/// How often [`Group::transfer_in_caught_up`] looks at the target again.
-const CAUGHT_UP_POLL: std::time::Duration = std::time::Duration::from_millis(10);
+/// How often [`Group::drained`] looks at the target again.
+const CAUGHT_UP_POLL: Duration = Duration::from_millis(10);
 
 /// What a leader's log held when a step was decided.
 #[derive(Debug, Clone)]
@@ -130,12 +131,12 @@ impl Group {
 
     /// Hand the leadership of `term` to `to`. Nothing is asked if this
     /// member no longer leads that term: the successor was picked from
-    /// that term's log.
+    /// that term's log. Held as [`Self::transfer_in_caught_up`] is, for at
+    /// most the shortest election timeout.
     pub(crate) async fn transfer_in(&self, term: u64, to: MemberId) -> Option<u64> {
-        // The term is checked in the read that gives up the lease, so a
-        // later term this member won meanwhile is never closed.
         let term = self.transfer_starting_in(Some(term)).await?;
-        let _ = self.raft.trigger().transfer_leader(to).await;
+        let within = Duration::from_millis(self.pace.timers.election_min);
+        self.hand_over(term, to, within).await;
         Some(term)
     }
 
@@ -167,34 +168,84 @@ impl Group {
         Some(term)
     }
 
-    /// [`Self::transfer_in`], with the request held until `to` holds this
-    /// leader's whole log, for at most `within`. The shard closes first, so
-    /// no new write lands meanwhile and a busy log stops growing away from
-    /// `to`. Asked anyway when the wait runs out: the term is closed by then,
-    /// and a transfer that does not go through ends it.
+    /// Hand the leadership of `term` to `to` once `to` holds this leader's
+    /// whole log and this leader has applied it, waiting at most `within`.
+    /// The shard closes first, so no new write lands meanwhile and a busy
+    /// log stops growing away from `to`. The apply is waited for because a
+    /// write's waiter is answered here only by its commit: one still in
+    /// flight when this member steps down is told the outcome is unknown,
+    /// though the new leader keeps it. Asked anyway when the wait runs out:
+    /// the term is closed by then, and a transfer that does not go through
+    /// ends it.
     pub(crate) async fn transfer_in_caught_up(
         &self,
         term: u64,
         to: MemberId,
-        within: std::time::Duration,
+        within: Duration,
     ) -> Option<u64> {
+        // The term is checked in the read that gives up the lease, so a
+        // later term this member won meanwhile is never closed.
         let term = self.transfer_starting_in(Some(term)).await?;
         #[cfg(any(test, feature = "testing"))]
         self.placed_transfers
             .lock()
             .push((term, to.broker.to_string()));
-        let deadline = tokio::time::Instant::now() + within;
-        loop {
-            let log = self.replication();
-            if log.matched.get(&to) >= Some(&log.last_index)
-                || tokio::time::Instant::now() >= deadline
-            {
-                break;
-            }
-            tokio::time::sleep(CAUGHT_UP_POLL).await;
+        self.hand_over(term, to, within).await;
+        Some(term)
+    }
+
+    /// Ask openraft to transfer the closed `term` to `to` once
+    /// [`Self::drained`], or once `within` has passed. Nothing is asked if
+    /// this member stopped leading `term` meanwhile.
+    async fn hand_over(&self, term: u64, to: MemberId, within: Duration) {
+        match self
+            .drained(term, &to, tokio::time::Instant::now() + within)
+            .await
+        {
+            None => return,
+            Some(true) => {}
+            Some(false) => tracing::info!(
+                member = %self.member,
+                %to,
+                ?within,
+                "a transfer was asked before its term's writes were all answered"
+            ),
         }
         let _ = self.raft.trigger().transfer_leader(to).await;
-        Some(term)
+    }
+
+    /// Wait until `to` has matched this leader's last entry and this
+    /// leader has applied it: `Some(true)`, or `Some(false)` when
+    /// `deadline` passes first. `None` once this member no longer leads
+    /// `term`, or its core or state machine stopped. The last index is read
+    /// from the core each time, since a write proposed before the close can
+    /// still land after it. Holds no lock over a wait, so the apply goes on
+    /// under it.
+    async fn drained(
+        &self,
+        term: u64,
+        to: &MemberId,
+        deadline: tokio::time::Instant,
+    ) -> Option<bool> {
+        let mut commits = self.commits.clone();
+        loop {
+            let last = self.raft.with_raft_state(move |state| {
+                let leads = state.server_state == ServerState::Leader
+                    && state.vote_ref().leader_id().term() == term;
+                leads.then(|| state.log_ids.last().map_or(0, |at| at.index))
+            });
+            let last = last.await.ok().flatten()?;
+            let applied = commits.borrow_and_update().applied();
+            let matched = self.replication().matched.get(to).copied();
+            if matched >= Some(last) && applied.is_some_and(|at| at.index >= last) {
+                return Some(true);
+            }
+            tokio::select! {
+                () = tokio::time::sleep_until(deadline) => return Some(false),
+                changed = commits.changed() => changed.ok()?,
+                () = tokio::time::sleep(CAUGHT_UP_POLL) => {}
+            }
+        }
     }
 
     /// Add `member` as a learner. It takes no vote.

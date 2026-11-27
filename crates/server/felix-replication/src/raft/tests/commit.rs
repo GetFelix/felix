@@ -817,7 +817,8 @@ async fn opens_at_its_term(cluster: &Cluster, hosts: &HashMap<&'static str, Arc<
 }
 
 /// A transfer closes the shard before it is asked for, and the term does
-/// not open again.
+/// not open again. A write of the closed term is still answered by its
+/// commit while this member leads the term.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_transfer_about_to_start_closes_the_shard() {
     let mut led = led().await;
@@ -832,18 +833,86 @@ async fn a_transfer_about_to_start_closes_the_shard() {
         Some(led.term)
     );
     assert_eq!(led.told(), [("opened", led.term), ("deposed", led.term)]);
-    assert_eq!(
-        lost(&waiting.await.expect("the wait")),
-        "this broker stopped leading the shard"
-    );
     assert_eq!(led.engine.transfer_starting(&shard(7)).await, None);
     assert_eq!(led.engine.open_term(&shard(0)), None);
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert!(!waiting.is_finished(), "the close answered the write");
 
     led.heal();
     led.cluster.committed_everywhere(0, written.end - 1).await;
+    waiting.await.expect("the wait").expect("committed");
     tokio::time::sleep(Duration::from_millis(300)).await;
     assert_eq!(led.status().role, Role::Leader);
     assert_eq!(led.told(), [("opened", led.term), ("deposed", led.term)]);
+    led.cluster.stop().await;
+}
+
+/// The leader's group and the member of the follower `broker`.
+fn member_of(led: &Led, broker: &str) -> (Arc<group::Group>, MemberId) {
+    let runtime = led.cluster.runtime(&led.leader.broker);
+    let group = runtime.group(&shard(0)).expect("group");
+    let to = led.cluster.runtime(broker).group(&shard(0)).expect("group");
+    (group, to.member.clone())
+}
+
+/// **A placed transfer waits until the writes of its term are answered.**
+/// Here the target holds the write and it commits, but the leader has not
+/// applied it. Asked then, the leadership moves with the write's waiter in
+/// flight, and the publisher is told the outcome is unknown for a write the
+/// new leader keeps.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_placed_transfer_waits_for_its_terms_writes_to_be_answered() {
+    let mut led = led().await;
+    let target = led.followers().next().expect("a follower");
+    let (group, to) = member_of(&led, &target);
+    let held = Arc::clone(&group.apply_hold).lock_owned().await;
+    let written = led.propose(1).await;
+    let waiting = tokio::spawn(led.engine.await_commit(&shard(0), written, PATIENCE));
+    let index = written.end - 1;
+    eventually(|| (group.replication().matched.get(&to)? >= &index).then_some(())).await;
+
+    let handing = Arc::clone(&group);
+    let term = led.term;
+    let transfer =
+        tokio::spawn(async move { handing.transfer_in_caught_up(term, to, PATIENCE).await });
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    if waiting.is_finished() {
+        panic!("answered before its apply: {:?}", waiting.await);
+    }
+    assert!(!transfer.is_finished(), "asked with a write in flight");
+    let status = led.status();
+    assert_eq!((status.role, status.term), (Role::Leader, term));
+
+    drop(held);
+    let answered = waiting.await.expect("the wait");
+    assert!(answered.is_ok(), "a kept write was not acked: {answered:?}");
+    assert_eq!(transfer.await.expect("the transfer"), Some(term));
+    eventually(|| {
+        let status = led.cluster.runtime(&target).status(&shard(0))?;
+        (status.role == Role::Leader && status.term > term).then_some(())
+    })
+    .await;
+    led.cluster.stop().await;
+}
+
+/// **A placed transfer with nothing in flight is asked at once.**
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_placed_transfer_with_nothing_in_flight_is_not_held() {
+    let mut led = led().await;
+    let target = led.followers().next().expect("a follower");
+    let (group, to) = member_of(&led, &target);
+    eventually(|| (group.replication().matched.get(&to)? >= &led.committed).then_some(())).await;
+    let asked = tokio::time::Instant::now();
+    let transfer = group.transfer_in_caught_up(led.term, to, PATIENCE).await;
+    let took = asked.elapsed();
+    assert_eq!(transfer, Some(led.term));
+    assert!(took < Duration::from_millis(200), "held for {took:?}");
+    let term = led.term;
+    eventually(|| {
+        let status = led.cluster.runtime(&target).status(&shard(0))?;
+        (status.role == Role::Leader && status.term > term).then_some(())
+    })
+    .await;
     led.cluster.stop().await;
 }
 
