@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795795801799,
+  "lastUpdate": 1795800182668,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -73736,6 +73736,58 @@ window.BENCHMARK_DATA = {
             "range": "14875.03",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 817258.65\nmean: 809581.30\nstdev: 14875.03\ncv: 1.84%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "93c6cdacb54a8cc981e7f590f6b4cccd8c7513c8",
+          "message": "perf: refresh the instructions-per-message baseline at 4337a57db (#3379)\n\naarch64 b1 measured 3% under the old baseline, past the gate's tolerance,\nso every PR's aarch64 gate failed on an improvement. The likely cause is\ne0a131811 (#3236): plain publishes queued on a Raft shard's lane are one\nproposal. Refreshed both architectures from five ipm-gate runs on one\ncommit with scripts/perf/ipm_refresh.sh.\n\naarch64: b1 487638 -> 479200, b64 10477 -> 10410\nx86_64:  b1 262977 -> 259223, b64 11108 -> 11068\n\nSpec-Unaffected: perf baseline only",
+          "timestamp": "2026-11-27T17:18:08Z",
+          "tree_id": "6ae220a82f0bcd3be1374dfba84194e77de7d945",
+          "url": "https://github.com/GetFelix/felix/commit/93c6cdacb54a8cc981e7f590f6b4cccd8c7513c8"
+        },
+        "date": 1795800182107,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 737775.38,
+            "range": "51222.92",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 737775.38\nmean: 717625.44\nstdev: 51222.92\ncv: 7.14%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 737775.38,
+            "range": "51222.92",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 737775.38\nmean: 717625.44\nstdev: 51222.92\ncv: 7.14%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 163117.17,
+            "range": "14620.89",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 163117.17\nmean: 156094.22\nstdev: 14620.89\ncv: 9.37%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1631171.66,
+            "range": "146208.90",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1631171.66\nmean: 1560942.18\nstdev: 146208.90\ncv: 9.37%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
