@@ -5325,7 +5325,15 @@ move from an older control plane added:
   the set to the draining broker and a live broker outside it, and the
   shrink below ends the move once the new copy votes. A larger set whose
   members all drain swaps a follower for a live broker first, and the lead
-  moves to it on a later pass. Each write takes a slot from the budget of
+  moves to it on a later pass. A set short of its factor with no follower
+  to swap (RF 3 down to its draining leader) grows by one live broker, and
+  the lead moves to it only once the group reports it voting; the old copy
+  is then swapped out and the top-up refills the set (#3303). A draining
+  leader that crashes meanwhile keeps its name, since a learner cannot be
+  elected, and the shard waits for it or a re-form. Until the refill
+  votes, an RF 3 shard runs on two voters, and losing either stops writes
+  until it returns or the group is re-formed. That order lets the
+  draining broker leave once two copies exist, not three. Each write takes a slot from the budget of
   16 set changes and a pause holds it. With no live broker outside the set
   the shard shows as waiting with "no live node can take this shard". A
   drain cancelled mid-move does not undo it: the move finishes.

@@ -173,6 +173,7 @@ pub(super) fn raft_step<'a>(
         && let Some(decision) = top_up(
             existing,
             replication_factor,
+            None,
             is_serving,
             eligible,
             load,
@@ -181,17 +182,18 @@ pub(super) fn raft_step<'a>(
     {
         return decision;
     }
-    let fewest = |count: &dyn Fn(&str) -> u32| {
+    let fewest = |count: &dyn Fn(&str) -> u32, keep: &dyn Fn(&str) -> bool| {
         members
             .iter()
             .copied()
+            .filter(|node| keep(node))
             .min_by_key(|node| (count(node), u64::MAX - score(key, node), *node))
     };
     let leader_live = is_live(leader);
     let to = if leader_live {
         // Two or more apart, so moves converge instead of trading leaders.
         let over = |count: &dyn Fn(&str) -> u32| {
-            fewest(count).filter(|to| count(to).saturating_add(2) <= count(leader))
+            fewest(count, &|_| true).filter(|to| count(to).saturating_add(2) <= count(leader))
         };
         let for_stream = over(&|node| leaders.of(key, node));
         moves.stream_wanted |= for_stream.is_some();
@@ -222,7 +224,13 @@ pub(super) fn raft_step<'a>(
             Some(to) => to,
         }
     } else {
-        match elected.or_else(|| fewest(&|node| leaders.total(node))) {
+        // Only a voter can be handed the lead or elected, so a member the
+        // reported voters leave out is not named. If it died before it
+        // voted, a name on it would leave the shard on a down leader that
+        // never led, with nothing to move it on. A down leader keeps its
+        // name and the shard waits for it.
+        let voting = |node: &str| existing.may_be_voting(node);
+        match elected.or_else(|| fewest(&|node| leaders.total(node), &voting)) {
             Some(to) => to,
             None if down => return Decision::Kept,
             None => {
@@ -635,8 +643,14 @@ pub(super) fn single_move_undone(
 ///   acknowledged record.
 /// - A larger set swaps a follower that must leave for a live broker
 ///   ([`replace_leaving`]); a later pass renames the leader to it.
+/// - A larger set with no such follower and short of its factor (RF 3 down
+///   to its leader, say) grows by one live broker ([`top_up`]). The next
+///   pass renames the leader to it once the group reports it voting, and
+///   the old copy is then swapped out as a follower. Until it votes, a
+///   newcomer that is down holds the shard as [`Blocked::MemberDown`], and
+///   once it is lost [`replace_leaving`] gives its seat away.
 ///
-/// `None` when neither applies, and the shard waits for a live broker.
+/// `None` when none applies, and the shard waits for a live broker.
 #[allow(clippy::too_many_arguments)]
 fn leave_without_member<'a>(
     existing: &'a ShardAssignment,
@@ -652,7 +666,29 @@ fn leave_without_member<'a>(
     let leader = existing.leader.as_str();
     let why = leaving(leader)?;
     if replication_factor.max(1) > 1 || !existing.replicas.is_empty() {
-        return replace_leaving(existing, is_serving, leaving, eligible, load, moves);
+        if let Some(decision) =
+            replace_leaving(existing, is_serving, leaving, eligible, load, moves)
+        {
+            return Some(decision);
+        }
+        if existing.nodes().count() >= replication_factor.max(1) as usize {
+            return None;
+        }
+        if let Some(node) = existing.nodes().find(|node| !is_serving(node)) {
+            return Some(Decision::Waiting(Blocked::MemberDown {
+                node: node.clone(),
+                why,
+            }));
+        }
+        return top_up(
+            existing,
+            replication_factor,
+            Some(leader),
+            is_serving,
+            eligible,
+            load,
+            moves,
+        );
     }
     let to = match replacement(existing, leader, is_serving, eligible, load) {
         Ok(to) => to,
@@ -862,10 +898,12 @@ fn newcomer_beside<'a>(
 /// member serving and the target stored and formed for the current set,
 /// from the same budget as a replacement, and held by a pause. `None` when
 /// the set is full or no node outside it is live: the shard then shows as
-/// under-replicated.
+/// under-replicated. `leaving`: a member that will leave the set, whose
+/// zone the newcomer does not count as covered.
 fn top_up<'a>(
     existing: &'a ShardAssignment,
     replication_factor: u32,
+    leaving: Option<&str>,
     is_serving: &dyn Fn(&str) -> bool,
     eligible: &[&'a Node],
     load: &mut HashMap<&'a str, u32>,
@@ -879,7 +917,7 @@ fn top_up<'a>(
     if existing.nodes().any(|node| !is_serving(node)) {
         return None;
     }
-    let to = newcomer(existing, None, eligible, load)?;
+    let to = newcomer(existing, leaving, eligible, load)?;
     if let Err(blocked) = seat_open(existing) {
         return Some(Decision::Waiting(blocked));
     }
