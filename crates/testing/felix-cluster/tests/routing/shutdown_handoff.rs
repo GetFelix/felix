@@ -24,9 +24,6 @@ const EXIT_WITHIN: Duration = Duration::from_secs(30 + 25 + 10);
 #[serial]
 #[tokio::test]
 async fn a_stopping_broker_hands_its_shard_over_under_load() {
-    if felix_cluster::skip_on_raft_until_moves_land() {
-        return;
-    }
     let mut cluster = Cluster::start(ClusterConfig {
         nodes: 3,
         streams: vec![StreamSpec::replicated(STREAM, 1, 2)],
@@ -227,7 +224,10 @@ async fn a_stopping_broker_hands_its_shard_over_under_load() {
 #[serial]
 #[tokio::test]
 async fn a_reader_follows_a_moved_shard_off_a_draining_entry_broker() {
-    if felix_cluster::skip_on_raft_until_moves_land() {
+    if felix_cluster::skip_on_raft_until(
+        3004,
+        "a planned move or leader change in this test does not complete on Raft yet",
+    ) {
         return;
     }
     use felix_controlplane_service::cluster::placement::Decision;
@@ -819,7 +819,10 @@ fn assert_exactly_once(owed: &[Vec<u8>], read: &[ShardRecords]) {
 #[serial]
 #[tokio::test]
 async fn a_handoff_that_times_out_loses_no_acknowledged_record() {
-    if felix_cluster::skip_on_raft_until_moves_land() {
+    if felix_cluster::skip_on_raft_until(
+        3004,
+        "a planned move or leader change in this test does not complete on Raft yet",
+    ) {
         return;
     }
     const SHARDS: u32 = 16;

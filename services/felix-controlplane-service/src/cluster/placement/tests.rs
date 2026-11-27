@@ -20,6 +20,7 @@ mod pacing;
 mod pending_set;
 mod raft_elected;
 mod raft_leaders;
+mod raft_top_up;
 mod readmit;
 mod reconciler;
 mod recovering;

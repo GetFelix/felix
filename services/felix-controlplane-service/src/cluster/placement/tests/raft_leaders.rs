@@ -7,9 +7,9 @@ use super::*;
 use crate::model::RaftTarget;
 use crate::store::ControlPlaneStore;
 
-const ABC: [&str; 3] = ["broker-a", "broker-b", "broker-c"];
+pub(super) const ABC: [&str; 3] = ["broker-a", "broker-b", "broker-c"];
 
-fn raft() -> MovePolicy {
+pub(super) fn raft() -> MovePolicy {
     MovePolicy {
         raft_streams: true,
         ..MovePolicy::default()
@@ -18,7 +18,7 @@ fn raft() -> MovePolicy {
 
 /// Shard `shard` of `orders`, led by `leader` with every other broker of
 /// `ABC` a member, a target the group was told, and the group formed.
-fn member_of(shard: u32, leader: &str) -> ShardAssignment {
+pub(super) fn member_of(shard: u32, leader: &str) -> ShardAssignment {
     let mut assignment = pinned("orders", shard, leader);
     assignment.replicas = ABC
         .iter()
@@ -45,7 +45,7 @@ fn member_of(shard: u32, leader: &str) -> ShardAssignment {
     assignment
 }
 
-fn set_of(assignment: &ShardAssignment) -> BTreeSet<String> {
+pub(super) fn set_of(assignment: &ShardAssignment) -> BTreeSet<String> {
     assignment.nodes().cloned().collect()
 }
 
@@ -673,7 +673,7 @@ fn seated(stream: &str, shard: u32, leader: &str, followers: &[&str]) -> ShardAs
 
 /// `assignment` as the group leaves it once its set change is done: the
 /// target stored for the set it names and every copy a reported voter.
-fn settle(assignment: &mut ShardAssignment) {
+pub(super) fn settle(assignment: &mut ShardAssignment) {
     let members: BTreeMap<String, u64> = assignment.nodes().map(|n| (n.clone(), 7)).collect();
     assignment.raft_target.as_mut().unwrap().members = members.clone();
     assignment.raft_voters.as_mut().unwrap().members = members.clone();

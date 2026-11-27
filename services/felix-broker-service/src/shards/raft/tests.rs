@@ -924,14 +924,12 @@ async fn a_durable_stream_shard_opens_as_a_raft_member() {
     shards.take(&mut left).await;
     take_formed(&shards, assigned(orders.clone(), INCARNATION)).await;
 
-    // The in-memory stream and the cache are the hybrid's. The stream not
-    // registered yet is nobody's this pass.
-    let mut kept: Vec<_> = left.into_keys().collect();
-    kept.sort();
-    let mut expected = vec![key("scratch", 0), cache];
-    expected.sort();
-    assert_eq!(kept, expected);
+    // The in-memory stream is the hybrid's. The stream and the cache not
+    // registered yet are nobody's this pass: a cache is never in memory.
+    let kept: Vec<_> = left.into_keys().collect();
+    assert_eq!(kept, vec![key("scratch", 0)]);
     assert!(shards.engine_for(&key("unknown", 0)).is_none());
+    assert!(shards.engine_for(&cache).is_none());
     assert!(shards.engine_for(&key("scratch", 0)).is_none());
 
     until("the member to lead its group of one", || {
