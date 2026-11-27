@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795738003035,
+  "lastUpdate": 1795738482349,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -92004,6 +92004,72 @@ window.BENCHMARK_DATA = {
             "range": "48.12",
             "unit": "us",
             "extra": "trials: 5\nmedian: 578.00\nmean: 585.40\nstdev: 48.12\ncv: 8.22%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "31ea4540f120d88cdfdcef5abcb36a8b949c5eb6",
+          "message": "fix(raft): a restore re-form on one copy is refused when its start does not clear earlier epochs (#3297) (#3311)\n\n* fix(raft): a restore waits until its time line clears the floor and every earlier epoch (#3291)\n\nA re-form from a backup point took the larger of the time line plus gap\nand the earlier epochs' first indexes. Being just above an earlier first\nindex is not enough when the clock that planned it ran ahead, or when it\nwas planned with a larger gap: the restore could start below offsets that\nepoch had acknowledged and give them out again.\n\nThe planner now refuses a restore (LineBehind) unless its line plus gap\nis more than 2^32 + (2^40 - gap) above the floor and every earlier first\nindex, which covers any earlier gap up to 2^40 and clocks within about\nfour minutes. The control plane refuses an offset_gap above 2^40, which\nthat bound and the abandon's assume.\n\nSpec-Unaffected: the change only refuses restore plans; every behaviour left is one FelixRaftRestore and FelixRaftRestoreRepeated already allow\n\n* fix(raft): a group of one re-formed after a restore waits until its time line clears every earlier epoch (#3297)\n\nThe standalone and cluster-led RF 1 re-form after a restore took its first\nindex from max(first, line) on the broker's clock and never refused. After\nthe clock stepped back by S, or on a host whose clock was S behind, a plan\nmade within 2S of an earlier epoch's start put the line below offsets that\nepoch had acknowledged.\n\nThe plan is now refused unless the line clears the copy's last index, the\ncontrol plane's offset floor (in a cluster) and every earlier epoch's first\nindex by 2^32, the margin a backup-point restore takes (restore_line_clears).\nThat is about 4.4 minutes of clock. The shard stays closed, the copy is not\nstopped, and the next pass plans again. Re-forms after a relaxed crash are\nnot on the clock and never wait.\n\nThe LineBehind refusal now carries the gap and says how long to wait, how\nmuch of that a short gap adds, and when the wait points at a clock behind.\nfelixctl refuses an --offset-gap above 2^40 before sending.\n\nSpec-Unaffected: the change only refuses plans; every start left is one FelixRaftRestoreRepeated's Line rule with the broker's clock already allows\n\n* fix(raft): scope the restore line claim to epochs the copy holds, and test the retry (#3297)\n\nThe docs now say the check sees only epochs in the restored copy (or the\ncontrol plane's record), name the standalone old-backup case the code does\nnot enforce, and keep the advice to fix a clock set back. The wait is shown\nin tenths of a minute, so the log and the docs both say 4.4 minutes. A test\nchecks that a refused restore is refused again on the next pass, then\nre-forms on the line once the clock passes the bound.\n\nSpec-Unaffected: docs, log text and a test only",
+          "timestamp": "2026-11-27T00:08:35Z",
+          "tree_id": "e5f3094b4de95b605ab270b3b44f1fdf0f91a719",
+          "url": "https://github.com/GetFelix/felix/commit/31ea4540f120d88cdfdcef5abcb36a8b949c5eb6"
+        },
+        "date": 1795738467649,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 98,
+            "range": "0.55",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 98.00\nmean: 97.60\nstdev: 0.55\ncv: 0.56%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 164,
+            "range": "22.28",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 164.00\nmean: 164.60\nstdev: 22.28\ncv: 13.53%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 1046,
+            "range": "818.64",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 1046.00\nmean: 1472.20\nstdev: 818.64\ncv: 55.61%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 138,
+            "range": "4.30",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 138.00\nmean: 138.00\nstdev: 4.30\ncv: 3.12%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 279,
+            "range": "451.59",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 279.00\nmean: 488.60\nstdev: 451.59\ncv: 92.43%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 526,
+            "range": "918.71",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 526.00\nmean: 1017.40\nstdev: 918.71\ncv: 90.30%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
