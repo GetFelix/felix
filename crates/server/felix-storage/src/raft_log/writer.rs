@@ -63,20 +63,38 @@ where
             began: std::time::Instant::now(),
             done: false,
         });
-        self.shared
+        static VOTES_IN_FLIGHT: std::sync::atomic::AtomicUsize =
+            std::sync::atomic::AtomicUsize::new(0);
+        let inflight = VOTES_IN_FLIGHT.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+        let began_vote = std::time::Instant::now();
+        let saved = self
+            .shared
             .log
             .save_vote(generation, &leader, committed)
             .await
-            .map_err(io_error)?;
-        if let Some(marking) = self.shared.marking.get() {
-            marking
+            .map_err(io_error);
+        let ballot_ms = began_vote.elapsed().as_millis() as u64;
+        if let (Ok(()), Some(marking)) = (&saved, self.shared.marking.get()) {
+            let marked = marking
                 .marks
                 .vote(VoteMark {
                     generation,
                     leader: Some(Arc::from(leader)),
                     committed,
                 })
-                .await?;
+                .await;
+            let total_ms = began_vote.elapsed().as_millis() as u64;
+            VOTES_IN_FLIGHT.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+            if total_ms > 300 {
+                tracing::warn!(shard = %self.shared.log.label(), ballot_fsync_ms = ballot_ms, shared_mark_log_ms = total_ms - ballot_ms, total_ms, votes_in_flight_at_start = inflight, "DIAG3032 slow save_vote");
+            }
+            marked?;
+        } else {
+            VOTES_IN_FLIGHT.fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+            if ballot_ms > 300 {
+                tracing::warn!(shard = %self.shared.log.label(), ballot_fsync_ms = ballot_ms, votes_in_flight_at_start = inflight, "DIAG3032 slow save_vote");
+            }
+            saved?;
         }
         if let Some(timing) = &mut timing {
             timing.done = true;

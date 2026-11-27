@@ -38,6 +38,7 @@ struct Batch {
     id: u64,
     beats: Vec<RaftRequest>,
     waiters: Vec<oneshot::Sender<Answer>>,
+    queued_at: Vec<std::time::Instant>,
 }
 
 impl Beats {
@@ -62,7 +63,42 @@ fn flush(inner: &Arc<dyn RaftTransport>, wait: Duration, batch: Batch) {
     // other groups' heartbeats with it.
     tokio::spawn(async move {
         let count = batch.beats.len();
-        let mut answers = inner.send_beats(batch.beats, wait).await.into_iter();
+        let sent = std::time::Instant::now();
+        let first_queued = batch.queued_at.first().copied().unwrap_or(sent);
+        let leases: Vec<usize> = batch
+            .beats
+            .iter()
+            .enumerate()
+            .filter(|(_, beat)| beat.group.to_string().contains("/leases/"))
+            .map(|(at, _)| at)
+            .collect();
+        let lease_queued: Vec<u64> = leases
+            .iter()
+            .map(|at| sent.duration_since(batch.queued_at[*at]).as_millis() as u64)
+            .collect();
+        let to = batch.beats.first().map(|beat| beat.to().broker.to_string());
+        let groups: Vec<String> = batch
+            .beats
+            .iter()
+            .map(|beat| beat.group.to_string())
+            .collect();
+        let answers = inner.send_beats(batch.beats, wait).await;
+        let rtt = sent.elapsed();
+        if rtt > Duration::from_millis(300)
+            || !lease_queued.is_empty() && rtt > Duration::from_millis(100)
+        {
+            let slow: Vec<&str> = answers
+                .iter()
+                .zip(&groups)
+                .filter(|(answer, _)| matches!(answer, Err(Refused::Slow(_))))
+                .map(|(_, group)| group.as_str())
+                .collect();
+            let lease_slow = leases
+                .iter()
+                .any(|at| matches!(answers.get(*at), Some(Err(Refused::Slow(_)))));
+            tracing::warn!(to = ?to, size = count, queue_to_send_ms = sent.duration_since(first_queued).as_millis() as u64, rtt_ms = rtt.as_millis() as u64, wait_ms = wait.as_millis() as u64, refused_slow = slow.len(), refused_sample = ?slow.iter().take(4).collect::<Vec<_>>(), lease_beats = leases.len(), lease_queued_ms = ?lease_queued, lease_refused_slow = lease_slow, "DIAG3032 slow heartbeat batch");
+        }
+        let mut answers = answers.into_iter();
         for waiter in batch.waiters {
             let answer = answers.next().unwrap_or_else(|| {
                 Err(Refused::Unreachable(format!(
@@ -95,11 +131,13 @@ impl RaftTransport for Beats {
                     id: *next,
                     beats: Vec::new(),
                     waiters: Vec::new(),
+                    queued_at: Vec::new(),
                 }
             });
             let first = batch.beats.is_empty();
             batch.beats.push(request);
             batch.waiters.push(waiter);
+            batch.queued_at.push(std::time::Instant::now());
             match batch.beats.len() >= MAX_BEATS {
                 true => (batches.remove(&broker), None),
                 false => (None, first.then_some(batch.id)),

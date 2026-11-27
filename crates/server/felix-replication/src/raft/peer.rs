@@ -223,8 +223,32 @@ impl GroupRuntime {
         let Some(from) = from else {
             return refused("the connection has not said which broker it is".to_owned());
         };
-        let answers =
-            super::beats::answer_each(beats, wait, |beat| self.handle_from(&from, beat)).await;
+        let began = std::time::Instant::now();
+        let size = beats.len();
+        let done: parking_lot::Mutex<Vec<(String, u64)>> = parking_lot::Mutex::new(Vec::new());
+        let answers = super::beats::answer_each(beats, wait, |beat| {
+            let label = beat.group.to_string();
+            let done = &done;
+            let fut = self.handle_from(&from, beat);
+            async move {
+                let answer = fut.await;
+                done.lock()
+                    .push((label, began.elapsed().as_millis() as u64));
+                answer
+            }
+        })
+        .await;
+        let total = began.elapsed();
+        if total > Duration::from_millis(300) {
+            let done = done.lock();
+            let lease = done
+                .iter()
+                .find(|(label, _)| label.contains("/leases/"))
+                .map(|(_, ms)| *ms);
+            let slowest = done.iter().map(|(_, ms)| *ms).max();
+            let missing = size - done.len();
+            tracing::warn!(from = ?from, size, total_ms = total.as_millis() as u64, wait_ms = wait.as_millis() as u64, answered = done.len(), unanswered = missing, slowest_answer_ms = ?slowest, lease_answer_ms = ?lease, "DIAG3032 follower slow heartbeat batch");
+        }
         wire::encode_beats_reply(&answers)
     }
 }
