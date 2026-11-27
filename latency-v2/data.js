@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795747494765,
+  "lastUpdate": 1795749143145,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -92466,6 +92466,72 @@ window.BENCHMARK_DATA = {
             "range": "730.92",
             "unit": "us",
             "extra": "trials: 5\nmedian: 575.00\nmean: 964.00\nstdev: 730.92\ncv: 75.82%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "04e313850a9cae414ca094b9f7c2a15a8abbbaa4",
+          "message": "fix(raft): a planned leadership transfer answers the writes in flight before it hands over (#3324) (#3328)\n\n* fix(raft): a placed transfer waits until its term's writes are answered (#3324)\n\nA placed leadership transfer closed the shard, waited only for the target\nto match the leader's last index, then asked openraft. Two things lost the\nanswer of a write already in flight:\n\n- Closing the term for a transfer made the role watcher report the term\n  lost to every waiter at once, so a commit wait for an entry already in\n  the log returned LeadershipLost the moment the shard closed.\n- The leader stepped down before it applied the tail, so a waiter that\n  survived the close was still deposed before its commit was seen.\n\nA term closed for a transfer now counts as held for waiters while openraft\nstill leads it, and the transfer (placed, and a membership step's move off\nthe leader) waits within the same bound until the target has matched and\nthis leader has applied its last entry, read from the core each look.\nAsked anyway when the bound passes, as before: the term cannot reopen.\n\nSpec-Unaffected: the transfer is asked later in the same closed term and a waiter is answered only by its commit, which the placement and lease models already allow.\n\n* test(raft): a closed term's write that does not commit is never acked (#3324)\n\nTwo tests for the unsafe direction of a planned hand-over: a write of the\nclosed term the new leader truncates is refused, never acked, and a\ndeposed leader's waiter is told at once with its apply held. The docs,\nthe hand-over comment and the changelog now say when a publish can still\nget leadership_lost during a hand-over.\n\nSpec-Unaffected: tests and docs only",
+          "timestamp": "2026-11-27T03:05:17Z",
+          "tree_id": "45f820bd0e937a107d0da9837a068838df176164",
+          "url": "https://github.com/GetFelix/felix/commit/04e313850a9cae414ca094b9f7c2a15a8abbbaa4"
+        },
+        "date": 1795749110199,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 150,
+            "range": "0.84",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 150.00\nmean: 149.80\nstdev: 0.84\ncv: 0.56%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 206,
+            "range": "4.21",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 206.00\nmean: 206.80\nstdev: 4.21\ncv: 2.03%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 659,
+            "range": "204.02",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 659.00\nmean: 530.80\nstdev: 204.02\ncv: 38.44%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 197,
+            "range": "17.93",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 197.00\nmean: 205.00\nstdev: 17.93\ncv: 8.75%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 411,
+            "range": "430.05",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 411.00\nmean: 596.00\nstdev: 430.05\ncv: 72.16%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 614,
+            "range": "1318.94",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 614.00\nmean: 1530.60\nstdev: 1318.94\ncv: 86.17%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
