@@ -19,12 +19,6 @@ const STREAM: &str = "orders";
 #[serial]
 #[tokio::test]
 async fn a_subscription_follows_its_shard_to_the_new_owner() {
-    if felix_cluster::skip_on_raft_until(
-        3004,
-        "a planned move or leader change in this test does not complete on Raft yet",
-    ) {
-        return;
-    }
     let cluster = Cluster::start(ClusterConfig {
         nodes: 2,
         streams: vec![StreamSpec::new(STREAM, 1)],
@@ -141,7 +135,10 @@ async fn a_subscription_follows_its_shard_to_the_new_owner() {
     while !owed.iter().all(|payload| payloads.contains(payload)) {
         match tokio::time::timeout_at(deadline, subscription.next_event()).await {
             Ok(Ok(Some(event))) => {
-                offsets.push(event.offset.expect("a durable stream carries offsets"));
+                offsets.push((
+                    event.offset.expect("a durable stream carries offsets"),
+                    event.skipped_before,
+                ));
                 payloads.push(event.payload.to_vec());
             }
             Ok(Ok(None)) => panic!(
@@ -157,11 +154,13 @@ async fn a_subscription_follows_its_shard_to_the_new_owner() {
         }
     }
 
-    let expected: Vec<u64> = (0..offsets.len() as u64).collect();
-    assert_eq!(
-        offsets, expected,
-        "every offset once and in order across the move"
-    );
+    felix_cluster::replay::assert_offsets_account_for_skips(&offsets, "across the move");
+    let in_order: Vec<Vec<u8>> = payloads
+        .iter()
+        .filter(|payload| owed.contains(payload))
+        .cloned()
+        .collect();
+    assert_eq!(in_order, owed, "acknowledged records out of order");
     let mut unique = payloads.clone();
     unique.sort();
     unique.dedup();

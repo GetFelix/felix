@@ -325,17 +325,21 @@ async fn a_sharded_cache_watch_follows_each_shard_to_its_new_owner() {
             while !stop.load(Ordering::Relaxed) {
                 let (key, value) = (key(i), format!("during-{i}").into_bytes());
                 i += 1;
-                if writer
-                    .cache_put(
+                // A put held up by the move is bounded, so the test never
+                // waits on a put that nobody answers.
+                if tokio::time::timeout(
+                    Duration::from_secs(10),
+                    writer.cache_put(
                         &tenant,
                         &namespace,
                         CACHE,
                         &key,
                         bytes::Bytes::from(value.clone()),
                         None,
-                    )
-                    .await
-                    .is_ok()
+                    ),
+                )
+                .await
+                .is_ok_and(|put| put.is_ok())
                 {
                     acknowledged.lock().await.push((key, value));
                 }
@@ -360,7 +364,10 @@ async fn a_sharded_cache_watch_follows_each_shard_to_its_new_owner() {
     .expect("move");
     tokio::time::sleep(Duration::from_millis(500)).await;
     stop.store(true, Ordering::Relaxed);
-    putter.await.expect("putter");
+    tokio::time::timeout(felix_cluster::wait::budget(Duration::from_secs(30)), putter)
+        .await
+        .expect("the putter to stop")
+        .expect("putter");
     owed.extend(acknowledged.lock().await.iter().cloned());
     assert!(
         owed.len() > 16,

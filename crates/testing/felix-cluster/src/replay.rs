@@ -65,6 +65,30 @@ pub async fn drain<E: Events>(events: &mut E, quiet: Duration) -> Result<Vec<Eve
     }
 }
 
+/// Checks that every gap between consecutive offsets is explained by the
+/// events' own skip counts, starting from offset 0.
+///
+/// `events` are `(offset, skipped_before)` in delivery order. On Raft the
+/// offset is the log index, so leader no-ops and membership entries take
+/// offsets and readers report them as skipped. On the hybrid engine nothing
+/// is skipped mid-run, so any skip there is a failure too.
+pub fn assert_offsets_account_for_skips(events: &[(u64, u64)], context: &str) {
+    let raft = crate::suite_runs_on_raft();
+    let mut previous: Option<u64> = None;
+    for (i, (offset, skipped)) in events.iter().enumerate() {
+        if !raft {
+            assert_eq!(*skipped, 0, "{context}: event {i} reports skipped offsets");
+        }
+        let expected = previous.map_or(0, |p| p + 1) + skipped;
+        assert_eq!(
+            *offset, expected,
+            "{context}: event {i} is at offset {offset}, expected {expected} \
+             (every offset once and in order, gaps only where skipped)"
+        );
+        previous = Some(*offset);
+    }
+}
+
 /// The broker ended the subscription cleanly before the replay went quiet.
 ///
 /// Not retried by a caller: a reset or a refusal is the broker's signal to
