@@ -5970,7 +5970,10 @@ already gave the shard. A broker's shard watch drops any other change at a
 generation it holds as stale, but it takes one at the same generation and
 set whose target is newer than the one it holds
 (`ShardOwnership::apply`), so the target reaches the brokers through the
-feed and not only through a resync.
+feed and not only through a resync. The copy id writes before the one that
+completes a target change nothing on most brokers, but they still end the
+long poll, so the watch asks again at once instead of waiting out the sync
+interval, and the target write that follows arrives as soon as it lands.
 
 Withholding is decided when the feed is read, and the acknowledgement that
 ends it writes no change, so a target read while withheld would never be

@@ -944,6 +944,12 @@ pub async fn run(
             }) => {
                 failures = 0;
                 behind.judge(false, tokio::time::Instant::now());
+                // Changes that moved nothing here still cut the long poll
+                // short. Waiting out the interval after them leaves no
+                // request held, so a write landing next, such as a Raft
+                // target right after another broker's copy id, waits for the
+                // timer (#3339).
+                let advanced = checkpoint.is_none_or(|since| seq > since);
                 checkpoint = Some(seq);
                 floor = floor.max(seq);
                 mm::record_checkpoint(seq);
@@ -957,7 +963,7 @@ pub async fn run(
                 reread.observe(
                     reread_withheld && ownership.read().await.withholds_untargeted_groups(),
                 );
-                reread.cap(next_delay(interval, moved, started.elapsed()))
+                reread.cap(next_delay(interval, moved || advanced, started.elapsed()))
             }
             Ok(Progress::Behind) => {
                 failures = 0;
@@ -1073,12 +1079,13 @@ async fn view_wanted(lease: &Option<Arc<crate::cluster::lease::LeaseState>>) {
 
 /// How long to wait before the next request.
 ///
-/// None after a change, since the next request long-polls anyway. After an
-/// empty answer, whatever is left of `interval`: a long-poll that waited is
-/// already past it, and a control plane that ignores `wait_ms` answers at once
-/// and is polled on the interval as before rather than in a tight loop.
-fn next_delay(interval: Duration, changed: bool, took: Duration) -> Duration {
-    if changed {
+/// None after an answer that advanced the feed, whether or not it moved
+/// anything here, since the next request long-polls anyway. After an empty
+/// answer, whatever is left of `interval`: a long-poll that waited is already
+/// past it, and a control plane that ignores `wait_ms` answers at once and is
+/// polled on the interval as before rather than in a tight loop.
+fn next_delay(interval: Duration, advanced: bool, took: Duration) -> Duration {
+    if advanced {
         Duration::ZERO
     } else {
         interval.saturating_sub(took)

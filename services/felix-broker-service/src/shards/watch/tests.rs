@@ -1232,6 +1232,112 @@ async fn a_withheld_target_is_read_again_until_it_is_not() {
     );
 }
 
+/// **A target written right after a change that moved nothing here comes
+/// through the watch, not the interval (#3339).** After a set change the
+/// control plane writes each broker's copy id in place; the first moves
+/// nothing on a broker that holds no target, and the one that completes the
+/// target lands right after. The interval is far longer than the wait.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_target_right_after_a_change_that_moved_nothing_is_not_held_to_the_interval() {
+    use axum::{Json, Router, routing::get};
+
+    let shard = |extra: serde_json::Value| {
+        let mut item = serde_json::json!({
+            "tenant_id": "t1", "namespace": "ns", "stream": "orders", "shard": 0,
+            "leader": "b1", "replicas": ["b2"], "generation": 2, "state": "active"
+        });
+        item.as_object_mut()
+            .expect("object")
+            .extend(extra.as_object().expect("object").clone());
+        item
+    };
+    let change = move |seq: u64, extra: serde_json::Value| {
+        serde_json::json!({
+            "items": [{
+                "seq": seq,
+                "op": "updated",
+                "key": { "tenant_id": "t1", "namespace": "ns", "stream": "orders", "shard": 0 },
+                "assignment": shard(extra),
+            }],
+            "next_seq": seq + 1
+        })
+    };
+    let router = Router::new()
+        .route(
+            "/v1/shard-assignments/snapshot",
+            get(move || async move {
+                Json(serde_json::json!({ "items": [shard(serde_json::json!({}))], "next_seq": 10 }))
+            }),
+        )
+        .route(
+            "/v1/shard-assignments/changes",
+            get(
+                move |axum::extract::Query(query): axum::extract::Query<
+                    std::collections::HashMap<String, String>,
+                >| async move {
+                    match query.get("since").map(String::as_str) {
+                        // The first copy id: the same view again.
+                        Some("10") => Json(change(10, serde_json::json!({}))),
+                        // The second completes the target.
+                        Some("11") => Json(change(
+                            11,
+                            serde_json::json!({ "target": {
+                                "version": { "incarnation": 1, "counter": 1 },
+                                "members": { "b1": 7, "b2": 8 }
+                            }}),
+                        )),
+                        _ => {
+                            tokio::time::sleep(Duration::from_millis(20)).await;
+                            Json(serde_json::json!({ "items": [], "next_seq": 12 }))
+                        }
+                    }
+                },
+            ),
+        );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind");
+    let addr = listener.local_addr().expect("addr");
+    let server = tokio::spawn(async move {
+        let _ = axum::serve(listener, router).await;
+    });
+
+    let ownership = Arc::new(RwLock::new(ShardOwnership::default()));
+    let shutdown = CancellationToken::new();
+    let watch = tokio::spawn(run(
+        felix_replication::controlplane_link::HttpControlPlaneLink::new(
+            reqwest::Client::new(),
+            &format!("http://{addr}"),
+        ),
+        None,
+        Arc::clone(&ownership),
+        Arc::new(Notify::new()),
+        Duration::from_secs(60),
+        None,
+        true,
+        shutdown.clone(),
+    ));
+    let got = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            if let Some(target) = ownership
+                .read()
+                .await
+                .get(&key(0))
+                .and_then(|held| held.target.clone())
+            {
+                return target;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await;
+    shutdown.cancel();
+    watch.await.expect("watch");
+    server.abort();
+    let target = got.expect("the target waited for the watch interval");
+    assert_eq!(target.members.get("b2"), Some(&8));
+}
+
 /// **Re-reads back off and stop once every target-less shard has a
 /// target.** A shard whose target is held but withheld (a registered broker
 /// still down after a restore) is no reason to keep snapshotting.
