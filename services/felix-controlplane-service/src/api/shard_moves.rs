@@ -20,10 +20,11 @@ use crate::api::types::{
 use crate::auth::bearer::require_cluster_action;
 use crate::auth::rbac::authorize::ACTION_NODE_MANAGE;
 use crate::cluster::placement::{
-    CaughtUp, Decision, OperatorError, OperatorStep, PlacementRead, Refused, abandon_log,
-    cancel_move, preview_operator, run_operator, start_move,
+    CaughtUp, Decision, MoveStep, OperatorError, OperatorStep, PlacementRead, Refused, abandon_log,
+    abandon_raft_log, abandons_on_raft, cancel_move, preview_operator, run_operator, start_move,
 };
 use crate::model::{MoveReason, ShardKey, ShardKind, ShardState};
+use crate::store::StoreError;
 
 #[utoipa::path(
     get,
@@ -85,6 +86,8 @@ pub(crate) async fn list_shard_moves(
 /// - 409 when the destination is not live, already leads the shard or is at
 ///   capacity, the shard is already moving, its leader is down, or a move
 ///   limit is reached; on a Raft shard, when the destination is not a member.
+///   `conflict` when the store refused the write as the shard stands; read
+///   it and retry.
 pub(crate) async fn start_shard_move(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -198,7 +201,7 @@ pub(crate) async fn cancel_shard_move(
     responses(
         (status = 200, description = "Log abandoned and the shard placed afresh", body = ShardMoveResponse),
         (status = 404, description = "No such shard", body = crate::api::types::ErrorResponse),
-        (status = 409, description = "Nothing to abandon, or no node can take the shard", body = crate::api::types::ErrorResponse)
+        (status = 409, description = "Nothing to abandon, or no node can take the shard; on Raft also `not_declared_dead`, `abandon_unsupported` or `abandon_refused`", body = crate::api::types::ErrorResponse)
     )
 )]
 /// Give up a shard's log and place the shard afresh. **This loses data.**
@@ -212,10 +215,24 @@ pub(crate) async fn cancel_shard_move(
 /// new generation; records only the old leader held are gone, acknowledged
 /// ones included.
 ///
+/// On Raft the shard's group is given up instead: refused until every broker
+/// placed in its epoch is declared dead, the next epoch starts empty on one
+/// live broker at a first index on the restore time line, above every offset
+/// the lost group gave out. The new group has that one copy whatever the
+/// stream's replication factor, and stays at one copy
+/// (`docs/per-shard-raft.md`, "Abandoning a lost group").
+///
 /// # Errors
 /// - 404 when the shard has no assignment.
 /// - 409 `not_stranded` when the leader is serving or a replica can take
 ///   over without loss, and `unplaceable` when no node can take the shard.
+/// - 409 on Raft: `not_declared_dead` while a broker placed in the group's
+///   epoch is not declared dead, `abandon_unsupported` until the fleet
+///   finalizes `raft_abandon`, and `abandon_refused` when the store refuses
+///   the write (the shard moved on, or the time line is not yet a full
+///   `MIN_OFFSET_GAP` above the offset floor and the last epoch's start,
+///   which takes about four and a half minutes after that epoch began when
+///   the control-plane clocks agree, longer if its clock ran ahead).
 pub(crate) async fn abandon_shard_log(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -230,7 +247,10 @@ pub(crate) async fn abandon_shard_log(
         shard,
         kind: query.kind,
     };
-    let response = run(&state, |catalog| abandon_log(catalog, &key)).await?;
+    let response = match abandon_on_raft(&state, &key).await? {
+        Some(response) => response,
+        None => run(&state, |catalog| abandon_log(catalog, &key)).await?,
+    };
     tracing::warn!(
         kind = %key.kind,
         name = %key.stream,
@@ -240,6 +260,65 @@ pub(crate) async fn abandon_shard_log(
         "an operator abandoned a shard's log; records only its previous leader held are lost",
     );
     Ok(response)
+}
+
+/// The abandon of a shard on Raft, or `None` for one placement places. One
+/// command the store checks and writes in one compare and swap; see
+/// [`crate::cluster::placement::abandon_raft_log`].
+async fn abandon_on_raft(
+    state: &AppState,
+    key: &ShardKey,
+) -> Result<Option<Json<ShardMoveResponse>>, ApiError> {
+    let refused = |refused: Refused| operator_error(OperatorError::Refused(refused));
+    // Read before the catalog, which is not held across an await.
+    let finalized =
+        crate::api::streams::fleet_finalized(state, felix_common::fleet::RAFT_ABANDON).await?;
+    let dead = state
+        .store
+        .dead_nodes()
+        .await
+        .map_err(|ref err| api_internal("read the dead brokers", err))?;
+    let read = PlacementRead::load(state.store.as_ref(), &state.node_liveness)
+        .await
+        .map_err(|ref err| api_internal("read placement state", err))?;
+    let (start, from) = {
+        let catalog = read.catalog(state.move_policy.clone());
+        if !abandons_on_raft(&catalog, key) {
+            return Ok(None);
+        }
+        if !finalized {
+            return Err(refused(Refused::AbandonUnsupported));
+        }
+        let start = abandon_raft_log(&catalog, key, &dead, felix_common::clock::wall_millis())
+            .map_err(refused)?;
+        let from = catalog
+            .existing
+            .iter()
+            .find(|assignment| &assignment.key == key)
+            .map(|assignment| assignment.leader.clone())
+            .unwrap_or_default();
+        (start, from)
+    };
+    drop(read);
+    let to = start.leader.clone();
+    let expected_generation = start.expected_generation;
+    let assignment = state
+        .store
+        .abandon_raft_epoch(key, start)
+        .await
+        .map_err(|err| match err {
+            StoreError::Conflict(why) => refused(Refused::AbandonRefused(why)),
+            StoreError::NotFound(_) => refused(Refused::UnknownShard),
+            ref other => api_internal("abandon a Raft shard's log", other),
+        })?;
+    state.placement_wakes.assignment_written();
+    state.placement_wakes.request_pass();
+    Ok(Some(Json(response(OperatorStep {
+        step: MoveStep::Discard { from, to },
+        assignment,
+        expected_generation,
+        zones: None,
+    }))))
 }
 
 #[utoipa::path(
@@ -421,7 +500,7 @@ async fn set_paused(
         .store
         .set_moves_paused(paused)
         .await
-        .map_err(|ref err| api_internal("set whether placement is paused", err))?;
+        .map_err(|ref err| store_error("set whether placement is paused", err))?;
     tracing::info!(paused, "placement's moves paused or resumed by an operator");
     if !paused {
         state.placement_wakes.request_pass();
@@ -467,11 +546,21 @@ fn operator_error(err: OperatorError) -> ApiError {
             }
             other => api_conflict(other.code(), &other.to_string()),
         },
-        OperatorError::Store(err) => api_internal("change a shard move", &err),
+        OperatorError::Store(err) => store_error("change a shard move", &err),
         OperatorError::Contended => api_conflict(
             "contended",
             "the shard kept changing while this was decided; try again",
         ),
+    }
+}
+
+/// A store conflict is a 409 `conflict`: the store refused the write as the
+/// shard stands, such as a Raft set its reported voters do not yet keep a
+/// majority of, and the same request may succeed once the shard moves on.
+fn store_error(message: &str, err: &crate::store::StoreError) -> ApiError {
+    match err {
+        crate::store::StoreError::Conflict(why) => api_conflict("conflict", why),
+        other => api_internal(message, other),
     }
 }
 

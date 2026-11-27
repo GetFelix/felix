@@ -83,6 +83,18 @@
 (* Membership inside an epoch changes through a joint configuration, and a *)
 (* member uses the newest membership in its log, committed or not.         *)
 (*                                                                         *)
+(* With Abandon, an operator gives the log up when every copy is gone      *)
+(* ("Abandoning a lost group"). In one store step, refused unless every    *)
+(* broker placed in the epoch or named by the assignment is declared dead, *)
+(* the control plane writes the next epoch with an empty base and no       *)
+(* source copy, on one live broker. Its first index is above the floor,    *)
+(* above every earlier epoch's first index and on the restore time line.   *)
+(* A broker declared dead can come back with its copy as it was            *)
+(* (Comeback). Two broker guards go with it: only a blank copy that is the *)
+(* new epoch's one voter starts it, at the first index and never from      *)
+(* index 0, and a copy behind an abandoned epoch does not open, so it      *)
+(* takes no step.                                                          *)
+(*                                                                         *)
 (* Checked:                                                                *)
 (*                                                                         *)
 (*   AckedSurvive       -- an acknowledged record is in the base of every  *)
@@ -118,6 +130,9 @@
 (*   PlacedIsRecorded   -- every broker a membership of the current epoch  *)
 (*                         names is in the control plane's record of the   *)
 (*                         brokers placed in the epoch.                    *)
+(*   AbandonedNotLed    -- no live broker leads an epoch behind an         *)
+(*                         abandoned one: with OneLeaderPerTerm, the shard *)
+(*                         has one leader.                                 *)
 (*                                                                         *)
 (* Each knob removes one rule:                                             *)
 (*                                                                         *)
@@ -145,6 +160,13 @@
 (*   CutToCommit        -- a cut base ends at the saved commit index even  *)
 (*                         on a copy whose last log id has the floor's     *)
 (*                         epoch and term.                                 *)
+(*                                                                         *)
+(*   Abandon            -- "off", or "on" for the design. Each other value *)
+(*                         removes one rule: "outside" checks the dead set *)
+(*                         in a step before the write, "floor" puts the    *)
+(*                         first index just above the floor, "zero" has    *)
+(*                         the blank copy form from index 0, and "open"    *)
+(*                         lets a copy behind the abandoned epoch open.    *)
 (*                                                                         *)
 (* Three constants are not knobs:                                          *)
 (*                                                                         *)
@@ -216,7 +238,8 @@ CONSTANTS
     Alone,              \* "off", "whole" or "commit": a group of one re-forms itself
     Reserve,            \* "every", "leader" or "none": who reserves before its write counts
     MaxCuts,
-    MaxReturns
+    MaxReturns,
+    Abandon             \* "off", "on", or a knob: "outside", "floor", "zero", "open"
 
 VARIABLES
     ep,         \* group epoch of the broker's member
@@ -333,8 +356,20 @@ AckQuorum(c, l, Q) ==
         2 * Cardinality({m \in S : m[1] \in Q /\ (m[1] = l => m = Mid(l))})
             > Cardinality(S)
 
+Abandoned(f) == "abandon" \in f.why
+
+\* A copy that holds nothing: no entry, no vote, no stop marker.
+Blank(b) == log[b] = <<>> /\ term[b] = 0 /\ ~retired[b]
+
+\* A copy whose epoch is behind an abandoned one is never opened. The blank
+\* copy the abandoned epoch names as its voter is the one that starts it.
+Fenced(b) ==
+    /\ Abandon # "open"
+    /\ \E f \in forms :
+        Abandoned(f) /\ f.e > ep[b] /\ ~(Mid(b) \in f.voters /\ Blank(b))
+
 \* A broker declared dead takes no step, unless the declaration is wrong.
-Alive(b) == DeadRuns \/ b \notin dead
+Alive(b) == (DeadRuns \/ b \notin dead) /\ ~Fenced(b)
 
 Init ==
     /\ ep = [b \in Brokers |-> 0]
@@ -976,15 +1011,101 @@ SelfStart(b) ==
     /\ UNCHANGED <<placed, ordered, dead, cpFloor, plans, elected, counters>>
     /\ UNCHANGED diskVars
 
+--------------------------------------------------------------------------------
+\* Abandoning a lost group (services/felix-controlplane-service,
+\* model/shard/raft_reform/abandon.rs).
+
+\* The restore time line, as an oracle: above every offset given out so far.
+\* The design argues it from the clock, which FelixRaftRestoreRepeated.tla
+\* checks. The floor alone is not enough: it trails the commits.
+Line ==
+    1 + MaxOf({x.i : x \in acked} \cup {Len(log[b]) : b \in Brokers}
+                \cup {Len(m.log) : m \in msgs} \cup {0})
+
+\* An epoch's first index is one past its padded base. The code starts on
+\* the line and refuses unless it is a full gap above the floor and every
+\* earlier first index. The model assumes the control-plane clocks agree,
+\* so the line is never behind, and does not check that refusal; the Max
+\* only keeps the index above both.
+AbandonFirst ==
+    IF Abandon = "floor" THEN cpFloor.i + 1
+    ELSE Max(Line, Max(cpFloor.i + 1, MaxOf({Len(f.base) + 2 : f \in forms} \cup {0})))
+
+\* The brokers whose copies an abandon gives up.
+Stranded == everPlaced \cup placed
+
+NoCopy == [b \in {} |-> 0]
+
+\* With "outside", the dead set is checked in a step of its own, kept as a
+\* plan that reads no copy.
+AbandonCheck(e) ==
+    /\ Abandon = "outside"
+    /\ ~Kept
+    /\ e = cpEpoch
+    /\ e < MaxEpoch
+    /\ Cardinality(plans) < MaxPlans
+    /\ Stranded \subseteq dead
+    /\ [e |-> e, facts |-> NoCopy] \notin plans
+    /\ plans' = plans \cup {[e |-> e, facts |-> NoCopy]}
+    /\ UNCHANGED brokerVars
+    /\ UNCHANGED <<cpEpoch, cpMem, ordered, placed, everPlaced, dead, cpFloor, forms, lost, counters>>
+    /\ UNCHANGED diskVars
+
+\* One compare and swap: the dead check, the empty base and its first index,
+\* and the placement on l alone. l's first copy id report seeds the epoch;
+\* here that is l's copy now. Every record the group held is a documented
+\* loss, unless a stranded broker is not dead at the write.
+AbandonEpoch(e, l) ==
+    LET f == [e |-> e + 1, base |-> PadTo(<<>>, AbandonFirst - 1, e + 1), end |-> 0,
+              voters |-> {Mid(l)}, cut |-> FALSE, marked |-> FALSE,
+              why |-> {"abandon"}, held |-> {}]
+    IN /\ Abandon # "off"
+       /\ ~Kept
+       /\ e = cpEpoch
+       /\ e < MaxEpoch
+       /\ IF Abandon = "outside" THEN [e |-> e, facts |-> NoCopy] \in plans
+          ELSE Stranded \subseteq dead
+       /\ l \notin dead
+       /\ f \notin forms
+       /\ forms' = forms \cup {f}
+       /\ cpEpoch' = e + 1
+       /\ cpMem' = Simple({Mid(l)})
+       /\ lost' = lost \cup
+            {x \in acked : x.e <= e /\ \A b \in Stranded \ dead : ~Has(log[b], x)}
+       /\ placed' = {l}
+       /\ everPlaced' = {l}
+       \* The floor is kept.
+       /\ UNCHANGED brokerVars
+       /\ UNCHANGED <<ordered, dead, cpFloor, plans, counters>>
+       /\ UNCHANGED diskVars
+
+\* A broker declared dead comes back with its copy as it was: a declaration
+\* answers for the disk the operator saw, not for what is restored later.
+Comeback(b) ==
+    /\ Abandon # "off"
+    /\ ~Kept
+    /\ b \in dead
+    /\ returns < MaxReturns
+    /\ returns' = returns + 1
+    /\ dead' = dead \ {b}
+    /\ UNCHANGED brokerVars
+    /\ UNCHANGED <<cpEpoch, cpMem, ordered, placed, everPlaced, cpFloor, plans, forms, lost, counters>>
+    /\ UNCHANGED <<keptLogs, synced, reserve, cuts>>
+
 \* A voter held the base, so its log is the base and the gap. Anyone else
 \* keeps what agrees with the base and is a learner. A broker declared dead
-\* is refused.
+\* is refused. Only the blank voter starts an abandoned epoch: it is
+\* reserved through the first index less one, and its first entry lands at
+\* the first index ("zero" forms it from index 0 instead).
 StartEpoch(b, f) ==
     /\ f \in forms
     /\ f.e = cpEpoch
     /\ f.e > ep[b]
     /\ b \notin dead
-    /\ LET new == IF Mid(b) \in f.voters THEN f.base ELSE CommonPrefix(log[b], f.base)
+    /\ ~Fenced(b)
+    /\ Abandoned(f) => Mid(b) \in f.voters /\ Blank(b)
+    /\ LET new == IF Abandoned(f) /\ Abandon = "zero" THEN <<>>
+                  ELSE IF Mid(b) \in f.voters THEN f.base ELSE CommonPrefix(log[b], f.base)
        IN /\ log' = [log EXCEPT ![b] = new]
           /\ commit' = [commit EXCEPT ![b] = Len(new)]
     /\ ep' = [ep EXCEPT ![b] = f.e]
@@ -1013,6 +1134,8 @@ Next ==
     \/ \E p \in plans : \E pick \in Brokers : Reform(p, pick)
     \/ \E p \in plans : \E b \in DOMAIN p.facts : \E c \in Copies(b) : ReformKept(p, c)
     \/ \E b \in Brokers : \E f \in forms : StartEpoch(b, f)
+    \/ AbandonCheck(cpEpoch)
+    \/ \E l \in Brokers : AbandonEpoch(cpEpoch, l) \/ Comeback(l)
 
 Spec == Init /\ [][Next]_vars
 
@@ -1084,6 +1207,12 @@ BootIsRecorded ==
 PlacedIsRecorded ==
     /\ placed \subseteq everPlaced
     /\ \A b \in Brokers : ep[b] = cpEpoch => EverNamed(b) \subseteq everPlaced
+
+\* Not Leads: that has the fence in it.
+AbandonedNotLed ==
+    \A b \in Brokers :
+        (role[b] = "leader" /\ ~retired[b] /\ (DeadRuns \/ b \notin dead))
+            => ~\E f \in forms : Abandoned(f) /\ f.e > ep[b]
 
 \* Witnesses: each is an invariant that must fail.
 
@@ -1164,6 +1293,10 @@ NeverRecoversFromCutBeforeStart ==
     ~/\ \E b \in Brokers : \E f \in forms : \E k \in keptLogs[b] :
             f.e = 1 /\ k.e = 0 /\ <<b, k.cid>> \in f.voters
      /\ \E x \in acked : x.e = 2 /\ x.t > 0
+
+\* An abandoned epoch commits a record of its own.
+NeverAbandonCommits ==
+    ~\E x \in acked : \E f \in forms : Abandoned(f) /\ x.e = f.e /\ x.t > 0
 
 \* A learner that no membership names holds a record.
 NeverLearnerHolds ==

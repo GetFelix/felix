@@ -230,6 +230,55 @@ fn a_reformed_epoch_stored_in_place_is_applied() {
     assert_eq!(owned.get(&key(0)).expect("present").group_epoch(), 0);
 }
 
+/// `reformed(epoch)` without a seed, as an abandon writes its epoch.
+fn unseeded(epoch: u64) -> ShardAssignment {
+    ShardAssignment {
+        raft_seed: None,
+        ..reformed(epoch)
+    }
+}
+
+fn seed_of(owned: &ShardOwnership) -> Option<RaftVoters> {
+    owned.get(&key(0)).expect("present").raft_seed.clone()
+}
+
+/// An abandon writes its epoch with no seed; the first copy id report then
+/// seeds it in place, at the same generation and epoch. Dropped, the
+/// abandoned shard's blank copy never starts. A seed already held, one of
+/// another incarnation, or one of an older epoch must not land.
+#[test]
+fn a_seed_written_in_place_for_the_held_epoch_is_applied() {
+    let mut owned = ShardOwnership::default();
+    assert!(owned.apply(&key(0), Some(assignment(0, "broker-a", 3))));
+    assert!(owned.apply(&key(0), Some(unseeded(2))), "the abandon");
+    assert_eq!(seed_of(&owned), None);
+
+    let mut stale = reformed(2);
+    stale.raft_seed.as_mut().expect("seeded").epoch = 1;
+    assert!(!owned.apply(&key(0), Some(stale)), "an older epoch's seed");
+    let mut other = reformed(2);
+    other.raft_seed.as_mut().expect("seeded").incarnation = 1;
+    assert!(
+        !owned.apply(&key(0), Some(other)),
+        "another incarnation's seed"
+    );
+    assert_eq!(seed_of(&owned), None);
+
+    assert!(owned.apply(&key(0), Some(reformed(2))), "the seed");
+    let seeded = reformed(2).raft_seed;
+    assert_eq!(seed_of(&owned), seeded);
+
+    let mut different = reformed(2);
+    different.raft_seed.as_mut().expect("seeded").members =
+        [("broker-b".to_string(), 7)].into_iter().collect();
+    assert!(!owned.apply(&key(0), Some(different)), "a second seed");
+    assert!(
+        !owned.apply(&key(0), Some(unseeded(2))),
+        "a late unseeded copy"
+    );
+    assert_eq!(seed_of(&owned), seeded);
+}
+
 /// `assignment(0, "broker-a", 3)` with a floor at `epoch` and `index`, at
 /// `incarnation`.
 fn floored(incarnation: u64, epoch: u64, index: u64) -> ShardAssignment {

@@ -1638,6 +1638,105 @@ which can be one. The same holds for a switch that started with two voters.
 The control plane is on this path. It already is for placement, and a
 group that needs re-forming is not serving.
 
+### Abandoning a lost group
+
+A re-form starts from a surviving copy. When every copy is gone, for
+example an RF 1 shard whose only broker lost its disk, an operator can
+give the log up instead: `POST /v1/placement/abandon/{tenant}/{ns}/{stream}/{shard}`.
+Every record the group held is lost, acknowledged ones included.
+
+The call is refused until every broker placed in the group's epoch is
+declared dead (`not_declared_dead`). A broker that is only down may come
+back with acknowledged records, and then a re-form is the way. It is also
+refused until the fleet finalizes `raft_abandon` (`abandon_unsupported`),
+so no broker that would form the new epoch from index 0 can be its leader.
+
+The control plane writes the abandon as one compare and swap,
+`AbandonRaftEpoch` at metadata level 56. It checks the incarnation, epoch
+and generation, checks every placed broker against the store's own dead set
+at the write (not the set the operator read), places the shard on one live
+broker at the next generation and epoch, and appends an empty base whose
+first index is on the restore time line (`2^14 x` the planning time in
+milliseconds, plus the gap). The offset floor is kept, so offsets the lost
+group gave out stay given out.
+
+The floor alone is not enough: a leader reports it at most once a second,
+and not at all while it cannot reach the control plane, so the lost copy
+may have acknowledged offsets above it. The time line covers those, as for
+a restore, but only once it is well past the lost epoch's start. Being just
+above an earlier epoch's first index is not enough: if the clock that
+planned that epoch ran 10 s ahead and the abandon comes 10.001 s later on
+a correct clock, the line is 1 ms (16,384 offsets) above that first index,
+while at 100k records a second the epoch may have acknowledged a million.
+
+So the abandon is refused (`abandon_refused`) until the line is more than
+`MIN_OFFSET_GAP` (2^32) above the offset floor and every earlier epoch's
+first index. The line gains 2^14 offsets a millisecond, so that gap is
+2^18 ms, about 262 s, of line. Why it is enough: say the earlier epoch's
+clock ran `D` ahead and the abandon comes `E` after that epoch began. The
+line is then `2^14 (E - D)` above its first index, and the epoch can have
+acknowledged at most `rate x E` above it. Once `E - D` is at least 2^18 ms
+and `D` is at most 2^18 ms, `2^14 (E - D) >= rate x E` for any rate up to
+half the slope, 8,192 offsets a millisecond (about 8M a second), the same
+bound a restore assumes.
+
+That needs two things:
+
+- **The control-plane clocks agree within about four minutes** (2^18 ms).
+  A clock further ahead than that when it planned an epoch can leave the
+  line, a full gap later, below offsets that epoch acknowledged.
+- **The earlier epoch's gap is no larger than the abandon's.** An abandon
+  always uses `DEFAULT_OFFSET_GAP` (2^40). A restore planned with a larger
+  `offset_gap` starts further above the line, and a later abandon then
+  passes the check while sitting closer to that epoch's real start.
+
+In practice: an abandon asked within about four and a half minutes of the
+last epoch's start is refused, longer if the clock that started it ran
+ahead. Ask again once that has passed; if it is still refused, check the
+control-plane clocks.
+
+The new epoch is a group of one, whatever the stream's replication factor:
+the abandon places only the new leader. A Quorum publish is then
+acknowledged on that one copy. Placement does not yet add copies to a Raft
+group short of its factor, so the shard stays at one copy.
+
+A broker never forms a group past epoch 0 from index 0, since forming
+writes the group's first entries there. A blank copy of an abandoned epoch
+starts at the epoch's first index instead:
+
+1. The new leader opens a blank copy, takes the epoch's bases from the
+   record (`raft-epoch`) and reports its copy id. That report is the
+   epoch's first target, and the control plane writes it as the seed.
+2. Once the seed names its copy, the broker closes the blank member and
+   starts it as the seed's one voter: reserved through the first index
+   less one, with a snapshot naming the seed's voters, a purged id and a
+   saved commit there. Its first entry lands at the first index.
+3. The member opens again and leads a group of one.
+
+Only a copy that holds nothing but its copy id and the record's exact
+`raft-epoch` starts this way, so a copy that voted, took an entry or was
+stopped by a re-form is left alone. The start runs under the
+`reform-building` marker, like a re-form's, so a crash at any step leaves a
+copy that does not open, and the next pass redoes the start from the
+record.
+
+A broker of the lost epoch can come back, declared dead or not, with its
+copy and its old membership. Opened, that member would elect itself and
+serve a log the operator gave up. So a broker never opens a copy whose
+epoch is behind an epoch that started from an empty base, and closes such
+a member if it is open when the record moves on. The copy's data is left
+on disk, and it sends no copy id, so it never joins the new epoch either.
+
+> `crates/server/felix-storage/src/raft_copy/tests/fresh_epoch.rs`,
+> `an_abandoned_copy_starts_at_the_first_index`,
+> `an_abandon_start_refuses_a_copy_that_is_not_blank` and
+> `an_abandon_start_cut_at_any_step_finishes_when_run_again`.
+> `services/felix-broker-service/src/shards/raft/tests.rs`,
+> `a_blank_copy_of_an_abandoned_epoch_starts_at_its_first_index` and
+> `a_copy_of_an_abandoned_epoch_does_not_lead_when_it_returns`.
+> Model: `docs/formal/FelixRaftReform.tla` with `Abandon`
+> (`FelixRaftReformAbandon*.cfg`).
+
 ### Writing through openraft
 
 Decided (issue #2167): in 0.8 a write goes through openraft's
