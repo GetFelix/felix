@@ -208,8 +208,16 @@ restated in offsets, and the rate is enforced instead of assumed:
   own entries or an election.
 - **The line's gap covers the burst.** Over any span of `t` ms a shard gives
   out at most `2^13 * t` offsets plus the bucket's capacity plus one entry's
-  worth (32 MiB over the smallest record frame). The line rises at twice the
-  rate, so the restore gap is raised by that burst, in offsets.
+  worth (32 MiB over the smallest record frame), about 2^22 offsets in
+  all. The line rises at twice the rate, so the restore gap must be at
+  least that burst, in offsets. `felixctl reform`'s `MIN_OFFSET_GAP` (2^32,
+  the smallest gap taken without `--accept-short-gap`) covers it; a gap
+  accepted below 2^22 with `--accept-short-gap` does not, and the doc for
+  that flag says so.
+- **A new leader's bucket starts empty.** A full bucket at every election
+  would let a leader change add a burst each time. Starting empty means a
+  leader earns its allowance at the rate, so the bound above holds across
+  leader changes.
 
 The index line stays for indexes, whose rate the entry count still bounds.
 
@@ -363,8 +371,8 @@ its index, so index bounds still cover offsets.
 | After step | Offset of an entry | Read bound, publish answer, `expected`, cache versions, floors | Re-form and restore bounds | Records per entry |
 | --- | --- | --- | --- | --- |
 | 1, 2 | equals its index | index (= offset) | index | 1 |
-| 3 | equals its index: a count-0 entry still advances the offset by one | index (= offset) | index | 1 |
-| 4 | at or below its index: count-0 entries take none | offset | index, which still covers offsets | 1 |
+| 3 | equals its index: a count-0 entry still advances the offset by one | offset-typed calls, equal to the index | index | 1 |
+| 4 | at or below its index: count-0 entries take none; a new epoch's first offset is its first index | offset | index, with gap padding | 1 |
 | 5, 6 | at or below its index | offset | offset | 1 |
 | 7 on | unrelated to its index | offset | offset | 1 or more |
 
@@ -378,16 +386,26 @@ its index, so index bounds still cover offsets.
 3. **Adapter.** `raft_log` stores an entry as a frame, derives and checks
    the base offset, puts the next offset in snapshots, and serves reads by
    offset. Every entry advances the offset by `max(count, 1)`, so offsets
-   still equal indexes and behaviour does not change.
-4. **Offsets leave indexes.** Count-0 entries stop taking offsets. In the
-   same step the read bound, the publish answer, a conditional's comparison,
-   cache versions and watch offsets, and trim and retention floors become
-   offsets, with their models (`FelixRaftReads`, `FelixRaftWritten`,
+   still equal indexes and behaviour does not change. Every consumer of a
+   position (read bound, publish answer, a conditional's comparison, cache
+   versions and watch offsets, trim and retention floors, delivery) moves
+   to offset-typed calls here, while offset and index are still equal, so
+   the next step changes values and not call sites.
+4. **Offsets leave indexes.** One PR, never split: count-0 entries stop
+   taking offsets, every member decides a conditional from its own derived
+   base, and the models swap (`FelixRaftReads`, `FelixRaftWritten`,
    `FelixRaftCache`, `FelixRaftGroups`, `FelixHeadTrim`,
-   `FelixRaftStreamPurge`). What readers see changes here: the
-   `skipped_before` counts and their tests, the Kafka trailing-run test, and
-   the `docs/protocol.md` and `docs/storage-format.md` text on skipped
-   offsets.
+   `FelixRaftStreamPurge`). Splitting it would leave a main where some
+   consumer compares an index with an offset. A new epoch's first offset is
+   its first index, and the re-form's gap padding stays, until step 5: with
+   index bounds and offsets at or below indexes, starting the offset at the
+   first index is what keeps an epoch above every offset given out before
+   (otherwise a base at index 100 with next offset 95, cut by a relaxed
+   crash after acknowledging 95 to 99, re-formed at index 105 by
+   `raft-reserved`, would derive offset 95 again). What readers see changes
+   here: the `skipped_before` counts and their tests, the Kafka trailing-run
+   test, and the `docs/protocol.md` and `docs/storage-format.md` text on
+   skipped offsets.
 5. **Re-form and restore in offsets.** Every bound in "Re-form and restore
    start in both numbers": `raft_copy/vouch.rs`, `raft-reserved` in
    offsets, the epoch's first offset and lost range, the restore time line
@@ -400,8 +418,8 @@ its index, so index bounds still cover offsets.
 6. **Skip reasons on the wire.** `skip_reason` in the 0.8 event batch layout
    and `skipped_reason` on group records and cache watches, as baseline
    (#3362), the client changes and `docs/protocol.md`. Lands with step 5.
-7. **Propose batches.** A publish is one entry; every member decides a
-   conditional from its own base; idempotent dedupe per batch.
+7. **Propose batches.** A publish is one entry; idempotent dedupe per
+   batch.
    `FelixRaftBatch`, `FelixRaftIdempotent`. Needs steps 5 and 6 on main.
 8. **Delete the piece machinery** listed in "What goes away", and retire
    `FelixRaftCond`.
