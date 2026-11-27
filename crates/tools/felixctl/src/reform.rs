@@ -199,6 +199,9 @@ pub(crate) fn render_apply(plan: &Value) -> String {
 /// control plane's `MIN_OFFSET_GAP`.
 const MIN_OFFSET_GAP: u64 = 1 << 32;
 
+/// The largest `--offset-gap`, the control plane's `MAX_OFFSET_GAP`.
+const MAX_OFFSET_GAP: u64 = 1 << 40;
+
 /// The create request for `--scope` and `--restore-point`.
 pub(crate) fn plan_body(args: &ReformPlanArgs) -> anyhow::Result<Value> {
     let scope = match args.scope.as_slice() {
@@ -211,6 +214,14 @@ pub(crate) fn plan_body(args: &ReformPlanArgs) -> anyhow::Result<Value> {
     let Some(path) = &args.restore_point else {
         return Ok(json!({ "scope": scope }));
     };
+    if let Some(gap) = args.offset_gap
+        && gap > MAX_OFFSET_GAP
+    {
+        return Err(fail(
+            Exit::Usage,
+            format!("--offset-gap {gap} is above {MAX_OFFSET_GAP}, the largest a restore takes"),
+        ));
+    }
     if let Some(gap) = args.offset_gap
         && gap < MIN_OFFSET_GAP
         && !args.accept_short_gap

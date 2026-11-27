@@ -296,3 +296,60 @@ fn a_drain_move_waits_for_a_dead_old_copy_until_the_destination_votes() {
     let plan = plan_with(&streams, &[], &nodes, &[learning], &NothingCaughtUp, raft());
     assert_eq!(only_waits(&plan), vec![Blocked::Unapplied]);
 }
+
+/// **A destination that dies before it votes is undone whether or not its
+/// copy opened.** With no copy id the target is never stored, which is the
+/// shape a dead seat is given away in. The RF 1 move's undo runs first for
+/// either shape, so the draining broker stays leader and voter, the set goes
+/// back to it alone, and the next pass grows it to another live broker.
+#[test]
+fn a_drain_move_whose_destination_dies_unopened_is_undone_first() {
+    use super::restore::{MINUTE, Reports, gone};
+    let streams = vec![replicated_stream("orders", 1, 1)];
+    let opened = shard_on(0, "broker-a", &["broker-b"], &["broker-a"]);
+    let mut unopened = opened.clone();
+    unopened.raft_target = None;
+    unopened.raft_copy_ids.remove("broker-b");
+    let a_only: BTreeSet<String> = ["broker-a".to_string()].into();
+
+    let mut down = a_is(
+        NodeLifecycle::Draining,
+        &["broker-a", "broker-b", "broker-c"],
+    );
+    down[1].status.lifecycle = NodeLifecycle::Down;
+    let mut lost = a_is(NodeLifecycle::Draining, &["broker-a", "broker-c"]);
+    lost.push(gone("broker-b", 10 * MINUTE));
+
+    for nodes in [&down, &lost] {
+        for existing in [&opened, &unopened] {
+            let plan = plan_with(
+                &streams,
+                &[],
+                nodes,
+                std::slice::from_ref(existing),
+                &Reports::default(),
+                raft(),
+            );
+            let (step, undone) = the_move(&plan);
+            assert_eq!(
+                step,
+                MoveStep::RaftMoveUndone {
+                    node: "broker-b".to_string()
+                },
+                "{plan:?}"
+            );
+            assert_eq!(undone.leader, "broker-a");
+            assert_eq!(undone.nodes().cloned().collect::<BTreeSet<_>>(), a_only);
+            // The store's checks take the undo: the reported voter keeps a
+            // majority of the set of it alone.
+            assert!(!existing.holds_formed_set(&a_only));
+            assert!(!existing.holds_set_from(&undone.leader, &undone.replicas));
+
+            let back = applied(&undone, &["broker-a"]);
+            let plan = plan_with(&streams, &[], nodes, &[back], &Reports::default(), raft());
+            let (_, regrown) = the_move(&plan);
+            assert_eq!(regrown.leader, "broker-a");
+            assert_eq!(regrown.replicas, vec!["broker-c".to_string()]);
+        }
+    }
+}

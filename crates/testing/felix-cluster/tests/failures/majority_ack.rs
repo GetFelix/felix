@@ -699,7 +699,10 @@ async fn assert_holds(cluster: &Cluster, node: &str, acknowledged: &[String]) {
 #[serial]
 #[tokio::test]
 async fn a_failover_onto_a_spare_broker_keeps_what_the_old_set_acknowledged() {
-    if felix_cluster::skip_on_raft_until_moves_land() {
+    if felix_cluster::skip_on_raft_until(
+        3004,
+        "a Raft group has no replica level reports, which this test waits for",
+    ) {
         return;
     }
     use felix_controlplane_service::cluster::placement::Decision;
@@ -1506,7 +1509,10 @@ async fn a_partitioned_minority_with_the_control_plane_does_not_open() {
 #[serial]
 #[tokio::test]
 async fn seating_a_replacement_keeps_what_the_old_set_acknowledged() {
-    if felix_cluster::skip_on_raft_until_moves_land() {
+    if felix_cluster::skip_on_raft_until(
+        3004,
+        "a Raft group has no replica level reports, which this test waits for",
+    ) {
         return;
     }
     let mut cluster = start_nodes(4, Duration::from_secs(2)).await;
@@ -1612,7 +1618,10 @@ async fn seating_a_replacement_keeps_what_the_old_set_acknowledged() {
 #[serial]
 #[tokio::test]
 async fn a_lost_follower_is_restored_even_when_its_first_replacement_dies() {
-    if felix_cluster::skip_on_raft_until_moves_land() {
+    if felix_cluster::skip_on_raft_until(
+        3004,
+        "a Raft group has no replica level reports, which this test waits for",
+    ) {
         return;
     }
     use felix_controlplane_service::cluster::placement::MovePolicy;
