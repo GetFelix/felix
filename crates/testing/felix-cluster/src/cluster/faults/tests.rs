@@ -53,3 +53,31 @@ fn a_fault_file_is_replaced_and_never_rewritten_in_place() {
         .collect();
     assert_eq!(left, ["peer-partition"], "the staged file is gone");
 }
+
+/// **A broker built without the partition code is refused a partition**, so
+/// a partition test against an optimised build without `fault-injection`
+/// fails rather than passing with nothing severed.
+#[test]
+fn a_broker_without_partition_injection_is_refused_a_partition() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let without = dir.path().join("without");
+    std::fs::write(&without, b"\x7fELF no partition code here").expect("write");
+    let err = require_partition_injection(&without).expect_err("refused");
+    assert!(err.to_string().contains("fault-injection"), "{err}");
+
+    let with = dir.path().join("with");
+    let mut body = b"\x7fELF ".to_vec();
+    body.extend_from_slice(PARTITION_MARKER);
+    std::fs::write(&with, body).expect("write");
+    require_partition_injection(&with).expect("has the partition code");
+}
+
+/// **The broker this harness runs carries the partition code**: the marker
+/// the check looks for is what the broker's partition check returns.
+#[test]
+fn the_built_broker_carries_partition_injection() {
+    let Ok(binary) = crate::node::broker_binary() else {
+        return;
+    };
+    require_partition_injection(&binary).expect("the harness broker can be partitioned");
+}

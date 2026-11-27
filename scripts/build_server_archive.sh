@@ -46,6 +46,7 @@ tar --version | head -1
 cargo build --release --locked \
   -p felix-broker-service --bin felix-broker \
   -p felix-controlplane-service --bin felix-controlplane
+scripts/check_no_fault_injection.sh target/release/felix-broker
 
 name="felix-${tag}-linux-x86_64"
 stage=$(mktemp -d)

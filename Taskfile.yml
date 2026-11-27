@@ -71,7 +71,7 @@ tasks:
       # `cargo test -p felix-cluster` does not rebuild; loadgen.rs shells out
       # to felix-loadgen and the backup tests to felixctl the same way. Separate
       # commands: a --bin filter would apply to every package and skip the rest.
-      - "cargo build -p felix-broker-service --bin felix-broker"
+      - "cargo build -p felix-broker-service --bin felix-broker --features fault-injection"
       - "cargo build -p felix-loadgen"
       - "cargo build -p felixctl"
       - |
@@ -203,6 +203,13 @@ tasks:
       # Then anything untouched for a week: old feature combinations, abandoned
       # branches' dependency graphs, superseded incremental caches.
       - "cargo sweep --time 7"
+  check:no-fault-injection:
+    desc: Build the broker as a release would, without its LTO, and check it carries no peer-partition injection.
+    cmds:
+      # Its own profile, so this neither waits on a release LTO build nor
+      # replaces the target/debug broker the cluster harness runs.
+      - "cargo build --locked --profile no-debug-assertions -p felix-broker-service --bin felix-broker"
+      - 'scripts/check_no_fault_injection.sh "${CARGO_TARGET_DIR:-target}/no-debug-assertions/felix-broker"'
   deny:
     cmds:
       - "cargo install cargo-deny --version 0.19.0 --locked"
@@ -448,17 +455,17 @@ tasks:
   cluster:up:
     desc: Start a local three-node cluster and hold it until Ctrl-C.
     cmds:
-      - cargo build -p felix-broker-service --bin felix-broker
+      - cargo build -p felix-broker-service --bin felix-broker --features fault-injection
       - cargo run -p felix-cluster -- up {{.CLI_ARGS}}
   cluster:status:
     desc: Start a cluster, print membership and shard ownership, then tear it down.
     cmds:
-      - cargo build -p felix-broker-service --bin felix-broker
+      - cargo build -p felix-broker-service --bin felix-broker --features fault-injection
       - cargo run -p felix-cluster -- status {{.CLI_ARGS}}
   cluster:smoke:
     desc: Publish through a non-owner and receive from the owner.
     cmds:
-      - cargo build -p felix-broker-service --bin felix-broker
+      - cargo build -p felix-broker-service --bin felix-broker --features fault-injection
       - cargo run -p felix-cluster -- smoke {{.CLI_ARGS}}
   cluster:subscribe:
     desc: Stream events from a running cluster (start one with cluster:up).
@@ -469,7 +476,7 @@ tasks:
   cluster:demo:
     desc: "Cross-broker demo in ONE pane, start to finish (see cluster:demo:tmux for three)."
     cmds:
-      - cargo build -p felix-broker-service --bin felix-broker
+      - cargo build -p felix-broker-service --bin felix-broker --features fault-injection
       - cargo run -q -p felix-cluster -- demo {{.CLI_ARGS}}
   cluster:failover:
     desc: "Replication, quorum acks and failover: kill the leader, keep publishing."
@@ -479,13 +486,13 @@ tasks:
   cluster:consistency:
     desc: "What Quorum buys and what Leader costs, under one fault"
     cmds:
-      - cargo build -p felix-broker-service --bin felix-broker
+      - cargo build -p felix-broker-service --bin felix-broker --features fault-injection
       - cargo run -q -p felix-cluster --bin felix-cluster -- consistency {{.CLI_ARGS}}
 
   cluster:demo:tmux:
     desc: The same demo across THREE tmux panes - cluster, subscriber, publisher.
     cmds:
-      - cargo build -p felix-broker-service --bin felix-broker
+      - cargo build -p felix-broker-service --bin felix-broker --features fault-injection
       - cargo build -p felix-cluster
       - scripts/cluster-demo-tmux.sh
   cluster:burst:
@@ -639,7 +646,7 @@ tasks:
     desc: Build what the Node suite needs, run it, and check the verdict against the catalogue.
     cmds:
       # The suite spawns these; `cargo build` does not do it on its behalf.
-      - cargo build -p felix-broker-service --bin felix-broker
+      - cargo build -p felix-broker-service --bin felix-broker --features fault-injection
       - cargo build -p felix-cluster --bin felix-cluster
       - cd crates/sdk/felix-typescript && cargo build
       - cd crates/sdk/felix-typescript && FELIX_CONFORMANCE_RESULTS={{.RESULTS}} node --test test/conformance.test.mjs
@@ -668,5 +675,5 @@ tasks:
   conformance:fixture:
     desc: Hold a cluster for a client conformance suite to run against.
     cmds:
-      - cargo build -p felix-broker-service --bin felix-broker
+      - cargo build -p felix-broker-service --bin felix-broker --features fault-injection
       - cargo run -q -p felix-cluster -- client-fixture {{.CLI_ARGS}}
