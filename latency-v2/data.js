@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795761904816,
+  "lastUpdate": 1795762301879,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -92994,6 +92994,72 @@ window.BENCHMARK_DATA = {
             "range": "49.53",
             "unit": "us",
             "extra": "trials: 5\nmedian: 412.00\nmean: 399.00\nstdev: 49.53\ncv: 12.41%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "bf9a6b4023dd4dd4bb94d4ce713a8d5dc04767cb",
+          "message": "fix(storage): startup checks a crashed copy before rotating it, so a power-cut copy is not treated as a restore (#3309) (#3348)\n\n* fix(raft): a relaxed crash keeps the marks it can vouch for, so a re-form counts power-cut votes (#3309)\n\nA machine crash of a relaxed run rotated the storage id and removed the\nroot's mark log before any copy was judged, so every copy rotated as\nStorageId and was kept as a restore. With the followers' votes unknown\nthe re-form cut to the saved commit and dropped acknowledged records the\ndisks still held.\n\nBefore rotating, begin_with now runs the gate's check against the old id:\nthe mark log's root sequence is at or above the run witness's copy and\nthe control plane's copy for that id, with at least one present. When it\npasses, raft-marks is renamed to raft-marks-before-<old id> instead of\nremoved. A copy minted under that id is judged against those marks when\nit opens, and one whose copy id and vote meet them is kept as power-cut.\nAny other rotation removes the kept marks. A directory older than its\nregistration keeps no marks and its relaxed-crash record is tagged as a\nrestore.\n\nThe strict cluster test is un-skipped and the test of the old contract\nis folded into it.\n\nSpec-Unaffected: FelixRaftReform.tla already models a cluster member's relaxed power cut as a power-cut kept copy with its newest vote (PowerCutRotate); this makes the code match it.\n\n* test(raft): the witness and a restored root are covered when a relaxed crash keeps marks (#3309)\n\nSpec-Unaffected: tests and doc comment only\n\n* test(cluster): the strict relaxed re-form test waits on #3351; today's cut is checked on Raft\n\nThe restarted leader stands for election alone and votes in term 3 with\nno entry there, so the vouch rule cuts every tail even with every vote\nknown. The strict test is skipped until #3351 with its assertion intact,\nand the saved-commit test comes back, now asserting the plan is unmarked.\n\nSpec-Unaffected: test, docs and changelog only; no modelled behaviour changes",
+          "timestamp": "2026-11-27T06:44:24Z",
+          "tree_id": "1a4ec5939a1f22ef7b62e2c0849ff9df6b1517c6",
+          "url": "https://github.com/GetFelix/felix/commit/bf9a6b4023dd4dd4bb94d4ce713a8d5dc04767cb"
+        },
+        "date": 1795762285123,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 151,
+            "range": "0.71",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 151.00\nmean: 151.00\nstdev: 0.71\ncv: 0.47%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 202,
+            "range": "2.17",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 202.00\nmean: 202.80\nstdev: 2.17\ncv: 1.07%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 264,
+            "range": "99.57",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 264.00\nmean: 304.20\nstdev: 99.57\ncv: 32.73%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 196,
+            "range": "10.95",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 196.00\nmean: 200.60\nstdev: 10.95\ncv: 5.46%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 400,
+            "range": "329.34",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 400.00\nmean: 542.00\nstdev: 329.34\ncv: 60.76%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 1545,
+            "range": "699.49",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 1545.00\nmean: 1582.60\nstdev: 699.49\ncv: 44.20%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
