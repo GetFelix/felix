@@ -242,9 +242,10 @@ const SLOW_FLUSH: Duration = Duration::from_secs(5);
 /// holds the change written and uncommitted, it and the destination are
 /// killed.
 ///
-/// A seat move adds or removes one voter per change, and openraft writes no
-/// joint entry for that, so this window (the new membership in force on some
-/// members, not committed) is the nearest a move comes to a joint change.
+/// A seat move changes one voter at a time, and openraft 0.10 writes no
+/// joint entry for a single-voter change (#3402), so this is not a joint
+/// phase: the window is the new membership in force on some members and not
+/// yet committed.
 /// The survivors cannot agree on the membership: `kept` may count four
 /// voters and need three votes, `short` counts three and needs `kept`, which
 /// refuses it for its shorter log. So any leader they elect holds every
