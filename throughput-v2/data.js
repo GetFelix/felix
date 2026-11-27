@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795738486954,
+  "lastUpdate": 1795738893859,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -72488,6 +72488,58 @@ window.BENCHMARK_DATA = {
             "range": "19077.90",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1188925.74\nmean: 1190979.12\nstdev: 19077.90\ncv: 1.60%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "1d19e759ef5e9234b8e5fe649f2e7f3c5af1c63e",
+          "message": "fix(raft): a seat whose broker died before its copy opened is given to another broker (#3310) (#3314)\n\nNo Raft target is stored until every member of the set reports a copy id,\nand a swap waits on a target stored for the current set. A broker seated by\na swap or top-up that died before opening its copy never reports, so the\ntarget never settles and replace_leaving waited on TargetUnsettled forever,\nleaving the group on two live copies.\n\nSuch a seat is now given to another live broker when the broker is down,\nno target is stored for the set, the group has formed, and the voters its\nleader reported at this incarnation and epoch do not name it. The write\nstill goes through the store's majority check on the reported voters, the\npause and the budget. A down member the voters name keeps the usual rule.\n\nSpec-Unaffected: placement choice of a new member set; the store's formed-set and majority checks the model covers are unchanged",
+          "timestamp": "2026-11-27T00:13:59Z",
+          "tree_id": "4628c3310120752708a1f854e78c40c4c40a7788",
+          "url": "https://github.com/GetFelix/felix/commit/1d19e759ef5e9234b8e5fe649f2e7f3c5af1c63e"
+        },
+        "date": 1795738892834,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 367268.61,
+            "range": "16291.20",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 367268.61\nmean: 361371.18\nstdev: 16291.20\ncv: 4.51%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 367268.61,
+            "range": "16291.20",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 367268.61\nmean: 361371.18\nstdev: 16291.20\ncv: 4.51%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 83365.79,
+            "range": "5573.05",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 83365.79\nmean: 81081.14\nstdev: 5573.05\ncv: 6.87%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 833657.91,
+            "range": "55730.46",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 833657.91\nmean: 810811.42\nstdev: 55730.46\ncv: 6.87%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
