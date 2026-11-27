@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795758273492,
+  "lastUpdate": 1795759136718,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -73060,6 +73060,58 @@ window.BENCHMARK_DATA = {
             "range": "22695.48",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1192223.58\nmean: 1196967.35\nstdev: 22695.48\ncv: 1.90%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "7979d875480b271bcc2fdad44bd4716d45596bec",
+          "message": "fix(raft): a target written after a no-op feed change reaches the broker at once (#3339) (#3347)\n\nThe shard watch waited out the rest of the sync interval after any answer\nthat moved nothing on this broker. A change that landed but moved nothing\nhere, such as another broker's copy id after a set change, still ended the\nlong poll, so the watch then held no request and the target write that\nfollowed waited for the timer: about 10 s per membership step in the\nrestarted-broker move test. An answer that advanced the feed now asks\nagain at once.\n\nSpec-Unaffected: broker watch poll timing only; no modelled state or ordering changes",
+          "timestamp": "2026-11-27T05:53:20Z",
+          "tree_id": "922713379914f79030c3af3755e1efcfeefbb8ff",
+          "url": "https://github.com/GetFelix/felix/commit/7979d875480b271bcc2fdad44bd4716d45596bec"
+        },
+        "date": 1795759135960,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 678098.5,
+            "range": "55082.77",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 678098.50\nmean: 675620.50\nstdev: 55082.77\ncv: 8.15%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 678098.5,
+            "range": "55082.77",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 678098.50\nmean: 675620.50\nstdev: 55082.77\ncv: 8.15%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 161438.92,
+            "range": "2567.60",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 161438.92\nmean: 161564.49\nstdev: 2567.60\ncv: 1.59%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1614389.2,
+            "range": "25676.04",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1614389.20\nmean: 1615644.90\nstdev: 25676.04\ncv: 1.59%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
