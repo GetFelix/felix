@@ -973,10 +973,12 @@ Reached(k, E, R) ==
 \* T: the highest key of any entry read, of the floor, and of any vote read
 \* that a majority reached (all of them with `any`). Only a voter of epoch E
 \* raises a term of E, so T is sound when every broker placed in E has its
-\* epoch-E vote read.
+\* epoch-E vote read. Reached is asked only of a vote above every entry and
+\* the floor, as no other vote can raise T; it is the costly part to check.
 Top(E, R, any) ==
-    MaxKey({c.vote : c \in {x \in R : any \/ Reached(x.vote, E, R)}}
-               \cup {LastKey(c.log) : c \in R} \cup {<<cpFloor.e, cpFloor.t>>})
+    LET low == MaxKey({LastKey(c.log) : c \in R} \cup {<<cpFloor.e, cpFloor.t>>})
+    IN MaxKey({low} \cup {c.vote : c \in {x \in R : KeyLess(low, x.vote)
+                                                 /\ (any \/ Reached(x.vote, E, R))}})
 
 \* The epoch-E mark: the votes not read are a majority of some voter set of
 \* E, so an election of E may have taken none the re-form read.
