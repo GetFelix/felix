@@ -95,6 +95,17 @@ impl Cluster {
             .with_context(|| format!("publish to {stream} via {node_id}"))
     }
 
+    /// Publish through `node_id` and answer the log offset the broker acked.
+    pub async fn publish_acked_via(
+        &self,
+        node_id: &str,
+        stream: &str,
+        payload: Vec<u8>,
+    ) -> Result<Option<u64>> {
+        self.publish_through(node_id, stream, payload, &self.client_token())
+            .await
+    }
+
     /// Publish through whichever broker in the cluster answers, the way an
     /// application with a seed list would.
     pub async fn publish_via_any(&self, stream: &str, payload: Vec<u8>) -> Result<()> {
