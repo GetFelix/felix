@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795760098569,
+  "lastUpdate": 1795761909066,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -73164,6 +73164,58 @@ window.BENCHMARK_DATA = {
             "range": "44013.48",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 977694.12\nmean: 955035.97\nstdev: 44013.48\ncv: 4.61%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "ee94e71121964c5f9952cf3178f38958e2ad2063",
+          "message": "fix(raft): a dead voter that has not reported its copy no longer blocks placement (#3313) (#3323)\n\n* fix(raft): a voter that dies after a set change no longer blocks placement (#3313)\n\nA set change drops the copy ids, and no target is stored until every\nmember reports one. A voter that died before it reported again held the\ntarget, and with it every later swap, for good; dead_seat does not apply\nbecause the reported voters name it.\n\nPlacement now records the dead voter's copy id for it, the one the\ngroup's reported voters name it under at this incarnation and epoch,\nwhen it is the one member that has not reported and every other member\nserves. It goes through the existing copy-id report with the broker's\ncurrent registration, so the replicated apply is unchanged and needs no\nmetadata level.\n\nSpec-Unaffected: placement-side proposal of an existing command; no modelled apply or broker behaviour changes\n\n* test(controlplane): the vouched copy id write is pinned at the store and the pass (#3313)\n\nCorrect the docs: a vouched id is the one the group's voters name, and a\nbroker that returns with another copy reports it itself.\n\nSpec-Unaffected: tests and docs only",
+          "timestamp": "2026-11-27T06:39:20Z",
+          "tree_id": "7d0f69218a3b8723ac0b43496ec73c901d925b32",
+          "url": "https://github.com/GetFelix/felix/commit/ee94e71121964c5f9952cf3178f38958e2ad2063"
+        },
+        "date": 1795761908071,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 470331.44,
+            "range": "29722.07",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 470331.44\nmean: 478695.40\nstdev: 29722.07\ncv: 6.21%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 470331.44,
+            "range": "29722.07",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 470331.44\nmean: 478695.40\nstdev: 29722.07\ncv: 6.21%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 117953.63,
+            "range": "7690.93",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 117953.63\nmean: 114852.30\nstdev: 7690.93\ncv: 6.70%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1179536.3,
+            "range": "76909.23",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1179536.30\nmean: 1148523.01\nstdev: 76909.23\ncv: 6.70%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
