@@ -5,7 +5,9 @@
 use super::super::raft_leaders::RAFT_REPLACEMENTS_PER_PASS;
 use super::raft_leaders::{ABC, member_of, raft, set_of};
 use super::*;
-use crate::model::{PlacedInEpoch, RaftFormed, RaftOrdered, RaftTarget, RaftVoters};
+use crate::model::{
+    PlacedInEpoch, RaftBases, RaftFormed, RaftOrdered, RaftSeed, RaftTarget, RaftVoters,
+};
 
 const ABCD: [&str; 4] = ["broker-a", "broker-b", "broker-c", "broker-d"];
 
@@ -117,7 +119,10 @@ fn a_thin_raft_shard_waits_for_enough_brokers_and_fills_when_they_join() {
     let waits: Vec<_> = held.waiting().map(|(_, why)| why.clone()).collect();
     assert_eq!(
         waits,
-        vec![unfilled(Blocked::TooFewBrokers { live: 2, needed: 3 })],
+        vec![unfilled(Blocked::TooFewBrokers {
+            eligible: 2,
+            needed: 3
+        })],
         "{held:?}"
     );
     assert_eq!(
@@ -266,6 +271,20 @@ fn a_short_raft_set_with_any_trace_of_a_group_is_not_filled() {
                 term: 1,
             });
         }),
+        ("an epoch seed", |a| {
+            a.raft_seed = Some(RaftSeed {
+                incarnation: a.incarnation,
+                epoch: 0,
+                members: [("broker-a".to_string(), 7)].into(),
+                starts: Default::default(),
+            });
+        }),
+        ("re-form bases", |a| {
+            a.raft_bases = Some(RaftBases {
+                incarnation: a.incarnation,
+                bases: Vec::new(),
+            });
+        }),
         ("an ordered target", |a| {
             a.raft_ordered = Some(RaftOrdered {
                 incarnation: a.incarnation,
@@ -326,4 +345,102 @@ fn a_formed_raft_group_with_a_cleared_target_is_not_filled() {
     assert_eq!(plan.moves().count(), 0, "{plan:?}");
     let waits: Vec<_> = plan.waiting().map(|(_, why)| why.clone()).collect();
     assert_eq!(waits, vec![Blocked::TargetUnsettled], "{plan:?}");
+}
+
+/// **A full set whose target a set change cleared before any voter report
+/// is not filled.** Only `placed` remembers the full set here, and it is
+/// enough: the target named copies on three brokers, so a group may have
+/// formed on them.
+#[test]
+fn a_short_raft_set_once_full_with_its_target_cleared_is_not_filled() {
+    let streams = vec![replicated_stream("orders", 1, 3)];
+    let mut existing = thin("broker-a", &["broker-b"]);
+    existing.placed = Some(PlacedInEpoch {
+        epoch: 0,
+        brokers: ABC.iter().map(|n| n.to_string()).collect(),
+    });
+
+    let plan = plan_of(&streams, &[], &live(&ABCD), existing);
+
+    assert_eq!(plan.moves().count(), 0, "{plan:?}");
+    let waits: Vec<_> = plan.waiting().map(|(_, why)| why.clone()).collect();
+    assert_eq!(waits, vec![Blocked::TargetUnsettled], "{plan:?}");
+}
+
+/// `thin` on `leader` and `followers`, with `nodes` where `leader` is not
+/// live: the fill drops it and names a live broker leader.
+fn filled_without(leader: &str, followers: &[&str], nodes: &[Node]) -> ShardAssignment {
+    let streams = vec![replicated_stream("orders", 1, 3)];
+    let plan = plan_with(
+        &streams,
+        &[],
+        nodes,
+        &[thin(leader, followers)],
+        &NothingCaughtUp,
+        raft(),
+    );
+    let (_, written) = the_fill(&plan);
+    assert_eq!(written.nodes().count(), 3, "{plan:?}");
+    assert!(!set_of(&written).contains(leader), "{plan:?}");
+    assert_ne!(written.leader, leader, "{plan:?}");
+    written
+}
+
+/// **A lone placed leader that is down, lost or draining is dropped by the
+/// fill.** Its group never formed, so it holds no record; waiting on it
+/// would hold the shard for good.
+#[test]
+fn a_thin_raft_shard_whose_lone_leader_is_down_lost_or_draining_is_filled_without_it() {
+    use super::restore::{MINUTE, gone};
+    let mut down = live(&ABCD);
+    down[0].status.lifecycle = NodeLifecycle::Down;
+    let mut lost = live(&ABCD);
+    lost[0] = gone("broker-a", 10 * MINUTE);
+    let mut draining = live(&ABCD);
+    draining[0].status.lifecycle = NodeLifecycle::Draining;
+    for (case, nodes) in [("down", down), ("lost", lost), ("draining", draining)] {
+        let written = filled_without("broker-a", &[], &nodes);
+        assert_eq!(
+            set_of(&written),
+            ["broker-b", "broker-c", "broker-d"]
+                .iter()
+                .map(|n| n.to_string())
+                .collect(),
+            "{case}"
+        );
+    }
+}
+
+/// **Placed on two at RF 3, leader dead and follower alive: the follower
+/// keeps its seat and leads**, and one live broker fills the set.
+#[test]
+fn a_thin_raft_shard_whose_leader_died_is_led_by_its_live_follower() {
+    let mut nodes = live(&ABCD);
+    nodes[0].status.lifecycle = NodeLifecycle::Down;
+
+    let written = filled_without("broker-a", &["broker-b"], &nodes);
+
+    assert_eq!(written.leader, "broker-b");
+    assert_eq!(written.replicas.len(), 2);
+}
+
+/// A dead lone leader does not count toward the brokers the fill needs.
+#[test]
+fn a_thin_raft_shard_with_a_dead_leader_waits_for_enough_live_brokers() {
+    let streams = vec![replicated_stream("orders", 1, 3)];
+    let mut nodes = live(&ABC);
+    nodes[0].status.lifecycle = NodeLifecycle::Down;
+
+    let plan = plan_of(&streams, &[], &nodes, thin("broker-a", &[]));
+
+    assert_eq!(plan.moves().count(), 0, "{plan:?}");
+    let waits: Vec<_> = plan.waiting().map(|(_, why)| why.clone()).collect();
+    assert_eq!(
+        waits,
+        vec![unfilled(Blocked::TooFewBrokers {
+            eligible: 2,
+            needed: 3
+        })],
+        "{plan:?}"
+    );
 }

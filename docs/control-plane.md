@@ -2001,12 +2001,13 @@ never formed. Brokers form nothing on a short set and the store takes no
 copy id for one, so it never gets the target a top-up waits for
 ([#3331](https://github.com/GetFelix/felix/issues/3331)). Once enough
 brokers are live, placement writes the full set in one step (`raft_fill`),
-keeping the leader and every serving follower that need not leave, under
+keeping every serving member that need not leave (a leader that is down,
+lost or draining is dropped too, and a kept or added broker leads), under
 the same pause and budget as a swap, and the brokers form the group on it
 as for a shard placed in full. It does so only while the epoch's record of
 placed brokers names fewer than the factor, at epoch 0, with no target, no
-counter kept from one, no formed mark, no reported voters or floor and no
-ordered target: any of those means a group may hold records, and the set
+counter kept from one, no formed mark, no reported voters or floor, no
+epoch seed or re-form base and no ordered target: any of those means a group may hold records, and the set
 then changes one member at a time. Until then the shard is under-replicated
 and placement logs, at info and about once a minute per shard, that it is
 held unformed and why (too few live brokers, a pause, the per-pass budget).

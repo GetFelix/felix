@@ -81,7 +81,9 @@ pub(super) fn on_raft(existing: &ShardAssignment, raft_streams: bool, durable: b
 ///   abandon leaves it, grows by a live node outside the set ([`top_up`]),
 ///   one member a write. A set placed on too few brokers never formed, and
 ///   is placed in full in one write once enough are live
-///   ([`fill_unformed`]).
+///   ([`fill_unformed`]). That write also drops a leader that is down or
+///   must leave, since it holds no record, instead of the leave rules
+///   waiting on a target the set never gets.
 /// - A live leader leading two or more shards over a live member moves to
 ///   it, the stream's spread first and then the cluster's, while nothing is
 ///   recovering. With no such member, a live broker outside the set takes a
@@ -141,20 +143,20 @@ pub(super) fn raft_step<'a>(
     {
         return rename(existing, to, true, counted, leaders, moves);
     }
-    // Before the swaps and the top-up, which wait for a target this set
-    // can never get.
-    if is_live(leader)
-        && leaving(leader).is_none()
-        && let Some(decision) = fill_unformed(
-            existing,
-            replication_factor,
-            is_serving,
-            leaving,
-            eligible,
-            load,
-            moves,
-        )
-    {
+    // Before the swaps, the top-up and the leave rules, which wait for a
+    // target this set can never get. A leader that is down or must leave
+    // is dropped by the fill like any other member.
+    if let Some(decision) = fill_unformed(
+        existing,
+        replication_factor,
+        is_serving,
+        counted,
+        leaders,
+        leaving,
+        eligible,
+        load,
+        moves,
+    ) {
         return decision;
     }
     // A leader that must leave is renamed first, below; it is swapped out
@@ -810,16 +812,33 @@ fn newcomer<'a>(
     eligible: &[&'a Node],
     load: &HashMap<&'a str, u32>,
 ) -> Option<&'a str> {
-    let key = &existing.key;
     let staying: Vec<&str> = existing
         .nodes()
         .map(String::as_str)
         .filter(|node| Some(*node) != from)
         .collect();
+    newcomer_beside(
+        &existing.key,
+        &staying,
+        &|id| existing.nodes().any(|member| member == id),
+        eligible,
+        load,
+    )
+}
+
+/// [`newcomer`] for a set given as the brokers `staying` in it, skipping
+/// any broker `taken` names.
+fn newcomer_beside<'a>(
+    key: &crate::model::ShardKey,
+    staying: &[&str],
+    taken: &dyn Fn(&str) -> bool,
+    eligible: &[&'a Node],
+    load: &HashMap<&'a str, u32>,
+) -> Option<&'a str> {
     eligible
         .iter()
         .map(|node| node.node_id.as_str())
-        .filter(|id| !existing.nodes().any(|member| member == id))
+        .filter(|id| !taken(id))
         .min_by_key(|id| {
             (
                 staying
@@ -907,17 +926,25 @@ pub(super) fn seat_open(existing: &ShardAssignment) -> Result<(), Blocked> {
 /// when its group never formed. A broker forms nothing on a short set and
 /// the store takes no copy id for one, so such a set never gets a target
 /// and [`top_up`] would wait on [`seat_open`] for good (#3331). With no
-/// group there is no record to keep: the write keeps the leader and every
-/// serving follower that need not leave, and adds live brokers outside the
-/// set until it is full. The brokers then form the group as on a shard
-/// placed in full from the start.
+/// group there is no record to keep: the write keeps every serving member
+/// that need not leave, and adds live brokers outside the set until it is
+/// full. The brokers then form the group as on a shard placed in full from
+/// the start.
+///
+/// The leader keeps the lead when it stays. One that is down, lost or must
+/// leave is dropped like a follower, and a kept follower, else the first
+/// broker added, leads: with no target stored it never formed a group, so
+/// it holds no record and can form nothing if it comes back.
 ///
 /// Held by a pause and from the replacement budget, as a top-up is. `None`
 /// when the set is full or its group may have formed ([`never_formed`]).
+#[allow(clippy::too_many_arguments)]
 fn fill_unformed<'a>(
     existing: &'a ShardAssignment,
     replication_factor: u32,
     is_serving: &dyn Fn(&str) -> bool,
+    counted: &dyn Fn(&str) -> bool,
+    leaders: &mut Leadership<'a>,
     leaving: &dyn Fn(&str) -> Option<Leaving>,
     eligible: &[&'a Node],
     load: &mut HashMap<&'a str, u32>,
@@ -932,34 +959,34 @@ fn fill_unformed<'a>(
             held: Box::new(blocked),
         })
     };
-    let mut next = ShardAssignment {
-        replicas: existing
-            .replicas
-            .iter()
-            .filter(|node| is_serving(node) && leaving(node).is_none())
-            .cloned()
-            .collect(),
-        ..existing.renamed()
-    };
-    let kept = next.nodes().count();
-    let mut added = Vec::new();
-    while next.nodes().count() < needed {
+    // The leader first, so it keeps the lead when it stays.
+    let mut set: Vec<&'a str> = existing
+        .nodes()
+        .map(String::as_str)
+        .filter(|node| is_serving(node) && leaving(node).is_none())
+        .collect();
+    let kept = set.len();
+    while set.len() < needed {
         // Not a broker this write drops: it is down or must leave.
-        let Some(to) = newcomer(&next, None, eligible, load)
-            .filter(|to| !existing.nodes().any(|node| node == to))
-        else {
+        let taken = |id: &str| set.contains(&id) || existing.nodes().any(|node| node == id);
+        let Some(to) = newcomer_beside(&existing.key, &set, &taken, eligible, load) else {
             let outside = eligible
                 .iter()
                 .filter(|node| !existing.nodes().any(|member| *member == node.node_id))
                 .count();
             return Some(held(Blocked::TooFewBrokers {
-                live: (kept + outside) as u32,
+                eligible: (kept + outside) as u32,
                 needed: needed as u32,
             }));
         };
-        next.replicas.push(to.to_string());
-        added.push(to);
+        set.push(to);
     }
+    let next = ShardAssignment {
+        leader: set[0].to_string(),
+        replicas: set[1..].iter().map(|node| node.to_string()).collect(),
+        ..existing.renamed()
+    };
+    let added = &set[kept..];
     let step = MoveStep::RaftFill {
         to: added.iter().map(|to| to.to_string()).collect(),
     };
@@ -968,6 +995,13 @@ fn fill_unformed<'a>(
         decision => {
             for to in added {
                 *load.entry(to).or_default() += 1;
+            }
+            let leader = existing.leader.as_str();
+            if set[0] != leader {
+                if counted(leader) {
+                    leaders.remove(Owner::of(&existing.key), leader);
+                }
+                leaders.add(Owner::of(&existing.key), set[0]);
             }
             Some(decision)
         }

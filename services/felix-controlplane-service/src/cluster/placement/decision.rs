@@ -323,9 +323,10 @@ pub enum Blocked {
     /// A Raft shard placed on fewer brokers than its replication factor has
     /// never formed, and the write that places it in full waits for `held`.
     Unfilled { held: Box<Blocked> },
-    /// Fewer brokers can hold a copy (`live`) than the replication factor
-    /// needs.
-    TooFewBrokers { live: u32, needed: u32 },
+    /// Fewer brokers may take a copy (`eligible`: live, not draining, and
+    /// allowed by the stream's region and storage) than the replication
+    /// factor needs.
+    TooFewBrokers { eligible: u32, needed: u32 },
 }
 
 impl std::fmt::Display for Blocked {
@@ -396,9 +397,10 @@ impl std::fmt::Display for Blocked {
                 "the group has not formed: it is placed on fewer brokers than its replication factor, \
                  and the write that places it in full waits ({held})"
             ),
-            Self::TooFewBrokers { live, needed } => write!(
+            Self::TooFewBrokers { eligible, needed } => write!(
                 f,
-                "{live} live brokers can hold a copy and the replication factor needs {needed}"
+                "{eligible} brokers may take a copy (live, not draining, and allowed by the \
+                 stream's region and storage) and the replication factor needs {needed}"
             ),
         }
     }

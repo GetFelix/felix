@@ -5239,6 +5239,11 @@ move from an older control plane added:
   target, no counter kept from a dropped one, no formed mark, no reported
   voters or floor, no epoch seed or re-form base, and no ordered target. A
   shard with no `placed` record, such as a restored one, is not filled.
+  A leader that is down, lost, draining or internal is dropped like a
+  follower, and a kept follower, else a broker the write adds, leads: with
+  no target ever stored it holds no record, and if it comes back it is in
+  no set and forms nothing, as a broker forms only on a target naming its
+  copy. A dropped broker does not count toward the brokers the fill needs.
   With too few live brokers the shard waits, counted as under-replicated,
   and the control plane logs why at info about once a minute.
 - A set with fewer members than the replication factor whose group formed
