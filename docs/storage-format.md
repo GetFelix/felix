@@ -69,6 +69,7 @@ a segment, should be rejected on its first four bytes rather than misparsed.
   registered-at                              ← the node record's registration time, beside the incarnation
   copy-trust                                 ← which copies a leader vouched for since the id last rotated
   copy-trust-kept                            ← a release that keeps copy-trust ran here
+  raft-marks-before-<id>                     ← the Raft marks a relaxed crash set aside under the id it rotated away
   run-token                                  ← this run's token, which the run witness outside the directory names
   node-id                                    ← the id offloaded keys start with, when offload is on without FELIX_NODE_ID
   acme_default_orders_0-0d3aed4b998d2798/     ← one directory per stream shard
@@ -1668,8 +1669,11 @@ reservation still counts.
 
 A rotation that moves a shard directory into `.kept/` writes one word into
 it: `power-cut <copy>\n`, where `<copy>` is the copy id the rotation
-minted in 16 hex digits, or `restore\n`. Only a log below its log mark is
-`power-cut`, and it speaks only for the copy it names: a later rotation
+minted in 16 hex digits, or `restore\n`. A log below its log mark is
+`power-cut`. So is a copy minted under the storage id a relaxed crash
+rotated away, when the root set that id's marks aside
+(`raft-marks-before-<id>`), the marks name the copy's id, and its vote is
+at or above its vote mark. A `power-cut` speaks only for the copy it names: a later rotation
 of an empty or wiped directory keeps nothing, so a re-form must not let
 an older power cut vouch for the copy after it. The vote mark is checked first, so such a copy still holds
 the newest vote it took, and a re-form may read it to learn how high the
@@ -1683,6 +1687,23 @@ It is written and synced after the rename, so a crash leaves a kept
 directory without it, never a live directory with one. A missing file
 reads as `restore`, which covers every kept directory from before the
 file existed. Any other content is an error for the re-form's reads.
+
+## `raft-marks-before-<id>`: the marks a relaxed crash kept
+
+A machine crash of a relaxed run rotates the root's storage id, and every
+rotation removes `raft-marks`. When the start finds the mark log at or
+above every copy of its root sequence kept outside the root for the old id
+(the run witness's and the control plane's), with at least one such copy,
+it renames the log to `raft-marks-before-<id>` instead, where `<id>` is the
+old storage id in 32 hex digits. The bytes are the mark log's, unchanged.
+The rename is synced before the new id is written.
+
+A copy minted under `<id>` is judged against these marks when it opens:
+its copy id and vote, as an open under the same id judges them. Only the
+newest such file is kept, and every other rotation removes it. A file that
+does not read is ignored, and those copies rotate as `restore`. See
+`docs/per-shard-raft.md`, "A relaxed crash keeps the marks it can vouch
+for".
 
 ## `raft-stopped`: a copy a re-form stopped
 

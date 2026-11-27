@@ -2607,7 +2607,7 @@ impl Member {
 
     /// A broker on `net` holding `sessions`, a `Quorum` cache on three
     /// brokers.
-    async fn start_cache(net: &Arc<Loopback>, name: &'static str) -> Self {
+    pub(crate) async fn start_cache(net: &Arc<Loopback>, name: &'static str) -> Self {
         Self::start_cache_on(net, name, tempfile::tempdir().expect("tempdir")).await
     }
 
