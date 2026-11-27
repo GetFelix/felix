@@ -19,12 +19,6 @@ const STREAM: &str = "orders";
 #[serial]
 #[tokio::test]
 async fn a_subscription_follows_its_shard_to_the_new_owner() {
-    if felix_cluster::skip_on_raft_until(
-        3004,
-        "a planned move or leader change in this test does not complete on Raft yet",
-    ) {
-        return;
-    }
     let cluster = Cluster::start(ClusterConfig {
         nodes: 2,
         streams: vec![StreamSpec::new(STREAM, 1)],

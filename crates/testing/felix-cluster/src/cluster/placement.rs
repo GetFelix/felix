@@ -247,8 +247,21 @@ impl Cluster {
             "destination": destination,
         });
         let url = format!("{}/v1/shard-moves", self.control_plane_url());
-        let response = self.operator_call(self.http.post(&url).json(&body)).await?;
-        step_of(response)
+        // A Raft shard's set is unsettled for a few seconds after a move
+        // changed it, until the group's remaining member reports again.
+        let budget = wait::budget(Duration::from_secs(60));
+        let deadline = Instant::now() + budget;
+        loop {
+            match self.operator_call(self.http.post(&url).json(&body)).await {
+                Ok(response) => return step_of(response),
+                Err(err)
+                    if err.to_string().contains("set_unsettled") && Instant::now() < deadline =>
+                {
+                    tokio::time::sleep(Duration::from_millis(200)).await;
+                }
+                Err(err) => return Err(err),
+            }
+        }
     }
 
     /// Cancel the move of shard `shard` of `stream` through the operator API.

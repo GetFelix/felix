@@ -29,12 +29,6 @@ const COUNTER: &str = "hits";
 #[tokio::test]
 #[serial]
 async fn a_moved_shard_keeps_its_group_state_and_counters() {
-    if felix_cluster::skip_on_raft_until(
-        3004,
-        "a planned move or leader change in this test does not complete on Raft yet",
-    ) {
-        return;
-    }
     let mut cluster = Cluster::start(ClusterConfig {
         nodes: 1,
         streams: vec![StreamSpec::new(STREAM, 1)],
@@ -380,9 +374,8 @@ async fn consume_until(
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[serial]
 async fn writes_of_every_kind_through_a_move_are_never_refused() {
-    if felix_cluster::skip_on_raft_until(
-        3004,
-        "a planned move or leader change in this test does not complete on Raft yet",
+    if felix_cluster::skip_on_raft_retire_with_hybrid(
+        "hybrid-only: writes held between the fence and the cut-over and sent on to the new owner; a Raft hand-over closes the shard for an election and refuses as not ready",
     ) {
         return;
     }
@@ -622,6 +615,11 @@ async fn move_to(cluster: &Cluster, to: &str) {
     })
     .await
     .expect("move");
+    // A Raft shard is named to its new leader before the group elects it.
+    cluster
+        .await_raft_leaders_placed(Duration::from_secs(60))
+        .await
+        .expect("the group to elect the new leader");
 }
 
 async fn publish_jobs(cluster: &Cluster, via: &str, from: usize, count: usize) {
@@ -647,12 +645,6 @@ async fn publish_jobs(cluster: &Cluster, via: &str, from: usize, count: usize) {
 #[tokio::test]
 #[serial]
 async fn a_shard_moved_away_and_back_hands_out_nothing_already_acked() {
-    if felix_cluster::skip_on_raft_until(
-        3004,
-        "a planned move or leader change in this test does not complete on Raft yet",
-    ) {
-        return;
-    }
     let cluster = Cluster::start(ClusterConfig {
         nodes: 2,
         streams: vec![StreamSpec::new(STREAM, 1)],

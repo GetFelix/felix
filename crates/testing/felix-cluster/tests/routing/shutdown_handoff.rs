@@ -224,9 +224,8 @@ async fn a_stopping_broker_hands_its_shard_over_under_load() {
 #[serial]
 #[tokio::test]
 async fn a_reader_follows_a_moved_shard_off_a_draining_entry_broker() {
-    if felix_cluster::skip_on_raft_until(
-        3004,
-        "a planned move or leader change in this test does not complete on Raft yet",
+    if felix_cluster::skip_on_raft_retire_with_hybrid(
+        "hybrid-only: a lapsed lease ends the reader and placement promotes the follower, neither of which a Raft group has",
     ) {
         return;
     }
@@ -819,9 +818,8 @@ fn assert_exactly_once(owed: &[Vec<u8>], read: &[ShardRecords]) {
 #[serial]
 #[tokio::test]
 async fn a_handoff_that_times_out_loses_no_acknowledged_record() {
-    if felix_cluster::skip_on_raft_until(
-        3004,
-        "a planned move or leader change in this test does not complete on Raft yet",
+    if felix_cluster::skip_on_raft_retire_with_hybrid(
+        "hybrid-only: counts shards placement fails over after the handoff gives up; a Raft group fails over by election, and its stopping broker is covered by a_stopping_broker_hands_its_shard_over_under_load",
     ) {
         return;
     }

@@ -390,12 +390,6 @@ async fn re_send(cluster: &Cluster, node_id: &str, producer_id: u64, sequence: u
 #[tokio::test]
 #[serial]
 async fn a_producer_keeps_its_sequence_across_a_planned_move() -> Result<()> {
-    if felix_cluster::skip_on_raft_until(
-        3004,
-        "a planned move or leader change in this test does not complete on Raft yet",
-    ) {
-        return Ok(());
-    }
     let cluster = Cluster::start(ClusterConfig {
         nodes: 2,
         streams: vec![StreamSpec::new(STREAM, 1)],
