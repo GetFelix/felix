@@ -71,7 +71,9 @@ pub(super) fn on_raft(existing: &ShardAssignment, raft_streams: bool, durable: b
 /// - A follower that must leave (`leaving`: an internal, draining or lost
 ///   broker) is replaced by a live node outside the set, one at a time,
 ///   through the group's membership target. With no such node it stays and
-///   the shard waits, shown to the operator.
+///   the shard waits, shown to the operator. A seat whose broker died before
+///   its copy opened is given away the same way, though no target was ever
+///   stored for it ([`dead_seat`]).
 /// - A set short of the replication factor, as an abandon or a placement
 ///   on too few brokers leaves it, grows by a live node outside the set
 ///   ([`top_up`]), one member a write.
@@ -667,6 +669,7 @@ fn replace_leaving<'a>(
 /// Refused while another member is not serving, since the joint change needs
 /// a majority of both sets, and while the target is not stored for the
 /// current set or the group has not formed on it: one set change at a time.
+/// A [`dead_seat`] is the exception to the stored target.
 /// The errors name no `why`; callers fill it in.
 fn replacement<'a>(
     existing: &ShardAssignment,
@@ -689,8 +692,22 @@ fn replacement<'a>(
             node: from.to_string(),
             why: Leaving::Draining,
         })?;
-    seat_open(existing)?;
-    Ok(to)
+    match seat_open(existing) {
+        Err(Blocked::TargetUnsettled) if dead_seat(existing, from, is_serving) => Ok(to),
+        open => open.map(|()| to),
+    }
+}
+
+/// Whether `node`'s seat may change hands before the set's target is
+/// stored: its broker is down, no target names the set yet, and the voters
+/// the group reported do not name it. Its broker died before it opened a
+/// copy, so the target, which waits for every member's copy id, would
+/// never be stored and the group would never hear of the set (#3310).
+/// Giving the seat to another broker redoes the swap that seated it; the
+/// write still has to pass the store's majority check on the reported
+/// voters. A down member the voters name keeps the settled-target rule.
+fn dead_seat(existing: &ShardAssignment, node: &str, is_serving: &dyn Fn(&str) -> bool) -> bool {
+    !is_serving(node) && existing.raft_target.is_none() && existing.reported_without(node)
 }
 
 /// The live node outside the set that joins it, `from` leaving: the one

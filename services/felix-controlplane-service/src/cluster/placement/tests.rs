@@ -18,6 +18,7 @@ mod moves;
 mod operator;
 mod pacing;
 mod pending_set;
+mod raft_dead_seat;
 mod raft_elected;
 mod raft_leaders;
 mod raft_top_up;

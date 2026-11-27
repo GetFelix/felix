@@ -624,3 +624,66 @@ async fn a_lost_answer_starts_the_copy_on_a_later_pass() {
     assert_eq!(payloads(&c.broker).await, written());
     c.stop().await;
 }
+
+/// **A held shard re-forms once what kept it from re-forming at its open
+/// clears**, without a restart: a member opened before registration said
+/// which fleet features are enabled, before the writer was set, or on an
+/// assignment that did not yet name this broker alone is held at first, and
+/// a later pass re-forms it with one request.
+#[tokio::test]
+async fn a_shard_opened_before_its_re_form_could_be_decided_re_forms_later() {
+    let raft = || {
+        fleet::IMPLEMENTED
+            .iter()
+            .map(|feature| feature.name())
+            .filter(|name| name.starts_with("raft_"))
+    };
+    type Change = Box<dyn Fn(&mut ShardAssignment) + Send + Sync>;
+    let cases: [(&str, bool, bool, Change); 3] = [
+        ("the fleet not yet known", false, true, Box::new(|_| {})),
+        ("the writer not yet set", true, false, Box::new(|_| {})),
+        (
+            "the placement not yet recorded",
+            true,
+            true,
+            Box::new(|a| a.placed = None),
+        ),
+    ];
+    for (what, adopted, writer, change) in cases {
+        let root = tempfile::tempdir().expect("tempdir");
+        let w = crashed(root.path()).await;
+        let cp = FakeControlPlane::new(Say::Take);
+        let gate = Arc::new(FleetGate::new(raft()));
+        if adopted {
+            gate.restart(raft());
+        }
+        let broker = broker_in(root.path(), PERIODIC).await;
+        let (shards, engine) = members(&broker, Arc::clone(&gate));
+        if writer {
+            shards.set_alone_writer(cp.clone());
+        }
+        let c = Cluster {
+            broker,
+            shards,
+            engine,
+        };
+        c.feed(&cp, &*change).await;
+        assert!(cp.requests().is_empty(), "{what}: asked");
+        assert!(c.shards.leading(&key("orders", 0)).is_none(), "{what}");
+
+        gate.restart(raft());
+        c.shards.set_alone_writer(cp.clone());
+        c.serve(&cp, w.end).await;
+        assert_eq!(cp.requests().len(), 1, "{what}");
+        assert_eq!(cp.bumps.load(Ordering::SeqCst), 1, "{what}");
+        assert_eq!(group_epoch(&w.dir).expect("epoch"), Some(1), "{what}");
+        assert_eq!(payloads(&c.broker).await, written(), "{what}");
+        let next = publish(&c.broker, &c.engine, &[b"six"]).await;
+        assert!(
+            next >= w.end,
+            "{what}: offset {next} reused below {}",
+            w.end
+        );
+        c.stop().await;
+    }
+}
