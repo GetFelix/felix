@@ -213,6 +213,14 @@ the new leader. Offsets are the log's, and the new leader holds the same log, so
 the consumer resumes at the offset it asked for. Nothing is skipped or repeated;
 the client sees a short pause.
 
+A fetch already long-polling on the old broker asks placement again each time
+it wakes, so it gets the same answer at its next wake-up (at the latest when
+`max_wait_ms` runs out), with no records read after the broker stopped leading.
+The commit point alone would not refuse it, since a Raft follower still has one.
+
+> `crates/server/felix-kafka/src/api/tests/fetch.rs`,
+> `a_parked_fetch_is_refused_once_this_broker_stops_leading`.
+
 On a Raft shard the leader Metadata names is the one the group elected, which
 may not be the one placement names (a group just formed, a failover with a
 voter down). A broker whose member follows a leader names that leader, even one
