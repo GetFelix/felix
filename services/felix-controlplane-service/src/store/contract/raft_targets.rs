@@ -141,6 +141,18 @@ async fn a_set_holds_until_its_group_forms(store: &dyn ControlPlaneStore) {
         .put_shard_assignment(moved)
         .await
         .expect("the group formed, so its set moves");
+    // The move cleared the copy ids, so no reported voter counts yet: a step
+    // back to broker-x alone could drop the copy that holds the data before
+    // the store knows it votes (#3336).
+    let mut back = read(store, &shard.key).await;
+    back.replicas.clear();
+    assert!(
+        matches!(
+            store.put_shard_assignment(back).await,
+            Err(StoreError::Conflict(_))
+        ),
+        "a step back before the copy ids are reported"
+    );
     // broker-y left the set but is still a kept voter. Naming itself at a
     // huge index, it neither gets back into the voters a blank copy admits
     // nor shuts out the reports that follow (#2909).

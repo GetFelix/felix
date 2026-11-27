@@ -2041,12 +2041,15 @@ An RF 1 shard has no voter both sets keep, so its move takes two writes
 (#3012). The operator move grows the set to the leader and the destination,
 and the group adds the destination as a learner and then a voter. Once the
 leader reports the destination's copy voting, placement writes the
-destination alone as the set and its leader, and the group hands it
+destination alone as the set and its leader on the pass that report wakes, and the group hands it
 leadership and drops the old copy. A set of the destination alone any
 earlier would make its empty copy the whole group, so the store holds it
 until then. A second move is refused with `set_unsettled` while the set is
 over the factor. A move back to the old broker, or a destination that stops
-being live before it votes, undoes the move (`raft_move_undone`). A
+being live before it votes, undoes the move (`raft_move_undone`). A move back
+sent before both brokers have reported their copy ids for the grown set, and
+the leader its voters, is refused with `set_unsettled`: the store would refuse
+the old broker alone until then. Retry it once they arrive. A
 destination that votes and then goes down strands the shard, which
 placement reports, until it is back or the group is re-formed without it;
 `docs/per-shard-raft.md` has the steps. A removed copy keeps

@@ -439,7 +439,8 @@ fn raft_leader_move(
 
 /// Move an RF 1 shard mid-move back to its leader, `destination`: the
 /// destination leaves the set again. Once it votes the group needs its vote
-/// to remove it, so a voting destination that is not serving is refused.
+/// to remove it, so a voting destination that is not serving is refused, and
+/// so is a set the reported voters do not yet keep a majority of.
 fn raft_move_back(
     catalog: &Catalog<'_>,
     existing: &ShardAssignment,
@@ -454,6 +455,11 @@ fn raft_move_back(
     if existing.reports_voting(node) && !lifecycle_of(catalog, node).is_some_and(|l| l.is_serving())
     {
         return Err(Refused::MemberDown(node.to_string()));
+    }
+    // The grow cleared the copy ids, so until they and a voter report are
+    // back the store refuses the old leader alone (#2905).
+    if existing.holds_formed_set(&assignment.nodes().cloned().collect()) {
+        return Err(Refused::SetUnsettled);
     }
     Ok(OperatorStep {
         step: MoveStep::RaftMoveUndone {
