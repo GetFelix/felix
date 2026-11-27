@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795745337426,
+  "lastUpdate": 1795747499024,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -72748,6 +72748,58 @@ window.BENCHMARK_DATA = {
             "range": "90578.57",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1258859.08\nmean: 1222681.11\nstdev: 90578.57\ncv: 7.41%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "0b37db25bba179c4b50aaa65cde2980e60c4a4dc",
+          "message": "fix(raft): member opens wait until the fleet's features are known (#3316) (#3326)\n\nA member reads raft_written_commit (its fsync mode) and raft_alone_reform\nonce, at its open. After a restart the open pass could run before the\nregistration answered, so a relaxed broker's member fsynced on commit\nuntil it next opened. The pass now holds members until both features are\ndecided, for at most 10 s, with a log line on the hold and on giving up.\nA standalone broker (its own fleet), a seeded view that already decides\nboth, and a start that votes before its restore check do not wait.\n\nSpec-Unaffected: open ordering against fleet adoption; no modelled state or acknowledgement rule changes",
+          "timestamp": "2026-11-27T02:36:42Z",
+          "tree_id": "f0574620ac1a08c7f986ecb190a92f4d3d79138b",
+          "url": "https://github.com/GetFelix/felix/commit/0b37db25bba179c4b50aaa65cde2980e60c4a4dc"
+        },
+        "date": 1795747498411,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 545711.34,
+            "range": "35314.25",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 545711.34\nmean: 531709.68\nstdev: 35314.25\ncv: 6.64%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 545711.34,
+            "range": "35314.25",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 545711.34\nmean: 531709.68\nstdev: 35314.25\ncv: 6.64%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 122771.05,
+            "range": "2684.89",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 122771.05\nmean: 121842.09\nstdev: 2684.89\ncv: 2.20%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1227710.51,
+            "range": "26848.92",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1227710.51\nmean: 1218420.88\nstdev: 26848.92\ncv: 2.20%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
