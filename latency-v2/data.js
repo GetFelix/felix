@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795775551409,
+  "lastUpdate": 1795775856545,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -93324,6 +93324,72 @@ window.BENCHMARK_DATA = {
             "range": "847.56",
             "unit": "us",
             "extra": "trials: 5\nmedian: 1641.00\nmean: 1409.20\nstdev: 847.56\ncv: 60.15%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "7c5f53d15b5669e6924ae06cb7f6821258e00a53",
+          "message": "fix(raft): a cache watch from an old offset replays the log the member still holds (#3335) (#3350)\n\n* fix(raft): a cache watch resuming from an old offset is replayed from the log (#3335)\n\nA Raft member answered a resume from below its recorded changes with a\nresnapshot, so a watch from offset 0 on a shard nobody had watched never\nsaw the overwritten values. The hybrid replays its shard log there.\n\nWhen the recorded changes do not reach back, the member now folds the\nentries above its stored snapshot into a copy of the snapshot's state, up\nto the edge read under the state's lock after the watch registered, and\nhands out the changes from the resume offset on. Apply is deterministic,\nso the copy makes the same changes; only applied entries are read. A\nresume at or below the snapshot's entry is still resnapshotted.\n\nUn-skips the two routing::watches_follow cluster tests.\n\nSpec-Unaffected: a read-only fold of applied entries; apply, commit and compaction are unchanged\n\n* fix(raft): bound the cost of a cache watch replay from the log (#3335)\n\nA resume below the recorded changes read the whole snapshot file under the\nstore's install lock, even when the answer was a resnapshot, and any number\nof resumes could each restore their own copy at once. A replay slow enough\nto overflow the live queue ended the watch as lagged, and the client's\nresume started the same replay again.\n\nThe resnapshot decision now reads only the covered index. The snapshot is\nread through a reader that holds the install lock just to open the file. A\ngroup runs at most two replays at once; further resumes wait. A replay that\noverflowed the live queue is not handed out: the watch registers again and\nis resnapshotted, so a slow replay cannot loop.\n\nTests cover the covered-index decision with an unreadable snapshot file,\nresumes queueing behind the bound, the overflow fallback, and a\nresnapshotted resume on a follower passing the read barrier.\n\nSpec-Unaffected: read-side bound on a fold of applied entries; apply, commit and compaction are unchanged\n\n* fix(cache): check stopped_serving again after a lagged replay's re-register (#3335)\n\nAn ending between the old watch's moved check and the new registration\nwas missed by the new watch, which then ran on a member that no longer\nserves the shard.\n\nSpec-Unaffected: handler-side recheck of an existing serving guard\n\n* test(cluster): watches_follow checks delivery on the new owner, not a moved event\n\nOn Raft the drained broker can stay a voter, following the new leader,\nafter placement names the new owner, and a watch on it keeps serving\ncorrectly. Both tests now write fresh values on the new owner once it\nleads and require the watch to hold exactly what the new owner's log\nholds for them. A ShardMoved is required only once the old broker has\nleft the group, which on the hybrid is always.\n\nSpec-Unaffected: test-only change",
+          "timestamp": "2026-11-27T10:32:35Z",
+          "tree_id": "8cdfb05b0a3ee2462e183a7d4b32f863ca5cb910",
+          "url": "https://github.com/GetFelix/felix/commit/7c5f53d15b5669e6924ae06cb7f6821258e00a53"
+        },
+        "date": 1795775835627,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 64,
+            "range": "0.55",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 64.00\nmean: 63.60\nstdev: 0.55\ncv: 0.86%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 86,
+            "range": "1.52",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 86.00\nmean: 86.40\nstdev: 1.52\ncv: 1.76%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 123,
+            "range": "65.99",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 123.00\nmean: 147.60\nstdev: 65.99\ncv: 44.71%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 81,
+            "range": "2.70",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 81.00\nmean: 81.60\nstdev: 2.70\ncv: 3.31%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 175,
+            "range": "22.96",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 175.00\nmean: 187.20\nstdev: 22.96\ncv: 12.27%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 280,
+            "range": "113.56",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 280.00\nmean: 337.80\nstdev: 113.56\ncv: 33.62%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
