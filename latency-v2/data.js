@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795791902999,
+  "lastUpdate": 1795792855401,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -93522,6 +93522,72 @@ window.BENCHMARK_DATA = {
             "range": "713.84",
             "unit": "us",
             "extra": "trials: 5\nmedian: 353.00\nmean: 666.60\nstdev: 713.84\ncv: 107.09%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "4337a57db5b89a8fce90fce318b3609506759c2d",
+          "message": "docs: felix-replication and ARCHITECTURE.md describe Raft as the default engine (#3363) (#3370)\n\n* docs: felix-replication and ARCHITECTURE.md say Raft is the default engine (#3363)\n\nSpec-Unaffected: docs only\n\n* docs: drop feature-gated intra-doc link in felix-replication\n\nSpec-Unaffected: docs only",
+          "timestamp": "2026-11-27T15:14:19Z",
+          "tree_id": "f27cc6ffeee9c1938226e452d97bc6ebdd441707",
+          "url": "https://github.com/GetFelix/felix/commit/4337a57db5b89a8fce90fce318b3609506759c2d"
+        },
+        "date": 1795792837946,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 143,
+            "range": "1.41",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 143.00\nmean: 142.00\nstdev: 1.41\ncv: 1.00%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 194,
+            "range": "2.55",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 194.00\nmean: 195.00\nstdev: 2.55\ncv: 1.31%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 235,
+            "range": "9.08",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 235.00\nmean: 240.00\nstdev: 9.08\ncv: 3.78%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 192,
+            "range": "12.21",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 192.00\nmean: 197.20\nstdev: 12.21\ncv: 6.19%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 372,
+            "range": "285.37",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 372.00\nmean: 505.00\nstdev: 285.37\ncv: 56.51%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 537,
+            "range": "1006.11",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 537.00\nmean: 1216.40\nstdev: 1006.11\ncv: 82.71%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
