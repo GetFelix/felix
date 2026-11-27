@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795744998253,
+  "lastUpdate": 1795745337426,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -72696,6 +72696,58 @@ window.BENCHMARK_DATA = {
             "range": "2698.87",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 805067.61\nmean: 806481.74\nstdev: 2698.87\ncv: 0.33%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "16533ae3cb325eb37dc7e83fa18db0f30d007978",
+          "message": "fix(raft): a drain moves a shard with one replica (#3301) (#3305)\n\n* fix(placement): a drain moves an RF 1 Raft shard off the draining broker (#3301)\n\nA draining Raft leader is not live, so a shard with no live member found\nno destination and waited for good: an RF 1 shard never left a drained\nbroker. The draining broker still serves, so it now stays leader and\nvoter and gives the shard a live member. An RF 1 shard grows to it and a\nlive broker outside the set and shrinks once the new copy votes, the same\ntwo writes as an operator move. A larger set whose members all drain\nswaps a follower for a live broker first. Both take the set-change\nbudget and are held by a pause.\n\nSpec-Unaffected: placement only picks the target; the membership change, the formed-set hold and the shrink rule are unchanged\n\n* docs: tidy the drain move wording (#3301)\n\nSpec-Unaffected: docs only",
+          "timestamp": "2026-11-27T02:02:09Z",
+          "tree_id": "81014e637a9e3948dcdae7ddd9eaf22625ec830c",
+          "url": "https://github.com/GetFelix/felix/commit/16533ae3cb325eb37dc7e83fa18db0f30d007978"
+        },
+        "date": 1795745336686,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 563268.73,
+            "range": "43803.31",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 563268.73\nmean: 568398.30\nstdev: 43803.31\ncv: 7.71%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 563268.73,
+            "range": "43803.31",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 563268.73\nmean: 568398.30\nstdev: 43803.31\ncv: 7.71%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 125885.91,
+            "range": "9057.86",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 125885.91\nmean: 122268.11\nstdev: 9057.86\ncv: 7.41%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1258859.08,
+            "range": "90578.57",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1258859.08\nmean: 1222681.11\nstdev: 90578.57\ncv: 7.41%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
