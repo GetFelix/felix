@@ -226,14 +226,6 @@ pub(crate) async fn handle_acked_binary_publish_batch_control(
     ack_timeout_state: &Arc<parking_lot::Mutex<AckTimeoutState>>,
     cancel_tx: &watch::Sender<bool>,
     commit_acks: &CommitAcks,
-    // Frame-flag bits this client advertised. Read only to decide whether the
-    // ack may name a forwarding owner: that sets a flag bit, and a client that
-    // did not advertise it rejects the whole frame rather than masking the bit
-    // off -- rejecting an acknowledgement for a publish that worked.
-    peer_flags: u16,
-    // Feature bits this client offered, for what an idempotent batch under a
-    // reused sequence is answered with.
-    peer_features: u32,
 ) -> Result<()> {
     // Read the correlation prefix before the body, so even an undecodable batch
     // can be answered with an ack the client is able to match to its request.
@@ -317,7 +309,6 @@ pub(crate) async fn handle_acked_binary_publish_batch_control(
         }
     };
     handle_publish_batch_message(
-        peer_flags,
         broker,
         publish_ctx,
         declared,
@@ -358,7 +349,7 @@ pub(crate) async fn handle_acked_binary_publish_batch_control(
             (
                 producer.producer_id,
                 producer.sequence,
-                super::batch::sequence_reuse(peer_features),
+                felix_broker::SequenceReuse::Refuse,
             )
         }),
     )

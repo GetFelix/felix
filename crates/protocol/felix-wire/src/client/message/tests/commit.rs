@@ -212,5 +212,4 @@ fn trim_messages_round_trip_and_omit_what_is_unset() {
         Message::decode(tagged.encode().expect("encode")).expect("decode"),
         tagged
     );
-    assert_eq!(tagged.without_trim_headers(), cursor);
 }

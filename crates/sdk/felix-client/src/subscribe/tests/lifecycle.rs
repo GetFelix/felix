@@ -52,7 +52,7 @@ async fn subscribe_requests_no_id_and_adopts_server_assigned_id() -> Result<()> 
                     break;
                 };
                 let _ = read_message(&mut recv, &mut frame_scratch).await?;
-                write_message(&mut send, Message::Ok).await?;
+                write_message(&mut send, felix_wire::baseline_auth_ok()).await?;
                 if let Some(Message::Subscribe {
                     subscription_id, ..
                 }) = read_message(&mut recv, &mut frame_scratch).await?
@@ -156,7 +156,7 @@ async fn subscription_stream_close_returns_none() -> Result<()> {
                 return Ok(());
             };
             let _ = read_message(&mut recv, &mut frame_scratch).await?;
-            write_message(&mut send, Message::Ok).await?;
+            write_message(&mut send, felix_wire::baseline_auth_ok()).await?;
             loop {
                 let next = read_message(&mut recv, &mut frame_scratch).await?;
                 match next {
@@ -253,7 +253,7 @@ async fn subscription_connection_loss_is_an_error_not_an_end() -> Result<()> {
                 return Ok(());
             };
             let _ = read_message(&mut recv, &mut frame_scratch).await?;
-            write_message(&mut send, Message::Ok).await?;
+            write_message(&mut send, felix_wire::baseline_auth_ok()).await?;
             loop {
                 let next = read_message(&mut recv, &mut frame_scratch).await?;
                 match next {
@@ -363,7 +363,7 @@ async fn subscription_empty_event_batch_returns_none() -> Result<()> {
                 return Ok(());
             };
             let _ = read_message(&mut recv, &mut frame_scratch).await?;
-            write_message(&mut send, Message::Ok).await?;
+            write_message(&mut send, felix_wire::baseline_auth_ok()).await?;
             loop {
                 let next = read_message(&mut recv, &mut frame_scratch).await?;
                 match next {

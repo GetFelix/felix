@@ -119,14 +119,27 @@ pub(super) async fn run_uni_loop<S: FrameSource + ?Sized>(
                 token,
                 // One-directional: there is no reply channel to advertise on,
                 // and nothing here would ever send an optional message back.
-                // Only the flags matter, for what this stream may send.
+                // The flags matter for what this stream may send; the rest
+                // only for the baseline.
                 client_flags,
-                client_features: _,
-                client_features_hi: _,
+                client_features,
+                client_features_hi,
                 client_flags_ext,
             } => {
                 if auth_ctx.is_some() {
                     tracing::debug!("closing uni stream after duplicate auth");
+                    break;
+                }
+                let missing = felix_wire::client_missing_baseline(
+                    client_flags,
+                    client_features,
+                    client_features_hi,
+                );
+                if missing != (0, 0, 0) {
+                    tracing::debug!(
+                        ?missing,
+                        "closing uni stream: client below the 0.8 baseline"
+                    );
                     break;
                 }
                 match auth
@@ -136,7 +149,7 @@ pub(super) async fn run_uni_loop<S: FrameSource + ?Sized>(
                     Ok(ctx) => {
                         peer_flags_ext = crate::serving::quic::codec::negotiated_ext(
                             &broker,
-                            client_flags,
+                            client_flags.unwrap_or_default(),
                             client_flags_ext,
                         );
                         publish_ctx.bind_identity(&ctx);

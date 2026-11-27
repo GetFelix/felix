@@ -37,19 +37,6 @@ pub(crate) struct EventWriterConfig {
     /// subscription with `subscription_ended` once delivery reaches it.
     pub(super) end: Option<u64>,
 
-    /// Whether this subscriber negotiated `FLAG_EVENT_BATCH_OFFSETS`.
-    ///
-    /// Per-subscriber, because a stream can carry subscribers of both kinds and
-    /// each must receive the frame shape it agreed to. The envelope caches both
-    /// encodings, so the cost is at most two per batch however many subscribers
-    /// there are -- the encode-once fanout property still holds.
-    pub(super) offsets_enabled: bool,
-
-    /// Whether this subscriber also negotiated `FLAG_EVENT_BATCH_SKIPPED`, and
-    /// so is told when offsets before a batch hold no event. Only with
-    /// `offsets_enabled`.
-    pub(super) skip_enabled: bool,
-
     /// Whether this subscriber negotiated `FLAG_EVENT_BATCH_PUBLISHER`.
     pub(super) publisher_enabled: bool,
 
@@ -59,14 +46,6 @@ pub(crate) struct EventWriterConfig {
     /// Whether this subscriber negotiated `EXT_RECORD_HEADERS`, and so gets
     /// each record's key and headers.
     pub(super) headers_enabled: bool,
-
-    /// Whether this subscriber offered `FEATURE_SHARD_MOVED`, and so gets a
-    /// `shard_moved` frame when its shard moves away.
-    pub(super) shard_moved_enabled: bool,
-
-    /// Whether this subscriber offered `FEATURE_STREAM_DELETED`, and so gets
-    /// a `stream_deleted` frame when its stream is deleted.
-    pub(super) stream_deleted_enabled: bool,
 
     /// Max number of lane commands to gather per flush.
     pub(super) flush_max_items: usize,
@@ -82,8 +61,8 @@ impl EventWriterConfig {
     /// The event frame this subscriber negotiated.
     pub(super) fn shape(&self) -> felix_broker::FrameShape {
         felix_broker::FrameShape {
-            offsets: self.offsets_enabled,
-            skips: self.skip_enabled,
+            offsets: true,
+            skips: true,
             publisher: self.publisher_enabled,
             headers: self.headers_enabled,
             timestamps: self.timestamps_enabled,

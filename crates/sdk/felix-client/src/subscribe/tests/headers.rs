@@ -58,7 +58,7 @@ async fn events_from(frame: Bytes) -> Result<Vec<crate::Event>> {
                 let mut scratch = BytesMut::with_capacity(64 * 1024);
                 let (mut send, mut recv) = connection.accept_bi().await?;
                 let _ = read_message(&mut recv, &mut scratch).await?;
-                write_message(&mut send, Message::Ok).await?;
+                write_message(&mut send, felix_wire::baseline_auth_ok()).await?;
                 while let Some(message) = read_message(&mut recv, &mut scratch).await? {
                     if !matches!(message, Message::Subscribe { .. }) {
                         continue;

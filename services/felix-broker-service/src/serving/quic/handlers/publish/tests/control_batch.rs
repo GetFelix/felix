@@ -19,8 +19,6 @@ async fn handle_publish_batch_missing_request_id_returns_error() {
     let commit_acks = CommitAcks::detached(Arc::clone(&ack_waiters));
 
     handle_publish_batch_message(
-        // No client flags in a unit test: the ack owner hint is covered end to
-        // end against a real cluster, where there is a forward to hint about.
         0,
         &broker,
         &publish_ctx,
@@ -78,8 +76,6 @@ async fn handle_publish_batch_stream_not_found_sends_error() {
     let commit_acks = CommitAcks::detached(Arc::clone(&ack_waiters));
 
     handle_publish_batch_message(
-        // No client flags in a unit test: the ack owner hint is covered end to
-        // end against a real cluster, where there is a forward to hint about.
         0,
         &broker,
         &publish_ctx,
@@ -158,8 +154,6 @@ async fn handle_publish_batch_enqueue_full_reports_error() {
     let commit_acks = CommitAcks::detached(Arc::clone(&ack_waiters));
 
     handle_publish_batch_message(
-        // No client flags in a unit test: the ack owner hint is covered end to
-        // end against a real cluster, where there is a forward to hint about.
         0,
         &broker,
         &publish_ctx,
@@ -237,8 +231,6 @@ async fn handle_publish_batch_enqueue_ok_sends_ack() {
     let commit_acks = CommitAcks::detached(Arc::clone(&ack_waiters));
 
     handle_publish_batch_message(
-        // No client flags in a unit test: the ack owner hint is covered end to
-        // end against a real cluster, where there is a forward to hint about.
         0,
         &broker,
         &publish_ctx,
@@ -312,8 +304,6 @@ async fn handle_publish_batch_message_drop_when_queue_full_and_ack_none() {
     let commit_acks = CommitAcks::detached(Arc::clone(&ack_waiters));
 
     handle_publish_batch_message(
-        // No client flags in a unit test: the ack owner hint is covered end to
-        // end against a real cluster, where there is a forward to hint about.
         0,
         &broker,
         &publish_ctx,
@@ -382,8 +372,6 @@ async fn handle_publish_batch_message_enqueue_error_reports_publish_error() {
     let commit_acks = CommitAcks::detached(Arc::clone(&ack_waiters));
 
     handle_publish_batch_message(
-        // No client flags in a unit test: the ack owner hint is covered end to
-        // end against a real cluster, where there is a forward to hint about.
         0,
         &broker,
         &publish_ctx,
@@ -460,8 +448,6 @@ async fn handle_publish_batch_message_ack_on_commit_answers_when_the_job_settles
     let commit_acks = CommitAcks::for_test(&out_tx, Arc::new(Semaphore::new(1)));
 
     handle_publish_batch_message(
-        // No client flags in a unit test: the ack owner hint is covered end to
-        // end against a real cluster, where there is a forward to hint about.
         0,
         &broker,
         &publish_ctx,
@@ -523,8 +509,6 @@ async fn handle_publish_batch_message_throttled_with_request_id_sends_error() {
     let commit_acks = CommitAcks::detached(Arc::clone(&ack_waiters));
 
     handle_publish_batch_message(
-        // No client flags in a unit test: the ack owner hint is covered end to
-        // end against a real cluster, where there is a forward to hint about.
         0,
         &broker,
         &publish_ctx,
@@ -592,8 +576,6 @@ async fn handle_publish_batch_message_throttled_without_request_id_sends_error()
     let commit_acks = CommitAcks::detached(Arc::clone(&ack_waiters));
 
     handle_publish_batch_message(
-        // No client flags in a unit test: the ack owner hint is covered end to
-        // end against a real cluster, where there is a forward to hint about.
         0,
         &broker,
         &publish_ctx,
@@ -666,8 +648,6 @@ async fn handle_publish_batch_message_ack_waiters_exhausted() {
     let commit_acks = CommitAcks::detached(Arc::clone(&ack_waiters));
 
     handle_publish_batch_message(
-        // No client flags in a unit test: the ack owner hint is covered end to
-        // end against a real cluster, where there is a forward to hint about.
         0,
         &broker,
         &publish_ctx,
@@ -734,7 +714,6 @@ async fn refused_batch(encoding: AckEncoding) -> Outgoing {
     let commit_acks = CommitAcks::detached(Arc::clone(&ack_waiters));
 
     handle_publish_batch_message(
-        0,
         &broker,
         &publish_ctx,
         None,

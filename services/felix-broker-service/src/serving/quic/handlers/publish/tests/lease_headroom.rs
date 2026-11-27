@@ -129,7 +129,6 @@ async fn publish_one(h: &Harness, io: &Io) {
 
 async fn publish_batch(h: &Harness, io: &Io) {
     handle_publish_batch_message(
-        0,
         &h.leader.broker,
         &h.queued,
         None,

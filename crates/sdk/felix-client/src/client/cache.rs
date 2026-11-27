@@ -133,9 +133,6 @@ impl Connection {
         cache: &str,
         key: &str,
     ) -> Result<Option<Bytes>> {
-        if !felix_wire::supports_feature(self.server_features, felix_wire::FEATURE_CACHE_DELETE) {
-            return Err(anyhow::anyhow!("this broker does not support cache delete",));
-        }
         let request_id = self.cache_request_counter.fetch_add(1, Ordering::Relaxed);
         let message = Message::CacheDelete {
             tenant_id: tenant_id.to_string(),
@@ -182,7 +179,6 @@ impl Connection {
         cache: &str,
         key: &str,
     ) -> Result<Option<VersionedValue>> {
-        self.require_conditional()?;
         let request_id = self.cache_request_counter.fetch_add(1, Ordering::Relaxed);
         let message = Message::CacheGet {
             tenant_id: tenant_id.to_string(),
@@ -225,7 +221,6 @@ impl Connection {
         ttl_ms: Option<u64>,
         condition: CacheCondition,
     ) -> Result<CacheConditionResult> {
-        self.require_conditional()?;
         let request_id = self.cache_request_counter.fetch_add(1, Ordering::Relaxed);
         self.conditional(
             Message::CachePutIf {
@@ -271,7 +266,6 @@ impl Connection {
         ttl_ms: Option<u64>,
         condition: CacheCondition,
     ) -> Result<LeaseWrite> {
-        self.require_conditional()?;
         if !felix_wire::supports_feature(self.server_features_hi, felix_wire::FEATURE_LEASE_TOKEN) {
             return Err(anyhow::anyhow!("this broker does not mint lease tokens"));
         }
@@ -304,7 +298,6 @@ impl Connection {
         key: &str,
         version: u64,
     ) -> Result<CacheConditionResult> {
-        self.require_conditional()?;
         let request_id = self.cache_request_counter.fetch_add(1, Ordering::Relaxed);
         self.conditional(
             Message::CacheDeleteIf {
@@ -319,18 +312,6 @@ impl Connection {
         )
         .await
         .map(|answer| answer.result)
-    }
-
-    fn require_conditional(&self) -> Result<()> {
-        if !felix_wire::supports_feature(
-            self.server_features,
-            felix_wire::FEATURE_CACHE_CONDITIONAL,
-        ) {
-            return Err(anyhow::anyhow!(
-                "this broker does not support conditional cache writes"
-            ));
-        }
-        Ok(())
     }
 
     async fn conditional(&self, message: Message, request_id: u64) -> Result<LeaseWrite> {

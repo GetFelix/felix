@@ -46,20 +46,6 @@ pub(super) async fn authenticate(
         cancel_tx,
         ..
     } = *cx;
-    // Before anything is answered, so even a refused `Auth` gets a code when
-    // it asked for one. A second `Auth` changes nothing: it is refused below.
-    if session.auth_ctx.is_none() {
-        session.error_codes.negotiate(
-            client_features.unwrap_or(0),
-            client_flags.unwrap_or(felix_wire::ORIGINAL_V1_FLAGS),
-        );
-        session
-            .error_codes
-            .negotiate_hi(felix_wire::peer_features_hi(
-                client_features.unwrap_or(0),
-                client_features_hi,
-            ));
-    }
     if session.auth_ctx.is_some() {
         send_control_error(
             out_ack_tx,
@@ -72,6 +58,26 @@ pub(super) async fn authenticate(
         .await?;
         return Ok(Step::Close(false));
     }
+    // Before the credential is checked: a client below the baseline is
+    // refused whatever it presents, and there is no older shape to answer in.
+    let missing =
+        felix_wire::client_missing_baseline(client_flags, client_features, client_features_hi);
+    if missing != (0, 0, 0) {
+        tracing::info!(?missing, "auth refused: client below the 0.8 baseline");
+        send_control_error(
+            out_ack_tx,
+            out_ack_depth,
+            ack_throttle_tx,
+            ack_timeout_state,
+            cancel_tx,
+            ClientError::below_baseline(missing),
+        )
+        .await?;
+        return Ok(Step::Close(false));
+    }
+    // The baseline check above guarantees every one of these is present.
+    let client_flags = client_flags.unwrap_or_default();
+    let client_features = client_features.unwrap_or_default();
     let peer_certs = cx.connection.peer_certificates();
     match auth
         .authenticate_peer(&tenant_id, &token, peer_certs.as_deref())
@@ -79,75 +85,47 @@ pub(super) async fn authenticate(
     {
         Ok(ctx) => {
             session.auth_ctx = Some(ctx);
-            // Remembered, not just answered: delivery paths need to
-            // know which optional frame shapes this client can read.
-            // Absent means a pre-negotiation client, and the only
-            // safe reading of that silence is the original bits.
-            session.peer_flags = client_flags.unwrap_or(felix_wire::ORIGINAL_V1_FLAGS);
+            // Remembered, not just answered: delivery paths need to know
+            // which opt-in frame shapes this client asked for.
+            session.peer_flags = client_flags;
             // Only what the client offered and this broker serves now: a
             // frame that uses an extension is refused until then.
             session.peer_flags_ext = negotiated_ext(broker, client_flags, client_flags_ext);
-            // Which optional messages this client can decode.
-            // Absent means none: a broker that guessed would send a
-            // frame the client cannot parse, and an undecodable
-            // frame costs the connection.
-            session.peer_features = client_features.unwrap_or(0);
+            session.peer_features = client_features;
             session.peer_features_hi =
-                felix_wire::peer_features_hi(session.peer_features, client_features_hi);
+                felix_wire::peer_features_hi(client_features, client_features_hi);
             // Per connection, on top of the broker-wide setting.
             session.commit_ack = config.ack_on_commit
-                || felix_wire::supports_feature(
-                    session.peer_features,
-                    felix_wire::FEATURE_ACK_ON_COMMIT,
-                );
-            // A window only for a client that asked and can read the answer:
-            // any other client keeps completion-order acks and its old frame.
-            let publish_window = (client_flags.is_some()
-                && felix_wire::supports_feature(
-                    session.peer_features,
-                    felix_wire::FEATURE_PUBLISH_PIPELINE,
-                )
-                && publish_ctx.publish_window > 0)
-                .then_some(publish_ctx.publish_window);
-            // Plain publishes answered as they complete, only for a client
-            // that offered it: an older one counts on request order.
-            let on_completion = publish_window.is_some()
-                && felix_wire::supports_feature(
-                    session.peer_features_hi,
-                    felix_wire::FEATURE_PUBLISH_ANSWER_ON_COMPLETION,
-                );
+                || felix_wire::supports_feature(client_features, felix_wire::FEATURE_ACK_ON_COMMIT);
+            // Every 0.8 client pipelines and reads answers on completion, so
+            // the window is up to this broker alone.
+            let publish_window =
+                (publish_ctx.publish_window > 0).then_some(publish_ctx.publish_window);
             if let Some(window) = publish_window {
                 session.ack_order.enable();
-                if on_completion {
-                    session.ack_order.answer_on_completion();
-                }
+                session.ack_order.answer_on_completion();
                 session.publish_window = Some(std::sync::Arc::new(tokio::sync::Semaphore::new(
                     window as usize,
                 )));
             }
-            // Advertise our flag set only to a client that offered its
-            // own. A client that sent no `client_flags` predates
-            // negotiation and would not understand `AuthOk`, so it must
-            // keep receiving the plain `Ok` it expects.
             let (server_flags, server_flags_ext) = felix_wire::answer_flags(
                 felix_wire::KNOWN_FLAGS,
                 session.peer_flags_ext,
                 session.peer_flags,
             );
-            let mut response = match client_flags {
-                Some(_) => Message::AuthOk {
-                    server_flags,
-                    // Only what this broker can actually answer.
-                    //
-                    // The cluster-shaped features are gated on there
-                    // being a cluster: a broker with no topology to
-                    // report would have to refuse the question it
-                    // had invited. Cache delete is not one of those
-                    // -- it works the same on a single node -- so
-                    // gating it too would leave every standalone
-                    // broker unable to offer a request it can serve.
-                    server_features: Some(
-                        felix_wire::FEATURE_CACHE_DELETE
+            let mut response = Message::AuthOk {
+                server_flags,
+                // Only what this broker can actually answer.
+                //
+                // The cluster-shaped features are gated on there
+                // being a cluster: a broker with no topology to
+                // report would have to refuse the question it
+                // had invited. Cache delete is not one of those
+                // -- it works the same on a single node -- so
+                // gating it too would leave every standalone
+                // broker unable to offer a request it can serve.
+                server_features: Some(
+                    felix_wire::FEATURE_CACHE_DELETE
                             | felix_wire::FEATURE_ACK_ON_COMMIT
                             // Only when the cache store can observe
                             // its writes. A watch's contract is
@@ -249,19 +227,17 @@ pub(super) async fn authenticate(
                                         | felix_wire::FEATURE_STREAM_PUBLISH_WINDOW
                                 }
                             },
-                    ),
-                    server_features_hi: None,
-                    server_flags_ext,
-                    // Only when there is more than one. A single
-                    // listener is the default, and saying so
-                    // explicitly would change the bytes every
-                    // existing deployment puts on the wire to say
-                    // nothing a client does not already know.
-                    listener_ports: (config.quic_listeners > 1)
-                        .then(|| config.quic_binds().iter().map(|a| a.port()).collect()),
-                    publish_window,
-                },
-                None => Message::Ok,
+                ),
+                server_features_hi: None,
+                server_flags_ext,
+                // Only when there is more than one. A single
+                // listener is the default, and saying so
+                // explicitly would change the bytes every
+                // existing deployment puts on the wire to say
+                // nothing a client does not already know.
+                listener_ports: (config.quic_listeners > 1)
+                    .then(|| config.quic_binds().iter().map(|a| a.port()).collect()),
+                publish_window,
             };
             // The extended word goes only to a client that said it reads one.
             if let Message::AuthOk {
@@ -275,11 +251,10 @@ pub(super) async fn authenticate(
                     Some(_) => felix_wire::FEATURE_LEASE_TOKEN,
                     None => 0,
                 };
-                // Answered back only when granted, so a client that did not
-                // offer it gets the frame it always got.
-                let on_completion = match on_completion {
-                    true => felix_wire::FEATURE_PUBLISH_ANSWER_ON_COMPLETION,
-                    false => 0,
+                // Answered back only when granted.
+                let on_completion = match publish_window {
+                    Some(_) => felix_wire::FEATURE_PUBLISH_ANSWER_ON_COMPLETION,
+                    None => 0,
                 };
                 (*features, *server_features_hi) = felix_wire::answer_features(
                     *features,

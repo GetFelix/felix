@@ -8,7 +8,7 @@ use bytes::Bytes;
 use felix_wire::{Message, PublishRefusalReason};
 
 use super::Connection;
-use crate::commit::{CommitError, CommitOp, CommitReceipt, StateValue, prepare};
+use crate::commit::{CommitOp, CommitReceipt, StateValue, prepare};
 
 impl Connection {
     /// Commit `ops` on the shard `entity_key` routes to, as one record.
@@ -55,7 +55,6 @@ impl Connection {
         ops: Vec<CommitOp>,
         expected_offset: u64,
     ) -> Result<ConditionalWrite> {
-        self.require_conditional_publish()?;
         let answer = self
             .send_commit(
                 tenant_id,
@@ -113,7 +112,6 @@ impl Connection {
         ops: Vec<CommitOp>,
         expected_offset: u64,
     ) -> Result<ConditionalWrite> {
-        self.require_conditional_publish()?;
         let answer = self
             .send_commit(
                 tenant_id,
@@ -140,10 +138,6 @@ impl Connection {
         expected_offset: Option<u64>,
     ) -> Result<Message> {
         let prepared = prepare(ops)?;
-        self.require_commits()?;
-        if shard.is_some() {
-            self.require_explicit_shard()?;
-        }
         let request_id = self.cache_request_counter.fetch_add(1, Ordering::Relaxed);
         let message = Message::Commit {
             tenant_id: tenant_id.to_owned(),
@@ -247,10 +241,6 @@ impl Connection {
         payloads: Vec<Vec<u8>>,
         expected_offset: u64,
     ) -> Result<ConditionalWrite> {
-        self.require_conditional_publish()?;
-        if shard.is_some() {
-            self.require_explicit_shard()?;
-        }
         if payloads.is_empty() {
             return Err(anyhow::anyhow!(
                 "a conditional publish needs at least one record"
@@ -317,10 +307,6 @@ impl Connection {
         shard: Option<u32>,
         key: &str,
     ) -> Result<StateValue> {
-        self.require_commits()?;
-        if shard.is_some() {
-            self.require_explicit_shard()?;
-        }
         let request_id = self.cache_request_counter.fetch_add(1, Ordering::Relaxed);
         let message = Message::StateGet {
             tenant_id: tenant_id.to_owned(),
@@ -349,40 +335,6 @@ impl Connection {
                 "unexpected answer to state_get: {:?}",
                 std::mem::discriminant(&other)
             )),
-        }
-    }
-
-    fn require_conditional_publish(&self) -> Result<()> {
-        if felix_wire::supports_feature(
-            self.server_features,
-            felix_wire::FEATURE_PUBLISH_CONDITIONAL,
-        ) {
-            Ok(())
-        } else {
-            Err(anyhow::anyhow!(
-                "this broker does not support conditional publishes"
-            ))
-        }
-    }
-
-    /// Refused without a round trip against a broker that would ignore
-    /// `shard` and route by the key instead.
-    fn require_explicit_shard(&self) -> Result<()> {
-        if felix_wire::supports_feature(self.server_features_hi, felix_wire::FEATURE_EXPLICIT_SHARD)
-        {
-            Ok(())
-        } else {
-            Err(crate::publish::explicit_shard_unsupported())
-        }
-    }
-
-    /// Refused without a round trip against a broker that did not advertise
-    /// commits: an unknown request would cost the connection.
-    fn require_commits(&self) -> Result<(), CommitError> {
-        if felix_wire::supports_feature(self.server_features, felix_wire::FEATURE_ATOMIC_COMMIT) {
-            Ok(())
-        } else {
-            Err(CommitError::Unsupported)
         }
     }
 }

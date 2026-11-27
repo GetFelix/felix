@@ -8,7 +8,7 @@ use felix_wire::{ErrorCode, Message, PublishRefusalReason, RetryClass};
 
 use super::Connection;
 use crate::BrokerError;
-use crate::trim::{ConditionalTrim, TrimError};
+use crate::trim::ConditionalTrim;
 
 impl Connection {
     /// Hide the records of `shard` below `before`, only if the shard's next
@@ -46,7 +46,6 @@ impl Connection {
         expected_offset: u64,
         headers: Option<&[u8]>,
     ) -> Result<ConditionalTrim> {
-        self.require_head_trim()?;
         let request_id = self.cache_request_counter.fetch_add(1, Ordering::Relaxed);
         let message = Message::TrimBefore {
             tenant_id: tenant_id.to_owned(),
@@ -97,14 +96,6 @@ impl Connection {
                 "unexpected answer to trim_before: {:?}",
                 std::mem::discriminant(&other)
             )),
-        }
-    }
-
-    fn require_head_trim(&self) -> Result<(), TrimError> {
-        if felix_wire::supports_feature(self.server_features_hi, felix_wire::FEATURE_HEAD_TRIM) {
-            Ok(())
-        } else {
-            Err(TrimError::Unsupported)
         }
     }
 }
