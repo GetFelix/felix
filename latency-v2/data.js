@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795765655368,
+  "lastUpdate": 1795771989897,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -93192,6 +93192,72 @@ window.BENCHMARK_DATA = {
             "range": "607.20",
             "unit": "us",
             "extra": "trials: 5\nmedian: 278.00\nmean: 583.60\nstdev: 607.20\ncv: 104.04%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "107277a809c56ea587b16ef8c6e2f17e64f1f4be",
+          "message": "fix(raft): a new member of a re-formed stream group pulls its base and catches up (#3005) (#3319)\n\n* wip(raft): the check a re-formed stream learner runs on each base entry it pulls (#3005)\n\nA learner pulls floor..=base into a staging log before it installs the\ngap snapshot. BaseCheck refuses a hole, a repeat, an entry in the gap,\na falling term, a term past the base's, and a last entry in another term,\nand restarts at a raised floor. Not wired in yet.\n\nSpec-Unaffected: a pure check nothing calls yet; no modelled behaviour changes\n\n* wip(raft): a peer capability for serving a re-formed stream's base (#3005)\n\nDefined only; nothing offers it until a voter answers the pull.\n\nSpec-Unaffected: a capability bit nobody offers yet\n\n* wip(storage): a purge at a re-form's gap end keeps the base below it (#3005)\n\nopenraft purges through a snapshot it installs. On a learner that holds a\nre-formed group's base, the purge at the gap's end reset the log and\ndropped the base. It now stores the purged id and keeps the records, the\nstate a re-formed voter starts in.\n\nSpec-Unaffected: storage-local purge layout; the base is already below the purged id on voters\n\n* wip(raft): a voter serves a re-formed stream's base to a learner in bounded chunks (#3005)\n\nA new Raft request, base pull (11), answered with the base's entries from\nthe asked index, capped at 4096 entries and 8 MiB, never past the base's\nlast entry. Below the voter's first index the answer is empty and names\nit. The voter reads its log alone, so nothing waits on apply or publish.\nRAFT_BASE_PULL is now offered with RAFT.\n\nSpec-Unaffected: a read-only peer request; no Raft state or vote changes\n\n* wip(raft): a base pull is served only to a broker of the group, at a committed floor (#3005)\n\nThe reply's floor is the higher of the log's first index and the trim\nfloor in force at the base, read again after the read so a purge under\nit answers an empty chunk at the new floor. The admission check already\napplies, since a base pull names its learner; a test pins it.\n\nSpec-Unaffected: the voter's read path for a learner pull; no modelled Raft state changes\n\n* wip(storage): a learner stages a re-formed stream's base and adopts it whole (#3005)\n\nThe staging log takes pulled entries through record_from_entry at their\nown generations, syncs each chunk, and is marked with the base it holds\nonly once it is all in. Adoption lowers the saved commit, empties the\ncopy, writes a marker and renames the segments and durable mark in; a\ncrash before the marker leaves the copy blank and one after it rolls\nforward on the next call.\n\nSpec-Unaffected: a learner's local staging and adoption files; no modelled Raft state changes\n\n* wip(raft): an open adopts a learner's staged base first; base pulls go only to peers that offer them (#3005)\n\nA copy's open now rolls an adoption forward, adopts a finished staging\nlog of its latest base, or drops an unfinished one, before the log opens,\nso no open sees a half-adopted directory. An adopted copy applies nothing,\nhead trims included, until the gap snapshot installs and raises its floor.\n\nThe peer transport refuses a base pull to a voter that has not offered\nRAFT_BASE_PULL without sending it.\n\nSpec-Unaffected: learner catch-up below the gap is outside the Raft identity and log specs\n\n* wip(raft): a learner pulls a re-formed stream's base from one voter at a time into its staging log (#3005)\n\nSpec-Unaffected: the pull fills a staging log off the Raft path; nothing it does is acked or applied yet\n\n* wip(raft): a refused gap snapshot starts a learner's base pull, and the broker reopens it once staged (#3005)\n\nSpec-Unaffected: the pull runs off the apply path and only stages; the member still refuses the gap snapshot\n\n* wip(raft): a gap snapshot installs over a learner that holds its floor through the base (#3005)\n\nSpec-Unaffected: the install is the one a voter's own start makes at the gap's end; the member holds the same base entries the voters do\n\n* fix(raft): a re-formed stream learner pulls its base and joins, end to end (#3005)\n\nAn in-process re-form test on three brokers found two defects that kept\nevery learner of a never-trimmed stream from catching up:\n\n- A gap snapshot of a stream never trimmed carries no floor, and both the\n  install check and the pull start required one. No floor now means the\n  base runs from the log's start.\n- A re-formed voter's purged id sits at the gap's end, and its reader hid\n  the base below it, so it refused every base pull. The voter now serves\n  from the oldest entry on disk through `LogReader::base_page`.\n\nFrom the safety review: the pull is abandoned once the member takes a\nsnapshot or entries, and is never signalled after that; an open adopts a\nstaged base only into a copy that holds no record, purged id or snapshot.\n\nTests: the learner pulls, reopens, installs and is promoted, serves the\nleader's records, nothing in the gap, and counts toward a commit; with no\nvoter serving the base it never joins or counts; a voter serving another\nhistory is abandoned.\n\nSpec-Unaffected: learner catch-up across a re-form's gap is not modelled; voting and commit counting are unchanged\n\n* test(raft): a staged base is never adopted over a copy that caught up another way (#3005)\n\nAn open with a finished staging log over a copy that holds records\ndiscards the staging and leaves the log as it was, which also covers a\ncrash between the pull finishing and the reopen. An abandoned pull no\nlonger signals its base and starts no other.\n\nSpec-Unaffected: learner catch-up across a re-form's gap is not modelled\n\n* test(raft): a learner caught up by a snapshot mid-pull drops the pull (#3005)\n\nThe leader trims and purges past the gap while the learner's base pull\nwaits on a voter. The learner installs the purge snapshot, is promoted,\nand the pull released afterwards stages nothing and never closes it.\n\nSpec-Unaffected: test only; the cancellation it covers is broker-local\n\n* fix(raft): a learner refused over its held base says why and pulls again, bounded (#3005)\n\nA learner holding an adopted base that still cannot install the gap\nsnapshot was refused forever. It now logs why (rate-limited) and counts\nfelix_broker_raft_held_base_refusals_total{reason}. Once refused long\nenough it drops the held base at its next open so a pull runs again:\nat most four times per epoch, each waiting longer, counted on disk so a\nreopen does not reset it. A copy that took a snapshot keeps its log.\n\nSpec-Unaffected: a learner's local catch-up retry; votes, commits and installs are unchanged\n\n* docs(raft): how a new member of a re-formed stream group catches up (#3005)\n\nSays what a learner will not do before it holds the base, that a voter\nwithout the capability is never asked, what an operator sees while it\npulls, and that a head trim inside the base frees no disk until the\nfloor passes the gap. Drops the claims that a stream learner cannot\ncatch up after a re-form.\n\nSpec-Unaffected: docs only\n\n* docs(raft): a re-formed stream learner counts once promoted (#3005)\n\nSpec-Unaffected: docs only\n\n* fix(raft): a learner that spent its base discards says so once (#3005)\n\nAdds a re-form test for a stream trimmed before the stop. It is ignored:\nthe learner pulls the base from the floor, but a log that starts above\nindex 0 with no purged id does not open, so it never joins. The docs say\nso instead of claiming the pull covers trimmed streams.\n\nSpec-Unaffected: a log line and docs; no replicated state changes\n\n* fix(raft): a learner of a stream trimmed before its re-form joins (#3005)\n\nAn adopted base is now hidden from openraft until the gap snapshot\ninstalls. The adoption writes raft-base-adopted, and while it is there\nthe log shows no entry, no last id and no purged id, as a blank\nlearner's does, and refuses an append or a purge into the base. The\ninstall's purge through the gap's end writes the purged id with the base\nkept below it, then drops the mark. A base adopted from a floor above 0\nno longer leaves a log openraft cannot open, and a base from 0 takes the\nsame path. The held-base check reads below what openraft is shown.\n\nSpec-Unaffected: storage presentation of a learner's adopted base before its snapshot installs; no modelled transition changes\n\n* fix(raft): an adopted base and a stopped member's batch raise no mark over a started copy (#3005)\n\nThe log mark followed `last_point`, which read an adopted base no install\nhad purged over as live entries, so a reopen raised the mark to records\nopenraft never saw and the base's discard read as a log below its mark.\n`last_point` now treats that log as blank, as openraft does.\n\nA re-form start lowered the mark while the stopped member's batch still\nheld its log's last flushed position, which it marks once after the\nclose. Landing after the lowering, it put the mark above the emptied\nlearner, and the open rotated the copy as a power cut (\"a copy changed\nits id\" in the reform tests). The start drops that batch source first.\n\nA voter start refuses a kept directory holding an adopted, never\ninstalled base: it holds nothing committed there.\n\nSpec-Unaffected: copy-id and mark bookkeeping on open and start; no modelled Raft step changes\n\n* fix(raft): a re-form survey reads an adopted base never installed as blank\n\nA learner's pulled base with no purged id over it is hidden from its log\nand refused by a voter start. The survey still read it as a log, so a\nplan could name a kept adopted copy as its source and the start would\nfail every time. It now reads as no entries, current or kept.\n\nAlso tests that the log-below-mark check still fires after a re-form\nstart and after an adopted base is installed: a batched append marked\nthere and then lost rotates the copy.\n\nSpec-Unaffected: the survey already treats a copy with no entries as blank; the models hold no adopted bases\n\n* refactor(storage): the staging log names openraft's entry through raft_log\n\nThe openraft containment check allows openraft names only inside\nraft_log. The staged entry type moves there as LogEntry; nothing else\nchanges.\n\nSpec-Unaffected: a type alias moves between modules",
+          "timestamp": "2026-11-27T09:27:04Z",
+          "tree_id": "b0a40341ade08035bc28f2500be374c5dc7c3764",
+          "url": "https://github.com/GetFelix/felix/commit/107277a809c56ea587b16ef8c6e2f17e64f1f4be"
+        },
+        "date": 1795771974674,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 100,
+            "range": "0.84",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 100.00\nmean: 99.80\nstdev: 0.84\ncv: 0.84%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 139,
+            "range": "36.54",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 139.00\nmean: 153.80\nstdev: 36.54\ncv: 23.76%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 215,
+            "range": "81.17",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 215.00\nmean: 252.40\nstdev: 81.17\ncv: 32.16%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 137,
+            "range": "0.00",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 137.00\nmean: 137.00\nstdev: 0.00\ncv: 0.00%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 274,
+            "range": "7.44",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 274.00\nmean: 271.40\nstdev: 7.44\ncv: 2.74%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 372,
+            "range": "21.00",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 372.00\nmean: 363.40\nstdev: 21.00\ncv: 5.78%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
