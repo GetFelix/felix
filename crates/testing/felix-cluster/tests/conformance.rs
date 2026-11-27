@@ -320,7 +320,7 @@ async fn a_broker_that_cannot_renew_its_lease_stops_serving() -> Result<()> {
 #[tokio::test]
 async fn a_publish_refused_during_a_move_is_retryable() -> Result<()> {
     if felix_cluster::skip_on_raft_retire_with_hybrid(
-        "hybrid-only: holds the draining fence between stage and cut-over, which Raft has no counterpart of; a Raft hand-over refusal is covered by raft_shards",
+        "hybrid-only: holds the draining fence between stage and cut-over, which Raft has no counterpart of; the Raft refusal contract during a hand-over is #3330",
     ) {
         return Ok(());
     }
