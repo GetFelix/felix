@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795756184721,
+  "lastUpdate": 1795756716154,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -72956,6 +72956,58 @@ window.BENCHMARK_DATA = {
             "range": "99479.45",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1703105.32\nmean: 1677890.62\nstdev: 99479.45\ncv: 5.93%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "2fff0e9c2c1683a70601e0e6a32195086f8aad83",
+          "message": "fix(controlplane): a Raft move back waits for its set to settle, and voter reports wake placement (#3336, #3337) (#3340)\n\nA move back of a one-replica Raft shard sent right after the grow wrote\nthe old broker alone while the grow had cleared the copy ids, so the\nstore refused it and the API answered 500. It is now refused up front\nwith the retryable set_unsettled, and any store conflict from the move\nAPI is a 409 conflict.\n\nThe shrink that finishes such a move waited for the next periodic pass.\nA floor report whose voters changed, and a changed copy id, now request\na pass; repeats of the same voters do not.\n\nSpec-Unaffected: placement wake timing and API error mapping; the store's set holds are unchanged",
+          "timestamp": "2026-11-27T05:07:40Z",
+          "tree_id": "1925300963ea6bd5cc0b54518011878722c9164a",
+          "url": "https://github.com/GetFelix/felix/commit/2fff0e9c2c1683a70601e0e6a32195086f8aad83"
+        },
+        "date": 1795756715398,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 360349.12,
+            "range": "3513.39",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 360349.12\nmean: 360240.25\nstdev: 3513.39\ncv: 0.98%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 360349.12,
+            "range": "3513.39",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 360349.12\nmean: 360240.25\nstdev: 3513.39\ncv: 0.98%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 81692.54,
+            "range": "361.37",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 81692.54\nmean: 81436.73\nstdev: 361.37\ncv: 0.44%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 816925.37,
+            "range": "3613.69",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 816925.37\nmean: 814367.24\nstdev: 3613.69\ncv: 0.44%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
