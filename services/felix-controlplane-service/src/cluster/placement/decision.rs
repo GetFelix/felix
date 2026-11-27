@@ -162,6 +162,10 @@ pub enum MoveStep {
     /// and then swaps the voters through its membership change, so the group
     /// is never below its replication factor.
     RaftReplace { from: String, to: String },
+    /// A Raft shard's set, short of its replication factor, grows by `to`,
+    /// a live broker outside it. The group's leader adds `to` as a learner
+    /// and makes it a voter once it catches up.
+    RaftTopUp { to: String },
     /// A hybrid move left on a Raft shard is dropped. Its group never
     /// reports what the move waits for.
     RaftMoveDropped,
@@ -219,6 +223,7 @@ impl MoveStep {
             Self::RaftLeaderLanded { .. } => "raft_leader_landed",
             Self::RaftLeaderTimedOut { .. } => "raft_leader_timed_out",
             Self::RaftReplace { .. } => "raft_replace",
+            Self::RaftTopUp { .. } => "raft_top_up",
             Self::RaftMoveDropped => "raft_move_dropped",
             Self::RaftMoveUndone { .. } => "raft_move_undone",
             Self::OwnerReplaced { .. } => "owner_replaced",

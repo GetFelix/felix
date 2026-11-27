@@ -272,6 +272,14 @@ impl ShardAssignment {
         !matches!(self.formed_voters(), Some(Some(_))) || self.reports_voting(node)
     }
 
+    /// Whether a leader of this record's formed group reported voters at its
+    /// incarnation and epoch, and they do not name `node` under any copy.
+    /// Stricter than `!reports_voting`, which also holds for a voter whose
+    /// copy id this record has not heard since the set last changed.
+    pub(crate) fn reported_without(&self, node: &str) -> bool {
+        matches!(self.formed_voters(), Some(Some(voters)) if !voters.members.contains_key(node))
+    }
+
     /// `None` when this record's group has not formed; otherwise the voters
     /// its leader reported at this incarnation and epoch, if any.
     fn formed_voters(&self) -> Option<Option<&RaftVoters>> {
