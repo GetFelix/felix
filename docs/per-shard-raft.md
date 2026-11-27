@@ -6413,7 +6413,8 @@ operator command ("Re-forming a group"). See Questions, 1.
 In a cluster, a copy that a relaxed crash rotated re-forms itself through
 the control plane ("A cluster's RF 1 shard re-forms itself"), and needs no
 operator while the fleet has finalized `raft_alone_reform`. Until it has, the
-shard stays not ready, as before, for an operator's re-form.
+shard stays not ready for an operator's re-form, and re-forms itself once the
+fleet finalizes it.
 
 ### A cluster's RF 1 shard re-forms itself
 
@@ -6447,6 +6448,15 @@ claims it again. A refusal leaves the shard not ready and the copy stopped
 where an operator's own stop leaves it, so an operator's re-form still
 works: its stop round answers, and the next pass starts the copy from the
 epoch the operator's re-form wrote.
+
+The open may run before it can decide: before registration has said which
+fleet features are enabled, before the broker can reach the control plane,
+or on an assignment that does not yet name this broker the group's only
+broker. The member then opens held, with its copy rotated and the old one
+kept, and the broker logs why. The feed pass checks those conditions again
+and, once they all hold, closes the member and opens it again, and that open
+re-forms it. Only a member that never formed is reopened, so nothing it
+served is lost, and the reopen runs every check above again.
 
 Why it is safe:
 
