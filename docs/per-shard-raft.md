@@ -6138,6 +6138,18 @@ waits the same way. The target campaigns while the other followers still
 hear the old leader, so their pre-vote check lets a transfer target
 through.
 
+A planned move answers no publish with a final refusal. Publishers
+writing while the leader's seat moves to another broker and back see only
+retryable refusals, which land when sent again, and the odd outcome-unknown
+answer, whose record is then in the log at most once. Every acknowledged
+record is there exactly once. This is tested for an unreplicated `Leader`
+stream fsynced `periodic` and a `Quorum` stream at RF 3 fsynced on commit;
+a `Leader` stream at RF 3 is not tested.
+
+> `crates/testing/felix-cluster/tests/routing/rebalance.rs`,
+> `continuous_publishing_through_a_move_is_never_refused` and
+> `continuous_quorum_publishing_through_a_raft_move_is_never_refused`.
+
 > `crates/server/felix-replication/src/raft/tests/commit.rs`,
 > `a_placed_transfer_waits_for_its_terms_writes_to_be_answered`,
 > `a_placed_transfer_with_nothing_in_flight_is_not_held`,
