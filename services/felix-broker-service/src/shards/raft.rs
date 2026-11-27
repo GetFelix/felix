@@ -186,6 +186,10 @@ pub(crate) struct RaftShards {
     /// re-formed epoch. Unset on a standalone broker and in a build with
     /// no control plane link.
     alone_writer: std::sync::OnceLock<Arc<dyn alone_cluster::AloneWriter>>,
+    /// Held RF 1 shards whose re-form could not be decided when they
+    /// opened, by the incarnation opened. The feed pass opens each again
+    /// once it can be.
+    alone_later: parking_lot::Mutex<HashMap<ShardKey, u64>>,
 }
 
 /// A shard directory an earlier build wrote as a member with no copy id.
@@ -333,6 +337,7 @@ impl RaftShards {
             held_copies: parking_lot::Mutex::default(),
             alone: std::sync::atomic::AtomicBool::new(false),
             alone_writer: std::sync::OnceLock::new(),
+            alone_later: parking_lot::Mutex::default(),
         });
         shards
             .broker
@@ -623,16 +628,23 @@ impl RaftShards {
         let (dir, config) = claim.context("claim task")??;
         let retention_interval = config.retention_check_interval;
         let mut sent = None;
+        let mut later = None;
         if self.alone.load(Ordering::Acquire) {
             self.reform_alone(key, incarnation, root, &dir, &config)
                 .await
                 .context("re-form the group of one after a relaxed crash")?;
         } else {
-            sent = self
+            match self
                 .reform_alone_in_cluster(key, assignment, root, &dir, &config)
                 .await
-                .context("re-form the group of one through the control plane")?;
+                .context("re-form the group of one through the control plane")?
+            {
+                alone_cluster::AloneReform::Recorded(answer) => sent = Some(*answer),
+                alone_cluster::AloneReform::Done => {}
+                alone_cluster::AloneReform::Later(why) => later = Some(why),
+            }
         }
+        let only_here = assignment.replicas.iter().all(|b| *b == self.local);
         let assignment = sent.as_ref().unwrap_or(assignment);
         self.start_reformed(key, assignment, root, &dir, &config)
             .await
@@ -643,6 +655,17 @@ impl RaftShards {
             .open_copy(GroupId::new(key.clone(), incarnation), &dir, config, root)
             .await
             .context("open the Raft member")?;
+        // A kept copy holds records this one lacks, so the shard serves
+        // nothing until it is re-formed.
+        match later {
+            Some(why) if only_here && !opened.kept.held.is_empty() => {
+                tracing::info!(shard = ?key, why, "a held one-replica shard is not re-formed yet; it opens again once it can be");
+                self.alone_later.lock().insert(key.clone(), incarnation);
+            }
+            _ => {
+                self.alone_later.lock().remove(key);
+            }
+        }
         let epoch = {
             let dir = dir.clone();
             tokio::task::spawn_blocking(move || felix_storage::raft_copy::group_epoch(&dir)).await
@@ -756,16 +779,9 @@ impl RaftShards {
     async fn durable_rf(&self, key: &ShardKey) -> Option<Durable> {
         let (tenant, namespace, name) = (&key.tenant_id, &key.namespace, &key.stream);
         if key.kind == ShardKind::Cache {
-            // A broker with durable storage but a cache store with no logs
-            // leaves every cache to the hybrid, registered or not. One with no
-            // durable storage at all is a cluster member placement gives no
-            // cache shard: it only routes to the cache's group, and the hybrid
-            // never sees it.
-            if self.broker.cache().as_log_cache().is_none()
-                && self.broker.durable_storage().is_some()
-            {
-                return Some(Durable::No);
-            }
+            // A broker with no durable storage is a cluster member placement
+            // gives no cache shard; it only routes to the cache's group. One
+            // with storage always has cache logs (`refuse_logless_cache`).
             let metadata = self.broker.cache_metadata(tenant, namespace, name).await?;
             return Some(Durable::Yes(metadata.replication_factor));
         }
@@ -1410,8 +1426,7 @@ impl EngineShards for RaftShards {
             let mut placed = HashMap::default();
             for key in streams {
                 let wanted = match self.durable_rf(&key).await {
-                    // A stream or cache in memory has no log for a group to
-                    // run on.
+                    // A stream in memory has no log for a group to run on.
                     Some(Durable::No) => continue,
                     Some(Durable::Yes(wanted)) => wanted,
                     // Not registered here yet, so not known to be durable.
@@ -1495,6 +1510,35 @@ impl EngineShards for RaftShards {
                 self.stopped_copies
                     .lock()
                     .insert(key.clone(), StoppedCopy { term, error: why });
+                self.close_with_stream(&key, member).await;
+            }
+            // A held group of one whose re-form could not be decided at its
+            // open is closed once it can be, and the open below re-forms it.
+            // It never formed, so it served nothing.
+            let reform: Vec<ShardKey> = {
+                let mut later = self.alone_later.lock();
+                later.retain(|key, incarnation| {
+                    open.get(key)
+                        .is_some_and(|member| member.incarnation == *incarnation)
+                });
+                later
+                    .keys()
+                    .filter(|key| {
+                        fed.get(*key)
+                            .is_some_and(|(assignment, _)| self.alone_blocked(assignment).is_none())
+                            && self.runtime.status(key).is_some_and(|status| {
+                                status.term == 0 && status.last_index.is_none()
+                            })
+                    })
+                    .cloned()
+                    .collect()
+            };
+            for key in reform {
+                self.alone_later.lock().remove(&key);
+                let Some(member) = open.remove(&key) else {
+                    continue;
+                };
+                tracing::info!(shard = ?key, "re-forming a held one-replica shard: what kept it from re-forming at its open has cleared");
                 self.close_with_stream(&key, member).await;
             }
             self.restarts.lock().retain(|key| fed.contains_key(key));

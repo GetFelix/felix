@@ -159,6 +159,9 @@ impl RaftShards {
                 fold: &fold,
                 member: &member,
                 record: &LocalRecord,
+                // No control plane holds a floor; the copy and its
+                // bases are all there is.
+                floor: None,
             })
             .await?;
         if let Aloned::Reformed { epoch } = done {

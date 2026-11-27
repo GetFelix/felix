@@ -26,7 +26,7 @@ pub struct Replication {
     /// The replication factor.
     pub desired: u32,
     /// Seated copies on a serving broker that are following, the leader's
-    /// included.
+    /// included. For a Raft shard, only those its group reports voting.
     pub current: u32,
     /// Seated copies whose broker is not serving.
     pub unavailable: Vec<String>,
@@ -45,7 +45,7 @@ impl Replication {
 
 /// Every assigned shard's copies against its replication factor, in key
 /// order. A copy still being added is not counted until it is seated, and one
-/// its leader reports halted is not counted at all.
+/// its leader reports halted, or a Raft learner, is not counted at all.
 pub fn replication(
     streams: &[Stream],
     caches: &[Cache],
@@ -77,7 +77,13 @@ pub fn replication(
                 key: assignment.key.clone(),
                 leader: assignment.leader.clone(),
                 desired,
-                current: (up.len() - halted.len()) as u32,
+                // A Raft copy counts once its group reports it voting: a
+                // learner that cannot catch up is in no quorum either.
+                current: up
+                    .iter()
+                    .filter(|node| !halted.iter().any(|(halted, _)| halted == **node))
+                    .filter(|node| assignment.may_be_voting(node))
+                    .count() as u32,
                 unavailable: down.into_iter().cloned().collect(),
                 halted,
                 restoring: assignment

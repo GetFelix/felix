@@ -140,7 +140,8 @@ impl MoveClock {
             | MoveStep::RaftLeader { .. }
             | MoveStep::RaftLeaderLanded { .. }
             | MoveStep::RaftLeaderTimedOut { .. }
-            | MoveStep::RaftReplace { .. } => None,
+            | MoveStep::RaftReplace { .. }
+            | MoveStep::RaftTopUp { .. } => None,
         }
     }
 }

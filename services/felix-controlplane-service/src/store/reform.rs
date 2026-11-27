@@ -14,8 +14,8 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::time::{Duration, Instant};
 
 use felix_storage::raft_copy::{
-    BrokerReport, DEFAULT_OFFSET_GAP, GroupRecord, MIN_OFFSET_GAP, PlanView, RestoreAt, SurveyStep,
-    WireReport, WireStart, first_probes, survey_step,
+    BrokerReport, DEFAULT_OFFSET_GAP, GroupRecord, MAX_OFFSET_GAP, MIN_OFFSET_GAP, PlanView,
+    RestoreAt, SurveyStep, WireReport, WireStart, first_probes, survey_step,
 };
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
@@ -239,7 +239,7 @@ pub struct ReformRestore {
     /// The point's offset for each shard's log.
     pub shards: Vec<RestoreShard>,
     /// How far past the time line the next epoch starts
-    /// (`RestoreAt::first_index`); 2^40 when not given.
+    /// (`RestoreAt::first_index`); 2^40 when not given, and never above it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub offset_gap: Option<u64>,
     /// Take an `offset_gap` below 2^32, or a plan whose time line plus gap
@@ -252,6 +252,11 @@ impl ReformRestore {
     /// Why the request is refused, if it is.
     pub(crate) fn refused(&self) -> Option<String> {
         match self.offset_gap {
+            // A later restore or abandon assumes no epoch started further
+            // above the time line than this.
+            Some(gap) if gap > MAX_OFFSET_GAP => Some(format!(
+                "an offset gap of {gap} is above {MAX_OFFSET_GAP}, the largest a restore takes"
+            )),
             Some(gap) if gap < MIN_OFFSET_GAP && !self.accept_short_gap => Some(format!(
                 "an offset gap of {gap} is below {MIN_OFFSET_GAP}; accept it with \
                  accept_short_gap"

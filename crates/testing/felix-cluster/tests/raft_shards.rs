@@ -15,6 +15,9 @@ use felix_cluster::{Cluster, ClusterConfig, StreamSpec};
 use felix_wire::{AckMode, ErrorCode, RetryClass};
 use serial_test::serial;
 
+#[path = "raft_shards/reform.rs"]
+mod reform;
+
 const STREAM: &str = "orders";
 const OPT_IN: &str = "FELIX_TEST_RAFT_SHARDS";
 const ELECTED_WITHIN: Duration = Duration::from_secs(60);
