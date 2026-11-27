@@ -76,6 +76,14 @@ async fn a_raft_leader_move_to_a_dead_broker_leaves_the_set_as_it_was() {
         .expect("the move is taken before the destination is seen down");
     assert_eq!(step, "raft_replace");
 
+    // The move writes the destination into the stored set (as leader, with
+    // the swapped-out member's seat). Seeing it there proves a revert below
+    // is placement undoing the move, not a move that never took hold.
+    let named = |(leader, replicas, _): &(String, Vec<String>, Vec<String>)| {
+        *leader == destination || replicas.contains(&destination)
+    };
+    let mut placed = named(&stored_set(&cluster).await);
+
     // Placement steps and writes land throughout, so a set that stalls on a
     // dead learner shows up as a refused or unacknowledged write.
     for n in 0..10 {
@@ -83,8 +91,15 @@ async fn a_raft_leader_move_to_a_dead_broker_leaves_the_set_as_it_was() {
             publish_tried(&cluster, &followers[0], &format!("during-{n}"), &mut sent).await;
         acked.push(payload);
         cluster.place_shards().await;
+        placed |= named(&stored_set(&cluster).await);
         tokio::time::sleep(Duration::from_millis(500)).await;
     }
+    assert!(
+        placed,
+        "the move never reached placement: the stored set never named {destination}, \
+         so the revert below would prove nothing; stored {:?}",
+        stored_set(&cluster).await
+    );
     let settled = felix_cluster::wait::until(
         converged_within,
         "the set to be the original three again",
