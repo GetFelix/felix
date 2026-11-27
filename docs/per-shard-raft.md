@@ -264,12 +264,12 @@ both, and the log says so. A broker that started from its saved
 control-plane view, with the control plane down, has not had its restore
 check answered yet. Under the unified fence, the default, its Raft
 members wait for the control plane too, even with a witness: a restarted broker counts for nothing until the
-control plane has checked it. (`FELIX_UNIFIED_FENCE=0`, which let them open on the
-witness, is retired and ignored.)
+control plane has checked it. With `FELIX_UNIFIED_FENCE=0` they open on
+the witness.
 
-**Voting before the restore check.** Before `FELIX_UNIFIED_FENCE` was retired, a broker with
+**Voting before the restore check.** A broker with
 `FELIX_START_WITHOUT_CONTROLPLANE` on and `FELIX_UNIFIED_FENCE=0` that
-started from its view ran the gate at once, with no incarnation verdict
+starts from its view runs the gate at once, with no incarnation verdict
 (issue #3102). With the leader also dead, the copies still up could not
 elect otherwise, and the shard would wait for the control plane. What
 stands in for the verdict is the run witness, twice:

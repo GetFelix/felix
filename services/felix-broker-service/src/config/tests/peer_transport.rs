@@ -240,12 +240,31 @@ fn retired_hybrid_switches_change_nothing() {
     unsafe {
         env::set_var("FELIX_INTERNAL_FENCE", "false");
         env::set_var("FELIX_INTERNAL_ELECTION", "1");
-        env::set_var("FELIX_UNIFIED_FENCE", "0");
     }
     let peer = peer_from_env().expect("retired switches are not parsed");
     assert!(peer.fence);
     assert!(!peer.election);
     assert!(peer.unified_fence);
+}
+
+/// **`FELIX_UNIFIED_FENCE=0` still turns the unified fence off**: on Raft it
+/// is what lets a broker started from its control-plane view vote while the
+/// control plane is down (#3102). Only `0` turns it off.
+#[serial]
+#[test]
+fn the_unified_fence_switch_is_still_read() {
+    cluster_member_env();
+    unsafe {
+        env::set_var("FELIX_UNIFIED_FENCE", " 0 ");
+    }
+    assert!(!peer_from_env().expect("switch off").unified_fence);
+    unsafe {
+        env::set_var("FELIX_UNIFIED_FENCE", "off");
+    }
+    assert!(
+        peer_from_env().expect("kill switch").unified_fence,
+        "the kill switch is `0` alone; any other value keeps it on"
+    );
 }
 
 /// **The pool, admission and timing knobs are read from their variables; a

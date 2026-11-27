@@ -218,6 +218,22 @@ fn the_gates_follow_the_start() {
     );
 }
 
+/// **A start from the view votes before its restore check only with the
+/// unified fence off**, and a start that asked the control plane never does.
+#[test]
+fn only_a_start_from_the_view_without_the_unified_fence_votes_unchecked() {
+    let with = |unified_fence| BrokerConfig {
+        peer_transport: Some(felix_replication::peer::PeerTransportConfig {
+            unified_fence,
+            ..felix_replication::peer::PeerTransportConfig::default()
+        }),
+        ..member("http://127.0.0.1:1", true)
+    };
+    assert!(votes_unchecked(&with(false), true));
+    assert!(!votes_unchecked(&with(true), true));
+    assert!(!votes_unchecked(&with(false), false));
+}
+
 /// A start from the view whose run rotated the storage id waits for the
 /// control plane and records a replaced directory from its answer.
 #[tokio::test]

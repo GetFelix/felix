@@ -166,12 +166,14 @@ pub struct PeerTransportConfig {
     /// operator's opt-in to replica election: turn it on on every broker
     /// before finalizing `joint_fence` and `replica_election`.
     pub election: bool,
-    /// Whether this broker offers `UNIFIED_FENCE`
+    /// `FELIX_UNIFIED_FENCE`: whether this broker offers `UNIFIED_FENCE`
     /// when it dials, and so counts a promotion fence's answers by what each
     /// copy attests: promises from copies that kept their ballots, coverage
     /// from copies that hold what they acknowledged. On unless set to `0`.
     /// Only takes effect with `fence`, and the broker turns it off without a
-    /// durable directory, which has nothing to attest.
+    /// durable directory, which has nothing to attest. Off, a Raft broker
+    /// started from its control-plane view opens its members and votes
+    /// before its restore check has answered.
     pub unified_fence: bool,
     /// `FELIX_TLS_CLIENT_CERT_BIND_SUBJECT`: whether this broker offers
     /// `CLIENT_CERTS`. A broker offers it only when it binds token subjects
@@ -368,14 +370,19 @@ impl PeerTransportConfig {
                 ));
             }
         };
-        // `FELIX_INTERNAL_FENCE`, `FELIX_INTERNAL_ELECTION` and
-        // `FELIX_UNIFIED_FENCE` are retired with the hybrid engine
-        // (`docs/hybrid-retirement.md`): set, they are reported at start and
-        // read by nothing. The fields keep the defaults those settings had,
-        // so peers see the same capabilities, until #2260 deletes them.
+        // `FELIX_INTERNAL_FENCE` and `FELIX_INTERNAL_ELECTION` are retired
+        // with the hybrid engine (`docs/hybrid-retirement.md`): set, they are
+        // reported at start and read by nothing. The fields keep the defaults
+        // those settings had, so peers see the same capabilities, until #2260
+        // deletes them.
         config.fence = true;
         config.election = false;
-        config.unified_fence = true;
+        // Not retired: on Raft, `0` still lets a broker started from its
+        // control-plane view vote before its restore check (#3102).
+        // A kill switch: anything but `0` keeps it on.
+        config.unified_fence = std::env::var("FELIX_UNIFIED_FENCE")
+            .map(|value| value.trim() != "0")
+            .unwrap_or(true);
         config.partition_file = std::env::var("FELIX_PEER_PARTITION_FILE")
             .ok()
             .filter(|value| !value.trim().is_empty())

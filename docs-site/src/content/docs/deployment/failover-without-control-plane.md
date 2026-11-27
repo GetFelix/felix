@@ -7,9 +7,10 @@ description: "How a shard's replicas elect a new leader themselves when its lead
 This page describes the replica election of the hybrid engine in 0.7.0. The
 hybrid is retired: Raft is the only shard engine, a Raft group elects its own
 leader, and the settings below (`FELIX_INTERNAL_ELECTION`, `FELIX_INTERNAL_FENCE`,
-`FELIX_UNIFIED_FENCE`, the suspicion and election timers) are ignored and
-reported at start. See [Retired variables](/reference/environment-variables/#retired-variables).
-Nothing on this page needs doing on a current broker.
+the suspicion and election timers) are ignored and reported at start. See
+[Retired variables](/reference/environment-variables/#retired-variables).
+`FELIX_UNIFIED_FENCE` is still read: the Raft paragraph under "Limits"
+says what it does there.
 :::
 
 Normally the control plane decides every failover. When a shard's leader dies,
@@ -207,7 +208,7 @@ treat it as down and elect one of themselves. It starts this way only if the
 control plane is down rather than refusing it, and only from the data
 directory the control plane last registered.
 
-Under `FELIX_SHARD_ENGINE=raft` the two settings mean the same. With the
+On Raft the two settings mean the same. With the
 unified fence the restarted broker opens no Raft member until the control
 plane answers. With `FELIX_UNIFIED_FENCE=0` its members vote during the
 outage and do not lead until it registers. That trusts the run witness in
