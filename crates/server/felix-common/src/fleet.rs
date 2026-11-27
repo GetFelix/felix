@@ -89,6 +89,7 @@ pub const IMPLEMENTED: &[FleetFeature] = &[
     RAFT_WRITTEN_COMMIT,
     RAFT_CONDITIONAL_BATCHES,
     RAFT_ALONE_REFORM,
+    RAFT_ABANDON,
 ];
 
 /// A leader writes a generation-start record whenever it starts leading a
@@ -321,6 +322,12 @@ pub const SHARD_RAFT: FleetFeature = FleetFeature::new("shard_raft");
 /// it must not downgrade below the build that carries the reservation
 /// (`docs/per-shard-raft.md`, "Proposal: commit on a written majority").
 pub const RAFT_WRITTEN_COMMIT: FleetFeature = FleetFeature::new("raft_written_commit");
+
+/// Every broker starts a blank copy of an abandoned Raft group's epoch at
+/// the epoch's first index, never from index 0. The control plane writes an
+/// abandon only once this is finalized (`docs/per-shard-raft.md`,
+/// "Abandoning a lost group").
+pub const RAFT_ABANDON: FleetFeature = FleetFeature::new("raft_abandon");
 
 /// The most features one gate tracks. A report longer than this is cut, which
 /// only ever leaves features off.

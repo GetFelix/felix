@@ -7,6 +7,8 @@
 //! it or taking a slot that step took; the caller re-reads and decides again.
 //! That is how a request on any instance keeps to the same limits as the
 //! lease holder's placement.
+use std::collections::BTreeSet;
+
 use super::moves::{
     AtGeneration, MovePolicy, Moves, keep_copy_pins, retake, spread_if_led_by, start, undo_fenced,
     undo_needs_fence, undo_replacement, undo_staged,
@@ -14,8 +16,8 @@ use super::moves::{
 use super::plan::{assignment_for, owner_of, plan_abandoning, replication_factors};
 use super::{Blocked, CaughtUp, Decision, MoveStep, Unplaceable, zones};
 use crate::model::{
-    Cache, ConsistencyLevel, MoveReason, Node, NodeLifecycle, ShardAssignment, ShardKey, ShardKind,
-    ShardState, Stream,
+    AbandonEpochStart, AbandonError, Cache, ConsistencyLevel, MoveReason, Node, NodeLifecycle,
+    ShardAssignment, ShardKey, ShardKind, ShardState, Stream,
 };
 
 /// What an operator's request is decided against: one read of the catalog.
@@ -118,6 +120,13 @@ pub enum Refused {
     /// A Raft shard's destination is a learner of its group: a change that
     /// adds it is still in progress.
     NotAMember(String),
+    /// A Raft shard's log cannot be abandoned while this broker, placed in
+    /// its group's epoch and so possibly holding a copy, is not declared dead.
+    NotDeclaredDead(String),
+    /// An abandon of a Raft shard's log needs every broker to support it.
+    AbandonUnsupported,
+    /// The abandon of a Raft shard's log cannot be written as asked.
+    AbandonRefused(String),
     /// A Raft shard's set cannot change yet: the group's target for its
     /// current set is not stored, or the group has not formed on it.
     SetUnsettled,
@@ -148,6 +157,9 @@ impl Refused {
             Self::SetChangePending => "set_change_pending",
             Self::Switched => "switched",
             Self::NotAMember(_) => "not_a_member",
+            Self::NotDeclaredDead(_) => "not_declared_dead",
+            Self::AbandonUnsupported => "abandon_unsupported",
+            Self::AbandonRefused(_) => "abandon_refused",
             Self::SetUnsettled => "set_unsettled",
             Self::MemberDown(_) => "member_down",
         }
@@ -207,6 +219,15 @@ impl std::fmt::Display for Refused {
                 f,
                 "this shard switched to Raft; its leader and members are no longer placed by the control plane"
             ),
+            Self::NotDeclaredDead(node) => write!(
+                f,
+                "broker {node} may hold a copy of this Raft shard's log and is not declared dead; declare it dead first"
+            ),
+            Self::AbandonUnsupported => write!(
+                f,
+                "abandoning a Raft shard's log needs the fleet feature raft_abandon, which not every broker supports"
+            ),
+            Self::AbandonRefused(why) => write!(f, "the abandon cannot be written: {why}"),
             Self::NotAMember(node) => write!(
                 f,
                 "node {node} is still being added to this Raft shard's group; move it once the change is done"
@@ -678,6 +699,74 @@ pub fn abandon_log(catalog: &Catalog<'_>, key: &ShardKey) -> Result<OperatorStep
         }),
         Some(Decision::Unplaceable(why)) => Err(Refused::Unplaceable(why)),
         _ => Err(Refused::NotStranded),
+    }
+}
+
+/// Whether `key` is a shard on Raft, whose abandon is [`abandon_raft_log`].
+pub fn abandons_on_raft(catalog: &Catalog<'_>, key: &ShardKey) -> bool {
+    let Ok(existing) = assignment_of(catalog, key) else {
+        return false;
+    };
+    let durable = placeable_of(catalog, key).is_none_or(|(_, durable, _)| durable);
+    super::raft_leaders::on_raft(existing, catalog.policy.raft_streams, durable)
+}
+
+/// [`abandon_log`] for a shard on Raft: the command that gives up its
+/// group's log and starts the next epoch empty, above every offset the lost
+/// group can have given out (`docs/per-shard-raft.md`, "Abandoning a lost
+/// group").
+///
+/// Refused unless every broker placed in the group's epoch is in `dead`,
+/// so a copy that may come back is never left out. The new leader is
+/// chosen as for a new shard. The store checks the same conditions again
+/// in the write, against its own dead set, so this only answers an operator
+/// early.
+pub fn abandon_raft_log(
+    catalog: &Catalog<'_>,
+    key: &ShardKey,
+    dead: &BTreeSet<String>,
+    planned_at_millis: u64,
+) -> Result<AbandonEpochStart, Refused> {
+    let existing = assignment_of(catalog, key)?;
+    placeable_of(catalog, key).ok_or(Refused::UnknownShard)?;
+    // Placed as a new shard: placement keeps a Raft shard's down owner.
+    let others: Vec<ShardAssignment> = catalog
+        .existing
+        .iter()
+        .filter(|assignment| &assignment.key != key)
+        .cloned()
+        .collect();
+    let decision = plan_abandoning(
+        catalog.streams,
+        catalog.caches,
+        catalog.nodes,
+        &others,
+        catalog.caught_up,
+        catalog.policy.clone(),
+        None,
+    )
+    .shards
+    .into_iter()
+    .find(|shard| &shard.key == key)
+    .map(|shard| shard.decision);
+    let leader = match decision {
+        Some(Decision::Place(leader, _)) => leader,
+        Some(Decision::Unplaceable(why)) => return Err(Refused::Unplaceable(why)),
+        _ => return Err(Refused::NotStranded),
+    };
+    let start = AbandonEpochStart {
+        incarnation: existing.incarnation,
+        expected_epoch: existing.group_epoch(),
+        expected_generation: existing.generation,
+        leader,
+        planned_at_millis,
+        offset_gap: felix_storage::raft_copy::DEFAULT_OFFSET_GAP,
+    };
+    match existing.abandon_epoch(&start, dead) {
+        Ok(_) => Ok(start),
+        Err(AbandonError::Unaccounted(node)) => Err(Refused::NotDeclaredDead(node)),
+        Err(AbandonError::NotPlaced) => Err(Refused::NotStranded),
+        Err(other) => Err(Refused::AbandonRefused(other.to_string())),
     }
 }
 
