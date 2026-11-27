@@ -268,17 +268,19 @@ move, a drain, a rolling restart) is not a crash: the old leader knows its
 claims. Before it transfers, it fences the shard: a per-shard flag that
 `locked` checks after taking the slot, so it covers slots that already exist
 and the ones `locked` creates on demand (`queue/raft.rs:811`). A fenced
-operation answers a retryable not-leader error. Under the fence the leader
-writes each group's standing claims (one `Claim` per holder, as in
+operation answers a retryable not-leader error. A poll or extension that
+passed `locked` before the flag was set may still be handing out, so after
+setting the flag the leader takes each existing slot lock once, which waits
+for those to finish. Then it writes each group's standing claims (one `Claim` per holder, as in
 "Configure"), waits for them to apply, then asks for the transfer. The fence
 stays up until `deposed` fires for the term, not until the transfer call
 returns: openraft can answer the call before the leader has stopped leading.
 If the term is not deposed within an election timeout, the leader unfences
 but serves every group of the shard as `durable` (a `Claim` per poll and
-extension) until `deposed` fires or the transfer is known to be cancelled.
-An unfence does not mean the move is off: the transfer can still complete,
-or openraft can step the leader down to campaign once the transfer times
-out. Every claim answered after the unfence is therefore in the table
+extension) until `deposed` fires. openraft has no event for a cancelled
+transfer: the transfer either completes or times out, and a leader whose
+transfer timed out steps down and campaigns. Either way a new term starts
+and `deposed` fires, so durable serving always ends there. Every claim answered after the unfence is therefore in the table
 before the leader can change, so a planned change never loses a count and
 `C` can keep excluding it. This makes leader-held claims cost nothing on the moves operators
 make on purpose; only crashes and partitions redeliver. It is the last PR in
@@ -424,9 +426,10 @@ memory; `DeliveriesBounded` fails),
 `SeedAttemptsFromClaims = FALSE` (a `leader` hydrate ignores table claims;
 `AttemptsKept` fails after a switch from `durable`),
 `ClaimBeforeAnswer = FALSE` with `ClaimsDurable` (`DurableExclusive` fails),
-and `HandOverBeforeTransfer = FALSE` with polls not fenced during the
-hand-over (`DurableExclusive` fails for the restored claims, if the model
-treats hand-over claims as durable). These run in Actions, not locally.
+and `DrainBeforeFlush = FALSE` (the leader flushes claims right after setting
+the fence flag, without taking each slot lock, so a poll that passed
+`locked` before the flag hands out a claim the flush missed;
+`DeliveriesBounded` fails once the transfer completes). These run in Actions, not locally.
 
 **`FelixRaftSessions.tla`** names "a poll's claim" as a group commit. In
 `leader` mode a poll is a read, covered by `FelixRaftReads`' read. The model
@@ -515,7 +518,7 @@ so group entries stop using up stream offsets. Three consequences here:
 - **Switching to `durable` under load.** The flush of standing claims is one
   entry per holder and is bounded by `FELIX_GROUP_MAX_IN_FLIGHT`.
 - **Hand-over fence.** A transfer that hangs holds polls for its duration.
-  Bound the fence by the election timeout, then serve the shard's groups as `durable` until `deposed` or a known cancel.
+  Bound the fence by the election timeout, then serve the shard's groups as `durable` until `deposed`.
 - **Mixed builds.** New op codes stop a member that predates them. Fine for
   a fresh 0.8 fleet; a rolling upgrade across the commit that adds them is
   not supported, as for the rest of the baseline.
