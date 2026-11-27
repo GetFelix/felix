@@ -279,6 +279,12 @@ fn timers(settings: crate::config::RaftSettings) -> replication::raft::RuntimeCo
     if let Some(threads) = settings.group_threads {
         timers.group_threads = threads;
     }
+    if let Some(every) = settings.cache_snapshot_every {
+        timers.cache_snapshot_every = every;
+    }
+    if let Some(keep) = settings.cache_log_keep {
+        timers.cache_log_keep = keep;
+    }
     timers
 }
 

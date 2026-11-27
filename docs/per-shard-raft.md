@@ -3107,7 +3107,8 @@ A cache shard is the other way round. Its state is its snapshot plus the
 entries above it, so its log is cut to the snapshot:
 
 - Each member snapshots by itself once `cache_snapshot_every` entries
-  (16,384) have committed since its last snapshot. openraft checks that
+  (16,384, `FELIX_SHARD_RAFT_CACHE_SNAPSHOT_EVERY` on a broker) have
+  committed since its last snapshot. openraft checks that
   after each batch of messages, so it needs no tick.
 - Building a snapshot does not hold apply. Between two entries the state
   machine freezes its maps as they are, without copying them, and the
@@ -3141,12 +3142,15 @@ entries above it, so its log is cut to the snapshot:
   wait, so many groups snapshotting or restarting together do not take
   the blocking threads that disk flushes need.
 - The member then purges the entries the snapshot covers, except the newest
-  `cache_log_keep` (1,024). A member a little behind still catches up from
-  the log.
+  `cache_log_keep` (1,024, `FELIX_SHARD_RAFT_CACHE_LOG_KEEP`). A member a
+  little behind still catches up from the log.
 - A member behind its leader's purge is sent the leader's snapshot and
   installs it. The snapshot goes in pieces, each sized like an append, and
-  the member installs it when the last piece arrives. How it is bounded is
-  in [the replication engine](replication-engine.md), "Sending a snapshot".
+  the member installs it when the last piece arrives, and counts
+  `felix_broker_raft_snapshots_installed_total{kind="cache"}`. How it is
+  bounded is in [the replication engine](replication-engine.md), "Sending a
+  snapshot". `a_raft_cache_member_behind_the_snapshot_catches_up_by_installing_it`
+  (felix-cluster, `raft_shards`) runs this through three brokers.
 
 A shard's log therefore holds at most about `cache_snapshot_every` plus
 `cache_log_keep` entries, whatever the shard has written.
@@ -6202,6 +6206,7 @@ before.
 | `felix_broker_raft_placed_transfers_total` | By `outcome`: `landed` (this member stopped leading), `failed` (it still led a later term), `held` (counted once per reason, `why`: `unsettled`, `lagging`, `degraded`, `budget`) |
 | `felix_broker_raft_snapshot_unsendable_total` | Snapshot sends a leader refused, one per attempt, because the snapshot was over the 1 GiB a member takes, for stream and cache groups; each is also logged with the group and member, once a minute per member ("How big a cache group gets") |
 | `felix_broker_raft_held_base_refusals_total` | Gap snapshots a re-formed stream group's learner refused although it held its pulled base, by `reason`: `held_above_floor`, `floor_past_base`, `not_gap_end` or `unreadable` ("A new member of a re-formed group") |
+| `felix_broker_raft_snapshots_installed_total` | Snapshots members of this broker were sent by their leader and installed, by `kind`: `cache` or `stream`. A cache member counts one each time it fell behind its leader's purge |
 
 #### Where a target comes from
 

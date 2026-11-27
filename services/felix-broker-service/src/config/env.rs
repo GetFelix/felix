@@ -730,6 +730,8 @@ pub(crate) struct RaftSettings {
     pub(crate) elections_at_once: Option<usize>,
     pub(crate) group_threads: Option<usize>,
     pub(crate) election_max: Option<Duration>,
+    pub(crate) cache_snapshot_every: Option<u64>,
+    pub(crate) cache_log_keep: Option<u64>,
 }
 
 pub(crate) fn shard_raft_settings() -> Result<RaftSettings> {
@@ -748,7 +750,31 @@ pub(crate) fn shard_raft_settings() -> Result<RaftSettings> {
                 .as_deref(),
         )?
         .map(|millis| Duration::from_millis(millis as u64)),
+        cache_snapshot_every: parse_shard_raft_cache_snapshot_every(
+            std::env::var(CACHE_SNAPSHOT_EVERY).ok().as_deref(),
+        )?,
+        cache_log_keep: parse_count(
+            CACHE_LOG_KEEP,
+            std::env::var(CACHE_LOG_KEEP).ok().as_deref(),
+        )?
+        .map(|keep| keep as u64),
     })
+}
+
+/// How many entries a Raft cache shard commits between two snapshots of its
+/// own state. A member further behind than the entries kept under the last
+/// one (`FELIX_SHARD_RAFT_CACHE_LOG_KEEP`) catches up from the leader's
+/// snapshot.
+const CACHE_SNAPSHOT_EVERY: &str = "FELIX_SHARD_RAFT_CACHE_SNAPSHOT_EVERY";
+const CACHE_LOG_KEEP: &str = "FELIX_SHARD_RAFT_CACHE_LOG_KEEP";
+
+/// `0` is refused: the runtime reads it as never, and a cache shard's log
+/// would then grow without bound.
+pub(crate) fn parse_shard_raft_cache_snapshot_every(value: Option<&str>) -> Result<Option<u64>> {
+    match parse_count(CACHE_SNAPSHOT_EVERY, value)? {
+        Some(0) => anyhow::bail!("{CACHE_SNAPSHOT_EVERY} must be at least 1"),
+        every => Ok(every.map(|every| every as u64)),
+    }
 }
 
 /// `FELIX_SHARD_RAFT_ELECTIONS_AT_ONCE`: how many Raft groups on this
