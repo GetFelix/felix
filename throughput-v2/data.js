@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795815819595,
+  "lastUpdate": 1795816224064,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -74256,6 +74256,58 @@ window.BENCHMARK_DATA = {
             "range": "8121.63",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1216304.48\nmean: 1219013.18\nstdev: 8121.63\ncv: 0.67%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1018-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "d2b9aa540d28d0c245997d8b24773b9137e3cf85",
+          "message": "test(cluster): Raft moves to a dead destination or a cut-off learner keep every acked record (#3330) (#3355)\n\n* test(cluster): Raft tests for a leader move to a dead destination and to a cut-off learner (#3330)\n\nSpec-Unaffected: test-only\n\n* test(cluster): the dead-destination move test asserts the move reached placement (#3330)\n\nSpec-Unaffected: test-only change, no protocol or model behaviour touched",
+          "timestamp": "2026-11-27T13:44:00-08:00",
+          "tree_id": "a828bda2e08e085199e014f07a8ca0b81c03c59d",
+          "url": "https://github.com/GetFelix/felix/commit/d2b9aa540d28d0c245997d8b24773b9137e3cf85"
+        },
+        "date": 1795816223391,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 510241.38,
+            "range": "36764.24",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 510241.38\nmean: 513016.05\nstdev: 36764.24\ncv: 7.17%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 510241.38,
+            "range": "36764.24",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 510241.38\nmean: 513016.05\nstdev: 36764.24\ncv: 7.17%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 120173.61,
+            "range": "4485.20",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 120173.61\nmean: 119160.00\nstdev: 4485.20\ncv: 3.76%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1201736.13,
+            "range": "44851.99",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1201736.13\nmean: 1191600.04\nstdev: 44851.99\ncv: 3.76%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
