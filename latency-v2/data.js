@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795771989897,
+  "lastUpdate": 1795775551409,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -93258,6 +93258,72 @@ window.BENCHMARK_DATA = {
             "range": "21.00",
             "unit": "us",
             "extra": "trials: 5\nmedian: 372.00\nmean: 363.40\nstdev: 21.00\ncv: 5.78%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "6ec545e67dbd4b3529509471a1b662094f03aca7",
+          "message": "test(cluster): Raft tests for a hand-over under every kind of write, a move undone after the voters changed, and a move cut short by kills (#3330) (#3333)\n\nThree opt-in Raft shard tests that match the hybrid move tests in strength:\n\n- a_raft_hand_over_keeps_every_kind_of_acknowledged_write: cache puts and\n  deletes, counter adds and group claims and finishes run while operator\n  moves hand the stream's and the cache's leaders back and forth. Each\n  counter add has its own power-of-four amount, so its key's sum says how\n  many times each add landed: acknowledged exactly once, in doubt at most\n  once.\n- a_raft_move_cancelled_after_the_voters_changed_loses_no_acknowledged_write:\n  a move outside the set runs until the group reports the new voters, then\n  a move back undoes it, under a publisher and a subscriber from offset 0.\n  The subscriber must see every offset once, in order, with each gap told\n  by skipped_before, since blank and membership entries take offsets.\n- a_raft_move_cut_short_by_kills_keeps_what_was_acknowledged: the old\n  leader and the destination are killed once the group's first change has\n  made the destination a voter, with one follower held short of the log.\n\nreplay_holding now reads through replay_at, which keeps offsets and tracks\nwhat is owed in a set.\n\nSpec-Unaffected: test only",
+          "timestamp": "2026-11-27T10:26:49Z",
+          "tree_id": "8c3675a4835625bfe240582c497fd4346663ce78",
+          "url": "https://github.com/GetFelix/felix/commit/6ec545e67dbd4b3529509471a1b662094f03aca7"
+        },
+        "date": 1795775536595,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 96,
+            "range": "0.89",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 96.00\nmean: 96.60\nstdev: 0.89\ncv: 0.93%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 136,
+            "range": "46.13",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 136.00\nmean: 156.60\nstdev: 46.13\ncv: 29.46%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 498,
+            "range": "977.89",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 498.00\nmean: 1003.60\nstdev: 977.89\ncv: 97.44%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 134,
+            "range": "0.84",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 134.00\nmean: 134.20\nstdev: 0.84\ncv: 0.62%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 290,
+            "range": "168.99",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 290.00\nmean: 389.00\nstdev: 168.99\ncv: 43.44%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 1641,
+            "range": "847.56",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 1641.00\nmean: 1409.20\nstdev: 847.56\ncv: 60.15%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
