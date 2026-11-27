@@ -3272,10 +3272,15 @@ carries entries never waits.
   each heartbeat on its own, the bytes it always read, and so is a batch of
   one.
 - **One group cannot hold up the rest.** The receiver hands every
-  heartbeat to its member at once. Once one has answered, a member that stays
-  silent for one window past the latest answer is answered *slow*, which the
-  leader counts as not answered, with the broker up. A failure for one
-  group's heartbeat is that group's alone.
+  heartbeat to its member at once. Once one has answered, a member still
+  silent a quarter of the heartbeat (50 ms by default) after that first answer
+  is answered *slow*, which the leader counts as not answered, with the broker
+  up. A failure for one group's heartbeat is that group's alone. The wait is
+  that long because a stalled broker's members come back a few milliseconds
+  apart. Answered slow, each would fail its heartbeat, and a read-index round
+  that needed it would find no quorum and start again. The sender puts the
+  wait in the message. The wait also ends one wait before the batch's
+  deadline, so a late first answer still gets back in time.
 - **Off.** `beat_window` zero sends each heartbeat on its own. It must be
   shorter than `heartbeat`; the runtime refuses a config where it is not.
 
