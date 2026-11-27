@@ -115,7 +115,6 @@ async fn group_operations_on_a_raft_shard_are_answered_as_on_the_hybrid() -> Res
                 &config,
                 cluster.clone(),
             ),
-            Default::default(),
         );
         async move {
             let (_, messages) = run.await.expect("ran");

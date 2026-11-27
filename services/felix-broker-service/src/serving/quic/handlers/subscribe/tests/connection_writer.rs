@@ -957,7 +957,7 @@ async fn a_writer_drop_after_the_feeder_chose_ended_sends_lagged() -> Result<()>
 #[serial]
 async fn a_writer_drop_keeps_a_revoked_last_frame() -> Result<()> {
     let revoked = felix_wire::Message::decode(felix_wire::Frame::decode(
-        crate::serving::quic::handlers::subscribe::revoked_frame(0)?,
+        crate::serving::quic::handlers::subscribe::revoked_frame()?,
     )?)?;
     writer_drop_replaces_last(None, revoked.clone(), revoked, 0).await
 }

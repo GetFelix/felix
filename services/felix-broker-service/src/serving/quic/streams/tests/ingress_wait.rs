@@ -126,7 +126,6 @@ async fn spawn_stream(
             commit_acks,
             &mut scratch,
             Default::default(),
-            Default::default(),
         )
         .await
     });
@@ -137,7 +136,7 @@ async fn spawn_stream(
 async fn next_answer(out_ack_rx: &mut mpsc::Receiver<Outgoing>) -> Option<Message> {
     loop {
         match timeout(Duration::from_secs(2), out_ack_rx.recv()).await {
-            Ok(Some(Outgoing::Message(Message::Ok))) => continue,
+            Ok(Some(Outgoing::Message(Message::AuthOk { .. }))) => continue,
             Ok(Some(Outgoing::Message(message))) => return Some(message),
             Ok(Some(_)) => continue,
             Ok(None) | Err(_) => return None,

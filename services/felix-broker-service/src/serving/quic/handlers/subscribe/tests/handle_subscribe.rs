@@ -502,10 +502,10 @@ async fn handle_subscribe_message_open_uni_failure_sends_error_ack() -> Result<(
     Ok(())
 }
 
-/// Subscribe with `peer_features`, publish one record, end the shard's
+/// Subscribe, publish one record, end the shard's
 /// subscriptions as a move does, and return every raw frame after the hello
 /// up to the end of the stream.
-async fn frames_of_a_moved_subscription(peer_features: u32) -> Result<Vec<bytes::Bytes>> {
+async fn frames_of_a_moved_subscription() -> Result<Vec<bytes::Bytes>> {
     let broker = Arc::new(Broker::new(EphemeralCache::new().into()));
     broker.register_tenant("t1").await?;
     broker.register_namespace("t1", "default").await?;
@@ -559,9 +559,9 @@ async fn frames_of_a_moved_subscription(peer_features: u32) -> Result<Vec<bytes:
             None,
             None,
             None,
-            felix_wire::ORIGINAL_V1_FLAGS,
+            felix_wire::CLIENT_BASELINE_FLAGS,
             0,
-            peer_features,
+            felix_wire::CLIENT_BASELINE_FEATURES,
             None,
         )
         .await?;
@@ -617,20 +617,12 @@ async fn frames_of_a_moved_subscription(peer_features: u32) -> Result<Vec<bytes:
     Ok(frames)
 }
 
-/// A client that offered `FEATURE_SHARD_MOVED` gets one last frame saying
-/// where the shard went; one that did not gets exactly the bytes it always
-/// got, the last event and the end of the stream.
+/// A moved subscription ends with one last frame saying where the shard went.
 #[tokio::test]
-async fn a_moved_subscription_ends_with_shard_moved_only_when_offered() -> Result<()> {
-    let without = frames_of_a_moved_subscription(0).await?;
-    let with = frames_of_a_moved_subscription(felix_wire::FEATURE_SHARD_MOVED).await?;
+async fn a_moved_subscription_ends_with_shard_moved() -> Result<()> {
+    let with = frames_of_a_moved_subscription().await?;
 
-    assert_eq!(without.len(), 1, "the event, then the end");
     assert_eq!(with.len(), 2, "the event, shard_moved, then the end");
-    assert_eq!(
-        with[0], without[0],
-        "the event is byte-identical either way"
-    );
     let moved = Message::decode(felix_wire::Frame::decode(with[1].clone())?)?;
     assert_eq!(
         moved,
@@ -816,23 +808,15 @@ fn events_of(frames: &[bytes::Bytes]) -> Result<Vec<(u64, u64, Bytes)>> {
     Ok(events)
 }
 
-/// Generation-start records are never delivered, history or live, and a
-/// client that offered `EVENT_BATCH_SKIPPED` is told about each one on the
-/// event after it. A client that did not gets offsets alone, and no frame
-/// carrying a bit it would reject.
+/// Generation-start records are never delivered, history or live, and each
+/// one is reported on the event after it.
 #[tokio::test]
-async fn generation_starts_are_reported_only_to_a_client_that_offered_the_bit() -> Result<()> {
-    let offsets = felix_wire::ORIGINAL_V1_FLAGS | felix_wire::FLAG_EVENT_BATCH_OFFSETS;
-
+async fn generation_starts_are_reported_on_the_next_event() -> Result<()> {
     let from_zero = felix_wire::StartPosition::Offset(0);
     let with = events_of(
-        &frames_across_generation_starts(
-            offsets | felix_wire::FLAG_EVENT_BATCH_SKIPPED,
-            from_zero,
-            false,
-        )
-        .await?
-        .1,
+        &frames_across_generation_starts(felix_wire::CLIENT_BASELINE_FLAGS, from_zero, false)
+            .await?
+            .1,
     )?;
     assert_eq!(
         with,
@@ -842,20 +826,6 @@ async fn generation_starts_are_reported_only_to_a_client_that_offered_the_bit() 
             (3, 1, Bytes::from_static(b"c")),
             (5, 1, Bytes::from_static(b"d")),
         ]
-    );
-
-    let (_, frames) = frames_across_generation_starts(offsets, from_zero, false).await?;
-    assert!(frames.iter().all(|frame| {
-        felix_wire::Frame::decode(frame.clone())
-            .is_ok_and(|frame| frame.header.flags & felix_wire::FLAG_EVENT_BATCH_SKIPPED == 0)
-    }));
-    let without = events_of(&frames)?;
-    assert_eq!(
-        without
-            .iter()
-            .map(|(offset, skipped, _)| (*offset, *skipped))
-            .collect::<Vec<_>>(),
-        vec![(0, 0), (1, 0), (3, 0), (5, 0)],
     );
     Ok(())
 }
@@ -1074,21 +1044,12 @@ async fn a_subscribe_with_the_lease_held_is_served() -> Result<()> {
 }
 
 /// Joined at `latest` on a log ending in two generation starts, with a third
-/// written while live. A client that offered `EVENT_BATCH_SKIPPED` counts no
-/// drop from `start_offset`; one that did not reads one false drop per
-/// generation start, at the join as mid-stream (see docs/protocol.md).
+/// written while live: the skipped count means no drop from `start_offset`.
 #[tokio::test]
-async fn a_latest_join_counts_generation_starts_as_drops_only_without_the_skip_bit() -> Result<()> {
-    let offsets = felix_wire::ORIGINAL_V1_FLAGS | felix_wire::FLAG_EVENT_BATCH_OFFSETS;
-    let latest = felix_wire::StartPosition::Latest;
-    let dropped = |start: u64, events: &[(u64, u64, Bytes)]| {
-        let (offset, skipped, _) = &events[0];
-        offset - start - skipped
-    };
-
+async fn a_latest_join_counts_no_drop_across_generation_starts() -> Result<()> {
     let (start, frames) = frames_across_generation_starts(
-        offsets | felix_wire::FLAG_EVENT_BATCH_SKIPPED,
-        latest,
+        felix_wire::CLIENT_BASELINE_FLAGS,
+        felix_wire::StartPosition::Latest,
         true,
     )
     .await?;
@@ -1096,13 +1057,8 @@ async fn a_latest_join_counts_generation_starts_as_drops_only_without_the_skip_b
     // a, b, a generation start, c, then two more: `latest` joins at 4.
     assert_eq!(start, Some(4));
     assert_eq!(with, vec![(7, 3, Bytes::from_static(b"d"))]);
-    assert_eq!(dropped(4, &with), 0);
-
-    let (start, frames) = frames_across_generation_starts(offsets, latest, true).await?;
-    let without = events_of(&frames)?;
-    assert_eq!(start, Some(4));
-    assert_eq!(without, vec![(7, 0, Bytes::from_static(b"d"))]);
-    assert_eq!(dropped(4, &without), 3, "one per generation start");
+    let (offset, skipped, _) = &with[0];
+    assert_eq!(offset - 4 - skipped, 0);
     Ok(())
 }
 

@@ -43,7 +43,6 @@ async fn writer_loop_branches() -> Result<()> {
     let writer = tokio::spawn(run_writer_loop(
         send,
         out_ack_rx,
-        Default::default(),
         Arc::new(AckOrder::new()),
         std::time::Duration::from_secs(5),
         Arc::new(std::sync::atomic::AtomicUsize::new(1)),
@@ -70,7 +69,6 @@ async fn writer_loop_branches() -> Result<()> {
     let writer = tokio::spawn(run_writer_loop(
         send,
         out_ack_rx,
-        Default::default(),
         Arc::new(AckOrder::new()),
         std::time::Duration::from_secs(5),
         Arc::new(std::sync::atomic::AtomicUsize::new(1)),
@@ -96,7 +94,6 @@ async fn writer_loop_branches() -> Result<()> {
     let writer = tokio::spawn(run_writer_loop(
         send,
         out_ack_rx,
-        Default::default(),
         Arc::new(AckOrder::new()),
         std::time::Duration::from_secs(5),
         Arc::new(std::sync::atomic::AtomicUsize::new(1)),
@@ -117,7 +114,6 @@ async fn writer_loop_branches() -> Result<()> {
     let writer = tokio::spawn(run_writer_loop(
         send,
         out_ack_rx,
-        Default::default(),
         Arc::new(AckOrder::new()),
         std::time::Duration::from_secs(5),
         Arc::new(std::sync::atomic::AtomicUsize::new(1)),
@@ -174,7 +170,6 @@ async fn writer_loop_cancel_breaks_on_cancel() -> Result<()> {
     let writer = tokio::spawn(run_writer_loop(
         send,
         out_ack_rx,
-        Default::default(),
         Arc::new(AckOrder::new()),
         std::time::Duration::from_secs(5),
         Arc::new(std::sync::atomic::AtomicUsize::new(0)),
@@ -228,7 +223,6 @@ async fn writer_loop_records_timings_when_sampled() -> Result<()> {
     let writer = tokio::spawn(run_writer_loop(
         send,
         out_ack_rx,
-        Default::default(),
         Arc::new(AckOrder::new()),
         std::time::Duration::from_secs(5),
         Arc::new(std::sync::atomic::AtomicUsize::new(1)),
@@ -309,7 +303,6 @@ async fn writer_sends_queued_answers_before_finishing_a_cancelled_stream() -> Re
     let writer = tokio::spawn(run_writer_loop(
         send,
         out_ack_rx,
-        Default::default(),
         Arc::new(AckOrder::new()),
         std::time::Duration::from_secs(5),
         Arc::new(std::sync::atomic::AtomicUsize::new(1)),
