@@ -59,23 +59,96 @@ async fn delete(cluster: &Cluster) {
     );
 }
 
+/// One acked publish: the value, the offset the broker answered, and the
+/// broker the client published through.
+type Acks = Vec<(String, Option<u64>, String)>;
+
 /// Publish `values` once the stream serves, stepping placement meanwhile.
-async fn publish(cluster: &Cluster, values: &[&str]) {
+/// Each ack is kept in `acks`.
+async fn publish(cluster: &Cluster, values: &[&str], acks: &mut Acks) {
     for value in values {
-        felix_cluster::wait::until(
+        let acked = felix_cluster::wait::until_some(
             Duration::from_secs(30),
             &format!("{value} accepted"),
             || async {
                 cluster.place_shards().await;
-                cluster
-                    .publish_via_any(STREAM, value.as_bytes().to_vec())
-                    .await
-                    .is_ok()
+                for node in cluster.node_ids() {
+                    if let Ok(offset) = cluster
+                        .publish_acked_via(&node, STREAM, value.as_bytes().to_vec())
+                        .await
+                    {
+                        return Some((offset, node));
+                    }
+                }
+                None
             },
         )
         .await
         .expect("publish");
+        acks.push((value.to_string(), acked.0, acked.1));
     }
+}
+
+/// A failure message's evidence for #3378: what every member says about the
+/// new shard, and what each member's own replay holds. A record missing from
+/// the serving leader's replay but held by another member is a replay race; one
+/// held by none was lost after its ack.
+async fn diagnose(cluster: &Cluster, acks: &Acks) -> String {
+    let mut out = format!("acks (value, offset, entry broker): {acks:?}\n");
+    for node in cluster.node_ids() {
+        let addr = cluster.node(&node).expect("node").client_addr;
+        let view = match felix_cluster::client::connect(
+            addr,
+            &cluster.tenant_id,
+            &cluster.inspector_token(),
+        )
+        .await
+        {
+            Ok(client) => client
+                .inspect_shard(
+                    felix_client::ShardKind::Stream,
+                    &cluster.tenant_id,
+                    &cluster.namespace,
+                    STREAM,
+                    0,
+                )
+                .await
+                .map(|v| {
+                    format!(
+                        "role={} phase={} serving={} generation={:?} tail={:?} committed={:?} accepted_generation={:?} raft={:?}",
+                        v.role, v.phase, v.serving, v.generation, v.tail, v.committed,
+                        v.accepted_generation, v.raft
+                    )
+                })
+                .unwrap_or_else(|err| format!("inspect failed: {err:#}")),
+            Err(err) => format!("connect failed: {err:#}"),
+        };
+        let replay = match cluster
+            .whole_replay_on(
+                &node,
+                STREAM,
+                Duration::from_secs(2),
+                Duration::from_secs(10),
+            )
+            .await
+        {
+            Ok(events) => events
+                .iter()
+                .map(|e| {
+                    format!(
+                        "{:?}:{}(skip {})",
+                        e.offset,
+                        String::from_utf8_lossy(&e.payload),
+                        e.skipped_before
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join(", "),
+            Err(err) => format!("replay failed: {err:#}"),
+        };
+        out.push_str(&format!("{node}: {view}\n    log: [{replay}]\n"));
+    }
+    out
 }
 
 /// Every follower holds the leader's tail, and none halted.
@@ -146,13 +219,15 @@ async fn a_recreated_quorum_stream_replicates_on_a_new_cluster() {
 
     let first = create(&cluster).await;
     assert_ne!(first, 0, "a new cluster's stream has an incarnation");
-    publish(&cluster, &["old-a", "old-b", "old-c", "old-d"]).await;
+    let mut acks = Acks::new();
+    publish(&cluster, &["old-a", "old-b", "old-c", "old-d"], &mut acks).await;
     every_copy_level(&cluster).await;
 
     delete(&cluster).await;
     let second = create(&cluster).await;
     assert!(second > first, "{second} after {first}");
-    publish(&cluster, &["new-a", "new-b"]).await;
+    acks.clear();
+    publish(&cluster, &["new-a", "new-b"], &mut acks).await;
     every_copy_level(&cluster).await;
 
     if felix_cluster::suite_runs_on_raft() {
@@ -162,6 +237,7 @@ async fn a_recreated_quorum_stream_replicates_on_a_new_cluster() {
             .serving_leader(STREAM, Duration::from_secs(30))
             .await
             .expect("leader");
+        let served_by = leader.clone();
         let held = felix_cluster::wait::until_some(
             Duration::from_secs(30),
             "the new records to replay",
@@ -171,17 +247,37 @@ async fn a_recreated_quorum_stream_replicates_on_a_new_cluster() {
                 while let Ok(Ok(Some(event))) =
                     tokio::time::timeout(Duration::from_secs(2), replay.next_event()).await
                 {
-                    held.push(String::from_utf8_lossy(&event.payload).to_string());
+                    held.push((
+                        event.offset,
+                        String::from_utf8_lossy(&event.payload).to_string(),
+                    ));
                 }
-                held.contains(&"new-b".to_string()).then_some(held)
+                held.iter().any(|(_, v)| v == "new-b").then_some(held)
             },
         )
-        .await
-        .expect("replay the new stream");
-        assert!(
-            held.contains(&"new-a".to_string()) && !held.iter().any(|v| v.starts_with("old-")),
-            "the new stream holds the deleted one's records: {held:?}"
-        );
+        .await;
+        let held = match held {
+            Ok(held) => held,
+            Err(err) => panic!(
+                "no replay held new-b ({err:#}); serving leader {served_by}\n{}",
+                diagnose(&cluster, &acks).await
+            ),
+        };
+        let missing_new_a = !held.iter().any(|(_, v)| v == "new-a");
+        let has_old = held.iter().any(|(_, v)| v.starts_with("old-"));
+        if missing_new_a || has_old {
+            let problem = match (missing_new_a, has_old) {
+                (true, true) => {
+                    "new-a is missing from the replay and the deleted stream's records are present"
+                }
+                (true, false) => "new-a is missing from the replay",
+                _ => "the deleted stream's records are present in the replay",
+            };
+            panic!(
+                "{problem}: {served_by} replayed (offset, value) {held:?}\n{}",
+                diagnose(&cluster, &acks).await
+            );
+        }
         cluster.shutdown().await;
         return;
     }
