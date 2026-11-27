@@ -276,6 +276,9 @@ async fn pull_from(
 pub(crate) struct TransportSource {
     pub(crate) transport: Arc<dyn RaftTransport>,
     pub(crate) group: GroupId,
+    /// The learner's re-form epoch. A voter of another epoch refuses the
+    /// pull, so a base never crosses a re-form.
+    pub(crate) reform_epoch: u64,
     pub(crate) from: MemberId,
     pub(crate) deadline: Duration,
 }
@@ -291,6 +294,7 @@ impl ChunkSource for TransportSource {
     ) -> Result<BaseChunk, String> {
         let request = RaftRequest {
             group: self.group.clone(),
+            reform_epoch: self.reform_epoch,
             to: voter.clone(),
             beat: Beat::default(),
             report: Ask::Nothing,

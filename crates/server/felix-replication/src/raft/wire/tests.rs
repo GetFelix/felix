@@ -60,6 +60,7 @@ fn membership() -> Membership {
 fn request(body: Request) -> RaftRequest {
     RaftRequest {
         group: group(),
+        reform_epoch: 3,
         to: member("b"),
         beat: crate::raft::network::Beat { gap: 2_000, seq: 5 },
         report: crate::raft::network::Ask::Nothing,
@@ -416,7 +417,7 @@ fn a_read_index_reads_back_under_its_tags() {
 fn a_vote_matches_its_golden_vector() {
     let written = request(Request::Vote(VoteRequest::new(vote(3, false), None)));
     let expected: Vec<u8> = [
-        &[6, 3][..],
+        &[7, 3][..],
         // the deadline: 200 ms
         &[0, 0, 0, 200][..],
         // the group: tenant, namespace, stream, shard, kind, epoch
@@ -427,6 +428,8 @@ fn a_vote_matches_its_golden_vector() {
         &[0, 0, 0, 3][..],
         &[1][..],
         &[0, 0, 0, 0, 0, 0, 0, 7][..],
+        // the sending copy's re-form epoch
+        &[0, 0, 0, 0, 0, 0, 0, 3][..],
         // the member: broker, copy
         &[0, 1, b'b'][..],
         &[0, 0, 0, 0, 0, 0, 0, 11][..],
@@ -593,7 +596,7 @@ fn a_conditional_entry_is_refused_by_its_tag_on_an_older_build() {
         leader_commit: None,
     }));
     let bytes = encode_request(&written).expect("encode");
-    assert_eq!(bytes[0], 6, "the layout is unchanged");
+    assert_eq!(bytes[0], 7, "the layout is unchanged");
     // The tag, then the expected offset, the append time, the length and the
     // record.
     let at = bytes.len() - payload.len() - 4 - 8 - 8 - 1;
@@ -636,7 +639,7 @@ fn a_trim_entry_is_refused_by_its_tag_on_an_older_build() {
         }))
     };
     let bytes = encode_request(&append(trim(None, None))).expect("encode");
-    assert_eq!(bytes[0], 6, "the layout is unchanged");
+    assert_eq!(bytes[0], 7, "the layout is unchanged");
     // The tag, then the floor, the append time, the length and the headers.
     let at = bytes.len() - payload.len() - 4 - 8 - 8 - 1;
     assert_eq!(bytes[at], ENTRY_TRIM);
@@ -694,7 +697,7 @@ fn a_commit_entry_reads_back_and_is_refused_by_its_tag_on_an_older_build() {
     for publisher in [None, Some(Bytes::from_static(b"alice"))] {
         let written = commit(None, None, publisher);
         let bytes = encode_request(&append(written.clone())).expect("encode");
-        assert_eq!(bytes[0], 6, "the layout is unchanged");
+        assert_eq!(bytes[0], 7, "the layout is unchanged");
         let Request::Append(read) = decode_request(bytes.clone()).expect("decode").body else {
             panic!("not an append");
         };
@@ -754,7 +757,7 @@ fn a_group_entry_reads_back_and_is_refused_by_its_tag_on_an_older_build() {
     };
     let written = group();
     let bytes = encode_request(&append(written.clone())).expect("encode");
-    assert_eq!(bytes[0], 6, "the layout is unchanged");
+    assert_eq!(bytes[0], 7, "the layout is unchanged");
     let Request::Append(read) = decode_request(bytes.clone()).expect("decode").body else {
         panic!("not an append");
     };
@@ -859,7 +862,7 @@ fn an_attributed_entry_reads_back_and_is_refused_by_its_tag_on_an_older_build() 
         for (producer, expected) in [(None, None), (Some(piece), None), (None, Some(10))] {
             let written = record(producer, expected, who.clone(), what.clone());
             let bytes = encode_request(&append(written.clone())).expect("encode");
-            assert_eq!(bytes[0], 6, "the layout is unchanged");
+            assert_eq!(bytes[0], 7, "the layout is unchanged");
             let Request::Append(read) = decode_request(bytes.clone()).expect("decode").body else {
                 panic!("not an append");
             };

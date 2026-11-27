@@ -67,6 +67,9 @@ const PURGE_WITHIN: Duration = Duration::from_secs(2);
 
 pub(crate) struct Group {
     pub(crate) id: GroupId,
+    /// The copy's re-form epoch, fixed while it is open: only a closed copy
+    /// takes another. See [`RaftRequest::reform_epoch`].
+    pub(crate) reform_epoch: u64,
     pub(crate) member: MemberId,
     raft: Raft<ShardTypes, Machine>,
     /// The member's log, to drain its queued flushes at the stop.
@@ -754,6 +757,7 @@ impl Group {
     #[allow(clippy::too_many_arguments)]
     pub(crate) async fn open(
         id: GroupId,
+        reform_epoch: u64,
         member: MemberId,
         log: DiskLog,
         marks: Option<(CopyMarks, LogMarkMode)>,
@@ -869,6 +873,7 @@ impl Group {
                 Arc::clone(&reports),
                 reach,
                 Arc::clone(&refusals),
+                reform_epoch,
                 Arc::clone(&config),
                 unsendable,
             ),
@@ -924,6 +929,7 @@ impl Group {
         ));
         Ok(Self {
             id,
+            reform_epoch,
             member,
             raft,
             log,
@@ -1617,6 +1623,7 @@ impl Group {
         let deadline = self.pace.timers.peer_deadline;
         let request = RaftRequest {
             group: self.id.clone(),
+            reform_epoch: self.reform_epoch,
             to: leader,
             beat: Beat::default(),
             report: Ask::Nothing,
@@ -1874,6 +1881,7 @@ impl Group {
         let source = super::base_pull::TransportSource {
             transport: Arc::clone(&self.transport),
             group: self.id.clone(),
+            reform_epoch: self.reform_epoch,
             from: self.member.clone(),
             deadline: Duration::from_millis(self.pace.timers.election_max),
         };
@@ -2337,6 +2345,7 @@ impl Group {
         let deadline = tokio::time::Instant::now() + patience;
         let request = RaftRequest {
             group: self.id.clone(),
+            reform_epoch: self.reform_epoch,
             to: leader,
             beat: Beat::default(),
             report: Ask::Nothing,
@@ -2836,6 +2845,7 @@ impl Group {
         let deadline = self.pace.timers.peer_deadline;
         let request = RaftRequest {
             group: self.id.clone(),
+            reform_epoch: self.reform_epoch,
             to: leader,
             beat: Beat::default(),
             report: Ask::Nothing,

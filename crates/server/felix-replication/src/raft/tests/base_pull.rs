@@ -6,6 +6,7 @@ use crate::raft::network::{Ask, Beat, RaftReply, RaftRequest, Refused};
 fn pull(from: &str) -> RaftRequest {
     RaftRequest {
         group: group(0),
+        reform_epoch: 0,
         to: MemberId::new("a", 1),
         beat: Beat::default(),
         report: Ask::Nothing,
@@ -44,4 +45,18 @@ async fn a_base_is_served_only_to_a_broker_of_the_group_in_its_own_name() {
     // does not have.
     let member = refusal(a.handle_from("b", pull("b")).await);
     assert!(member.contains("no re-form base"), "{member}");
+}
+
+/// A copy a re-form left behind holds the old epoch's records. It must not
+/// pull a base from the new group, nor a new copy pull one from it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_base_pull_from_another_reform_epoch_is_refused() {
+    let mut cluster = Cluster::new(true);
+    cluster.form(0).await;
+    let a = cluster.runtime("a");
+
+    let mut other = pull("b");
+    other.reform_epoch = 1;
+    let refused = refusal(a.handle_from("b", other).await);
+    assert!(refused.contains("re-form epoch 0"), "{refused}");
 }

@@ -804,9 +804,21 @@ impl GroupRuntime {
     /// broker opens its members through [`Self::open_copy`].
     #[cfg(any(test, feature = "testing"))]
     pub async fn open(&self, group: GroupId, copy: u64, log: DiskLog) -> Result<(), OpenError> {
+        self.open_in_epoch(group, 0, copy, log).await
+    }
+
+    /// As [`Self::open`], for a copy of re-form epoch `reform_epoch`.
+    #[cfg(any(test, feature = "testing"))]
+    pub async fn open_in_epoch(
+        &self,
+        group: GroupId,
+        reform_epoch: u64,
+        copy: u64,
+        log: DiskLog,
+    ) -> Result<(), OpenError> {
         let reserved = self.reserve(&group)?;
         let member = MemberId::new(self.inner.broker.clone(), copy);
-        self.start_member(reserved, group, member, log, None, false)
+        self.start_member(reserved, group, reform_epoch, member, log, None, false)
             .await
     }
 
@@ -865,6 +877,22 @@ impl GroupRuntime {
             }
             earlier => earlier,
         };
+        // Read once the open has taken the directory: a rotation carries
+        // `raft-epoch` into the fresh one.
+        let reform_epoch = {
+            let dir = dir.to_path_buf();
+            felix_common::blocking::spawn(move || felix_storage::raft_copy::group_epoch(&dir))
+                .await
+                .map_err(std::io::Error::other)
+                .flatten()
+        };
+        let reform_epoch = match reform_epoch {
+            Ok(epoch) => epoch.unwrap_or(0),
+            Err(err) => {
+                let _ = log.close().await;
+                return Err(OpenError::Log(err));
+            }
+        };
         // A kept copy that cannot be read may hold the group's records.
         let kept_unreadable = earlier.is_err();
         let earlier = earlier.unwrap_or_else(|err| {
@@ -882,6 +910,7 @@ impl GroupRuntime {
             .start_member(
                 reserved,
                 group,
+                reform_epoch,
                 member.clone(),
                 log.clone(),
                 Some(opened.marks),
@@ -1002,10 +1031,15 @@ impl GroupRuntime {
         })
     }
 
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "each is one fact the start needs"
+    )]
     async fn start_member(
         &self,
         mut reserved: Reserved<'_>,
         group: GroupId,
+        reform_epoch: u64,
         member: MemberId,
         log: DiskLog,
         marks: Option<CopyMarks>,
@@ -1030,6 +1064,7 @@ impl GroupRuntime {
         };
         let group = Group::open(
             group,
+            reform_epoch,
             member,
             log,
             marks.map(|marks| (marks, inner.log_mark)),
@@ -1268,6 +1303,7 @@ impl GroupRuntime {
     ) -> Result<Reply, Refused> {
         let request = RaftRequest {
             group: group.id.clone(),
+            reform_epoch: group.reform_epoch,
             to: member,
             beat: super::network::Beat::default(),
             report: crate::raft::network::Ask::Nothing,
@@ -1544,6 +1580,15 @@ impl GroupRuntime {
     /// This broker's member of `shard`'s group, if it has one.
     pub fn status(&self, shard: &ShardKey) -> Option<GroupStatus> {
         self.inner.registry.get(shard).map(|group| group.status())
+    }
+
+    /// The re-form epoch this broker's member of `shard` was opened at, fixed
+    /// for the member's life. `None` when it has no member.
+    pub fn reform_epoch(&self, shard: &ShardKey) -> Option<u64> {
+        self.inner
+            .registry
+            .get(shard)
+            .map(|group| group.reform_epoch)
     }
 
     /// Replication to every other member of `shard`'s group, while this

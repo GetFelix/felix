@@ -1333,8 +1333,9 @@ epoch commit.
 **What the command cannot protect against** is a wrong declaration. Two
 brokers declared dead that are in fact alive and can reach each other are
 a majority of the old epoch. They can elect and acknowledge writes until
-they learn of the new epoch, which voids their messages and stops them.
-Those writes are lost. This is why declaring a broker dead is its own
+they learn of the new epoch, which closes their members, and the new
+group refuses their messages throughout ("A copy the record has left is
+closed"). Those writes are lost. This is why declaring a broker dead is its own
 step, and why the operations docs tie it to wiping the machine.
 
 **The two holes of the automatic design.** Issue #2304 was a re-form
@@ -1491,13 +1492,14 @@ member it holds, it checks both:
 | The copy's `raft-epoch` | The record's epoch | Floor report | Copy id report |
 |---|---|---|---|
 | names epoch `e` | `e` | at `e` | sent |
-| names epoch `e` | another | at `e`, which the control plane refuses | not sent |
+| names epoch `e` | below `e` (a stale view) | at `e`, which the control plane refuses | not sent |
+| names epoch `e` | above `e` | the member is closed (below) | the member is closed |
 | none | 0 | at 0 | sent |
-| none | above 0 | not sent | not sent |
+| none | above 0 | the member is closed (below) | the member is closed |
 
 Without its copy id the control plane never puts the copy in the shard's
-target, so the leader never makes it a voter: an unknown-epoch copy does
-not vote, and a re-form plan does not have to mark around it. The floor
+target, so the leader never makes it a voter: a stale view never makes a
+copy a voter, and a re-form plan does not have to mark around it. The floor
 check is a second line: the control plane already refuses a floor report
 for an epoch other than its record's (`OtherEpoch`), but a broker that
 sent one at epoch 0 would retry it forever and the group's floor would
@@ -1529,14 +1531,52 @@ log already starts past the epoch's gap. A file this wrote from a view an
 epoch behind is replaced the same way while the directory still holds
 nothing. `raft_copy::write_fresh_epoch` holds the rules.
 
-A directory that holds anything is left without the file and never
-counts: it is a restore older than the epoch, and its log or vote may be
-from an epoch it was never part of. A stop marker refuses it too: a copy
+A directory that holds anything is left without the file and is not
+opened: it is a restore older than the epoch, or a copy no re-form read,
+and its log or vote may be from an epoch it was never part of. A stop marker refuses it too: a copy
 without `raft-epoch` is stopped at epoch 0, and naming a later epoch over
 it would spend the marker and let it rejoin under its old copy id. Such a
 copy stays out of the group until a re-form places it, whose learner start
 empties it. Besides that start and a rotation, which carries the file into
 the fresh directory it makes, nothing else writes `raft-epoch`.
+
+**A copy the record has left is closed (#3289).** Every re-form stops
+the copies it reads and starts them in the new epoch, so a copy that names
+an older epoch than the record, and is neither stopped nor partway through
+a start, is one no re-form read. It still holds its old membership. Take
+{A, B, C} with B and C declared dead while they are alive: the re-form
+starts epoch 1 on A alone, and B and C, together a majority of epoch 0,
+could elect each other and acknowledge writes beside A's group. A single
+returning copy can do the same when its old voter set had one voter. So a
+broker never opens such a copy, and closes its member when the record
+moves past it, on any feed pass: after a restart, when a partition heals,
+or when the broker joins late. A copy ahead of the record is never closed,
+since the record only moves on and a view behind the copy is stale. The
+copy's data is left on disk. A later re-form reads it and starts it as a
+learner, which empties it.
+
+Group messages carry the sending copy's epoch too ("re-form epoch" in
+`docs/internal-protocol.md`, "Raft messages"), and a member refuses a
+message from any other epoch. Without that, a vote request from epoch 0
+reaches an epoch 1 member under the same incarnation, and an epoch 0
+leader's append could cut the epoch 1 log. With both, no copy outside the
+re-formed epoch votes in it or leads its old membership once it has seen
+the new record.
+
+What this does not close is the time before the copy sees the record.
+B and C cut off from the control plane still lead until they hear of
+epoch 1, because a Raft leader's acknowledgements do not depend on a
+control-plane lease. That is the wrong declaration below ("What the
+command cannot protect against"), pinned as an expected violation by
+`FelixRaftReformWrongDeclaration.cfg`, and the lease is tracked in #3343.
+
+> `services/felix-broker-service/src/shards/raft/tests.rs`,
+> `a_copy_the_records_epoch_has_left_is_closed` and
+> `a_copy_ahead_of_the_record_stays_open`.
+> `crates/server/felix-replication/src/raft/peer/tests.rs`,
+> `a_message_from_another_reform_epoch_is_refused_and_changes_nothing`.
+> Model: `docs/formal/FelixRaftReform.tla`, whose `Elect` takes votes only
+> from copies of the candidate's epoch.
 
 **Why the floor is a log id, not an offset (#2402).** An offset alone
 covers offsets above the end of the base, not offsets inside it. Take
@@ -1854,8 +1894,8 @@ record.
 A broker of the lost epoch can come back, declared dead or not, with its
 copy and its old membership. Opened, that member would elect itself and
 serve a log the operator gave up. So a broker never opens a copy whose
-epoch is behind an epoch that started from an empty base, and closes such
-a member if it is open when the record moves on. The copy's data is left
+epoch is behind the record, and closes such a member if it is open when
+the record moves on ("A copy the record has left is closed"). The copy's data is left
 on disk, and it sends no copy id, so it never joins the new epoch either.
 
 > `crates/server/felix-storage/src/raft_copy/tests/fresh_epoch.rs`,
