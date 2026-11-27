@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795816581722,
+  "lastUpdate": 1795819773019,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -94446,6 +94446,72 @@ window.BENCHMARK_DATA = {
             "range": "718.98",
             "unit": "us",
             "extra": "trials: 5\nmedian: 656.00\nmean: 976.60\nstdev: 718.98\ncv: 73.62%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "21a8b0e887e0efe66ed7114e346f4f0fb083f0de",
+          "message": "refactor(python): split the blocking and asyncio clients into modules (#3388) (#3392)\n\nEach client's pymethods are now grouped by domain (publish, stream, cache,\ncommit, queues, admin) in client/ submodules, with client.rs keeping the\nstruct, constructor and handles. Needs pyo3's multiple-pymethods feature to\nspread one pyclass's methods over files. The Python-visible surface is\nunchanged: dir(), text signatures and docstrings of every class diff clean.\n\nSpec-Unaffected: refactor, no behaviour change",
+          "timestamp": "2026-11-27T22:40:47Z",
+          "tree_id": "bf78dd85dba4a64f15f7c725d1a3520d41285824",
+          "url": "https://github.com/GetFelix/felix/commit/21a8b0e887e0efe66ed7114e346f4f0fb083f0de"
+        },
+        "date": 1795819755750,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 151,
+            "range": "0.84",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 151.00\nmean: 150.80\nstdev: 0.84\ncv: 0.55%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 206,
+            "range": "6.73",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 206.00\nmean: 207.60\nstdev: 6.73\ncv: 3.24%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 261,
+            "range": "25.84",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 261.00\nmean: 267.20\nstdev: 25.84\ncv: 9.67%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 198,
+            "range": "7.67",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 198.00\nmean: 200.40\nstdev: 7.67\ncv: 3.83%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 383,
+            "range": "177.00",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 383.00\nmean: 458.60\nstdev: 177.00\ncv: 38.60%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 530,
+            "range": "707.41",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 530.00\nmean: 1009.00\nstdev: 707.41\ncv: 70.11%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
