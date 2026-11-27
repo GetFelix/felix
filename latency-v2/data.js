@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795744993943,
+  "lastUpdate": 1795745333906,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -92334,6 +92334,72 @@ window.BENCHMARK_DATA = {
             "range": "1010.03",
             "unit": "us",
             "extra": "trials: 5\nmedian: 572.00\nmean: 1055.60\nstdev: 1010.03\ncv: 95.68%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "16533ae3cb325eb37dc7e83fa18db0f30d007978",
+          "message": "fix(raft): a drain moves a shard with one replica (#3301) (#3305)\n\n* fix(placement): a drain moves an RF 1 Raft shard off the draining broker (#3301)\n\nA draining Raft leader is not live, so a shard with no live member found\nno destination and waited for good: an RF 1 shard never left a drained\nbroker. The draining broker still serves, so it now stays leader and\nvoter and gives the shard a live member. An RF 1 shard grows to it and a\nlive broker outside the set and shrinks once the new copy votes, the same\ntwo writes as an operator move. A larger set whose members all drain\nswaps a follower for a live broker first. Both take the set-change\nbudget and are held by a pause.\n\nSpec-Unaffected: placement only picks the target; the membership change, the formed-set hold and the shrink rule are unchanged\n\n* docs: tidy the drain move wording (#3301)\n\nSpec-Unaffected: docs only",
+          "timestamp": "2026-11-27T02:02:09Z",
+          "tree_id": "81014e637a9e3948dcdae7ddd9eaf22625ec830c",
+          "url": "https://github.com/GetFelix/felix/commit/16533ae3cb325eb37dc7e83fa18db0f30d007978"
+        },
+        "date": 1795745321334,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 69,
+            "range": "0.84",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 69.00\nmean: 69.20\nstdev: 0.84\ncv: 1.21%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 118,
+            "range": "1.87",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 118.00\nmean: 118.00\nstdev: 1.87\ncv: 1.59%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 149,
+            "range": "4.97",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 149.00\nmean: 149.80\nstdev: 4.97\ncv: 3.32%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 86,
+            "range": "1.10",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 86.00\nmean: 85.80\nstdev: 1.10\ncv: 1.28%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 185,
+            "range": "6.18",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 185.00\nmean: 185.80\nstdev: 6.18\ncv: 3.33%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 275,
+            "range": "418.52",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 275.00\nmean: 478.00\nstdev: 418.52\ncv: 87.56%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1016-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
