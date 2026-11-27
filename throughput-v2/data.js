@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795759136718,
+  "lastUpdate": 1795760098569,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -73112,6 +73112,58 @@ window.BENCHMARK_DATA = {
             "range": "25676.04",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1614389.20\nmean: 1615644.90\nstdev: 25676.04\ncv: 1.59%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "3081a3d3a9f1899981be78cedd17a6c11d73b7c3",
+          "message": "fix(raft): a short set whose only member is a draining leader is moved (#3303) (#3332)\n\n* fix(raft): a drain moves a short set whose only member is its leader (#3303)\n\nA Raft shard with replication factor above 1 down to its draining leader\nhad no follower to swap and the top-up skipped a leaving leader, so the\nshard sat at NoDestination and the drain never finished.\n\nThe leaving-leader path now grows such a set by one live broker, the\nleader keeping its seat and lead. A draining leader is renamed only to a\nmember the reported voters may include, so the lead moves once the new\ncopy votes; the old copy is then swapped out as a follower and the\ntop-up refills the set. A grown copy that is down holds the shard as\nmember_down until it is back or lost.\n\nSpec-Unaffected: placement planner choice of the next set change; the store's formed-set and majority checks the model covers are unchanged\n\n* fix(raft): a crashed draining leader keeps its name over a learner (#3303)\n\nThe leaving-leader rename now skips members the reported voters leave\nout on the down path too. A learner cannot be elected, so naming it left\nthe shard on a dead name if it then died. Docs state the two-voter window\nan RF 3 drain on this path runs through and why that order was chosen.\nAdds a test where the voter report from before the grow is still held.\n\nSpec-Unaffected: placement planner choice of leader name; the store's formed-set and majority checks are unchanged",
+          "timestamp": "2026-11-27T06:06:58Z",
+          "tree_id": "34803a387cb501bdc5e1d0ec8d0cbd15b46028fe",
+          "url": "https://github.com/GetFelix/felix/commit/3081a3d3a9f1899981be78cedd17a6c11d73b7c3"
+        },
+        "date": 1795760097989,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 438002.35,
+            "range": "20580.14",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 438002.35\nmean: 429439.05\nstdev: 20580.14\ncv: 4.79%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 438002.35,
+            "range": "20580.14",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 438002.35\nmean: 429439.05\nstdev: 20580.14\ncv: 4.79%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 97769.41,
+            "range": "4401.35",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 97769.41\nmean: 95503.60\nstdev: 4401.35\ncv: 4.61%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 977694.12,
+            "range": "44013.48",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 977694.12\nmean: 955035.97\nstdev: 44013.48\ncv: 4.61%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
