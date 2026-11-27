@@ -67,7 +67,10 @@ pub(super) fn on_raft(existing: &ShardAssignment, raft_streams: bool, durable: b
 ///   [`RAFT_OPERATOR_LEADER_MILLIS`]: its group's leader does hand over to
 ///   it while a majority is caught up ([`operator_leader`]).
 /// - A down leader with no live member stays named, with no alert: the
-///   group cannot elect either until a member is back.
+///   group cannot elect either until a member is back. A serving leader
+///   that must leave with no live member stays leader and gives the shard
+///   one ([`leave_without_member`]): an RF 1 shard starts the move an
+///   operator would.
 /// - A follower that must leave (`leaving`: an internal, draining or lost
 ///   broker) is replaced by a live node outside the set, one at a time,
 ///   through the group's membership target. With no such node it stays and
@@ -202,7 +205,20 @@ pub(super) fn raft_step<'a>(
         match elected.or_else(|| fewest(&|node| leaders.total(node))) {
             Some(to) => to,
             None if down => return Decision::Kept,
-            None => return Decision::Waiting(Blocked::NoDestination),
+            None => {
+                return leave_without_member(
+                    existing,
+                    replication_factor,
+                    is_serving,
+                    counted,
+                    leaders,
+                    leaving,
+                    eligible,
+                    load,
+                    moves,
+                )
+                .unwrap_or(Decision::Waiting(Blocked::NoDestination));
+            }
         }
     };
     rename(existing, to, down, counted, leaders, moves)
@@ -586,6 +602,64 @@ pub(super) fn single_move_undone(
             ..existing.renamed()
         },
     ))
+}
+
+/// A serving leader that must leave (draining, internal, outside the
+/// stream's region) with no live member to hand to. It still serves, so it
+/// stays leader and voter and runs the change that gives the shard one:
+///
+/// - An RF 1 shard grows to the leader and a live broker outside the set
+///   ([`grown`]), as an operator move does. [`finish_single_move`] shrinks
+///   it to that broker, leading, only once the group reports its copy
+///   voting, so the old copy is a voter until the new one holds every
+///   acknowledged record.
+/// - A larger set swaps a follower that must leave for a live broker
+///   ([`replace_leaving`]); a later pass renames the leader to it.
+///
+/// `None` when neither applies, and the shard waits for a live broker.
+#[allow(clippy::too_many_arguments)]
+fn leave_without_member<'a>(
+    existing: &'a ShardAssignment,
+    replication_factor: u32,
+    is_serving: &dyn Fn(&str) -> bool,
+    counted: &dyn Fn(&str) -> bool,
+    leaders: &mut Leadership<'a>,
+    leaving: &dyn Fn(&str) -> Option<Leaving>,
+    eligible: &[&'a Node],
+    load: &mut HashMap<&'a str, u32>,
+    moves: &mut Moves,
+) -> Option<Decision> {
+    let leader = existing.leader.as_str();
+    let why = leaving(leader)?;
+    if replication_factor.max(1) > 1 || !existing.replicas.is_empty() {
+        return replace_leaving(existing, is_serving, leaving, eligible, load, moves);
+    }
+    let to = match replacement(existing, leader, is_serving, eligible, load) {
+        Ok(to) => to,
+        Err(Blocked::NoReplacement { .. }) => return None,
+        Err(Blocked::MemberDown { node, .. }) => {
+            return Some(Decision::Waiting(Blocked::MemberDown { node, why }));
+        }
+        Err(blocked) => return Some(Decision::Waiting(blocked)),
+    };
+    let next = grown(existing, to);
+    // The store refuses the write on the same check (#2905).
+    if existing.holds_formed_set(&next.nodes().cloned().collect()) {
+        return Some(Decision::Waiting(Blocked::Unapplied));
+    }
+    let step = MoveStep::RaftReplace {
+        from: leader.to_string(),
+        to: to.to_string(),
+    };
+    let decision = spend_replacement(moves, step, next);
+    if matches!(decision, Decision::Move(..)) {
+        *load.entry(to).or_default() += 1;
+        if counted(leader) {
+            leaders.remove(Owner::of(&existing.key), leader);
+        }
+        leaders.add(Owner::of(&existing.key), to);
+    }
+    Some(decision)
 }
 
 /// Takes a set change's slot for this pass, or says why it waits.
