@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795815006576,
+  "lastUpdate": 1795815819595,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -74204,6 +74204,58 @@ window.BENCHMARK_DATA = {
             "range": "52884.22",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 811944.54\nmean: 791796.45\nstdev: 52884.22\ncv: 6.68%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "f081343030069708482b8d38d0811bfaeed04ceb",
+          "message": "test(cluster): the last planned-move tests run on Raft (#3004) (#3384)\n\n* test(cluster): the last move tests run on Raft or retire with the hybrid fence (#3004)\n\nSpec-Unaffected: test only\n\n* test(cluster): the retired refusal test names the issue for the Raft contract (#3004)\n\nSpec-Unaffected: test only",
+          "timestamp": "2026-11-27T21:37:46Z",
+          "tree_id": "ea135c886522f3091b5f085b3c7fc23d8ed191b2",
+          "url": "https://github.com/GetFelix/felix/commit/f081343030069708482b8d38d0811bfaeed04ceb"
+        },
+        "date": 1795815819058,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 523285.94,
+            "range": "24808.73",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 523285.94\nmean: 522651.46\nstdev: 24808.73\ncv: 4.75%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1018-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 523285.94,
+            "range": "24808.73",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 523285.94\nmean: 522651.46\nstdev: 24808.73\ncv: 4.75%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1018-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 121630.45,
+            "range": "812.16",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 121630.45\nmean: 121901.32\nstdev: 812.16\ncv: 0.67%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1018-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1216304.48,
+            "range": "8121.63",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1216304.48\nmean: 1219013.18\nstdev: 8121.63\ncv: 0.67%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1018-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
