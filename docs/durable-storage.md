@@ -1543,6 +1543,17 @@ when a leader ships it level with what that leader acknowledged, and the file
 keeps that across clean restarts until the next rotation. See
 `docs/replication-design.md`, "One fence rule for every change of leader".
 
+A rotation after a relaxed crash can also keep the Raft marks. Before it
+rotates, the start compares the root's mark sequence with the run witness's
+copy and the control plane's copy for the old id. When it is at or above
+both, with at least one of them there, `raft-marks` is renamed to
+`raft-marks-before-<old id>` rather than removed. Each Raft copy minted
+under the old id is judged against those marks when it opens, and one that
+still holds its vote is kept as a power cut, so a re-form counts that vote.
+A directory older than its registration keeps no marks and is recorded as
+a restore. See `docs/per-shard-raft.md`, "A relaxed crash keeps the marks it
+can vouch for".
+
 The boot is the kernel's boot id, `/proc/sys/kernel/random/boot_id`, read
 once at startup (macOS records `kern.bootsessionuuid`, but never keeps an id
 on it). Every restart, kernel

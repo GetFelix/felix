@@ -390,20 +390,14 @@ async fn relaxed_followers_lose_power() -> Option<PowerCutGroup> {
 /// a new copy id and must not vote: if the two followers counted as the
 /// voters they were, they would elect with the leader down and could cut
 /// what it acknowledged. The group stays closed until `plan` and `apply`
-/// re-form it, then every voter of the new epoch serves every record at its
-/// offset and no offset is given out again.
-///
-/// Skipped until #3309 is decided: today a re-form after a relaxed crash
-/// keeps nothing past the saved commit.
+/// re-form it. The followers' roots are not behind the control plane's copy
+/// of their root sequence, so their old copies are kept as power cuts and
+/// their votes count: the plan vouches for the leader's whole log and needs
+/// no loss accepted. Every voter of the new epoch then serves every record
+/// at its offset and no offset is given out again.
 #[tokio::test]
 #[serial]
 async fn a_group_whose_relaxed_followers_lose_power_re_forms_with_every_ack() {
-    if felix_cluster::skip_on_raft_until(
-        3309,
-        "a re-form after a relaxed crash keeps nothing past the saved commit",
-    ) {
-        return;
-    }
     let Some(PowerCutGroup {
         cluster,
         mut sent,
@@ -412,37 +406,6 @@ async fn a_group_whose_relaxed_followers_lose_power_re_forms_with_every_ack() {
     else {
         return;
     };
-    let (voters, _) = plan_and_apply(&cluster).await;
-    publish_after(&cluster, &voters, &mut sent).await;
-    for node in &voters {
-        holds_every_ack(&cluster, node, &sent, &probes).await;
-    }
-    cluster.shutdown().await;
-}
-
-/// **The same loss re-forms keeping what the group had saved.** What the
-/// docs promise after a relaxed crash: the re-form starts and completes,
-/// every record acknowledged at or below the saved commit (the plan's base)
-/// is held with its payload by every voter, no offset is given out twice,
-/// and the records the new epoch drops are listed in the plan, which is
-/// marked and needs the loss accepted.
-#[tokio::test]
-#[serial]
-async fn a_group_whose_relaxed_followers_lose_power_re_forms_keeping_what_was_saved() {
-    let Some(PowerCutGroup {
-        cluster,
-        mut sent,
-        probes,
-    }) = relaxed_followers_lose_power().await
-    else {
-        return;
-    };
-    let (voters, planned) = plan_and_apply(&cluster).await;
-    let plan = planned.plan.as_ref().expect("a reform shard has a plan");
-    let saved = plan
-        .base_last
-        .map(|(index, _, _)| index)
-        .expect("the base holds the saved commit's entries");
     let highest = sent
         .acked
         .iter()
@@ -450,21 +413,12 @@ async fn a_group_whose_relaxed_followers_lose_power_re_forms_keeping_what_was_sa
         .max()
         .expect("records before the loss");
     let before_loss = sent.acked.len();
-
+    let (voters, planned) = plan_and_apply(&cluster).await;
+    let plan = planned.plan.as_ref().expect("a reform shard has a plan");
     assert!(
-        plan.marked.is_some() && plan.needs_accept_loss,
-        "a plan that cannot vouch for the unsaved tail is marked: {plan:?}"
+        plan.marked.is_none() && !plan.needs_accept_loss,
+        "every vote is known, so the plan vouches for the whole tail: {plan:?}"
     );
-    // Whatever a copy holds past the base is listed per broker.
-    assert!(
-        plan.dropped
-            .iter()
-            .any(|(_, first, last)| *first >= saved && *last >= highest),
-        "the records past the saved commit ({saved}) up to {highest} are not listed \
-         as dropped: {:?}",
-        plan.dropped
-    );
-
     publish_after(&cluster, &voters, &mut sent).await;
     let first_after = sent.acked[before_loss..]
         .iter()
@@ -477,14 +431,8 @@ async fn a_group_whose_relaxed_followers_lose_power_re_forms_keeping_what_was_sa
          its first record was acknowledged at {first_after}",
         plan.first_index
     );
-
-    // Only what was saved is held for certain; the records past it may be
-    // gone.
-    let mut kept = sent.clone();
-    kept.acked
-        .retain(|(offset, _)| *offset <= saved || *offset > highest);
     for node in &voters {
-        holds_every_ack(&cluster, node, &kept, &probes).await;
+        holds_every_ack(&cluster, node, &sent, &probes).await;
     }
     cluster.shutdown().await;
 }

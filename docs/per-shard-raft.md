@@ -418,11 +418,62 @@ before it writes the new id. `open_root` is called only after the start's
 restore check has answered, so no rotation removes a mark log that is
 open, except on a start that votes before the check; there the open log
 stops at the rotation ("Voting before the restore check"). Every shard
-directory minted under the old id rotates when it opens,
-so the old marks protect nothing. Kept, they would carry a sequence that
-no copy outside the root names under the new id, and the root would be
-held after the next reboot. A crash between the removal and the new id
-leaves the old id with no marks, which rotates every directory too.
+directory minted under the old id rotates when it opens. Kept as the live
+log, the old marks would carry a sequence that no copy outside the root
+names under the new id, and the root would be held after the next reboot.
+A crash between the removal and the new id leaves the old id with no marks,
+which rotates every directory too. One rotation sets the log aside instead
+of removing it: a relaxed crash whose marks the copies outside the root
+vouch for (next).
+
+**A relaxed crash keeps the marks it can vouch for.** A machine crash of a
+relaxed run rotates the storage id, so every copy on the root rotates when
+it opens. Without its marks, such a copy cannot show it still holds its
+newest vote, so it would be kept as a restore and its vote would not count
+in a re-form. A group whose followers lost power would then re-form from
+the saved commit and drop acknowledged records the disks still hold
+(issue #3309). So `run_state::begin_with`, before it rotates, makes the
+gate's check against the old id: the mark log's root sequence is at or
+above the run witness's copy and the control plane's copy for that id, and
+at least one of them is there. It has to be then, since the next heartbeat
+replaces the control plane's copy and a reboot clears the witness. When the
+check passes, the rotation renames `raft-marks` to
+`raft-marks-before-<old id>` instead of removing it. A copy minted under
+that id is then judged against its marks when it opens: when the marks name
+its copy id and its vote is at or above the vote mark, it is kept as
+`power-cut`, as a log below its mark is. A copy that fails either, a
+poisoned one, or one a re-form stopped is kept as `restore`. The live mark
+log starts over at sequence 0 under the new id, so the gate is unchanged.
+
+A directory older than its registration is a restore whatever its last run
+did: it keeps no marks, and its relaxed-crash record is tagged as a
+restore, so a standalone re-form starts it above the time line.
+
+What this relies on:
+
+- Votes and the vote mark are synced before a vote is answered, under every
+  fsync mode, so a power cut keeps both. A copy whose vote meets its mark
+  gave no newer vote.
+- A truncation is synced under every fsync mode: the log mark is lowered
+  first, each unlinked segment is synced out of the directory newest first,
+  and the cut segment's new length is synced before the next append. So a
+  power cut leaves a prefix of what the copy last held, never an entry it
+  had truncated.
+- The check sees what the gate sees, no more. A root put back from a backup
+  newer than the control plane's copy passes it, as it passes the gate
+  (Questions, 12): one heartbeat while the control plane is reachable, the
+  whole outage while it is not. Inside that window a backup's copies can
+  read as power cuts with a vote older than one they gave. That is the
+  documented gap, and restoring a live snapshot is supported only after
+  `felix-broker rotate-storage-id`, which keeps no marks.
+
+Under `OnCommit` with no copy vouching for an unsynced record, a machine
+crash does not rotate, so nothing changes there. Under `Periodic` or
+`None`, or once a copy vouched unsynced, the kept votes count, so a plan is
+marked only for the reasons it would be without the crash, and the copy at
+the top term is kept whole. Offsets are not reused: the vouch rule, the
+floor and the reservations are unchanged. A record that every copy lost in
+the power cut is still lost, as relaxed fsync allows.
 
 **Per directory, not only per root.** The check above judges a data root,
 and the copy id is per shard directory, so two more things are checked when
@@ -1262,8 +1313,10 @@ knows of (see "When a copy vouches for its whole log" below). On Linux a process
 needs a re-form. A power cut rotates a broker's copy only when its run was
 relaxed or a copy in its root had vouched, and the old voter seat then
 stays empty until membership changes exist, so a group that loses a
-majority of its voters to power cuts is in the same place as one whose
-voters died.
+majority of its voters to power cuts needs a re-form. The re-form still
+counts those voters' votes when the root kept their marks ("A relaxed
+crash keeps the marks it can vouch for"); otherwise it is in the same
+place as one whose voters died.
 
 **Why reachable copies stop first.** With a majority gone the old epoch
 cannot commit. But the list can be read while a slow voter is still about

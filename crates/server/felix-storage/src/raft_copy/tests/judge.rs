@@ -876,3 +876,119 @@ async fn a_copy_reopens_at_once_after_a_close_under_load() {
         }
     }
 }
+
+/// What the copy of `SHARD` holds when a relaxed run's machine crashes.
+enum Crashed {
+    /// The vote it saved last.
+    Whole,
+    /// A backup from before its last vote, put back over it.
+    OlderVote,
+}
+
+/// Run a relaxed broker's copy that votes, crash the machine, and start
+/// again with `control_plane` as the control plane's copy of the root
+/// sequence, given the old id and the root's sequence. How the rotated copy
+/// is kept.
+async fn after_a_relaxed_crash(
+    crashed: Crashed,
+    control_plane: impl FnOnce(StorageId, u64) -> Option<(StorageId, u64)>,
+) -> RotatedBy {
+    use crate::run_state::{BootId, RootCopies, begin_with};
+    let root = Root::new();
+    let boot = |byte| Some(BootId::from_bytes([byte; 16]));
+    let begun = begin_with(
+        root.path(),
+        true,
+        None,
+        RootCopies::default(),
+        boot(1),
+        || false,
+        || [2; 16],
+    )
+    .expect("begin");
+    assert!(!begun.rotated);
+    let backup = tempfile::tempdir().expect("backup");
+    let (old_id, sequence) = {
+        let copies = root.open();
+        let opened = open_copy(&copies, &root.shard_dir()).await;
+        save_vote(&opened, 3).await;
+        if let Crashed::OlderVote = crashed {
+            close(opened).await;
+            copy_tree(&root.shard_dir(), backup.path());
+            let opened = open_copy(&copies, &root.shard_dir()).await;
+            save_vote(&opened, 5).await;
+            close(opened).await;
+            restore(backup.path(), &root.shard_dir());
+        } else {
+            close(opened).await;
+        }
+        (copies.storage_id(), copies.mark_log().sequence())
+    };
+    // The machine restarts: the witness is gone, and the run left no clean
+    // stop.
+    root.forget_witness();
+    let begun = begin_with(
+        root.path(),
+        true,
+        None,
+        RootCopies {
+            witness_dir: Some(root.shm.path()),
+            control_plane: control_plane(old_id, sequence),
+        },
+        boot(2),
+        || false,
+        || [3; 16],
+    )
+    .expect("begin");
+    assert!(begun.rotated);
+    root.witness_current_id();
+    let copies = root.open();
+    let reopened = open_copy(&copies, &root.shard_dir()).await;
+    let rotation = reopened.rotation.clone().expect("rotated");
+    assert_eq!(rotation.reason, RotateReason::StorageId);
+    let by = rotated_by::load(&rotation.kept.expect("kept")).expect("by");
+    if let RotatedBy::PowerCut { to } = by {
+        assert_eq!(to, reopened.copy);
+    }
+    close(reopened).await;
+    by
+}
+
+/// A relaxed crash of the machine rotates the storage id, and with it every
+/// copy. The root's marks are not behind the control plane's copy for the
+/// old id, so the copy that still holds its vote is kept as a power cut,
+/// whose vote a re-form counts (#3309).
+#[tokio::test]
+async fn a_relaxed_crash_keeps_a_copy_that_meets_its_marks_as_a_power_cut() {
+    let by = after_a_relaxed_crash(Crashed::Whole, |id, sequence| Some((id, sequence))).await;
+    assert!(matches!(by, RotatedBy::PowerCut { .. }), "{by:?}");
+}
+
+/// The marks are kept only when something outside the root vouches for
+/// them, and a copy is a power cut only while it meets them: a root behind
+/// the control plane, one nothing has a copy of, a copy under another id,
+/// and a copy holding an older vote all rotate as restores.
+#[tokio::test]
+async fn a_relaxed_crash_nothing_vouches_for_rotates_as_a_restore() {
+    let behind =
+        after_a_relaxed_crash(Crashed::Whole, |id, sequence| Some((id, sequence + 1))).await;
+    assert_eq!(
+        behind,
+        RotatedBy::Restore,
+        "a root behind the control plane"
+    );
+    let unchecked = after_a_relaxed_crash(Crashed::Whole, |_, _| None).await;
+    assert_eq!(unchecked, RotatedBy::Restore, "no copy of the sequence");
+    let other_id = after_a_relaxed_crash(Crashed::Whole, |_, sequence| {
+        Some((StorageId::from_bytes([9; 16]), sequence))
+    })
+    .await;
+    assert_eq!(other_id, RotatedBy::Restore, "a copy under another id");
+    let older =
+        after_a_relaxed_crash(Crashed::OlderVote, |id, sequence| Some((id, sequence))).await;
+    assert_eq!(
+        older,
+        RotatedBy::Restore,
+        "a copy put back with an older vote"
+    );
+}

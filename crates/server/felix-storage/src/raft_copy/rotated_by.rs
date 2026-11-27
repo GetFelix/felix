@@ -17,9 +17,10 @@ pub(crate) const FILE_NAME: &str = "rotated-by";
 /// How a kept copy came to be, as a re-form reads it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum RotatedBy {
-    /// The log was below its mark, so it lost an unsynced tail and kept its
-    /// newest vote. `to` is the copy id the rotation minted: the copy it
-    /// speaks for, and no later one.
+    /// The log was below its mark, or a relaxed crash rotated the storage
+    /// id and the copy met the marks the root kept for it, so it lost at
+    /// most an unsynced tail and kept its newest vote. `to` is the copy id
+    /// the rotation minted: the copy it speaks for, and no later one.
     PowerCut { to: u64 },
     /// Anything else: a restore, a lost disk, a poisoned log. Its vote can
     /// be older than one it gave.
@@ -27,7 +28,8 @@ pub(crate) enum RotatedBy {
 }
 
 impl RotatedBy {
-    /// The word for each reason. Only a log below its mark is a power cut:
+    /// The word for each reason, for a copy not judged against kept marks.
+    /// Only a log below its mark is a power cut:
     /// a poisoned log can hold less than it reported, and every other
     /// reason can bring back an older disk or vote.
     pub(crate) fn of(reason: RotateReason, to: u64) -> Self {

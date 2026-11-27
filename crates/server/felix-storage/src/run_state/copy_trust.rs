@@ -410,8 +410,24 @@ static LIVE: Mutex<Vec<std::sync::Weak<CopyTrust>>> = Mutex::new(Vec::new());
 /// the old id with no marks, which rotates every directory too. Nothing may
 /// hold the mark log open: the gate's own rotation reopens it after.
 pub fn rotate_storage_id(root: &Path, fresh: [u8; 16]) -> Result<StorageId> {
+    rotate(root, fresh, false)
+}
+
+/// [`rotate_storage_id`] for a relaxed crash whose mark log was checked
+/// against the copies of its root sequence outside the root: the log is
+/// set aside under the old id instead of removed, so each copy minted under
+/// that id can still be judged against its marks when it opens. See
+/// [`RAFT_MARKS_BEFORE`].
+pub(crate) fn rotate_storage_id_keeping_marks(root: &Path, fresh: [u8; 16]) -> Result<StorageId> {
+    rotate(root, fresh, true)
+}
+
+fn rotate(root: &Path, fresh: [u8; 16], keep_marks: bool) -> Result<StorageId> {
     let _registration = super::ID_RECORDS.lock();
-    forget_raft_marks(root)?;
+    match storage_identity::load(root)? {
+        Some(from) if keep_marks => set_raft_marks_aside(root, from)?,
+        _ => forget_raft_marks(root)?,
+    }
     // A rotation says the directory's contents may be older than what sets
     // naming its id counted, so the mint's credit ends even if a crash keeps
     // the old id.
@@ -444,13 +460,59 @@ pub fn rotate_storage_id(root: &Path, fresh: [u8; 16]) -> Result<StorageId> {
 /// The root's per-shard Raft mark log; see `raft_copy`.
 pub(crate) const RAFT_MARKS: &str = "raft-marks";
 
-/// Remove the root's Raft mark log, durably, if it has one.
+/// The prefix of the name a mark log set aside by
+/// [`rotate_storage_id_keeping_marks`] takes: `raft-marks-before-<old id>`.
+/// Only the newest one is kept, and any other rotation removes it, so it
+/// never outlives the check that let it stay.
+pub(crate) const RAFT_MARKS_BEFORE: &str = "raft-marks-before-";
+
+/// The name of the mark log set aside under `id`.
+pub(crate) fn raft_marks_before(id: StorageId) -> String {
+    format!("{RAFT_MARKS_BEFORE}{}", id.to_hex())
+}
+
+/// Remove the root's Raft mark log and any one set aside, durably.
 pub(crate) fn forget_raft_marks(root: &Path) -> Result<()> {
+    let mut removed = remove_marks_set_aside(root, None)?;
     match crate::fs::remove_file(root.join(RAFT_MARKS)) {
-        Ok(()) => crate::io::sync_dir(root).map_err(StorageError::from),
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(err) => Err(err.into()),
+        Ok(()) => removed = true,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+        Err(err) => return Err(err.into()),
     }
+    if removed {
+        crate::io::sync_dir(root)?;
+    }
+    Ok(())
+}
+
+/// Rename the root's mark log to [`raft_marks_before`] `from`, durably,
+/// after removing any older one. A crash after the rename leaves the old
+/// id with its log already aside, which the retry keeps.
+fn set_raft_marks_aside(root: &Path, from: StorageId) -> Result<()> {
+    let name = raft_marks_before(from);
+    remove_marks_set_aside(root, Some(&name))?;
+    match crate::fs::rename(root.join(RAFT_MARKS), root.join(&name)) {
+        Ok(()) => {}
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+        Err(err) => return Err(err.into()),
+    }
+    crate::io::sync_dir(root).map_err(StorageError::from)
+}
+
+/// Remove every mark log set aside under `root` but `keep`. Not synced.
+fn remove_marks_set_aside(root: &Path, keep: Option<&str>) -> Result<bool> {
+    let mut removed = false;
+    for entry in crate::fs::read_dir(root)? {
+        let name = entry?.file_name();
+        let Some(name) = name.to_str() else {
+            continue;
+        };
+        if name.starts_with(RAFT_MARKS_BEFORE) && Some(name) != keep {
+            crate::fs::remove_file(root.join(name))?;
+            removed = true;
+        }
+    }
+    Ok(removed)
 }
 
 impl CopyTrust {

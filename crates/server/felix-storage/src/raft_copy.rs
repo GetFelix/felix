@@ -59,6 +59,7 @@ pub use judge::{
     CopyRoot, KeptCopy, OpenedCopy, RotateReason, Rotation, highest_reserved,
     holds_log_without_copy, hybrid_log_under, kept_copies, reached_before,
 };
+pub(crate) use marks::sequence_before;
 pub use marks::{CopyMarks, MarkLog};
 pub use placement_ack::{
     MAX_PLACEMENT_ACK_AHEAD, ack_placement_incarnation, acked_placement_incarnation,
