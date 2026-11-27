@@ -400,13 +400,13 @@ async fn an_open_member_is_held_for_the_copy_id_report() {
     shards.shutdown().await;
 }
 
-/// **A copy without `raft-epoch` counts only while the group never
-/// re-formed.** Past epoch 0 it is a learner placed fresh or a restore
-/// older than the epoch: its epoch is unknown, so it sends no floor (one at
-/// epoch 0 would be refused and stall the group's) and no copy id, which
-/// would put it in the target and let it vote.
+/// **A copy the record's epoch has left is closed, and its open is
+/// refused** (#3289). This one holds a log and no `raft-epoch`, as a copy
+/// a re-form never read does: past epoch 0 it is of epoch 0, it would
+/// elect itself in its old membership, and the group's floor and target
+/// never hear of it.
 #[tokio::test]
-async fn a_copy_without_an_epoch_file_counts_only_at_epoch_zero() {
+async fn a_copy_the_records_epoch_has_left_is_closed() {
     let root = tempfile::tempdir().expect("tempdir");
     let broker = broker(root.path()).await;
     let shards = shards(&broker);
@@ -421,7 +421,47 @@ async fn a_copy_without_an_epoch_file_counts_only_at_epoch_zero() {
     .await;
     assert_eq!(shards.held_copies().len(), 1);
 
-    // Bases that kept the log, so the member is not left behind.
+    // Bases that kept the log: not an abandon.
+    let mut reformed = assigned(orders.clone(), INCARNATION);
+    reformed.placed = Some(crate::shards::watch::PlacedEpoch {
+        epoch: 1,
+        ..Default::default()
+    });
+    reformed.raft_bases = Some(reformed_once());
+    shards.take(&mut assignments([reformed.clone()])).await;
+    assert!(shards.runtime.status(&orders).is_none(), "closed");
+    assert!(shards.led_floors().is_empty());
+    assert!(shards.held_copies().is_empty());
+    // The same pass opens it again unless the open refuses it.
+    shards.take(&mut assignments([reformed])).await;
+    assert!(shards.runtime.status(&orders).is_none(), "refused");
+    assert_eq!(
+        felix_storage::raft_copy::group_epoch(&orders_dir(&broker)).expect("read"),
+        None,
+        "its data is left as it was"
+    );
+
+    // A view with no record, as from a control plane that predates it, is
+    // at epoch 0, and the copy opens in it.
+    shards
+        .take(&mut assignments([assigned(orders.clone(), INCARNATION)]))
+        .await;
+    assert!(shards.runtime.status(&orders).is_some(), "open at epoch 0");
+    shards.shutdown().await;
+}
+
+/// **A copy whose cached epoch is missing is still closed** once the
+/// record passes its epoch: the close reads the open group's epoch, not the
+/// cache, which a failed read leaves empty (#3289).
+#[tokio::test]
+async fn a_copy_with_no_cached_epoch_is_closed_when_the_record_leaves_it() {
+    let root = tempfile::tempdir().expect("tempdir");
+    let broker = broker(root.path()).await;
+    let shards = shards(&broker);
+    let orders = key("orders", 0);
+    lead_orders(&shards).await;
+    shards.epochs.lock().clear();
+
     let mut reformed = assigned(orders.clone(), INCARNATION);
     reformed.placed = Some(crate::shards::watch::PlacedEpoch {
         epoch: 1,
@@ -429,23 +469,31 @@ async fn a_copy_without_an_epoch_file_counts_only_at_epoch_zero() {
     });
     reformed.raft_bases = Some(reformed_once());
     shards.take(&mut assignments([reformed])).await;
-    assert!(shards.runtime.status(&orders).is_some(), "still open");
-    assert!(
-        shards.led_floors().is_empty(),
-        "no floor at an unknown epoch"
-    );
-    assert!(
-        shards.held_copies().is_empty(),
-        "no copy id at an unknown epoch"
-    );
+    assert!(shards.runtime.status(&orders).is_none(), "closed");
+    shards.shutdown().await;
+}
 
-    // A view with no record, as from a control plane that predates it, is
-    // at epoch 0.
+/// **A copy ahead of the record stays open.** The record only moves on, so
+/// a view behind the copy is stale, and closing on it would shut out a
+/// member of the current epoch.
+#[tokio::test]
+async fn a_copy_ahead_of_the_record_stays_open() {
+    let root = tempfile::tempdir().expect("tempdir");
+    let broker = broker(root.path()).await;
+    let shards = shards(&broker);
+    let orders = key("orders", 0);
+    let mut placed = assigned(orders.clone(), INCARNATION);
+    placed.placed = Some(crate::shards::watch::PlacedEpoch {
+        epoch: 1,
+        ..Default::default()
+    });
+    placed.raft_bases = Some(reformed_once());
+    shards.take(&mut assignments([placed])).await;
+    assert!(shards.runtime.status(&orders).is_some(), "open");
     shards
         .take(&mut assignments([assigned(orders.clone(), INCARNATION)]))
         .await;
-    assert_eq!(shards.held_copies().len(), 1);
-    assert_eq!(shards.led_floors().len(), 1);
+    assert!(shards.runtime.status(&orders).is_some(), "still open");
     shards.shutdown().await;
 }
 
@@ -1710,10 +1758,11 @@ async fn a_backup_point_reads_the_leaders_acknowledged_end() {
 }
 
 /// **A backup point lists every member open here, not only the ones the
-/// copy id report holds.** One off placement, or at an epoch it cannot
-/// prove, is left out of that report but still votes and may lead. Left
-/// out of the point too, its shard was read as a hybrid one on
-/// placement's leader, which answered "not led there" (#2995).
+/// copy id report holds.** One off placement is left out of that report
+/// but still votes and may lead. Left out of the point too, its shard was
+/// read as a hybrid one on placement's leader, which answered "not led
+/// there" (#2995). A member the record's epoch has left is closed, so it
+/// is in neither (#3289).
 #[tokio::test]
 async fn a_member_the_copy_id_report_leaves_out_is_still_in_a_backup_point() {
     use crate::shards::routing::EngineShards;
@@ -1741,9 +1790,8 @@ async fn a_member_the_copy_id_report_leaves_out_is_still_in_a_backup_point() {
     });
     reformed.raft_bases = Some(reformed_once());
     shards.take(&mut assignments([reformed])).await;
-    assert!(shards.held_copies().is_empty(), "an unproven epoch");
-    let [read] = shards.backup_members().try_into().expect("listed");
-    assert_eq!(read.key, orders);
+    assert!(shards.held_copies().is_empty(), "left behind");
+    assert!(shards.backup_members().is_empty(), "closed");
     shards.shutdown().await;
 }
 

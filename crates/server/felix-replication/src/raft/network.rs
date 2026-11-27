@@ -39,6 +39,10 @@ use client::Client;
 /// module's business; a transport carries it to [`Self::to`]'s broker.
 pub struct RaftRequest {
     pub(crate) group: GroupId,
+    /// The re-form epoch of the sending copy (its `raft-epoch`, 0 without
+    /// one). A member takes a message only from its own epoch, so a copy a
+    /// re-form left behind never votes in or appends to the new group.
+    pub(crate) reform_epoch: u64,
     pub(crate) to: MemberId,
     /// On a leader's append: the gap it names. Zero on every other message.
     pub(crate) beat: Beat,
@@ -285,6 +289,8 @@ pub(crate) struct Router {
     reports: Arc<Reports>,
     reach: Arc<Reach>,
     refusals: Arc<Refusals>,
+    /// [`RaftRequest::reform_epoch`] of every message this copy sends.
+    reform_epoch: u64,
     /// openraft's settings, for its usual retry delays.
     config: Arc<Config>,
     /// The members a snapshot could not be sent to, shared by the broker.
@@ -307,6 +313,7 @@ impl Router {
         reports: Arc<Reports>,
         reach: Arc<Reach>,
         refusals: Arc<Refusals>,
+        reform_epoch: u64,
         config: Arc<Config>,
         unsendable: Arc<Unsendable>,
     ) -> Self {
@@ -317,6 +324,7 @@ impl Router {
             reports,
             reach,
             refusals,
+            reform_epoch,
             config,
             unsendable,
             to: None,
@@ -385,6 +393,7 @@ impl Router {
         };
         let request = RaftRequest {
             group,
+            reform_epoch: self.reform_epoch,
             to: to.clone(),
             beat: sent.sent.as_ref().map_or(Beat::default(), |sent| Beat {
                 gap: sent.gap,

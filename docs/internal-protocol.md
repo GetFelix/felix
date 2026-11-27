@@ -1337,10 +1337,11 @@ length and UTF-8 bytes, at most 512. An optional value is a `u8` (0 absent,
 
 | Field | Layout |
 | --- | --- |
-| layout | `u8`, 6 (layout 1 had no report byte, layout 2 no snapshot data, layout 3 no target version in a membership, layout 4 no piece entry, layout 5 no send number). A reader refuses any other with an error that names the layout, so two builds on different layouts refuse each other's messages instead of misreading them. A sender checks the layouts the peer stated in its handshake first and sends nothing when they share none (see "Raft layouts" under "Capabilities") |
+| layout | `u8`, 7 (layout 1 had no report byte, layout 2 no snapshot data, layout 3 no target version in a membership, layout 4 no piece entry, layout 5 no send number, layout 6 no re-form epoch). A reader refuses any other with an error that names the layout, so two builds on different layouts refuse each other's messages instead of misreading them. A sender checks the layouts the peer stated in its handshake first and sends nothing when they share none (see "Raft layouts" under "Capabilities") |
 | message | `u8`: 1 append with no entries (a heartbeat), 2 append with entries, 3 vote, 4 pre-vote, 5 snapshot, 6 leader transfer, 7 written position, 8 read index, 9 heartbeats together (see below; its header differs after the deadline) |
 | deadline | `u32`: how long the sender waits for the answer, in milliseconds |
 | group | tenant, namespace, stream (names), shard `u32`, kind `u8` (0 stream, 1 cache), epoch `u64` |
+| re-form epoch | `u64`: the group epoch the sending copy runs in, its `raft-epoch`, 0 without one. A member refuses as unreachable a message whose re-form epoch is not its own copy's, so a copy a re-form left behind cannot vote in, append to or lead the new group (`docs/per-shard-raft.md`, "A copy the record has left is closed") |
 | member | broker (name), copy id `u64` |
 | beat | `u64`: on a leader's append, how long it may now stay silent, in milliseconds; 0 otherwise |
 | send number | `u64`: on a leader's append, its place among the leader's appends in that term. A follower stores the beat only from an append numbered above the last one it stored a beat from. 0 otherwise |
@@ -1458,7 +1459,7 @@ off for members on that peer within a short window (1 ms by default) as one
 
 | Field | Layout |
 | --- | --- |
-| layout | `u8`, 6 |
+| layout | `u8`, 7 |
 | message | `u8` 9 |
 | deadline | `u32`: the longest of the heartbeats' deadlines, in milliseconds, where a listener reads every body's |
 | wait | `u32`: how long, in microseconds, the listener waits for a member once another has answered |

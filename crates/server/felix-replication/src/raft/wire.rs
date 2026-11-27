@@ -32,8 +32,8 @@ use crate::{ShardKey, ShardKind};
 /// on another layout is refused by name rather than misread. 2 added the
 /// report byte to the request header, 3 the data of a snapshot, 4 the target
 /// version to a membership, 5 the piece entry, 6 the send number after the
-/// gap.
-const LAYOUT: u8 = 6;
+/// gap, 7 the sender's re-form epoch after the group.
+const LAYOUT: u8 = 7;
 
 /// The layouts this build reads and writes, which it states in the peer
 /// handshake. A sender writes only [`LAYOUT`], so it sends to a peer whose
@@ -227,6 +227,7 @@ pub(crate) fn encode_request(request: &RaftRequest) -> io::Result<Bytes> {
     // At a fixed place, so a listener reads it without reading the rest.
     buf.put_u32(u32::try_from(request.deadline.as_millis()).unwrap_or(u32::MAX));
     put_group(&mut buf, &request.group)?;
+    buf.put_u64(request.reform_epoch);
     put_member(&mut buf, &request.to)?;
     buf.put_u64(request.beat.gap);
     buf.put_u64(request.beat.seq);
@@ -294,6 +295,7 @@ pub(crate) fn decode_request(mut buf: Bytes) -> io::Result<RaftRequest> {
     let tag = take_u8(&mut buf)?;
     let deadline = Duration::from_millis(u64::from(take_u32(&mut buf)?));
     let group = take_group(&mut buf)?;
+    let reform_epoch = take_u64(&mut buf)?;
     let to = take_member(&mut buf)?;
     let beat = Beat {
         gap: take_u64(&mut buf)?,
@@ -392,6 +394,7 @@ pub(crate) fn decode_request(mut buf: Bytes) -> io::Result<RaftRequest> {
     expect_empty(&buf)?;
     Ok(RaftRequest {
         group,
+        reform_epoch,
         to,
         beat,
         report,
