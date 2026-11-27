@@ -321,6 +321,17 @@ impl Cluster {
             .await
     }
 
+    /// [`Self::raft_member_of`] for shard `shard` of cache `name`.
+    pub async fn raft_cache_member_of(
+        &self,
+        node: &str,
+        name: &str,
+        shard: u32,
+    ) -> Option<felix_wire::InspectedRaft> {
+        self.raft_copy(felix_client::ShardKind::Cache, node, name, shard)
+            .await
+    }
+
     /// [`Self::raft_member_of`] for a stream or a cache shard.
     pub(crate) async fn raft_copy(
         &self,
