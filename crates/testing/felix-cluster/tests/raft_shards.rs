@@ -9,6 +9,7 @@
 //! cargo build -p felix-broker-service --bin felix-broker --features raft
 //! FELIX_TEST_RAFT_SHARDS=1 cargo test -p felix-cluster --test raft_shards
 //! ```
+use std::collections::BTreeMap;
 use std::time::Duration;
 
 use felix_cluster::{Cluster, ClusterConfig, Fault, StreamSpec};
@@ -128,21 +129,45 @@ const LEADER_SETTLES: Duration = Duration::from_secs(2);
 
 async fn one_leader(cluster: &Cluster, among: &[String]) -> String {
     felix_cluster::wait::until_some(ELECTED_WITHIN, "a broker to lead the shard", || async {
-        let mut leading = Vec::new();
-        for node in among {
-            let led = cluster
-                .metric(node, "felix_broker_raft_shards_led")
-                .await
-                .ok()
-                .flatten();
-            if led.is_some_and(|led| led >= 1.0) {
-                leading.push(node.clone());
-            }
-        }
+        let mut leading = leading_now(cluster, among).await;
         (leading.len() == 1).then(|| leading.remove(0))
     })
     .await
     .expect("a leader")
+}
+
+/// The brokers in `among` that say they lead a group now.
+async fn leading_now(cluster: &Cluster, among: &[String]) -> Vec<String> {
+    let mut leading = Vec::new();
+    for node in among {
+        let led = cluster
+            .metric(node, "felix_broker_raft_shards_led")
+            .await
+            .ok()
+            .flatten();
+        if led.is_some_and(|led| led >= 1.0) {
+            leading.push(node.clone());
+        }
+    }
+    leading
+}
+
+/// [`leader_among`] that gives up after `within`, for a group that may not
+/// be able to elect: `None` when no one broker led it for that long.
+async fn leader_within(cluster: &Cluster, among: &[String], within: Duration) -> Option<String> {
+    let deadline = tokio::time::Instant::now() + felix_cluster::wait::budget(within);
+    while tokio::time::Instant::now() < deadline {
+        let first = leading_now(cluster, among).await;
+        if first.len() == 1 {
+            tokio::time::sleep(LEADER_SETTLES).await;
+            if leading_now(cluster, among).await == first {
+                return first.into_iter().next();
+            }
+        } else {
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
+    }
+    None
 }
 
 /// Publish through `node` until the broker acknowledges, and return the
@@ -246,20 +271,33 @@ async fn allow_follower_reads(cluster: &Cluster) {
 /// subscription without ending the stream, so a replay that ends early
 /// resubscribes on the same node from the next offset.
 async fn replay_holding(cluster: &Cluster, node: &str, owed: &[Vec<u8>]) -> Vec<Vec<u8>> {
+    replay_at(cluster, node, owed)
+        .await
+        .into_iter()
+        .map(|(_, payload)| payload)
+        .collect()
+}
+
+/// [`replay_holding`] with each record's offset, `None` from a broker that
+/// sends none.
+async fn replay_at(cluster: &Cluster, node: &str, owed: &[Vec<u8>]) -> Vec<(Option<u64>, Vec<u8>)> {
     let (client, mut subscription) = cluster.replay_on(node, STREAM).await.expect("replay");
     let deadline =
         tokio::time::Instant::now() + felix_cluster::wait::budget(Duration::from_secs(60));
-    let mut payloads = Vec::new();
+    let mut held: Vec<(Option<u64>, Vec<u8>)> = Vec::new();
     let mut next_offset = 0u64;
     let mut ended = Vec::new();
-    while !owed.iter().all(|payload| payloads.contains(payload)) {
+    // A set, as the moving tests owe thousands of records.
+    let mut missing: std::collections::HashSet<&[u8]> = owed.iter().map(Vec::as_slice).collect();
+    while !missing.is_empty() {
         let step = tokio::time::timeout(Duration::from_secs(10), subscription.next_event()).await;
         match step {
             Ok(Ok(Some(event))) => {
                 if let Some(offset) = event.offset {
                     next_offset = offset + 1;
                 }
-                payloads.push(event.payload.to_vec());
+                missing.remove(event.payload.as_ref());
+                held.push((event.offset, event.payload.to_vec()));
                 continue;
             }
             Ok(Ok(None)) => ended.push("ended".to_string()),
@@ -282,19 +320,17 @@ async fn replay_holding(cluster: &Cluster, node: &str, owed: &[Vec<u8>]) -> Vec<
             }
             continue;
         }
-        let text = |payload: &Vec<u8>| String::from_utf8_lossy(payload).into_owned();
-        let missing: Vec<String> = owed
-            .iter()
-            .filter(|payload| !payloads.contains(payload))
-            .map(text)
-            .collect();
+        let text = |payload: &[u8]| String::from_utf8_lossy(payload).into_owned();
+        let missing: Vec<String> = missing.iter().map(|payload| text(payload)).collect();
         panic!(
             "{node} gave up after {ended:?}\n delivered: {:?}\n owed: {:?}\n missing: {missing:?}",
-            payloads.iter().map(text).collect::<Vec<_>>(),
-            owed.iter().map(text).collect::<Vec<_>>(),
+            held.iter()
+                .map(|(_, payload)| text(payload))
+                .collect::<Vec<_>>(),
+            owed.iter().map(|payload| text(payload)).collect::<Vec<_>>(),
         );
     }
-    payloads
+    held
 }
 
 /// **A record published through any broker reaches a subscriber, whether
@@ -3119,6 +3155,1009 @@ async fn a_single_copy_raft_move_to_a_dead_broker_returns_to_the_old_one() {
     }
     if let Err(wrong) = sent.check(&old, &held) {
         panic!("{wrong}");
+    }
+    cluster.shutdown().await;
+}
+
+/// One shard's stored assignment, by kind and name.
+async fn assignment_of(
+    cluster: &Cluster,
+    kind: &felix_controlplane_service::model::ShardKind,
+    name: &str,
+) -> felix_controlplane_service::model::ShardAssignment {
+    cluster
+        .control_plane
+        .as_ref()
+        .expect("control plane running")
+        .store
+        .list_shard_assignments()
+        .await
+        .expect("assignments")
+        .into_iter()
+        .find(|a| a.key.kind == *kind && a.key.stream == name && a.key.shard == 0)
+        .unwrap_or_else(|| panic!("shard 0 of {name} is placed"))
+}
+
+/// Moves the leaders of the stream's and the cache's shard to `to`, a member
+/// of both sets, with operator moves, and waits until each group reports
+/// `to` leading it.
+async fn lead_both(cluster: &Cluster, to: &str, within: Duration) {
+    use felix_controlplane_service::model::ShardKind;
+    let shards = [
+        ("stream", ShardKind::Stream, STREAM),
+        ("cache", ShardKind::Cache, CACHE),
+    ];
+    for (kind, key, name) in &shards {
+        if assignment_of(cluster, key, name).await.leader == to {
+            continue;
+        }
+        let step = cluster
+            .start_move_of(kind, name, 0, to)
+            .await
+            .unwrap_or_else(|err| panic!("move {kind} {name} to {to}: {err:#}"));
+        assert_eq!(step, "raft_leader", "a move within the set names a leader");
+    }
+    let led = |a: &felix_controlplane_service::model::ShardAssignment| {
+        a.leader == to && a.raft_leader.as_ref().is_some_and(|led| led.node == to)
+    };
+    let waited =
+        felix_cluster::wait::until(within, "both groups to report the new leader", || async {
+            for (_, key, name) in &shards {
+                if !led(&assignment_of(cluster, key, name).await) {
+                    return false;
+                }
+            }
+            true
+        })
+        .await;
+    if let Err(err) = waited {
+        let mut now = Vec::new();
+        for (_, key, name) in &shards {
+            let a = assignment_of(cluster, key, name).await;
+            now.push((*name, a.leader, a.raft_leader.map(|led| led.node)));
+        }
+        panic!("the leaders never moved to {to}: {err:#}; placed and reported: {now:?}");
+    }
+}
+
+/// Runs `op` until it is answered, sending it again only after a refusal
+/// that promises nothing was applied, as the client contract allows. `Err`
+/// is the error that left it in doubt. Counts the refusals in `refused`.
+async fn answered<T, F, Fut>(what: &str, refused: &mut usize, op: F) -> Result<T, String>
+where
+    F: Fn() -> Fut,
+    Fut: std::future::Future<Output = anyhow::Result<T>>,
+{
+    let deadline = tokio::time::Instant::now() + felix_cluster::wait::budget(ELECTED_WITHIN);
+    loop {
+        match op().await {
+            Ok(value) => return Ok(value),
+            Err(err) if failed(&err) == Failed::Refused => {
+                *refused += 1;
+                assert!(
+                    tokio::time::Instant::now() < deadline,
+                    "{what} was refused for {ELECTED_WITHIN:?}: {err:#}"
+                );
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+            Err(err) => return Err(format!("{err:#}")),
+        }
+    }
+}
+
+/// What one cache writer's puts and deletes came to.
+#[derive(Debug, Default)]
+struct CacheWrites {
+    /// Acknowledged puts not deleted since: each reads back.
+    kept: Vec<(String, Vec<u8>)>,
+    /// Acknowledged deletes: each reads back absent.
+    deleted: Vec<String>,
+    /// A put or delete that ended in doubt, with the value put: the key
+    /// reads back as that value or absent.
+    in_doubt: Vec<(String, Vec<u8>)>,
+    refused: usize,
+}
+
+/// Puts fresh keys through `via` until `stop`, deleting every fourth again.
+async fn cache_writes_until(
+    cluster: &Cluster,
+    via: &str,
+    stop: &std::sync::atomic::AtomicBool,
+) -> CacheWrites {
+    use std::sync::atomic::Ordering;
+    let client = cluster.client_on(via).await.expect("connect");
+    let (tenant, namespace) = (&cluster.tenant_id, &cluster.namespace);
+    let mut writes = CacheWrites::default();
+    let mut i = 0usize;
+    while !stop.load(Ordering::Acquire) {
+        i += 1;
+        let key = format!("{via}-{i}");
+        let value = format!("value-{i}").into_bytes();
+        let put = answered(&format!("put {key}"), &mut writes.refused, || {
+            client.cache_put(
+                tenant,
+                namespace,
+                CACHE,
+                &key,
+                bytes::Bytes::from(value.clone()),
+                None,
+            )
+        })
+        .await;
+        if put.is_err() {
+            writes.in_doubt.push((key, value));
+        } else if i.is_multiple_of(4) {
+            let deleted = answered(&format!("delete {key}"), &mut writes.refused, || {
+                client.cache_delete(tenant, namespace, CACHE, &key)
+            })
+            .await;
+            match deleted {
+                Ok(_) => writes.deleted.push(key),
+                Err(_) => writes.in_doubt.push((key, value)),
+            }
+        } else {
+            writes.kept.push((key, value));
+        }
+        tokio::time::sleep(Duration::from_millis(2)).await;
+    }
+    writes
+}
+
+/// How many adds one counter key takes. Add `n` to a key is `4^n`, so the
+/// key's sum, read in base 4, says how many times each add was applied.
+const ADDS_PER_KEY: u32 = 20;
+
+/// What one counter writer's adds came to.
+#[derive(Debug, Default)]
+struct CounterAdds {
+    /// Each add as its key, its digit and whether it was acknowledged.
+    /// One not acknowledged ended in doubt and was never sent again.
+    adds: Vec<(String, u32, bool)>,
+    refused: usize,
+}
+
+/// Adds to counters through `via` until `stop`, each add an amount of its
+/// own.
+async fn counter_adds_until(
+    cluster: &Cluster,
+    via: &str,
+    stop: &std::sync::atomic::AtomicBool,
+) -> CounterAdds {
+    use std::sync::atomic::Ordering;
+    let client = cluster.client_on(via).await.expect("connect");
+    let (tenant, namespace) = (&cluster.tenant_id, &cluster.namespace);
+    let mut counted = CounterAdds::default();
+    let mut n = 0u32;
+    while !stop.load(Ordering::Acquire) {
+        let key = format!("{via}-adds-{}", n / ADDS_PER_KEY);
+        let digit = n % ADDS_PER_KEY;
+        n += 1;
+        let added = answered(&format!("add to {key}"), &mut counted.refused, || {
+            client.counter_add(tenant, namespace, CACHE, &key, 4i64.pow(digit))
+        })
+        .await;
+        counted.adds.push((key, digit, added.is_ok()));
+        tokio::time::sleep(Duration::from_millis(2)).await;
+    }
+    counted
+}
+
+/// Publishes fresh payloads through `via` until `stop`. A failed publish is
+/// never sent again, so `Sent` can tell a refusal that wrote.
+async fn publish_jobs_until(
+    cluster: &Cluster,
+    via: &str,
+    stop: &std::sync::atomic::AtomicBool,
+) -> Sent {
+    use std::sync::atomic::Ordering;
+    let client = cluster.client_on(via).await.expect("connect");
+    let publisher = client.publisher().await.expect("publisher");
+    let mut sent = Sent::default();
+    let mut i = 0usize;
+    while !stop.load(Ordering::Acquire) {
+        let payload = format!("job-{i}").into_bytes();
+        i += 1;
+        let published = publisher
+            .publish(
+                &cluster.tenant_id,
+                &cluster.namespace,
+                STREAM,
+                payload.clone(),
+                AckMode::PerMessage,
+            )
+            .await;
+        match published {
+            Ok(offset) => sent.acked.push((
+                offset.expect("a durable stream acknowledges with an offset"),
+                payload,
+            )),
+            Err(err) => sent.failed(payload, &err),
+        }
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    sent
+}
+
+/// What a group consumer's claims and finishes came to.
+#[derive(Debug, Default)]
+struct Consumed {
+    /// Offsets finished by an acknowledged ack, with their payloads.
+    finished: BTreeMap<u64, Vec<u8>>,
+    /// Offsets whose ack ended in doubt: each may be handed out again.
+    in_doubt: std::collections::HashSet<u64>,
+    /// Polls that ended in doubt: what they claimed comes back once the
+    /// claim lapses.
+    polls_in_doubt: usize,
+    refused: usize,
+}
+
+/// One poll and an ack for each record it hands out. Returns how many it
+/// handed out. A record handed out again after an acknowledged ack fails
+/// the test: that would be a record finished twice.
+async fn consume_once(group: &felix_client::ShardedGroup, consumed: &mut Consumed) -> usize {
+    let polled = answered("group poll", &mut consumed.refused, || group.poll(5)).await;
+    let Ok(batch) = polled else {
+        consumed.polls_in_doubt += 1;
+        return 0;
+    };
+    for claimed in &batch {
+        let offset = claimed.record.offset;
+        assert!(
+            !consumed.finished.contains_key(&offset),
+            "offset {offset} was handed out again after an acknowledged ack"
+        );
+        let acked = answered(&format!("ack {offset}"), &mut consumed.refused, || {
+            group.ack(claimed)
+        })
+        .await;
+        match acked {
+            Ok(()) => {
+                consumed
+                    .finished
+                    .insert(offset, claimed.record.payload.to_vec());
+            }
+            Err(_) => {
+                consumed.in_doubt.insert(offset);
+            }
+        }
+    }
+    batch.len()
+}
+
+/// How many times each of a counter key's adds was applied, from its sum.
+fn applied_adds(key: &str, sum: i64) -> Vec<i64> {
+    assert!(sum >= 0, "{key} reads {sum}, below every sum of its adds");
+    let mut rest = sum;
+    let mut times = Vec::new();
+    for _ in 0..ADDS_PER_KEY {
+        times.push(rest % 4);
+        rest /= 4;
+    }
+    assert_eq!(rest, 0, "{key} reads {sum}, above every sum of its adds");
+    times
+}
+
+/// The counter check has teeth without a cluster: an add applied twice, an
+/// acknowledged add missing and a refused add applied are each told apart
+/// from an in-doubt add that landed once.
+#[test]
+fn a_counter_add_applied_twice_is_seen_in_its_sum() {
+    let sum = |adds: &[u32]| adds.iter().map(|digit| 4i64.pow(*digit)).sum::<i64>();
+    assert_eq!(applied_adds("k", sum(&[0, 2, 3])), {
+        let mut want = vec![0; ADDS_PER_KEY as usize];
+        for digit in [0, 2, 3] {
+            want[digit] = 1;
+        }
+        want
+    });
+    assert_eq!(applied_adds("k", sum(&[1, 1]))[1], 2, "applied twice");
+    assert_eq!(applied_adds("k", sum(&[19, 19, 19]))[19], 3);
+}
+
+/// **A Raft hand-over keeps every kind of acknowledged write.** Cache puts
+/// and deletes, counter adds and a consumer group's claims and finishes go
+/// on through two brokers while operator moves hand the leadership of the
+/// stream's and the cache's shard back and forth among the three members.
+/// A write refused as not applied is sent again; one that ended in doubt is
+/// not. Afterwards every acknowledged cache write reads back, each counter
+/// add was applied exactly once when acknowledged and at most once when in
+/// doubt (each add has its own amount, so its sum says which landed and
+/// how often: the counter API has no idempotency key), and no record the
+/// group finished with an acknowledged ack is handed out again. The Raft
+/// half of `queues/handoff.rs`'s `writes_of_every_kind_through_a_move_are_never_refused`,
+/// without its no-refusal claim.
+#[tokio::test]
+#[serial]
+async fn a_raft_hand_over_keeps_every_kind_of_acknowledged_write() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    use felix_controlplane_service::model::ShardKind;
+
+    const GROUP: &str = "workers";
+    if !opted_in() {
+        return;
+    }
+    let converged_within = Duration::from_secs(180);
+    let config = ClusterConfig {
+        nodes: 3,
+        streams: vec![StreamSpec::quorum(STREAM, 1, 3)],
+        caches: vec![felix_cluster::CacheSpec::quorum(CACHE, 1, 3)],
+        // A claim from a poll that ended in doubt comes back after this, so
+        // the drain below does not wait out the default.
+        broker_env: vec![
+            engine("raft"),
+            (
+                "FELIX_GROUP_VISIBILITY_TIMEOUT_MS".to_string(),
+                "10000".to_string(),
+            ),
+        ],
+        ..Default::default()
+    };
+    let cluster = Cluster::start(config).await.expect("start cluster");
+    cluster
+        .finalize_fleet_features(&["raft_consumer_groups"], Duration::from_secs(30))
+        .await
+        .expect("finalize the group feature");
+    let nodes = cluster.node_ids();
+    let first = assignment_of(&cluster, &ShardKind::Stream, STREAM)
+        .await
+        .leader;
+    let others: Vec<String> = nodes.iter().filter(|n| **n != first).cloned().collect();
+    // Both shards on one leader, so each hand-over below moves both.
+    lead_both(&cluster, &first, converged_within).await;
+
+    let client = std::sync::Arc::new(
+        felix_cluster::client::connect_cluster(
+            &cluster.broker_addrs(),
+            &cluster.tenant_id,
+            &cluster.client_token(),
+        )
+        .await
+        .expect("connect a cluster client"),
+    );
+    let group = client
+        .group_sharded(&cluster.tenant_id, &cluster.namespace, STREAM, GROUP)
+        .await
+        .expect("sharded group");
+
+    let stop = AtomicBool::new(false);
+    let mover = async {
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        for to in [&others[0], &others[1], &others[0], &first] {
+            lead_both(&cluster, to, converged_within).await;
+        }
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        stop.store(true, Ordering::Release);
+    };
+    let consumer = async {
+        let mut consumed = Consumed::default();
+        while !stop.load(Ordering::Acquire) {
+            if consume_once(&group, &mut consumed).await == 0 {
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        }
+        consumed
+    };
+    let ((), cache_a, cache_b, adds_a, adds_b, jobs, mut consumed) = tokio::join!(
+        mover,
+        cache_writes_until(&cluster, &nodes[0], &stop),
+        cache_writes_until(&cluster, &nodes[1], &stop),
+        counter_adds_until(&cluster, &nodes[0], &stop),
+        counter_adds_until(&cluster, &nodes[1], &stop),
+        publish_jobs_until(&cluster, &nodes[0], &stop),
+        consumer,
+    );
+    let caches = [&cache_a, &cache_b];
+    let adds = [&adds_a, &adds_b];
+    println!(
+        "acknowledged: {} cache puts kept, {} deletes, {} counter adds, {} publishes, {} finishes; \
+         in doubt: {} cache, {} counter, {} publishes, {} acks, {} polls; refused and re-sent: \
+         {} cache, {} counter, {} group",
+        caches.iter().map(|c| c.kept.len()).sum::<usize>(),
+        caches.iter().map(|c| c.deleted.len()).sum::<usize>(),
+        adds.iter()
+            .map(|a| a.adds.iter().filter(|add| add.2).count())
+            .sum::<usize>(),
+        jobs.acked.len(),
+        consumed.finished.len(),
+        caches.iter().map(|c| c.in_doubt.len()).sum::<usize>(),
+        adds.iter()
+            .map(|a| a.adds.iter().filter(|add| !add.2).count())
+            .sum::<usize>(),
+        jobs.in_doubt.len(),
+        consumed.in_doubt.len(),
+        consumed.polls_in_doubt,
+        caches.iter().map(|c| c.refused).sum::<usize>(),
+        adds.iter().map(|a| a.refused).sum::<usize>(),
+        consumed.refused,
+    );
+    for writes in caches {
+        assert!(!writes.kept.is_empty(), "no cache put was acknowledged");
+    }
+    assert!(!jobs.acked.is_empty(), "no publish was acknowledged");
+
+    let reader = &nodes[2];
+    let read = |key: String| {
+        let cluster = &cluster;
+        async move {
+            felix_cluster::wait::until_some(ELECTED_WITHIN, "a cache read", || async {
+                cluster.cache_get_via(reader, CACHE, &key).await.ok()
+            })
+            .await
+            .unwrap_or_else(|err| panic!("read {key}: {err:#}"))
+        }
+    };
+    for writes in caches {
+        for (key, value) in &writes.kept {
+            assert_eq!(
+                read(key.clone()).await.as_ref(),
+                Some(value),
+                "{key} was acknowledged and does not read back"
+            );
+        }
+        for key in &writes.deleted {
+            assert_eq!(
+                read(key.clone()).await,
+                None,
+                "{key} was deleted and reads back"
+            );
+        }
+        for (key, value) in &writes.in_doubt {
+            let found = read(key.clone()).await;
+            assert!(
+                found.is_none() || found.as_ref() == Some(value),
+                "{key}, in doubt, reads {found:?}"
+            );
+        }
+    }
+
+    let mut by_key: BTreeMap<&str, Vec<(u32, bool)>> = BTreeMap::new();
+    for counted in adds {
+        for (key, digit, acked) in &counted.adds {
+            by_key
+                .entry(key.as_str())
+                .or_default()
+                .push((*digit, *acked));
+        }
+    }
+    for (key, sent) in &by_key {
+        let sum = felix_cluster::wait::until_some(ELECTED_WITHIN, "a counter read", || async {
+            cluster.counter_get_via(reader, CACHE, key).await.ok()
+        })
+        .await
+        .unwrap_or_else(|err| panic!("read {key}: {err:#}"))
+        .unwrap_or(0);
+        let times = applied_adds(key, sum);
+        for (digit, applied) in times.iter().enumerate() {
+            let digit = digit as u32;
+            match sent.iter().find(|(sent, _)| *sent == digit) {
+                Some((_, true)) => assert_eq!(
+                    *applied, 1,
+                    "{key}'s acknowledged add {digit} was applied {applied} times (sum {sum})"
+                ),
+                Some((_, false)) => assert!(
+                    *applied <= 1,
+                    "{key}'s add {digit}, in doubt and never re-sent, was applied {applied} \
+                     times (sum {sum})"
+                ),
+                None => assert_eq!(*applied, 0, "{key}'s add {digit} was never sent"),
+            }
+        }
+    }
+
+    // Finish what the consumer had not got to, the claims of polls in doubt
+    // once they lapse. Every acknowledged publish is finished once.
+    let deadline =
+        tokio::time::Instant::now() + felix_cluster::wait::budget(Duration::from_secs(90));
+    while jobs
+        .acked
+        .iter()
+        .any(|(offset, _)| !consumed.finished.contains_key(offset))
+    {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "acknowledged records never finished: {:?}",
+            jobs.acked
+                .iter()
+                .filter(|(offset, _)| !consumed.finished.contains_key(offset))
+                .map(|(offset, _)| offset)
+                .take(10)
+                .collect::<Vec<_>>()
+        );
+        if consume_once(&group, &mut consumed).await == 0 {
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
+    }
+    for (offset, payload) in &jobs.acked {
+        assert_eq!(
+            consumed.finished.get(offset),
+            Some(payload),
+            "offset {offset} was finished with another record"
+        );
+    }
+    let leader = assignment_of(&cluster, &ShardKind::Stream, STREAM)
+        .await
+        .leader;
+    assert_holds_acknowledged(&cluster, &leader, &jobs).await;
+    cluster.shutdown().await;
+}
+
+/// What a subscriber read: each event, and where it subscribed again.
+#[derive(Debug, Clone)]
+enum Read {
+    /// Subscribed again from this offset after its subscription ended.
+    From(u64),
+    Event {
+        offset: u64,
+        skipped_before: u64,
+        payload: Vec<u8>,
+    },
+}
+
+/// Checks that `read` names every offset once and in order, and that every
+/// jump between events is one the broker said holds no event. Returns each
+/// event's offset and payload.
+fn read_in_order(read: &[Read]) -> Vec<(u64, Vec<u8>)> {
+    let mut next = 0u64;
+    let mut events = Vec::new();
+    for step in read {
+        match step {
+            Read::From(at) => assert_eq!(*at, next, "subscribed again from {at}, not {next}"),
+            Read::Event {
+                offset,
+                skipped_before,
+                payload,
+            } => {
+                assert_eq!(
+                    *offset,
+                    next + skipped_before,
+                    "after {next} the subscriber saw {offset} with {skipped_before} \
+                     skipped before it: a gap no one was told of, or an offset again"
+                );
+                next = offset + 1;
+                events.push((*offset, payload.clone()));
+            }
+        }
+    }
+    events
+}
+
+#[test]
+fn a_gap_no_one_was_told_of_fails_the_read_check() {
+    let event = |offset, skipped_before| Read::Event {
+        offset,
+        skipped_before,
+        payload: Vec::new(),
+    };
+    let told = [event(1, 1), event(2, 0), Read::From(3), event(5, 2)];
+    assert_eq!(read_in_order(&told).len(), 3);
+    for wrong in [
+        vec![event(0, 0), event(2, 0)],
+        vec![event(0, 0), event(0, 0)],
+        vec![event(0, 0), Read::From(0), event(0, 0)],
+    ] {
+        let caught = std::panic::catch_unwind(|| read_in_order(&wrong));
+        assert!(caught.is_err(), "{wrong:?} passed");
+    }
+}
+
+/// **A Raft move undone after the voters changed loses no acknowledged
+/// write, and its subscriber sees every offset once, in order.** Four
+/// brokers, one three-copy shard. A publisher and a subscriber from offset 0
+/// run throughout an operator move to the broker outside the set, which
+/// runs until the group reports the new voters, and a move back that
+/// undoes it. Each blank and membership entry of those changes takes a
+/// stream offset, as the offset is the Raft index, so the subscriber must
+/// be told of each (`skipped_before`) and must see no other gap. The final
+/// set holds every acknowledged record at its offset, and every record the
+/// subscriber saw is the one the log holds there. The Raft half of
+/// `routing/operator_moves.rs`'s `cancelling_a_fenced_move_loses_no_acknowledged_write`.
+#[tokio::test]
+#[serial]
+async fn a_raft_move_cancelled_after_the_voters_changed_loses_no_acknowledged_write() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::{Arc, Mutex};
+
+    if !opted_in() {
+        return;
+    }
+    let converged_within = Duration::from_secs(180);
+    let cluster = Cluster::start(four_broker_raft_cluster())
+        .await
+        .expect("start cluster");
+    allow_follower_reads(&cluster).await;
+    let (old, followers, _) = stored_set(&cluster).await;
+    let mut members = followers.clone();
+    members.push(old.clone());
+    voters_become(&cluster, &members, converged_within).await;
+    let outsider = cluster
+        .node_ids()
+        .into_iter()
+        .find(|node| !members.contains(node))
+        .expect("a broker outside the set");
+    let mut before = Sent::default();
+    for n in 0..10 {
+        publish_tried(&cluster, &followers[0], &format!("before-{n}"), &mut before).await;
+    }
+
+    let (addrs, token) = (cluster.broker_addrs(), cluster.client_token());
+    let connect = || felix_cluster::client::connect_cluster(&addrs, &cluster.tenant_id, &token);
+    let stop = Arc::new(AtomicBool::new(false));
+    let done_reading = Arc::new(AtomicBool::new(false));
+    let read: Arc<Mutex<Vec<Read>>> = Arc::default();
+    let reader = Arc::new(connect().await.expect("reader"));
+    let subscriber = {
+        let (read, done) = (Arc::clone(&read), Arc::clone(&done_reading));
+        let (tenant, namespace) = (cluster.tenant_id.clone(), cluster.namespace.clone());
+        tokio::spawn(async move {
+            let subscribe = |from| {
+                let (reader, tenant, namespace) = (&reader, &tenant, &namespace);
+                async move {
+                    reader
+                        .subscribe_from(
+                            tenant,
+                            namespace,
+                            STREAM,
+                            Some(felix_client::StartPosition::Offset(from)),
+                        )
+                        .await
+                }
+            };
+            let mut subscription = subscribe(0).await.expect("subscribe");
+            let mut next = 0u64;
+            while !done.load(Ordering::Relaxed) {
+                let step =
+                    tokio::time::timeout(Duration::from_secs(1), subscription.next_event()).await;
+                match step {
+                    Ok(Ok(Some(event))) => {
+                        let offset = event.offset.expect("a durable stream carries offsets");
+                        next = offset + 1;
+                        read.lock().expect("read").push(Read::Event {
+                            offset,
+                            skipped_before: event.skipped_before,
+                            payload: event.payload.to_vec(),
+                        });
+                    }
+                    // Quiet, not ended.
+                    Err(_) => {}
+                    // The subscription follows the shard itself; one that
+                    // still ends resumes where it stopped.
+                    Ok(Ok(None) | Err(_)) => loop {
+                        if done.load(Ordering::Relaxed) {
+                            break;
+                        }
+                        if let Ok(resumed) = subscribe(next).await {
+                            read.lock().expect("read").push(Read::From(next));
+                            subscription = resumed;
+                            break;
+                        }
+                        tokio::time::sleep(Duration::from_millis(200)).await;
+                    },
+                }
+            }
+        })
+    };
+
+    let during: Arc<Mutex<Sent>> = Arc::default();
+    let writer = connect().await.expect("writer");
+    let publisher = {
+        let (during, stop) = (Arc::clone(&during), Arc::clone(&stop));
+        let (tenant, namespace) = (cluster.tenant_id.clone(), cluster.namespace.clone());
+        tokio::spawn(async move {
+            let mut i = 0usize;
+            while !stop.load(Ordering::Relaxed) {
+                let payload = format!("during-{i}").into_bytes();
+                i += 1;
+                let published = writer
+                    .publish(
+                        &tenant,
+                        &namespace,
+                        STREAM,
+                        payload.clone(),
+                        AckMode::PerMessage,
+                    )
+                    .await;
+                {
+                    let mut sent = during.lock().expect("sent");
+                    match published {
+                        Ok(offset) => sent.acked.push((
+                            offset.expect("a durable stream acknowledges with an offset"),
+                            payload,
+                        )),
+                        Err(err) => sent.failed(payload, &err),
+                    }
+                }
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+    };
+    let acked_so_far = || during.lock().expect("sent").acked.len();
+
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let step = cluster
+        .start_move(STREAM, 0, &outsider)
+        .await
+        .expect("a move outside the set is taken");
+    assert_eq!(step, "raft_replace");
+    let mut moved = followers.clone();
+    moved.push(outsider.clone());
+    voters_become(&cluster, &moved, converged_within).await;
+
+    // Undone by a move back. The old leader is outside the set now, so this
+    // is a seat move of its own.
+    let step = felix_cluster::wait::until_some(
+        Duration::from_secs(60),
+        "the move back to be taken",
+        || async { cluster.start_move(STREAM, 0, &old).await.ok() },
+    )
+    .await
+    .unwrap_or_else(|err| {
+        panic!("the move back to {old} was never taken: {err:#}");
+    });
+    assert_eq!(step, "raft_replace");
+    voters_become(&cluster, &members, converged_within).await;
+    felix_cluster::wait::until(converged_within, "the old leader to lead again", || async {
+        cluster
+            .metric(&old, "felix_broker_raft_shards_led")
+            .await
+            .ok()
+            .flatten()
+            .is_some_and(|led| led >= 1.0)
+    })
+    .await
+    .expect("leadership follows placement back");
+    let back_at = acked_so_far();
+    felix_cluster::wait::until(
+        Duration::from_secs(60),
+        "publishes acknowledged after the move back",
+        || async { acked_so_far() >= back_at + 10 },
+    )
+    .await
+    .expect("the shard takes writes once it is back");
+    stop.store(true, Ordering::Relaxed);
+    publisher.await.expect("publisher");
+
+    let mut sent = before;
+    {
+        let during = during.lock().expect("sent");
+        sent.acked.extend(during.acked.iter().cloned());
+        sent.in_doubt.extend(during.in_doubt.iter().cloned());
+        sent.refused.extend(during.refused.iter().cloned());
+    }
+    let owed: Vec<Vec<u8>> = sent.acked.iter().map(|(_, p)| p.clone()).collect();
+    felix_cluster::wait::until(
+        Duration::from_secs(60),
+        "the subscriber to see every acknowledged record",
+        || async {
+            let read = read.lock().expect("read");
+            let seen: std::collections::HashSet<&[u8]> = read
+                .iter()
+                .filter_map(|step| match step {
+                    Read::Event { payload, .. } => Some(payload.as_slice()),
+                    Read::From(_) => None,
+                })
+                .collect();
+            owed.iter().all(|payload| seen.contains(payload.as_slice()))
+        },
+    )
+    .await
+    .expect("the subscriber gets every acknowledged record");
+    done_reading.store(true, Ordering::Relaxed);
+    subscriber.await.expect("subscriber");
+
+    let read = read.lock().expect("read").clone();
+    let seen: BTreeMap<u64, Vec<u8>> = read_in_order(&read).into_iter().collect();
+    let skipped: u64 = read
+        .iter()
+        .map(|step| match step {
+            Read::Event { skipped_before, .. } => *skipped_before,
+            Read::From(_) => 0,
+        })
+        .sum();
+    println!(
+        "{} records seen, {skipped} offsets skipped as not events, {} acknowledged",
+        seen.len(),
+        sent.acked.len()
+    );
+    for (offset, payload) in &sent.acked {
+        assert_eq!(
+            seen.get(offset),
+            Some(payload),
+            "the subscriber did not see {:?} at its acknowledged offset {offset}",
+            String::from_utf8_lossy(payload)
+        );
+    }
+    for node in &members {
+        let held: BTreeMap<u64, Vec<u8>> = replay_at(&cluster, node, &owed)
+            .await
+            .into_iter()
+            .map(|(offset, payload)| (offset.expect("a durable stream carries offsets"), payload))
+            .collect();
+        for (offset, payload) in &sent.acked {
+            assert_eq!(
+                held.get(offset),
+                Some(payload),
+                "{node} does not hold {:?} at its acknowledged offset {offset}",
+                String::from_utf8_lossy(payload)
+            );
+        }
+        // The replay reads to the last acknowledged record, so compare up to
+        // there: what the subscriber saw past it may not be replayed yet.
+        let last = held.keys().next_back().copied().unwrap_or(0);
+        for (offset, payload) in seen.range(..=last) {
+            assert_eq!(
+                held.get(offset),
+                Some(payload),
+                "the subscriber saw {:?} at {offset}, which {node} does not hold there",
+                String::from_utf8_lossy(payload)
+            );
+        }
+        let payloads: Vec<Vec<u8>> = held.into_values().collect();
+        if let Err(wrong) = sent.check(node, &payloads) {
+            panic!("{wrong}");
+        }
+    }
+    cluster.shutdown().await;
+}
+
+/// How many voter changes the brokers in `nodes` have committed, summed.
+async fn membership_changes(cluster: &Cluster, nodes: &[String]) -> f64 {
+    let mut total = 0.0;
+    for node in nodes {
+        total += metric(
+            cluster,
+            node,
+            r#"felix_broker_raft_membership_steps_total{step="change"}"#,
+        )
+        .await;
+    }
+    total
+}
+
+/// **A Raft move cut short by kills keeps what was acknowledged.** Five
+/// brokers, one three-copy shard. One follower, `short`, gets nothing past
+/// the first record, so it lacks records a majority acknowledged. An
+/// operator move to a broker outside the set starts; once the group's first
+/// change has made the destination a voter beside the old leader, before a
+/// later one removes the old leader, the old leader and the destination are
+/// killed.
+///
+/// Through that change the voters are the old set and the destination, so
+/// the two survivors are no majority and may elect no one until a killed
+/// broker is back; if the change had already finished they are, and only
+/// the one holding the log can win. Either way any leader holds every
+/// acknowledged record. The two brokers then come back, the move finishes
+/// with three voters, the destination holds the log, and no group on any
+/// broker stopped. The Raft half of `routing/operator_moves.rs`'s two
+/// `a_move_cut_short_by_kills_*` tests.
+#[tokio::test]
+#[serial]
+async fn a_raft_move_cut_short_by_kills_keeps_what_was_acknowledged() {
+    if !opted_in() {
+        return;
+    }
+    let converged_within = Duration::from_secs(180);
+    let mut cluster = Cluster::start(ClusterConfig {
+        nodes: 5,
+        ..raft_cluster()
+    })
+    .await
+    .expect("start cluster");
+    allow_follower_reads(&cluster).await;
+    let (old, followers, _) = stored_set(&cluster).await;
+    let mut members = followers.clone();
+    members.push(old.clone());
+    voters_become(&cluster, &members, converged_within).await;
+    let (kept, short) = (followers[0].clone(), followers[1].clone());
+    let destination = cluster
+        .node_ids()
+        .into_iter()
+        .find(|node| !members.contains(node))
+        .expect("a broker outside the set");
+
+    let mut sent = Sent::default();
+    publish_tried(&cluster, &old, "before", &mut sent).await;
+    cluster
+        .wait_for_every_member_level(STREAM, Duration::from_secs(60))
+        .await
+        .expect("every member holds it");
+    // No broker reaches `short` from here on. Its own requests still go, so
+    // it can stand for election with its short log.
+    for node in cluster.node_ids().into_iter().filter(|node| *node != short) {
+        cluster
+            .inject(&Fault::Refuse {
+                node,
+                peers: vec![short.clone()],
+            })
+            .await
+            .expect("cut the short follower off");
+    }
+    for i in 0..10 {
+        publish_tried(&cluster, &old, &format!("acknowledged-{i}"), &mut sent).await;
+    }
+
+    // Any member that leads during the move can take a change step.
+    let watched = [old.clone(), kept.clone(), destination.clone()];
+    let changed_before = membership_changes(&cluster, &watched).await;
+    let step = cluster
+        .start_move(STREAM, 0, &destination)
+        .await
+        .expect("a move outside the set is taken");
+    assert_eq!(step, "raft_replace");
+    let waited = felix_cluster::wait::until(
+        Duration::from_secs(120),
+        "the group to make the destination a voter",
+        || async { membership_changes(&cluster, &watched).await > changed_before },
+    )
+    .await;
+    if let Err(err) = waited {
+        panic!(
+            "{err:#}; the stored set is {:?}",
+            stored_set(&cluster).await
+        );
+    }
+    cluster.kill_node(&old).expect("kill the old leader");
+    cluster
+        .kill_node(&destination)
+        .expect("kill the destination");
+    let at_kill = stored_set(&cluster).await;
+    cluster.heal_all().await.expect("heal");
+
+    let survivors = [kept.clone(), short.clone()];
+    match leader_within(&cluster, &survivors, Duration::from_secs(30)).await {
+        Some(leader) => {
+            println!("{leader} leads the survivors; stored set at the kills {at_kill:?}");
+            assert_holds_acknowledged(&cluster, &leader, &sent).await;
+        }
+        None => println!(
+            "no survivor leads with the old leader and the destination down; stored set at \
+             the kills {at_kill:?}"
+        ),
+    }
+
+    cluster
+        .restart_node(&destination)
+        .await
+        .expect("restart the destination");
+    cluster
+        .restart_node(&old)
+        .await
+        .expect("restart the old leader");
+    let leader = leader_among(
+        &cluster,
+        &[
+            kept.clone(),
+            short.clone(),
+            destination.clone(),
+            old.clone(),
+        ],
+    )
+    .await;
+    assert_holds_acknowledged(&cluster, &leader, &sent).await;
+    voters_become(
+        &cluster,
+        &[kept.clone(), short.clone(), destination.clone()],
+        converged_within,
+    )
+    .await;
+    let (now_leader, now_followers, _) = stored_set(&cluster).await;
+    assert_eq!(
+        now_followers.len() + 1,
+        3,
+        "the set is back to three: {now_leader} {now_followers:?}"
+    );
+    publish_tried(&cluster, &old, "after", &mut sent).await;
+    for node in [&destination, &short, &kept] {
+        assert_holds_acknowledged(&cluster, node, &sent).await;
+    }
+    for node in cluster.node_ids() {
+        let stopped = metric(
+            &cluster,
+            &node,
+            "felix_broker_raft_shards_stopped_on_storage_error",
+        )
+        .await;
+        assert_eq!(stopped, 0.0, "{node} stopped a group");
     }
     cluster.shutdown().await;
 }
