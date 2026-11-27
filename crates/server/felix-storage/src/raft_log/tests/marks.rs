@@ -452,3 +452,90 @@ async fn a_record_with_headers_marks_the_root() {
     append_flushed(&mut log, &[normal(1, 1, "headers:k")]).await;
     assert!(marked());
 }
+
+/// A copy holding an adopted base: entries 0..=2 in term 1 written before
+/// the mark, as an adoption renames them in.
+async fn adopted_copy(root: &Root, copies: &CopyRoot) -> u64 {
+    let opened = copies
+        .open_copy(SHARD, &root.shard_dir(), "t/ns/orders/0", config())
+        .await
+        .expect("open copy");
+    let mut log = Log::new(opened.log.clone(), Codec).expect("a Raft log");
+    append(
+        &mut log,
+        &[normal(1, 0, "a"), normal(1, 1, "b"), normal(1, 2, "c")],
+    )
+    .await
+    .expect("append")
+    .await
+    .expect("flush");
+    drop(log);
+    opened.log.close().await.expect("close");
+    crate::raft_log::adopted::store(&root.shard_dir()).expect("mark");
+    opened.copy
+}
+
+/// Open the copy as a member does: marks kept, then marked as recovered.
+async fn recovered(root: &Root, copies: &CopyRoot) -> (OpenedCopy, Log) {
+    let (opened, log) = opened(root, copies, LogMarkMode::Exact).await;
+    log.mark_recovered().await.expect("recovered");
+    (opened, log)
+}
+
+/// **A hidden base raises no mark.** openraft sees an adopted base as a
+/// blank log, so the marks do too: reopening it marks nothing, and the
+/// discard that drops it is not read as a log below its mark, which would
+/// rotate the copy as a power cut.
+#[tokio::test]
+async fn an_adopted_base_raises_no_mark_and_its_discard_keeps_the_copy() {
+    let root = Root::new();
+    let copies = root.open();
+    let copy = adopted_copy(&root, &copies).await;
+    for _ in 0..2 {
+        let (opened, log) = recovered(&root, &copies).await;
+        assert_eq!(opened.rotation, None);
+        assert_eq!(opened.copy, copy);
+        assert_eq!(root.marks_on_disk().expect("marks").log, None);
+        drop(log);
+        opened.log.close().await.expect("close");
+    }
+    crate::raft_copy::request_discard(&root.shard_dir(), 8, std::time::Duration::from_secs(3600))
+        .expect("discard");
+    let (opened, log) = recovered(&root, &copies).await;
+    assert_eq!(opened.rotation, None, "a discard is no power cut");
+    assert_eq!(opened.copy, copy);
+    assert_eq!(
+        crate::log::AppendOnlyLog::tail_offset(&opened.log)
+            .await
+            .expect("tail"),
+        0
+    );
+    drop(log);
+    opened.log.close().await.expect("close");
+}
+
+/// Once the install purges over the base the marks follow the log as any
+/// copy's: a reopen marks the entry written past the gap.
+#[tokio::test]
+async fn an_installed_base_is_marked_as_any_log() {
+    let root = Root::new();
+    let copies = root.open();
+    let copy = adopted_copy(&root, &copies).await;
+    let (opened, mut log) = recovered(&root, &copies).await;
+    log.purge(log_id(2, 7)).await.expect("purge");
+    append(&mut log, &[normal(3, 8, "next")])
+        .await
+        .expect("append")
+        .await
+        .expect("flush");
+    assert_eq!(root.marks_on_disk().expect("marks").log, Some(point(3, 8)));
+    drop(log);
+    opened.log.close().await.expect("close");
+
+    let (opened, log) = recovered(&root, &copies).await;
+    assert_eq!(opened.rotation, None);
+    assert_eq!(opened.copy, copy);
+    assert_eq!(root.marks_on_disk().expect("marks").log, Some(point(3, 8)));
+    drop(log);
+    opened.log.close().await.expect("close");
+}

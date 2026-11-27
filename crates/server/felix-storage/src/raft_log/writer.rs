@@ -228,6 +228,14 @@ where
             return Ok(());
         }
         let first = earlier.first().map_or(batch.first, |batch| batch.first);
+        // openraft is shown no entry until the gap snapshot installs, and
+        // the install's purge runs before any later append.
+        if shared.bounds.lock().shown_from.is_some() {
+            return Err(invalid(format!(
+                "{}: an append at index {first} before a snapshot installed over the adopted base",
+                log.label()
+            )));
+        }
 
         let tail = match shared.hides() {
             Some(snapshots) => {
@@ -511,6 +519,17 @@ where
             index,
             generation: generation_of(term)?,
         };
+        if shared
+            .bounds
+            .lock()
+            .shown_from
+            .is_some_and(|end| index.saturating_add(1) < end)
+        {
+            return Err(invalid(format!(
+                "{}: asked to purge through index {index}, inside the adopted base",
+                log.label()
+            )));
+        }
         if let Some(snapshots) = shared.hides() {
             return shared.purge_hiding(snapshots, purged).await;
         }
@@ -541,6 +560,20 @@ where
             )));
         }
         shared.check_held(purged).await?;
+        // A learner that pulled a re-formed group's base is then sent the
+        // snapshot at the gap's end, and openraft purges through it. The
+        // base stays below the purged id, as on a re-formed voter: the
+        // stream still serves it, and the epoch's first append opens the gap.
+        let tail = log.tail_now();
+        if index.saturating_add(1) >= tail
+            && log.base_offset() < tail
+            && matches!(
+                reform_gap(log.dir(), tail, index.saturating_add(1)).await?,
+                GapCheck::Gap
+            )
+        {
+            return shared.store_purged(purged).await;
+        }
         shared.remove_through(purged, true).await
     }
 }

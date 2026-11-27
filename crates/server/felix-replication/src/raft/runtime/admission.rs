@@ -230,7 +230,7 @@ fn sender(body: &Request) -> Option<&MemberId> {
         Request::Vote(vote) | Request::PreVote(vote) => Some(vote.vote.leader_id().node_id()),
         Request::Snapshot { vote, .. } => Some(vote.leader_id().node_id()),
         Request::TransferLeader(transfer) => Some(transfer.from_leader().leader_id().node_id()),
-        Request::Written { from, .. } => Some(from),
+        Request::Written { from, .. } | Request::BasePull { from, .. } => Some(from),
         Request::ReadIndex | Request::Watched => None,
     }
 }

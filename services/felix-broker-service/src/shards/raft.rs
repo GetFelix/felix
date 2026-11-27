@@ -1746,6 +1746,9 @@ impl EngineShards for RaftShards {
                             && self.runtime.status(key).is_some_and(|status| {
                                 status.term == 0 && status.last_index.is_none()
                             })
+                            // A learner's staged base shows as no entries
+                            // too; the loop below reopens it.
+                            && !self.runtime.base_staged(key)
                     })
                     .cloned()
                     .collect()
@@ -1756,6 +1759,24 @@ impl EngineShards for RaftShards {
                     continue;
                 };
                 tracing::info!(shard = ?key, "re-forming a held one-replica shard: what kept it from re-forming at its open has cleared");
+                self.close_with_stream(&key, member).await;
+            }
+            // A learner adopts a staged re-formed base, or drops a held one
+            // it cannot use, only as it opens, so it is closed here and
+            // opened below.
+            let staged: Vec<ShardKey> = open
+                .keys()
+                .filter(|key| self.runtime.base_staged(key))
+                .cloned()
+                .collect();
+            for key in staged {
+                // A learner is no held group of one, so the retry above must
+                // not close what this reopens.
+                self.alone_later.lock().remove(&key);
+                let Some(member) = open.remove(&key) else {
+                    continue;
+                };
+                tracing::info!(shard = ?key, "a Raft learner's re-formed base changed; it opens again to adopt or drop it");
                 self.close_with_stream(&key, member).await;
             }
             self.restarts.lock().retain(|key| fed.contains_key(key));

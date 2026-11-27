@@ -215,7 +215,21 @@ fn every_request() -> Vec<RaftRequest> {
             }))
         },
         request(Request::ReadIndex),
+        request(Request::BasePull {
+            from: member("c"),
+            start: 12,
+            max_bytes: 1 << 20,
+            max_count: 64,
+        }),
     ]
+}
+
+/// The entries of the append in [`every_request`], records among them.
+fn some_entries() -> Vec<EntryOf<ShardTypes>> {
+    match every_request().swap_remove(1).body {
+        Request::Append(rpc) => rpc.entries,
+        _ => unreachable!(),
+    }
 }
 
 fn addressee() -> Box<Addressee> {
@@ -264,6 +278,14 @@ fn every_reply() -> Vec<Result<RaftReply, Refused>> {
         Ok(RaftReply(Reply::Written)),
         Ok(RaftReply(Reply::ReadIndex { index: Some(42) })),
         Ok(RaftReply(Reply::ReadIndex { index: None })),
+        Ok(RaftReply(Reply::Base {
+            floor: 3,
+            entries: some_entries(),
+        })),
+        Ok(RaftReply(Reply::Base {
+            floor: 9,
+            entries: Vec::new(),
+        })),
         Err(Refused::Unreachable("down".into())),
         Err(Refused::NoSuchMember(addressee())),
         Err(Refused::Stopped(addressee(), "fatal".into())),
@@ -337,6 +359,23 @@ fn every_reply_reads_back_as_written() {
                 Ok(RaftReply(Reply::ReadIndex { index: a })),
                 Ok(RaftReply(Reply::ReadIndex { index: b })),
             ) => assert_eq!(a, b),
+            (
+                Ok(RaftReply(Reply::Base {
+                    floor: a,
+                    entries: x,
+                })),
+                Ok(RaftReply(Reply::Base {
+                    floor: b,
+                    entries: y,
+                })),
+            ) => {
+                assert_eq!(a, b);
+                assert_eq!(x.len(), y.len());
+                for (x, y) in x.iter().zip(y) {
+                    assert_eq!(x.log_id, y.log_id);
+                    assert!(x.payload == y.payload, "{:?}", x.payload);
+                }
+            }
             (Err(a), Err(b)) => assert_eq!(a.to_string(), b.to_string()),
             _ => panic!("an answer read back as another kind"),
         }
@@ -1352,4 +1391,46 @@ fn the_stated_layouts_are_the_ones_written_and_read() {
             "layout {layout}"
         );
     }
+}
+
+/// A base pull goes as request tag 11 and its answer as tag 9. An answer
+/// naming more entries than a chunk may hold is refused before any is read.
+#[test]
+fn a_base_pull_reads_back_under_its_tags_and_its_cap() {
+    let asked = encode_request(&request(Request::BasePull {
+        from: member("c"),
+        start: 12,
+        max_bytes: 7,
+        max_count: 5,
+    }))
+    .expect("encode");
+    assert_eq!(asked[1], 11);
+    let Request::BasePull {
+        from,
+        start,
+        max_bytes,
+        max_count,
+    } = decode_request(asked).expect("decode").body
+    else {
+        panic!("not a base pull");
+    };
+    assert_eq!((from, start, max_bytes, max_count), (member("c"), 12, 7, 5));
+
+    let answer = encode_reply(&Ok(RaftReply(Reply::Base {
+        floor: 3,
+        entries: Vec::new(),
+    })));
+    assert_eq!(answer[1], 9);
+    let blank = EntryOf::<ShardTypes>::new_blank(log_id(2, 8));
+    let mut body = BytesMut::new();
+    body.put_u8(LAYOUT);
+    body.put_u8(9);
+    body.put_u64(3);
+    let over = crate::raft::base_pull::MAX_BASE_ENTRIES + 1;
+    body.put_u32(over);
+    for _ in 0..over {
+        put_entry(&mut body, &blank).expect("entry");
+    }
+    let err = decode_reply(body.freeze()).err().expect("refused");
+    assert!(err.to_string().contains("base entries"), "{err}");
 }

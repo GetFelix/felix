@@ -1722,8 +1722,7 @@ Questions, 10.
 the base, that copy is the only voter and the rest are learners. The leader
 promotes each learner by a membership change as soon as it has caught up.
 A cache learner catches up from the leader's snapshot. A stream learner
-cannot yet: the snapshot at the gap's end carries no records, so the learner
-refuses it and stays a learner (#3005).
+first pulls the base, as the next section describes.
 Until the voters are again a majority of the placed set, the control plane
 shows the shard as under-replicated and does not count it as RF 3, and a
 `Quorum` acknowledgement rests on as many copies as there are voters,
@@ -1731,6 +1730,84 @@ which can be one. The same holds for a switch that started with two voters.
 
 The control plane is on this path. It already is for placement, and a
 group that needs re-forming is not serving.
+
+#### A new member of a re-formed group
+
+A re-formed stream group's leader holds the base, then the gap, then the
+new epoch. Its snapshot at the gap's end carries the group's state but no
+records, since a shard snapshot travels in memory under a 1 GiB cap. A
+blank learner that installed it would serve nothing below the gap, so it
+refuses it and gets the records first:
+
+1. **The refused snapshot starts a pull.** The learner asks one voter at a
+   time for the base, from the snapshot's floor (0 for a stream never
+   trimmed) to the base's last entry, in chunks of at most 4,096 entries
+   or 8 MiB. Only a voter that offers `RAFT_BASE_PULL`
+   ([internal protocol](internal-protocol.md)) is asked; a voter built
+   before it is never sent the message. A voter reads the chunk from its
+   log alone, below its purged id, and serves nothing past the base. Base
+   entries are committed and never change.
+2. **Each entry is checked and staged.** The learner checks every entry's
+   index and term against the base it was started with. A mismatch, a
+   refusal or a timeout drops everything staged from that voter and moves
+   to the next, so the staged log never mixes two voters. Eight passes
+   over the voters, with a growing wait, before the pull gives up; the
+   next refused snapshot starts another. The staged log is synced and
+   marked whole.
+3. **The member reopens and adopts it.** The broker closes the member and
+   opens it again. The open renames the staged segments into the empty
+   log under a marker, so a crash leaves the copy blank or rolls forward.
+   A copy that took a snapshot or entries in the meantime caught up
+   another way, and its staged log is discarded instead. The adopted log
+   is marked `raft-base-adopted`, and while that mark is there Raft is
+   shown an empty log: no entry, no last log id, no purged id, as on a
+   blank learner. Raft cannot append to, truncate or purge into the base,
+   and the learner reports nothing from it in an election. The mark is on
+   disk, so a restart before the install keeps the base hidden. A
+   re-form's survey reads such a copy, current or kept, as blank too, so
+   a plan never counts it or takes it as a source.
+4. **The gap snapshot installs over the base.** It now skips only the
+   gap, so the learner takes it, acknowledges it, and the leader appends
+   the epoch from the first index and promotes the learner. The install's
+   purge through the gap's end writes the purged id with the base kept
+   below it, then drops the mark: from there the copy looks like a
+   re-formed voter. A base pulled from a floor above 0 works the same
+   way, and the learner keeps the floor the snapshot carries.
+
+Before it holds the base, a learner installs no gap snapshot, is not
+promoted, does not vote, serves no reads and counts toward no commit.
+A normal snapshot can still catch it up: once the leader has trimmed and
+purged past the gap, its snapshot installs as for any member behind a
+purge, and a pull still running is stopped and its staged log dropped.
+
+What an operator sees while a learner pulls: the shard stays
+under-replicated, the learner's broker logs the pull's end at `info`
+(staged) or `warn` (no voter served it, or the voters' floor is past the
+base), and each voter that refuses a chunk logs why at `warn`. A learner
+that holds its base and still cannot install the snapshot (its log starts
+above the snapshot's floor, its epoch file names an older base, or the
+leader's snapshot no longer ends at the gap) logs why every 30 seconds
+and counts `felix_broker_raft_held_base_refusals_total{reason}`. After it
+has been refused for two seconds it drops the base at its next open and
+pulls again; each later drop waits twice as long, up to a minute, and an
+epoch gets four. The count is kept in the copy's directory, so a reopen
+does not reset it. After that the learner keeps its base, logs once at
+`warn` that it gave up copying the base for this epoch, and the refusal
+warning repeats until an operator looks.
+
+A head trim inside the base does not free a re-formed voter's disk. Its
+purged id sits at the gap's end, so a purge at or below it removes
+nothing, and the base's segments stay until the floor passes the gap and
+a purge runs past it. Dropping them earlier would raise the floor the
+voter serves the base from above the one the gap snapshot carries, and a
+new learner could then never install it.
+
+> `services/felix-broker-service/src/shards/raft/tests/reform.rs`,
+> `a_re_formed_stream_learner_pulls_its_base_and_joins`,
+> `a_learner_of_a_stream_trimmed_before_its_re_form_joins`,
+> `a_learner_without_its_base_never_joins`,
+> `a_learner_abandons_a_voter_serving_another_history` and
+> `a_learner_caught_up_by_a_snapshot_mid_pull_drops_the_pull`
 
 ### Abandoning a lost group
 
@@ -5481,11 +5558,11 @@ move from an older control plane added:
   a joint change that needs its vote as well. Two voters are never less
   durable than one, so the top-up still adds one copy at a time.
 - The replication count counts copies the group reports voting. A stream
-  learner a re-form started cannot catch up across the re-form's gap yet
-  (#3005), so a re-formed stream group stays below its factor, shows as
-  under-replicated, and waits each pass for its group to report voters
-  that keep a majority of the next set. Only that shard's leader balance
-  stops; the rest of the pass goes on.
+  learner a re-form started counts once it has pulled the base and been
+  promoted ("A new member of a re-formed group"). Until then the shard
+  shows as under-replicated and waits each pass for its group to report
+  voters that keep a majority of the next set. Only that shard's leader
+  balance stops; the rest of the pass goes on.
 - A balance pass gives a seat to a live broker outside the set when it
   leads two fewer than the shard's leader and no member does (#3113). A
   broker a drain swapped out of every set, then restarted, is that broker:
@@ -6111,6 +6188,7 @@ before.
 | `felix_broker_raft_membership_steps_total{step="placed_transfer"}` | Placement transfers asked |
 | `felix_broker_raft_placed_transfers_total` | By `outcome`: `landed` (this member stopped leading), `failed` (it still led a later term), `held` (counted once per reason, `why`: `unsettled`, `lagging`, `degraded`, `budget`) |
 | `felix_broker_raft_snapshot_unsendable_total` | Snapshot sends a leader refused, one per attempt, because the snapshot was over the 1 GiB a member takes, for stream and cache groups; each is also logged with the group and member, once a minute per member ("How big a cache group gets") |
+| `felix_broker_raft_held_base_refusals_total` | Gap snapshots a re-formed stream group's learner refused although it held its pulled base, by `reason`: `held_above_floor`, `floor_past_base`, `not_gap_end` or `unreadable` ("A new member of a re-formed group") |
 
 #### Where a target comes from
 

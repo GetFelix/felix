@@ -187,6 +187,11 @@ impl PeerCapabilities {
     ///
     /// [`HelloOk::raft_layouts`]: super::HelloOk::raft_layouts
     pub const RAFT_LAYOUTS: Self = Self(1 << 29);
+    /// Serves a re-formed stream group's base, the records from the floor
+    /// through the base's last entry, to a learner that asks for it in
+    /// bounded chunks. Offered with `RAFT`; a learner pulls only from a
+    /// voter that offers it, and with none stays a learner.
+    pub const RAFT_BASE_PULL: Self = Self(1 << 30);
 
     pub fn from_bits(bits: u64) -> Self {
         Self(bits)

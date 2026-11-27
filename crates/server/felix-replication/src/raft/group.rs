@@ -187,6 +187,9 @@ pub(crate) struct Group {
     /// the runtime's shutdown. A publish that looked the group up earlier
     /// then refuses as if it had found no group.
     released: AtomicBool,
+    /// A stream learner's pull of its re-formed base, at most one at a
+    /// time. See [`super::base_pull`].
+    base_pull: Arc<super::base_pull::PullState>,
     /// The shard's publish queue, in commit order. Its task starts with the
     /// first publish, so a group that takes none has none.
     proposals: OnceLock<mpsc::UnboundedSender<Proposal>>,
@@ -635,6 +638,9 @@ impl Hold {
 /// the next interval, across every group: a label per group would be a label
 /// per shard.
 pub(super) const DROPPED_TICKS_TOTAL: &str = "felix_broker_raft_dropped_ticks_total";
+/// Gap snapshots a learner refused although it held its re-formed base, by
+/// why the base does not match.
+pub(super) const HELD_BASE_REFUSALS_TOTAL: &str = "felix_broker_raft_held_base_refusals_total";
 
 /// Counts a timer check that was dropped before the group took it.
 pub(super) struct Dropped<'a>(pub(super) Option<&'a AtomicU64>);
@@ -978,6 +984,7 @@ impl Group {
             leads_since: parking_lot::Mutex::new(None),
             stopped: AtomicBool::new(false),
             released: AtomicBool::new(false),
+            base_pull: Arc::default(),
             proposals: OnceLock::new(),
             client_writes: Arc::default(),
             stop,
@@ -1675,7 +1682,8 @@ impl Group {
             Request::Snapshot { .. }
             | Request::Written { .. }
             | Request::ReadIndex
-            | Request::Watched => false,
+            | Request::Watched
+            | Request::BasePull { .. } => false,
         };
         if held && asks {
             // Dropped, not refused: the candidate asks again at its next
@@ -1691,9 +1699,14 @@ impl Group {
         match body {
             Request::Append(rpc) => {
                 self.lease.named(term_of(&rpc.vote));
-                self.raft
-                    .append_entries(rpc)
-                    .await
+                let entries = !rpc.entries.is_empty();
+                let answer = self.raft.append_entries(rpc).await;
+                // A member that took entries is no longer blank: a base it
+                // pulled must not replace them.
+                if entries && matches!(answer, Ok(Ok(_))) {
+                    self.base_pull.abandon();
+                }
+                answer
                     .map(Reply::Append)
                     .map_err(|err| stopped(err.to_string()))
             }
@@ -1739,7 +1752,19 @@ impl Group {
                     }
                     Piece::Whole(snapshot) if self.id.shard.kind == ShardKind::Stream => {
                         let bytes = Bytes::from(snapshot);
-                        if let Err(why) = stream_installable(&meta, &bytes) {
+                        let mut installable = stream_installable(&meta, &bytes, None);
+                        if installable.is_err() {
+                            let held = self.held_base().await;
+                            installable = stream_installable(&meta, &bytes, held);
+                            match (held, &installable) {
+                                (None, Err(_)) => self.pull_base(&meta, &bytes),
+                                (Some(held), Err(why)) => {
+                                    self.held_base_refused(held, &meta, &bytes, why).await;
+                                }
+                                _ => {}
+                            }
+                        }
+                        if let Err(why) = installable {
                             tracing::error!(group = %self.id, member = %self.member, upto = ?meta.last_log_id, "refused a snapshot: {why}");
                             return Err(Refused::NoSnapshots(Box::new(Addressee {
                                 group: self.id.clone(),
@@ -1751,6 +1776,9 @@ impl Group {
                             restored: None,
                         };
                         self.hold.vote_may_change(Some(&vote));
+                        // Before the install, so a pull finishing under it
+                        // never signals a base to adopt over it.
+                        self.base_pull.abandon();
                         self.raft
                             .install_full_snapshot(vote, Snapshot { meta, snapshot })
                             .await
@@ -1819,7 +1847,180 @@ impl Group {
                 self.mark_watched();
                 Ok(Reply::Watched)
             }
+            Request::BasePull {
+                from,
+                start,
+                max_bytes,
+                max_count,
+            } => self.serve_base(&from, start, max_bytes, max_count).await,
         }
+    }
+
+    /// Start pulling this copy's re-form base, refused with the snapshot
+    /// `bytes`, from the snapshot's voters. Off the apply path, and never two
+    /// at once: the snapshot comes again while one runs. Once the base is
+    /// staged, [`Self::base_staged`] tells the runtime to reopen the member,
+    /// so the open adopts it.
+    fn pull_base(
+        &self,
+        meta: &openraft::type_config::alias::SnapshotMetaOf<ShardTypes>,
+        bytes: &[u8],
+    ) {
+        // No floor means the stream was never trimmed: the base starts at
+        // the log's start, and a voter's chunk raises it to what it serves.
+        let Ok(snapshot) = super::stream_snapshot::StreamSnapshot::decode(bytes) else {
+            return;
+        };
+        let floor = snapshot.purge.map_or(0, |purge| purge.floor);
+        let voters: Vec<MemberId> = meta
+            .last_membership
+            .membership()
+            .voter_ids()
+            .filter(|voter| *voter != self.member)
+            .collect();
+        let source = super::base_pull::TransportSource {
+            transport: Arc::clone(&self.transport),
+            group: self.id.clone(),
+            reform_epoch: self.reform_epoch,
+            from: self.member.clone(),
+            deadline: Duration::from_millis(self.pace.timers.election_max),
+        };
+        let dir = self.log.disk_log().dir().to_path_buf();
+        let config = self.log.disk_log().config().clone();
+        super::base_pull::spawn(
+            &self.runtime,
+            Arc::clone(&self.base_pull),
+            source,
+            voters,
+            dir,
+            config,
+            floor,
+            self.stop.clone(),
+            format!("{} of {}", self.member, self.id),
+        );
+    }
+
+    /// What this member's log holds of its copy's latest re-form base, when
+    /// it ends exactly at the base's last entry in the base's term. A learner
+    /// holds that once it has adopted a pulled base.
+    async fn held_base(&self) -> Option<HeldBase> {
+        let dir = self.log.disk_log().dir().to_path_buf();
+        let base =
+            felix_common::blocking::spawn(move || felix_storage::raft_copy::latest_base(&dir))
+                .await
+                .ok()?
+                .ok()??;
+        let last = base.base_last?;
+        // Below what openraft is shown: an adopted base is hidden from it
+        // until this install.
+        let entries = self
+            .log
+            .reader()
+            .base_page(last.index, last.index.saturating_add(2))
+            .await
+            .ok()?;
+        let [entry] = entries.as_slice() else {
+            return None;
+        };
+        (entry.log_id.index == last.index && entry.log_id.leader_id.term == last.term).then(|| {
+            HeldBase {
+                first: self.log.disk_log().base_offset(),
+                last: last.index,
+                first_index: base.first_index,
+            }
+        })
+    }
+
+    /// The gap snapshot was refused although this copy holds a base, which
+    /// no later snapshot of this epoch will match either. Logged and
+    /// counted, rate-limited; once refused long enough the base is dropped
+    /// at the next open so a pull runs again, a bounded number of times per
+    /// epoch with a growing wait. See `docs/per-shard-raft.md`, "A new
+    /// member of a re-formed group".
+    async fn held_base_refused(
+        &self,
+        held: HeldBase,
+        meta: &openraft::type_config::alias::SnapshotMetaOf<ShardTypes>,
+        bytes: &[u8],
+        why: &str,
+    ) {
+        let reason = held_refusal(held, meta, bytes);
+        metrics::counter!(HELD_BASE_REFUSALS_TOTAL, "reason" => reason).increment(1);
+        let (refused_for, warn, check) = self.base_pull.held_refused();
+        if warn {
+            tracing::warn!(group = %self.id, member = %self.member, reason, refused_secs = refused_for.as_secs(), "a learner holding its re-formed base cannot install the gap snapshot: {why}");
+        }
+        if !check {
+            return;
+        }
+        let dir = self.log.disk_log().dir().to_path_buf();
+        let first_index = held.first_index;
+        let asked = felix_common::blocking::spawn(move || {
+            felix_storage::raft_copy::request_discard(&dir, first_index, refused_for)
+        })
+        .await;
+        match asked {
+            Ok(Ok(felix_storage::raft_copy::BaseDiscard::Requested(n))) => {
+                tracing::warn!(group = %self.id, member = %self.member, reason, discards = n, "dropping the held re-formed base so the learner pulls it again");
+                self.base_pull.discard();
+            }
+            Ok(Ok(felix_storage::raft_copy::BaseDiscard::Exhausted)) => {
+                if self.base_pull.exhausted() {
+                    tracing::warn!(group = %self.id, member = %self.member, reason, discards = felix_storage::raft_copy::MAX_BASE_DISCARDS, "gave up copying the re-formed base for this epoch: the gap snapshot never installed over it ({why}); the member stays a learner");
+                }
+            }
+            Ok(Ok(felix_storage::raft_copy::BaseDiscard::Wait)) => {}
+            Ok(Err(err)) => {
+                tracing::warn!(group = %self.id, member = %self.member, error = %err, "could not ask to drop the held re-formed base");
+            }
+            Err(err) => {
+                tracing::warn!(group = %self.id, member = %self.member, error = %err, "could not ask to drop the held re-formed base");
+            }
+        }
+    }
+
+    /// True once this copy must close and open again: its re-form base is
+    /// staged whole for the open to adopt, or the base it holds is to be
+    /// dropped.
+    pub(crate) fn base_staged(&self) -> bool {
+        self.base_pull.staged()
+    }
+
+    /// A chunk of this copy's re-form base for the learner `from`. Read
+    /// from the log alone, so it waits on no apply, publish or flush.
+    async fn serve_base(
+        &self,
+        from: &MemberId,
+        start: u64,
+        max_bytes: u32,
+        max_count: u32,
+    ) -> Result<Reply, Refused> {
+        if self.id.shard.kind != ShardKind::Stream {
+            return Err(Refused::Unreachable(
+                "only a stream group serves a base".into(),
+            ));
+        }
+        let dir = self.log.disk_log().dir().to_path_buf();
+        let base =
+            felix_common::blocking::spawn(move || felix_storage::raft_copy::latest_base(&dir))
+                .await
+                .map_err(|err| Refused::Unreachable(err.to_string()))?
+                .map_err(|err| Refused::Unreachable(err.to_string()))?;
+        // The oldest entry on disk, not the log's first index: a re-formed
+        // voter's purged id sits at the gap's end, with the base below it.
+        let disk = self.log.disk_log().clone();
+        let floor = move |base: u64| disk.base_offset().max(disk.floor_as_of(base));
+        let mut reader = self.log.reader();
+        let chunk = super::base_pull::serve(&mut reader, floor, base, start, max_bytes, max_count)
+            .await
+            .map_err(|why| {
+                tracing::warn!(group = %self.id, member = %self.member, learner = %from, start, "refused a base pull: {why}");
+                Refused::Unreachable(why)
+            })?;
+        Ok(Reply::Base {
+            floor: chunk.floor,
+            entries: chunk.entries,
+        })
     }
 
     /// Queue `batch` behind every batch queued before it and answer where
@@ -3281,6 +3482,44 @@ pub(super) fn purge_step(snapshot: Option<u64>, purged: Option<u64>, at: u64) ->
     Some(PurgeStep::SnapshotThenPurge)
 }
 
+/// What a member's log holds of its copy's re-form base, for a gap
+/// snapshot's install: read only when the log ends exactly at the base's
+/// last entry, in the base's term, so nothing in it is above the base.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct HeldBase {
+    /// The log's first index.
+    pub(super) first: u64,
+    /// The base's last index.
+    pub(super) last: u64,
+    /// The epoch's first index: the gap runs from `last + 1` to below it.
+    pub(super) first_index: u64,
+}
+
+/// Why the gap snapshot `bytes` does not install over the base a member
+/// holds, `held`, as a metric label: it ends somewhere other than the gap's
+/// end (a newer epoch file, or a leader whose snapshot moved on), the held
+/// log starts above the snapshot's floor, or the floor is past the base.
+pub(super) fn held_refusal(
+    held: HeldBase,
+    meta: &openraft::type_config::alias::SnapshotMetaOf<ShardTypes>,
+    bytes: &[u8],
+) -> &'static str {
+    let Ok(snapshot) = super::stream_snapshot::StreamSnapshot::decode(bytes) else {
+        return "unreadable";
+    };
+    let floor = snapshot.purge.as_ref().map_or(0, |purge| purge.floor);
+    match meta.last_log_id.as_ref() {
+        Some(last) if held.first_index.checked_sub(1) == Some(last.index) => {
+            if held.first > floor {
+                "held_above_floor"
+            } else {
+                "floor_past_base"
+            }
+        }
+        _ => "not_gap_end",
+    }
+}
+
 /// Whether a member may install the stream snapshot `bytes`: only when every
 /// entry it skips is below the floor the snapshot itself carries, so the
 /// member drops nothing a reader could still be served. The member's own
@@ -3288,17 +3527,33 @@ pub(super) fn purge_step(snapshot: Option<u64>, purged: Option<u64>, at: u64) ->
 /// records the sender still serves. A snapshot without purge floors (one no
 /// purge wrote) is never installable. See `docs/per-shard-raft.md`
 /// ("Purging below the floor").
+///
+/// The one other install is a re-form's gap snapshot, which ends at the
+/// gap's end and carries a floor at or below the base: it skips nothing
+/// still served only when the member `held` every entry from that floor
+/// through the base, and the rest up to the snapshot is the gap.
 pub(super) fn stream_installable(
     meta: &openraft::type_config::alias::SnapshotMetaOf<ShardTypes>,
     bytes: &[u8],
+    held: Option<HeldBase>,
 ) -> Result<(), String> {
     let snapshot = super::stream_snapshot::StreamSnapshot::decode(bytes)
         .map_err(|err| format!("a snapshot this member cannot read: {err}"))?;
-    let Some(purge) = snapshot.purge else {
-        return Err("taking it would purge records this member was not sent".into());
-    };
     let Some(last) = meta.last_log_id.as_ref() else {
         return Err("a stream snapshot with no last entry".into());
+    };
+    // A gap snapshot of a stream never trimmed carries no floor: its base
+    // runs from the start of the log.
+    let floor = snapshot.purge.as_ref().map_or(0, |purge| purge.floor);
+    if let Some(held) = held
+        && held.first_index.checked_sub(1) == Some(last.index)
+        && held.first <= floor
+        && floor <= held.last.saturating_add(1)
+    {
+        return Ok(());
+    }
+    let Some(purge) = snapshot.purge else {
+        return Err("taking it would purge records this member was not sent".into());
     };
     if last.index >= purge.floor {
         return Err(format!(

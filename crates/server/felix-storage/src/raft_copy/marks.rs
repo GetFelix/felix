@@ -1054,6 +1054,19 @@ impl CopyMarks {
         self.submit(Update::LowerLog(point)).await
     }
 
+    /// Stop the batch marking this copy's log. For a start, which replaces
+    /// a log no member has open. A batch that read the position before this
+    /// queued its mark already, so a later lowering lands after it.
+    pub(crate) fn forget_batched(&self) {
+        let mut sources = self.log.inner.batched.lock();
+        if sources
+            .get(&self.shard)
+            .is_some_and(|source| source.copy == self.copy)
+        {
+            sources.remove(&self.shard);
+        }
+    }
+
     /// Have the batch write this shard's flushed position from `positions`
     /// every `interval`.
     pub(crate) fn batch_from(&self, positions: watch::Receiver<LogPositions>, interval: Duration) {
