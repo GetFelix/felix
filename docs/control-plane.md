@@ -1970,15 +1970,41 @@ copy has to move:
 | Follower on a draining broker | Replaced | Replaced: one write swaps it for a live node outside the set |
 | Follower on an internal node | Replaced | Replaced, the same way |
 | Follower lost past `restore_after_millis` | Replaced | Replaced, the same way |
+| Set short of the replication factor | Topped up (a restore) | One write adds a live node outside the set (`raft_top_up`), one member at a time |
 
 A set change is one write that swaps one member for a live node outside the
 set, so the set keeps its size. The write changes the stored target, and the
 group's leader adds the new member as a learner, waits for it to catch up and
-only then swaps the voters through joint consensus, so the group never has
-fewer voters than its replication factor and never loses its quorum. When the
+only then swaps the voters through joint consensus, so a swap never leaves
+the group with fewer voters than it had and never loses its quorum. When the
 leader's own seat moves, it grows the voters to the target plus itself, hands
 leadership to a voter the target keeps, and that voter shrinks the set
 ([per-shard-raft.md](per-shard-raft.md), "The driver").
+
+A set with fewer members than its replication factor is topped up instead
+(`raft_top_up`). An abandon leaves one, since it places the leader alone, and
+so does a shard placed while too few brokers were live. Each write adds one
+live broker from outside the set, under the same checks and budget as a swap.
+The next write waits until the group reports that copy voting, and this
+repeats until the set is back at the factor. Going from one copy to three passes through two
+voters, and a group of two needs both. If the second copy's broker goes down
+before the third votes, the shard stops taking writes: the swap that would
+replace the down member needs its vote too. It comes back when that broker
+does, or when an operator re-forms the group without it
+([per-shard-raft.md](per-shard-raft.md), "Re-forming a group"). Two voters
+are never less durable than one, which is why the top-up still goes one copy
+at a time.
+
+The replication count (`felix_shards_under_replicated`, `GET
+/v1/placement/replication`) counts a Raft shard's copies its group reports
+voting, so a learner that has not caught up is not a copy. A stream learner
+started by a re-form cannot catch up yet across the re-form's gap
+([#3005](https://github.com/GetFelix/felix/issues/3005)), so until that is
+fixed a re-formed stream group stays short of its factor and is reported
+under-replicated. A shard whose newest member never votes shows as
+waiting "for the group to report voters that keep a majority of the next
+set" on every pass, and leader balance skips that shard only; other shards
+are placed as usual.
 
 For a follower, the replacement is the live node outside the set that holds
 the fewest shards, chosen to keep the set's zone spread where it can, and a
@@ -1991,6 +2017,20 @@ such node the shard waits and the set stays (`NoReplacement`), and a member
 that is down holds it too (`MemberDown`). A leader on a broker that must go is
 renamed to a live member first, and its copy is swapped out as a follower on
 a later pass.
+
+A seat whose broker dies before it opens a copy is the one exception to the
+stored target. No target is stored until every member of the set reports a
+copy, so a swap or top-up that seated such a broker never reaches the group,
+and without the exception the shard would wait on it for good
+([#3310](https://github.com/GetFelix/felix/issues/3310)). Once that broker
+is lost past `restore_after_millis`, its seat goes to another live broker
+when three things hold: no target is stored for the current set, the group
+has formed, and the voters its leader last reported at this incarnation and
+epoch do not name the broker. That write passes the same majority check on
+the reported voters as any other swap, under the same pause and budget. A
+down broker the voters do name may hold acknowledged records, and it keeps
+the usual rule: it is replaced only on a stored target, through the group's
+joint change. Without a voter report the seat waits.
 
 An operator move outside the set is refused with `set_unsettled` while the
 target is not stored for the current set or the group has not formed,
@@ -2579,8 +2619,8 @@ after the fence.
 
 | Metric | Meaning |
 | --- | --- |
-| `felix_shard_move_steps_total{step}` | move steps written: `stage`, `fence`, `cut_over`, `abandon`, `halted` (the destination halted), `timed_out`, `stalled` (a restore's copy stopped moving), `reseat`, `restore`, `seat`, `take_pending_set` (a pending replica set taken on the leader's report), `pending_set_timed_out`, `pending_set_dropped`, `pending_set_cancelled`, `pending_set_member_replaced` (one dropped), `readmit` (a replaced copy named by its new storage id and held as a learner), `election_refused` (a leader named again above a generation promised to an elected broker), `set_unknown` (a leader named again above a generation whose set before it could not learn, or that a newer ballot holds), `raft_leader` (a Raft shard's leader named another member), `raft_leader_landed` and `raft_leader_timed_out` (an operator's move of a Raft shard's leader within its set landed, or was given up after two minutes), `raft_move_dropped` (a hybrid move left on a Raft shard dropped), and an operator's `cancel`, `retake`, `discard` and `owner_replaced` (an in-memory shard given a new owner) |
-| `felix_shards_under_replicated` | shards with fewer copies on serving brokers than their replication factor; non-zero for longer than the restore delay plus a copy means no broker can take the copy, or placement is paused |
+| `felix_shard_move_steps_total{step}` | move steps written: `stage`, `fence`, `cut_over`, `abandon`, `halted` (the destination halted), `timed_out`, `stalled` (a restore's copy stopped moving), `reseat`, `restore`, `seat`, `take_pending_set` (a pending replica set taken on the leader's report), `pending_set_timed_out`, `pending_set_dropped`, `pending_set_cancelled`, `pending_set_member_replaced` (one dropped), `readmit` (a replaced copy named by its new storage id and held as a learner), `election_refused` (a leader named again above a generation promised to an elected broker), `set_unknown` (a leader named again above a generation whose set before it could not learn, or that a newer ballot holds), `raft_leader` (a Raft shard's leader named another member), `raft_leader_landed` and `raft_leader_timed_out` (an operator's move of a Raft shard's leader within its set landed, or was given up after two minutes), `raft_top_up` (a member added to a Raft shard's set short of its factor), `raft_move_dropped` (a hybrid move left on a Raft shard dropped), and an operator's `cancel`, `retake`, `discard` and `owner_replaced` (an in-memory shard given a new owner) |
+| `felix_shards_under_replicated` | shards with fewer copies on serving brokers than their replication factor (for a Raft shard, copies its group reports voting); non-zero for longer than the restore delay plus a copy means no broker can take the copy, or placement is paused |
 | `felix_shard_replicas_missing` | the copies those shards are missing between them |
 | `felix_shard_replicas_halted` | copies whose leader reports it has stopped shipping to them; counted as missing, kept out of placement, and replaced after the restore delay |
 | `felix_shard_moves_timed_out_total` | moves and follower replacements abandoned at the move timeout, operator leader moves on Raft shards given up (`raft_leader_timed_out`), and restores dropped as `stalled`; a steady count means a copy that cannot finish |
@@ -2638,6 +2678,7 @@ a move takes `node.manage:cluster:*`, the permission that drains a node.
 | `POST /v1/raft/reform/plans/{plan_id}/apply` | an operator applies a plan they read (`{"accept_loss": [<shard key>, ...]}`): each shard marked `reform` is stopped on every broker, planned again from the stopped copies, and written as its next epoch only if that plan equals the one read ("Applying a plan" in `docs/per-shard-raft.md`). A shard whose plan may lose acknowledged records is skipped unless its key is in `accept_loss`. A plan made before another plan whose epoch write for the shard went through ends `stale`: its first index would be lower. Answers `applying`, the number of shards that started; progress is each shard's `apply` in `GET /v1/raft/reform/plans/{plan_id}` (`stopping`, `writing`, `starting`, then `started`, `skipped`, `stale`, `changed`, `left_alone` or `failed`). 409 for an unknown or still-surveying plan. Takes `node.manage` on `cluster:*` |
 | `GET /v1/nodes/{node_id}/reform/surveys` | a broker reads the surveys its node is asked to answer: plan id, round, shard, incarnation, epoch and the probe indexes. Takes `node.manage` over the node |
 | `POST /v1/nodes/{node_id}/reform/reports` | a broker answers surveys (`{"reports": [{"plan_id": ..., "round": n, "key": ..., "report": ...}]}`), at most 1024. An answer counts only for the current round of its plan and only from a broker that round asked; the rest are counted as `ignored`. Answers `accepted` and `ignored`. Takes `node.manage` over the node |
+| `POST /v1/nodes/{node_id}/reform/alone` | a broker that holds the only copy of a replication factor 1 group asks for its next epoch (`{"key": <shard key>, "start": <plan>}`, the plan naming this broker alone in `voters` and `starts` with no `dead`). The epoch is written only if the group is alone on the broker: replication factor 1, only this broker placed, seeded and ordered, no set change or move in flight, the broker not declared dead, and the shard still at the plan's incarnation and epoch ("A standalone broker re-forms itself" in `docs/per-shard-raft.md`). Answers the shard as written, and the same shard for a request already written; 404 for an unknown shard; 409 otherwise, and below metadata version 55. Needs the fleet feature `raft_alone_reform` finalized before a broker sends it | Takes `node.manage` over the node, which the node's own credential holds, or over `cluster:*` |
 | `POST /v1/nodes/{node_id}/seal-report` | the seal leader reports its shard's seal: the base and the copies that hold it. Answers `accepted`, true for the one report recorded for the seal; 409 `not_sealer` from any other broker. Takes `node.manage` over the node |
 | `POST /v1/nodes/{node_id}/seal-give-up` | the seal leader gives up a seal it cannot finish, and the shard opens again at the next generation. Answers `given_up`, false when a report was already recorded or the shard moved on. Takes `node.manage` over the node |
 

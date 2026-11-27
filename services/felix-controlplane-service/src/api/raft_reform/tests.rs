@@ -52,9 +52,10 @@ async fn applying_a_plan_takes_the_cluster_operator() {
 }
 
 /// A restore plan with a gap below the minimum is refused before any plan
-/// is made, unless the operator accepts the short gap.
+/// is made, unless the operator accepts the short gap. One above the maximum
+/// is always refused.
 #[tokio::test]
-async fn a_short_offset_gap_is_refused_unless_accepted() {
+async fn an_offset_gap_outside_the_bounds_is_refused() {
     use std::sync::Arc;
 
     use axum::body::Body;
@@ -86,4 +87,65 @@ async fn a_short_offset_gap_is_refused_unless_accepted() {
     assert_eq!(call(restore(1 << 20, false)).await, StatusCode::BAD_REQUEST);
     assert_eq!(call(restore(1 << 20, true)).await, StatusCode::OK);
     assert_eq!(call(restore(1 << 40, false)).await, StatusCode::OK);
+    // A later restore or abandon assumes no epoch started further above the
+    // time line than 2^40, so a larger gap is refused even when accepted.
+    assert_eq!(
+        call(restore((1 << 40) + 1, false)).await,
+        StatusCode::BAD_REQUEST
+    );
+    assert_eq!(
+        call(restore((1 << 40) + 1, true)).await,
+        StatusCode::BAD_REQUEST
+    );
+}
+
+/// A broker asks for its own group's epoch only: a token for another node
+/// is refused before the shard is looked at, and the node's own token
+/// reaches the store, which answers an unknown shard as not found.
+#[tokio::test]
+async fn a_broker_starts_only_its_own_groups_epoch() {
+    use std::sync::Arc;
+
+    use axum::body::Body;
+    use axum::http::Request;
+    use tower::ServiceExt;
+
+    use crate::api::build_router;
+    use crate::test_support::{app_state_ready, one_shard_cluster, token};
+
+    let (store, keys) = one_shard_cluster().await;
+    let app = build_router(app_state_ready(Arc::clone(&store) as _));
+    let body = serde_json::json!({
+        "key": {
+            "tenant_id": "t1", "namespace": "ns", "stream": "orders",
+            "shard": 0, "kind": "stream"
+        },
+        "start": {
+            "incarnation": 0, "expected_epoch": 0,
+            "base": { "first_index": 1 },
+            "voters": { "broker-a": 7 }
+        }
+    })
+    .to_string();
+    let call = |bearer: String| {
+        let request = Request::post("/v1/nodes/broker-a/reform/alone")
+            .header("authorization", format!("Bearer {bearer}"))
+            .header("content-type", "application/json")
+            .body(Body::from(body.clone()))
+            .expect("request");
+        let app = app.clone();
+        async move { app.oneshot(request).await.expect("answer").status() }
+    };
+    for bearer in [
+        token(&keys, &["node.view:cluster:*"]),
+        token(&keys, &["node.manage:node:broker-b"]),
+    ] {
+        let status = call(bearer).await;
+        assert!(
+            matches!(status, StatusCode::FORBIDDEN | StatusCode::UNAUTHORIZED),
+            "{status}"
+        );
+    }
+    let own = token(&keys, &["node.manage:node:broker-a"]);
+    assert_eq!(call(own).await, StatusCode::NOT_FOUND, "no such shard");
 }

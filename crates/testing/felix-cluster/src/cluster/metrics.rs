@@ -192,15 +192,38 @@ impl Cluster {
         if !self.config.raft_brokers() {
             return self.wait_for_replication(stream, timeout).await;
         }
+        self.every_member_level(felix_client::ShardKind::Stream, stream, timeout)
+            .await
+    }
+
+    /// On Raft, wait until every running broker's member of `cache`'s shard
+    /// 0 holds the log through its leader's last entry, and return the
+    /// leader. What a test that kills the leader next waits for, in place of
+    /// the hybrid's shipped records and replica report, which a Raft cache
+    /// never makes. Fails on the hybrid.
+    pub async fn wait_for_every_cache_member_level(
+        &self,
+        cache: &str,
+        timeout: Duration,
+    ) -> Result<String> {
+        if !self.config.raft_brokers() {
+            bail!("{cache} is replicated by the hybrid, which reports no Raft members");
+        }
+        self.every_member_level(felix_client::ShardKind::Cache, cache, timeout)
+            .await
+    }
+
+    async fn every_member_level(
+        &self,
+        kind: felix_client::ShardKind,
+        name: &str,
+        timeout: Duration,
+    ) -> Result<String> {
         let budget = wait::budget(timeout);
         let deadline = Instant::now() + budget;
         loop {
-            let first = self
-                .raft_members(felix_client::ShardKind::Stream, stream)
-                .await;
-            let then = self
-                .raft_members(felix_client::ShardKind::Stream, stream)
-                .await;
+            let first = self.raft_members(kind, name).await;
+            let then = self.raft_members(kind, name).await;
             let why = match raft_leader_caught_up(&first, &then) {
                 Ok(leader) => {
                     let tail = first
@@ -220,7 +243,7 @@ impl Cluster {
                 Err(short) => short,
             };
             if Instant::now() >= deadline {
-                bail!("{stream} shard 0 had members short of its leader within {budget:?}; {why}");
+                bail!("{name} shard 0 had members short of its leader within {budget:?}; {why}");
             }
             tokio::time::sleep(Duration::from_millis(100)).await;
         }
@@ -257,7 +280,7 @@ impl Cluster {
     }
 
     /// Whether the brokers run Raft groups rather than hybrid replication.
-    pub(crate) fn raft(&self) -> bool {
+    pub fn raft(&self) -> bool {
         self.config.raft_brokers()
     }
 

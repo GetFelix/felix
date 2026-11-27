@@ -56,7 +56,7 @@ pub const COMMAND_VERSION: u16 = 1;
 /// it the next level and raises this, so nothing proposes it until every
 /// member runs that release. New fields get their level in `fields.txt`.
 /// Never lower it: members report it, and the group's level is the minimum.
-pub const METADATA_VERSION: u16 = 54;
+pub const METADATA_VERSION: u16 = 55;
 
 /// The metadata level whose members' placement acts on the internal node
 /// role ([`MetaCommand::label_level`]).
@@ -648,6 +648,14 @@ pub enum MetaCommand {
         key: ShardKey,
         start: crate::model::ReformEpochStart,
     },
+    /// Start the next epoch of a group of one on its broker's word, after
+    /// the apply checks the group is alone on `node_id`
+    /// ([`crate::store::ControlPlaneStore::start_alone_epoch`]). Level 55.
+    StartAloneEpoch {
+        key: ShardKey,
+        node_id: String,
+        start: crate::model::ReformEpochStart,
+    },
     /// Order the seal that starts a shard's switch to Raft
     /// ([`crate::store::ControlPlaneStore::seal_shard`]). Level 34.
     SealShard {
@@ -783,6 +791,13 @@ impl MetaCommand {
             {
                 34
             }
+            // Finalizing the self re-form lets a broker ask for the command
+            // that members before level 55 would refuse.
+            Self::FinalizeFleetFeature { feature, .. }
+                if feature == felix_common::fleet::RAFT_ALONE_REFORM.name() =>
+            {
+                55
+            }
             Self::RegisterNodeInFleet { .. } | Self::FinalizeFleetFeature { .. } => 2,
             // Writes a generation the store did not pick, which a member
             // before level 21 cannot apply.
@@ -814,6 +829,9 @@ impl MetaCommand {
             // A member before level 51 would refuse the entry and keep the
             // old epoch where the others start the next one.
             Self::StartReformedEpoch { .. } => 51,
+            // A member before level 55 would refuse the entry and keep the
+            // old epoch where the others start the next one.
+            Self::StartAloneEpoch { .. } => 55,
             // Listed, not a wildcard: a new variant must pick its level.
             Self::CreateTenant { .. }
             | Self::DeleteTenant { .. }
@@ -1200,6 +1218,8 @@ pub fn settle_for_level(command: &[u8], level: u16) -> Result<Option<Vec<u8>>, V
             "an audit record"
         } else if gated == REFORM_EPOCH_OP {
             "a Raft group's re-form"
+        } else if gated == REFORM_ALONE_OP {
+            "a group of one's self re-form"
         } else {
             "a shard's switch to Raft"
         };
@@ -1365,6 +1385,9 @@ const RECORD_AUDIT_OP: &str = "record_audit";
 /// A re-form's epoch compare and swap, by op.
 const REFORM_EPOCH_OP: &str = "start_reformed_epoch";
 
+/// A group of one's self re-form, by op.
+const REFORM_ALONE_OP: &str = "start_alone_epoch";
+
 /// Whether `op` is refused below its level and otherwise appended as sent.
 fn is_gated(op: &str) -> bool {
     SWITCH_OPS.contains(&op)
@@ -1373,6 +1396,7 @@ fn is_gated(op: &str) -> bool {
         || op == DECLARE_DEAD_OP
         || op == RECORD_AUDIT_OP
         || op == REFORM_EPOCH_OP
+        || op == REFORM_ALONE_OP
 }
 
 /// A command's op. Decoded owned, so an escaped spelling still counts.

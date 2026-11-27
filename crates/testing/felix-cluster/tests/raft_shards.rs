@@ -11,9 +11,12 @@
 //! ```
 use std::time::Duration;
 
-use felix_cluster::{Cluster, ClusterConfig, StreamSpec};
+use felix_cluster::{Cluster, ClusterConfig, Fault, StreamSpec};
 use felix_wire::{AckMode, ErrorCode, RetryClass};
 use serial_test::serial;
+
+#[path = "raft_shards/reform.rs"]
+mod reform;
 
 const STREAM: &str = "orders";
 const OPT_IN: &str = "FELIX_TEST_RAFT_SHARDS";
@@ -2626,6 +2629,331 @@ async fn a_drained_brokers_follower_copy_is_replaced_so_the_broker_can_go() {
     if let Err(wrong) = sent.check(&outsider, &held) {
         panic!("{wrong}");
     }
+    cluster.shutdown().await;
+}
+
+/// Placement's policy once a test kills a broker: one that has been down a
+/// second is lost, so its seat is refilled.
+fn refilling() -> felix_controlplane_service::cluster::placement::MovePolicy {
+    felix_controlplane_service::cluster::placement::MovePolicy {
+        restore_after_millis: Some(1_000),
+        ..Default::default()
+    }
+}
+
+/// One placement pass under [`refilling`].
+async fn refill_pass(cluster: &Cluster) {
+    cluster
+        .control_plane
+        .as_ref()
+        .expect("control plane running")
+        .place_shards_with(refilling())
+        .await;
+}
+
+/// Steps placement until `done(leader, followers)` holds of the stored set.
+async fn place_until(
+    cluster: &Cluster,
+    what: &str,
+    within: Duration,
+    done: impl Fn(&str, &[String]) -> bool,
+) {
+    let waited = felix_cluster::wait::until(within, what, || async {
+        refill_pass(cluster).await;
+        let (leader, replicas, _) = stored_set(cluster).await;
+        done(&leader, &replicas)
+    })
+    .await;
+    if let Err(err) = waited {
+        panic!(
+            "{what}: {err:#}; the stored set is {:?}",
+            stored_set(cluster).await
+        );
+    }
+}
+
+/// Asserts `node` holds every acknowledged record of `sent` exactly once,
+/// and nothing a refusal promised was not written.
+async fn assert_holds_acknowledged(cluster: &Cluster, node: &str, sent: &Sent) {
+    let owed: Vec<Vec<u8>> = sent
+        .acked
+        .iter()
+        .map(|(_, payload)| payload.clone())
+        .collect();
+    let held = replay_holding(cluster, node, &owed).await;
+    for (offset, payload) in &sent.acked {
+        assert_eq!(
+            copies(&held, payload),
+            1,
+            "{node} lost {:?}, acknowledged at offset {offset}",
+            String::from_utf8_lossy(payload)
+        );
+    }
+    if let Err(wrong) = sent.check(node, &held) {
+        panic!("{wrong}");
+    }
+}
+
+/// **A failover that brings in a spare broker loses nothing a majority of
+/// the old set acknowledged.** Four brokers, one three-copy shard. The
+/// leader acknowledges records held by itself and one follower while the
+/// other follower is cut off from it, then dies. The group elects among
+/// the followers, placement swaps the dead leader's seat for the spare, and
+/// once the group reports the new voters, the new leader and the spare hold
+/// every acknowledged record.
+#[tokio::test]
+#[serial]
+async fn a_raft_failover_onto_a_spare_broker_keeps_what_the_old_set_acknowledged() {
+    if !opted_in() {
+        return;
+    }
+    let converged_within = Duration::from_secs(180);
+    let mut cluster = Cluster::start(four_broker_raft_cluster())
+        .await
+        .expect("start cluster");
+    allow_follower_reads(&cluster).await;
+    let (old, followers, _) = stored_set(&cluster).await;
+    let mut members = followers.clone();
+    members.push(old.clone());
+    voters_become(&cluster, &members, converged_within).await;
+    let spare = cluster
+        .node_ids()
+        .into_iter()
+        .find(|node| !members.contains(node))
+        .expect("a broker outside the set");
+    let (lagging, other) = (followers[0].clone(), followers[1].clone());
+
+    let mut sent = Sent::default();
+    publish_tried(&cluster, &old, "before", &mut sent).await;
+    cluster
+        .wait_for_every_member_level(STREAM, Duration::from_secs(60))
+        .await
+        .expect("every member holds it");
+    // What follows is acknowledged on {old, other}.
+    cluster
+        .inject(&Fault::Refuse {
+            node: old.clone(),
+            peers: vec![lagging.clone()],
+        })
+        .await
+        .expect("cut the lagging follower off");
+    for i in 0..5 {
+        publish_tried(&cluster, &old, &format!("on-a-majority-{i}"), &mut sent).await;
+    }
+    cluster.kill_node(&old).expect("kill the old leader");
+
+    place_until(
+        &cluster,
+        "placement to seat the spare for the dead leader",
+        converged_within,
+        |leader, replicas| {
+            *leader != old
+                && !replicas.contains(&old)
+                && (*leader == spare || replicas.contains(&spare))
+        },
+    )
+    .await;
+    voters_become(
+        &cluster,
+        &[lagging.clone(), other.clone(), spare.clone()],
+        converged_within,
+    )
+    .await;
+    let (new, _, _) = stored_set(&cluster).await;
+    publish_tried(&cluster, &new, "after", &mut sent).await;
+    for node in [&new, &spare] {
+        assert_holds_acknowledged(&cluster, node, &sent).await;
+    }
+    cluster.shutdown().await;
+}
+
+/// **A lost follower is replaced, and the shard gets back to three copies,
+/// even when the first broker it is copied to dies mid-copy.** Five brokers,
+/// one three-copy shard. A follower is killed; once it has been gone past the
+/// restore delay, placement swaps in a spare. That spare is killed before the
+/// swap is reported, so placement swaps in the other spare. The group ends
+/// with three live voters, and the new member holds every record
+/// acknowledged before the loss, as the leader after a hand-over.
+#[tokio::test]
+#[serial]
+async fn a_raft_lost_follower_is_restored_even_when_its_first_replacement_dies() {
+    if !opted_in() {
+        return;
+    }
+    let converged_within = Duration::from_secs(180);
+    let mut cluster = Cluster::start(ClusterConfig {
+        nodes: 5,
+        ..raft_cluster()
+    })
+    .await
+    .expect("start cluster");
+    allow_follower_reads(&cluster).await;
+    let (leader, followers, _) = stored_set(&cluster).await;
+    let mut members = followers.clone();
+    members.push(leader.clone());
+    voters_become(&cluster, &members, converged_within).await;
+    let (lost, kept) = (followers[0].clone(), followers[1].clone());
+    let spares: Vec<String> = cluster
+        .node_ids()
+        .into_iter()
+        .filter(|node| !members.contains(node))
+        .collect();
+    assert_eq!(spares.len(), 2, "two brokers outside the set");
+
+    let mut sent = Sent::default();
+    publish_tried(&cluster, &leader, "before", &mut sent).await;
+    for i in 0..20 {
+        publish_tried(&cluster, &leader, &format!("acknowledged-{i}"), &mut sent).await;
+    }
+
+    cluster.kill_node(&lost).expect("kill a follower");
+    felix_cluster::wait::until(Duration::from_secs(20), "the follower down", || async {
+        cluster
+            .placeable_nodes()
+            .await
+            .is_ok_and(|live| !live.contains(&lost))
+    })
+    .await
+    .expect("the follower is marked down");
+
+    place_until(
+        &cluster,
+        "placement to copy the lost follower's seat to a spare",
+        converged_within,
+        |leader, replicas| {
+            spares
+                .iter()
+                .any(|spare| leader == spare.as_str() || replicas.contains(spare))
+        },
+    )
+    .await;
+    let (now_leader, now_followers, _) = stored_set(&cluster).await;
+    let first = spares
+        .iter()
+        .find(|spare| **spare == now_leader || now_followers.contains(spare))
+        .expect("a spare was seated")
+        .clone();
+    cluster
+        .kill_node(&first)
+        .expect("kill the first replacement");
+    let second = spares
+        .iter()
+        .find(|spare| **spare != first)
+        .expect("the other spare")
+        .clone();
+
+    place_until(
+        &cluster,
+        "placement to replace the dead replacement",
+        converged_within,
+        |leader, replicas| {
+            let nodes: Vec<&str> = std::iter::once(leader)
+                .chain(replicas.iter().map(String::as_str))
+                .collect();
+            nodes.len() == 3
+                && nodes.contains(&second.as_str())
+                && nodes.contains(&kept.as_str())
+                && !nodes.contains(&lost.as_str())
+                && !nodes.contains(&first.as_str())
+        },
+    )
+    .await;
+    let (now_leader, now_followers, _) = stored_set(&cluster).await;
+    let mut want = now_followers.clone();
+    want.push(now_leader.clone());
+    voters_become(&cluster, &want, converged_within).await;
+
+    // The new copy is complete: hand the leadership to it and read it back.
+    cluster
+        .start_move(STREAM, 0, &second)
+        .await
+        .expect("move to the restored copy");
+    felix_cluster::wait::until(converged_within, "the restored copy to lead", || async {
+        refill_pass(&cluster).await;
+        cluster
+            .metric(&second, "felix_broker_raft_shards_led")
+            .await
+            .ok()
+            .flatten()
+            .is_some_and(|led| led >= 1.0)
+    })
+    .await
+    .expect("the restored copy takes over");
+    assert_holds_acknowledged(&cluster, &second, &sent).await;
+    cluster.shutdown().await;
+}
+
+/// **Seating a replacement keeps every record the old set acknowledged.**
+/// Four brokers, one three-copy shard. The leader acknowledges records held
+/// by itself and `departing` while `lagging` and the joiner are cut off,
+/// then `departing` is drained and the joiner is named in its place. The
+/// group cannot commit that change without the joiner, so it must not seat
+/// a copy that holds nothing; once the leader dies, whoever the survivors
+/// elect holds every acknowledged record.
+#[tokio::test]
+#[serial]
+async fn a_raft_replacement_seat_keeps_what_the_old_set_acknowledged() {
+    if !opted_in() {
+        return;
+    }
+    let converged_within = Duration::from_secs(180);
+    let mut cluster = Cluster::start(four_broker_raft_cluster())
+        .await
+        .expect("start cluster");
+    allow_follower_reads(&cluster).await;
+    let (leader, followers, _) = stored_set(&cluster).await;
+    let mut members = followers.clone();
+    members.push(leader.clone());
+    voters_become(&cluster, &members, converged_within).await;
+    let (departing, lagging) = (followers[0].clone(), followers[1].clone());
+    let joiner = cluster
+        .node_ids()
+        .into_iter()
+        .find(|node| !members.contains(node))
+        .expect("a broker outside the set");
+
+    let mut sent = Sent::default();
+    publish_tried(&cluster, &leader, "before", &mut sent).await;
+    cluster
+        .wait_for_every_member_level(STREAM, Duration::from_secs(60))
+        .await
+        .expect("every member holds it");
+    // What follows is acknowledged on {leader, departing}.
+    cluster
+        .inject(&Fault::Refuse {
+            node: leader.clone(),
+            peers: vec![lagging.clone(), joiner.clone()],
+        })
+        .await
+        .expect("cut the lagging follower and the joiner off");
+    for i in 0..5 {
+        publish_tried(&cluster, &leader, &format!("on-the-old-set-{i}"), &mut sent).await;
+    }
+
+    cluster.drain_node(&departing).await.expect("drain");
+    place_until(
+        &cluster,
+        "placement to name the joiner for the drained follower",
+        Duration::from_secs(60),
+        |leader, replicas| *leader == joiner || replicas.contains(&joiner),
+    )
+    .await;
+    // Placement keeps stepping while the joiner cannot be reached.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    while tokio::time::Instant::now() < deadline {
+        refill_pass(&cluster).await;
+        tokio::time::sleep(Duration::from_millis(200)).await;
+    }
+
+    cluster.kill_node(&leader).expect("kill the leader");
+    let survivors: Vec<String> = cluster
+        .node_ids()
+        .into_iter()
+        .filter(|node| *node != leader)
+        .collect();
+    let new = leader_among(&cluster, &survivors).await;
+    publish_tried(&cluster, &new, "after", &mut sent).await;
+    assert_holds_acknowledged(&cluster, &new, &sent).await;
     cluster.shutdown().await;
 }
 

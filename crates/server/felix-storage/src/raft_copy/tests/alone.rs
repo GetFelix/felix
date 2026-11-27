@@ -127,7 +127,46 @@ async fn reform(copies: &CopyRoot, dir: &Path) -> io::Result<Aloned> {
             fold: &fold,
             member: &member,
             record: &LocalRecord,
+            floor: None,
         })
+        .await
+}
+
+async fn stop(copies: &CopyRoot, dir: &Path) -> io::Result<Option<crate::raft_copy::AlonePlan>> {
+    stop_if(copies, dir, &|_| true).await
+}
+
+/// [`stop`], stopping only for a plan `may_stop` accepts.
+async fn stop_if(
+    copies: &CopyRoot,
+    dir: &Path,
+    may_stop: &(dyn Fn(&crate::raft_copy::AlonePlan) -> bool + Sync),
+) -> io::Result<Option<crate::raft_copy::AlonePlan>> {
+    let spacing = config().index_spacing_bytes;
+    let dir_owned = dir.to_path_buf();
+    let read = move |probes: &BTreeSet<u64>, epoch: u64| {
+        build_report(&dir_owned, spacing, probes, epoch, false, &NoMemberships)
+            .map(|report| WireReport::from(&report))
+    };
+    let fold = |_copy: u64| Box::new(Fold) as Box<dyn GapFold>;
+    let member = |copy: u64| format!("{BROKER}#{copy}");
+    copies
+        .stop_alone(
+            Alone {
+                shard: SHARD,
+                dir,
+                label: LABEL,
+                incarnation: 1,
+                broker: BROKER,
+                config: &config(),
+                read: &read,
+                fold: &fold,
+                member: &member,
+                record: &LocalRecord,
+                floor: None,
+            },
+            may_stop,
+        )
         .await
 }
 
@@ -350,4 +389,254 @@ fn a_plan_is_kept_across_a_restart() {
     };
     LocalRecord.store(dir.path(), &plan).expect("store");
     assert_eq!(LocalRecord.load(dir.path()).expect("load"), Some(plan));
+}
+
+/// **The cluster's half plans and stops the copy and writes no epoch**: the
+/// control plane's record decides the epoch, so the copy stays at epoch 0
+/// until a start. A resend gets the same plan, and a crash after the stop
+/// leaves the copy stopped for it.
+#[tokio::test]
+async fn stopping_alone_plans_and_stops_without_writing_an_epoch() {
+    let (root, dir) = crashed(3).await;
+    let copies = root.open();
+    let plan = stop(&copies, &dir).await.expect("stop").expect("owed");
+    assert_eq!(plan.bases.len(), 1);
+    assert_eq!(group_epoch(&dir).expect("epoch"), None, "no epoch written");
+    assert!(
+        crate::raft_copy::stop_file::stopped(&dir)
+            .expect("stopped")
+            .is_some()
+    );
+    assert!(crate::raft_copy::start_due(&dir, 1).expect("due"));
+    let again = stop(&root.open(), &dir).await.expect("again");
+    assert_eq!(again, Some(plan.clone()), "the same plan is sent again");
+    assert_eq!(group_epoch(&dir).expect("epoch"), None);
+    // The start the control plane's record drives finishes the re-form, and
+    // nothing is owed after it.
+    let done = reform(&root.open(), &dir).await.expect("start");
+    assert_eq!(done, Aloned::Reformed { epoch: 1 });
+    assert_eq!(group_epoch(&dir).expect("epoch"), Some(1));
+    assert_eq!(stop(&root.open(), &dir).await.expect("after"), None);
+}
+
+/// **A second crash after the control plane recorded the first plan plans
+/// again, and a plan the record does not hold leaves the copy unstopped.**
+/// The first plan's epoch is recorded, so the second plan for the same
+/// epoch, under a new copy id, matches nothing and must not stop the copy:
+/// a stopped copy is one a start from the record's seed would run on.
+#[tokio::test]
+async fn stopping_alone_after_another_crash_plans_again() {
+    let (root, dir) = crashed(3).await;
+    let recorded = stop(&root.open(), &dir).await.expect("stop").expect("owed");
+    relaxed_crash(&root, 3);
+    root.witness_current_id();
+    let held = |plan: &crate::raft_copy::AlonePlan| {
+        plan.copy == recorded.copy && plan.bases == recorded.bases
+    };
+    let second = stop_if(&root.open(), &dir, &held)
+        .await
+        .expect("stop again");
+    assert_eq!(second, None, "a plan the record does not hold");
+    let planned = LocalRecord.load(&dir).expect("load").expect("a plan");
+    assert_ne!(planned.minted, recorded.minted, "planned under the new id");
+    assert_ne!(planned.copy, recorded.copy, "for the rotated copy");
+    assert!(planned.bases[0].first_index >= recorded.bases[0].first_index);
+    assert!(
+        crate::raft_copy::stop_file::stopped(&dir)
+            .expect("stopped")
+            .is_none(),
+        "the copy was stopped for a plan the record does not hold"
+    );
+    assert!(!crate::raft_copy::start_due(&dir, 1).expect("due"));
+    assert_eq!(group_epoch(&dir).expect("epoch"), None);
+}
+
+#[tokio::test]
+async fn stopping_alone_without_a_crash_owes_nothing() {
+    let root = Root::new();
+    run_state::begin(root.path(), true, None, boot(1), || false, || [9; 16]).expect("begin");
+    let dir = root.shard_dir();
+    written_copy(&root.open(), &dir, 3).await;
+    assert_eq!(stop(&root.open(), &dir).await.expect("run"), None);
+    assert!(
+        crate::raft_copy::stop_file::stopped(&dir)
+            .expect("stopped")
+            .is_none()
+    );
+}
+
+/// What a restore through the tools does to the root after the shard wrote
+/// `count` records: the id is rotated with the restore marked, and the
+/// start after it rotates once more.
+async fn restored(count: u64) -> (Root, PathBuf) {
+    let root = Root::new();
+    run_state::begin(root.path(), true, None, boot(1), || false, || [9; 16]).expect("begin");
+    let dir = root.shard_dir();
+    written_copy(&root.open(), &dir, count).await;
+    restore_again(&root, 5);
+    (root, dir)
+}
+
+fn restore_again(root: &Root, n: u8) {
+    run_state::rotate_for_restore(root.path(), [n; 16]).expect("restore");
+    run_state::begin(root.path(), true, None, boot(n), || false, || [n + 100; 16]).expect("begin");
+    root.witness_current_id();
+}
+
+fn first_indexes(dir: &Path) -> Vec<u64> {
+    crate::raft_copy::epoch_file::load(dir)
+        .expect("epoch")
+        .expect("an epoch file")
+        .bases
+        .iter()
+        .map(|base| base.first_index)
+        .collect()
+}
+
+const R: u64 = crate::raft_copy::RESTORE_OFFSETS_PER_MILLI;
+const GAP: u64 = crate::raft_copy::DEFAULT_OFFSET_GAP;
+/// How far the line must clear an earlier epoch with the default gap:
+/// 2^32 offsets, 2^18 ms (about 4.4 minutes) of clock.
+const MARGIN_MILLIS: u64 = crate::raft_copy::MIN_OFFSET_GAP / R;
+const T0: u64 = 1_800_000_000_000;
+
+/// The highest offset an epoch starting at `first` at true time `began`
+/// can have given out by `now`, at half the line's slope.
+fn last_given(first: u64, began: u64, now: u64) -> u64 {
+    first + R / 2 * (now - began)
+}
+
+/// The line epoch planned at `T0` by a clock that read `T0 + ahead`.
+fn line_epoch(ahead: u64) -> u64 {
+    R * (T0 + ahead) + GAP
+}
+
+use crate::raft_copy::alone::restored_first;
+
+/// The clock is behind the one that planned an earlier epoch on the line:
+/// the line now is below that epoch's first index, and without a refusal
+/// the max with the copy's own first index is all that kept it apart.
+#[test]
+fn a_restore_on_a_clock_behind_an_earlier_epoch_is_refused() {
+    let earlier = line_epoch(0);
+    let now = T0 - 60_000;
+    let err = restored_first(3, Some(earlier), now).expect_err("refused");
+    assert!(err.contains("clears in about 5.4 min"), "{err}");
+    assert!(err.contains("check that this clock is not behind"), "{err}");
+}
+
+/// A clock stepped back by less than the margin: one minute back, the plan
+/// comes 90 s of true time after the earlier epoch began, so the line has
+/// moved only 30 s while that epoch can have given out 45 s worth. Refused
+/// until the clock reads the margin past that epoch's plan, and the first
+/// plan let through starts past everything it gave out.
+#[test]
+fn a_clock_stepped_back_less_than_the_margin_waits_until_the_line_clears() {
+    let earlier = line_epoch(0);
+    let back = 60_000;
+    let clock = |elapsed: u64| T0 + elapsed - back;
+    let line = R * clock(90_000) + GAP;
+    assert!(
+        line < last_given(earlier, T0, T0 + 90_000),
+        "the case reuses offsets without the refusal"
+    );
+    assert!(restored_first(3, Some(earlier), clock(90_000)).is_err());
+    let through = back + MARGIN_MILLIS + 1;
+    assert!(restored_first(3, Some(earlier), clock(through - 1)).is_err());
+    let first = restored_first(3, Some(earlier), clock(through)).expect("a plan");
+    assert!(first > last_given(earlier, T0, T0 + through));
+}
+
+/// A clock stepped back by more than the margin, ten minutes: every plan
+/// while it reads below the earlier epoch's plan time plus the margin is
+/// refused, so the shard waits out the step back. Past that, the bound
+/// assumes clocks within the margin (`docs/per-shard-raft.md`).
+#[test]
+fn a_clock_stepped_back_more_than_the_margin_is_refused_while_it_reads_behind() {
+    let earlier = line_epoch(0);
+    let back = 10 * 60_000;
+    for elapsed in [1, 60_000, back, back + MARGIN_MILLIS] {
+        let clock = T0 + elapsed - back;
+        assert!(
+            restored_first(3, Some(earlier), clock).is_err(),
+            "{elapsed} ms after the earlier epoch"
+        );
+    }
+    assert!(restored_first(3, Some(earlier), T0 + MARGIN_MILLIS + 1).is_ok());
+}
+
+/// The line exactly the margin above what was given is refused; one past is
+/// taken, and starts on the line.
+#[test]
+fn a_line_exactly_the_margin_above_is_refused() {
+    let line = R * T0 + GAP;
+    let margin = crate::raft_copy::MIN_OFFSET_GAP;
+    assert!(restored_first(3, Some(line - margin), T0).is_err());
+    assert_eq!(restored_first(3, Some(line - margin - 1), T0), Ok(line));
+    // A copy that is past the line keeps its own first index.
+    assert_eq!(restored_first(line + 7, Some(0), T0), Ok(line + 7));
+    assert_eq!(restored_first(3, None, T0), Ok(line));
+}
+
+/// A restore re-forms the shard on the line, two relaxed crashes in quick
+/// succession re-form it again with no wait, since a crash's epoch starts
+/// past what the copy reserved and not on the clock, and only a second
+/// restore within the margin of the first is refused, leaving the copy
+/// unstopped.
+#[tokio::test]
+async fn crashes_right_after_a_restore_re_form_and_a_second_restore_waits() {
+    let (root, dir) = restored(3).await;
+    let copies = root.open();
+    assert_eq!(
+        reform(&copies, &dir).await.expect("restore"),
+        Aloned::Reformed { epoch: 1 }
+    );
+    let line = first_indexes(&dir)[0];
+    assert!(
+        line > GAP,
+        "the restore's epoch is on the time line: {line}"
+    );
+    for (n, epoch) in [(3, 2), (4, 3)] {
+        relaxed_crash(&root, n);
+        root.witness_current_id();
+        let copies = root.open();
+        assert_eq!(
+            reform(&copies, &dir).await.expect("crash"),
+            Aloned::Reformed { epoch },
+            "crash {n}"
+        );
+    }
+    let firsts = first_indexes(&dir);
+    // Nothing was given out in between, so each crash's epoch may start
+    // where the last did; none goes back below the line.
+    assert!(firsts.windows(2).all(|w| w[1] >= w[0]), "{firsts:?}");
+
+    restore_again(&root, 6);
+    let copies = root.open();
+    let err = reform(&copies, &dir).await.expect_err("too soon");
+    assert!(err.to_string().contains("clears in about"), "{err}");
+    assert_eq!(group_epoch(&dir).expect("epoch"), Some(3));
+    assert!(
+        crate::raft_copy::stopped(&dir).expect("stop").is_none(),
+        "a refused plan leaves the copy as it is"
+    );
+    // The next pass is refused the same way: the copy is still owed a
+    // restore's re-form, not taken for a crash's, which would start low.
+    let copies = root.open();
+    let again = reform(&copies, &dir).await.expect_err("still too soon");
+    assert!(again.to_string().contains("clears in about"), "{again}");
+    assert_eq!(group_epoch(&dir).expect("epoch"), Some(3));
+
+    // Once the clock passes the bound, the pass re-forms it on the line.
+    let ahead = MARGIN_MILLIS + 1000;
+    crate::raft_copy::alone::CLOCK_AHEAD_MILLIS.with(|clock| clock.set(ahead));
+    let copies = root.open();
+    let done = reform(&copies, &dir).await;
+    crate::raft_copy::alone::CLOCK_AHEAD_MILLIS.with(|clock| clock.set(0));
+    assert_eq!(done.expect("re-form"), Aloned::Reformed { epoch: 4 });
+    let firsts = first_indexes(&dir);
+    assert!(
+        firsts[3] > firsts[2] + crate::raft_copy::MIN_OFFSET_GAP,
+        "the retry starts on the line past the earlier epochs: {firsts:?}"
+    );
 }

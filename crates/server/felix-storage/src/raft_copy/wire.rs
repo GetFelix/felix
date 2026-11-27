@@ -290,6 +290,10 @@ fn refused_reason(refused: &Refused<String>) -> String {
         Refused::RestoreTooLate { planned_at_millis } => format!(
             "the restore's first index at plan time {planned_at_millis} ms is past the last index"
         ),
+        Refused::LineBehind { line, given, gap } => format!(
+            "the restore is too soon: {}; plan again then",
+            super::vouch::line_behind_reason(*line, *gap, *given)
+        ),
         Refused::NothingRead => "no copy was read".into(),
         Refused::NoVoters => "no broker with a copy id holds the base".into(),
         Refused::NotAlone => "another broker is or was in the group".into(),

@@ -23,8 +23,9 @@ stays small. Each is marked "Decided" where it applies:
 - Writes go through openraft's `client_write` and the adapter appends
   ("Writing through openraft"). Adopting the leader's own appends is left
   for later.
-- Re-forming a group is an operator command and never automatic
-  ("Re-forming a group").
+- Re-forming a group is an operator command, except for an RF 1 shard whose
+  copy a relaxed crash rotated, which re-forms itself ("A cluster's RF 1 shard
+  re-forms itself").
 - `Leader` streams keep the local acknowledgement. A restarted member
   waits out the promise behind it and stores nothing ("Acknowledging a
   write").
@@ -235,6 +236,11 @@ Its root is judged on the control plane's copy, so it holds while the
 control plane is down or has none. Brokers that stayed up are not
 affected, so failover with the control plane down still works. What waits
 is the restarted broker's own vote.
+
+> `crates/testing/felix-cluster/tests/raft_shards/reform.rs`,
+> `a_restored_data_directory_never_votes`: a follower's data directory put
+> back from a copy, beside a follower that lacks the same records, elects
+> nothing until the leader returns.
 
 **The broker runs the gate after its start.** A broker started with
 `FELIX_SHARD_ENGINE=raft` opens every Raft member through the gate. The
@@ -743,6 +749,12 @@ brokers, or restore both from backups, and every group they share has one
 voter left. An RF 1 shard has that problem after any rotation. Raft cannot
 elect in such a group, and some acknowledged records may be gone.
 
+An RF 1 shard whose copy a relaxed crash rotated is the one exception: its
+broker re-forms it through the control plane once the fleet finalizes
+`raft_alone_reform` ("A cluster's RF 1 shard re-forms itself"). Any other
+rotation, and any shard on a fleet that has not finalized it, waits for the
+operator.
+
 **A group is never formed again on rotated copies.** When every copy of a
 shard rotated, as after `rotate-storage-id` on each of its brokers, a
 fleet-wide restore, or a power cut across relaxed brokers, each copy comes
@@ -979,6 +991,18 @@ broker's part of the plan, so none of these needs the plan that started it:
   names the new epoch. After a metadata leader change nothing asks; the
   plan's view then reads 404 and the epoch shows in the shard record.
 
+Across real brokers: two of three `periodic` brokers lose power while the
+leader's process is killed, and an RF 2 shard loses its only other copy to
+a wipe. Each group stays closed and acknowledges nothing until `plan` and
+`apply` re-form it, and the new epoch's voters then serve every
+acknowledged record at its offset and give out no offset twice. Only the
+voters are checked, since a stream learner cannot catch up across the
+re-form yet (#3005).
+
+> `crates/testing/felix-cluster/tests/raft_shards/reform.rs`,
+> `a_group_whose_relaxed_followers_lose_power_re_forms_with_every_ack`,
+> `a_group_whose_only_other_copy_was_lost_re_forms_from_the_copy_left`.
+
 **A restore from a backup point is a re-form.** A whole-cluster restore
 rotates every broker's storage id, so every Raft copy comes back with a new
 copy id and no vote, and the shard does not form again (#2620). The restore
@@ -1044,10 +1068,10 @@ mechanism:
   together with the other bounds every re-form takes. The plan time is the
   control plane's wall clock in Unix milliseconds, stamped once when the
   plan is made, so the re-plan after the stop reaches the same index. The
-  offset gap defaults to 2^40 (`--offset-gap N`; below 2^32 it also needs
-  `--accept-short-gap`, which also takes a plan whose line plus gap falls
-  below the point's end, as when the control plane's clock is far behind;
-  otherwise the plan is blocked). The point's `taken_at_millis` comes from the
+  offset gap defaults to 2^40 and is never above it (`--offset-gap N`;
+  below 2^32 it also needs `--accept-short-gap`, which also takes a plan
+  whose line plus gap falls below the point's end, as when the control
+  plane's clock is far behind; otherwise the plan is blocked). The point's `taken_at_millis` comes from the
   clock of the host that ran `felixctl backup-point`; it is shown in the
   plan and never used for the index.
 
@@ -1066,13 +1090,27 @@ mechanism:
   its plan time, and the line rises twice as fast as the epoch can give
   out offsets, so at any time t every offset ever given out is below
   `R * t + gap` plus what skew added. A later restore planned at t2 starts
-  at `R * t2 + gap`, past all of them. Skew is what is left: if the
-  control-plane node that planned the earlier restore ran S ahead and the
-  one planning the later one (another leader, after a leader change) runs
-  S behind, the later restore needs `(R - R/2) * Δ > 2 * R * S` of true
-  time Δ between them, that is Δ > 4 S. With clocks within a minute, that
-  is four minutes between restores; stopping every broker, restoring the
-  files and planning again takes longer.
+  at `R * t2 + gap`, past all of them.
+
+  Skew and the gap are what is left. Being above an earlier epoch's first
+  index is not enough: if the clock that planned it ran 2 minutes ahead and
+  the next restore comes 2 minutes and 1 ms later on a correct clock, its
+  line is 1 ms above that first index, while the earlier epoch can have
+  given out 2 minutes of offsets past it. An earlier epoch planned with a
+  larger gap than this one starts higher still. So a restore whose line
+  plus gap is not more than `2^32 + (2^40 - gap)` above the floor and every
+  earlier epoch's first index is blocked (`not far enough above index`).
+  With the default gap that is a full 2^32, about four and a half minutes of
+  line, the bound an abandon uses. Why it is enough: say the earlier epoch
+  was planned on a clock D ahead with a gap g0 of at most 2^40, and this
+  plan comes E later. The line plus gap is then `R * (E - D) + gap - g0`
+  above that epoch's first index, and the epoch gave out at most
+  `R/2 * E` past it. The check covers that for every g0 up to 2^40 and
+  every D up to 2^18 ms. So the bound needs control-plane clocks that agree
+  within about four minutes, and no epoch planned with a gap above 2^40,
+  which is why a larger gap is refused. A restore with a smaller gap after
+  a recent one with the default gap waits longer, up to about 37 hours for
+  a 2^32 gap: plan it with the default gap instead.
 
   The gap is added to the line, never to the point: a backup taken from a
   restored epoch ends near the line, and adding the gap past its end would
@@ -1101,10 +1139,14 @@ mechanism:
   from one backup reuses one (`FelixRaftRestoreRepeatedNoTime`), and so does
   adding the gap past the backup's end (`FelixRaftRestoreRepeatedEndGap`).
 - What this does not cover: a shard giving out offsets faster than 2^13
-  per millisecond sustained, or two restores closer together than four
-  times the skew between the clocks that planned them. Either can give an
-  offset out again, and readers who kept offsets past the point must then
-  treat them as reassigned.
+  per millisecond sustained, or control-plane clocks more than about four
+  minutes apart. Either can give an offset out again, and readers who kept
+  offsets past the point must then treat them as reassigned. The check
+  reads the floor and bases the control plane holds, so a restore over
+  metadata restored from before an epoch does not see that epoch. The line
+  alone covers it then only when this restore's gap is no smaller than
+  that epoch's and it comes more than twice as long after that epoch began
+  as the earlier clock ran ahead of this one.
 - The gap costs no space. The first append past it starts a segment whose
   header carries `FOLLOWS_GAP` and the low 32 bits of where the gap starts
   (`docs/storage-format.md`), so neither the segments nor the sparse
@@ -1791,8 +1833,8 @@ What the acknowledgement promises, and what it does not
   such an ask vouches for the record before its fsync, and rotates on a
   site-wide power loss too. A shard whose every voter rotated
   has no voter left and needs a re-form, as a 0.7 shard whose copies all
-  rotated stays closed. Today such a shard is formed again from empty
-  logs instead (#2620).
+  rotated stays closed. It is never formed again from the empty logs
+  (#2620; "Re-forming a group").
 - The cost is a voter seat. The rotated copy rejoins only through a
   membership change, which per-shard Raft does not make yet, so until then
   a group that lost a seat this way has one fewer broker to lose, as a 0.7
@@ -2736,6 +2778,17 @@ purge waits for their match. A member cut off while the others purged
 installs the leader's purge snapshot when it is back and keeps the floor it
 carries; the install starts its log at the purge point, so it holds no more
 than the others.
+
+A leader's openraft runs the purge on its Raft core, and holds it back while
+a replication stream still reads the range, even one to a member that is
+going away; it runs it when that stream answers or fails. A purge that
+waited on the disk there would stop the leader's heartbeats and writes
+right after a follower went away, long enough on a slow disk to lose the
+lease. So the purge only writes its purged id and returns, and the segments
+are unlinked behind it (`docs/durable-storage.md`, "Deleting below the
+floor"). Every call openraft makes into the log that outlasts a heartbeat is
+counted in `felix_storage_raft_log_slow_calls_total`, labelled by `call`,
+and logged as a warning at most every ten seconds.
 
 > `services/felix-broker-service/src/shards/raft/tests/retention.rs`,
 > `the_leader_trims_what_the_streams_retention_drops`,
@@ -4632,6 +4685,11 @@ record's floor once the record is below its commit offset, and rebuilds it
 at open from the trim records and the `head` file, as the hybrid does
 (`docs/durable-storage.md`, "Conditional head trim"). So once a member's
 commit passes the trim it hides the same records as every other member.
+A floor also waits for the member's own sync of the record, and a leader can
+answer a trim that its followers synced before it did. So the floor check of
+`propose_trim_at` and of retention's trim first waits for every trim the
+leader's log holds to apply, as a read does; a lower trim checked in that
+gap would otherwise be written below a floor the client was already given.
 
 On the hybrid only the leader serves readers, so once a trim is answered
 no reader on any broker is served below its floor. A Raft follower serves
@@ -5150,8 +5208,8 @@ later by no report a Raft shard sends:
 **What placement does with a Raft shard.** On a cluster whose
 `shard_engine` is `raft`, the control plane leaves a durable stream's group
 alone and names the member it wants leading. It changes a placed shard's
-set only by the one-member swaps below, and drops the copy a move from an
-older control plane added:
+set only by the one-member swaps and additions below, and drops the copy a
+move from an older control plane added:
 
 - A balance pass, a drain and an operator move each name another member of
   the set as leader, in one write that changes only `leader`. Nothing is
@@ -5170,6 +5228,29 @@ older control plane added:
   set and every other member is serving, so the group's leader adds the new
   member as a learner and then changes the voters (see "Membership"). A lost
   member goes first. With no such node the set stays and the shard waits.
+- A set with fewer members than the replication factor is topped up
+  (`raft_top_up`). An abandon leaves a set like this, since it places the
+  leader alone, and so does a shard placed while too few brokers were live.
+  Each write adds one live broker from outside the set, under the same
+  checks as a follower replacement and from the same budget. The new member
+  joins as a learner and votes once it has caught up, and the next is added
+  only after that, so the voters the leader reported always hold at least
+  half of the next set. Until the set is full, a `Quorum` write is
+  acknowledged by a majority of the voters it has, not of its factor. With
+  no broker outside the set the shard stays short and shows as
+  under-replicated.
+- On the way from one copy to three the group has two voters and needs
+  both. If the second copy's broker goes down before the third votes, the
+  shard takes no writes until that broker is back or an operator re-forms
+  the group without it ("Re-forming a group"): replacing the down member is
+  a joint change that needs its vote as well. Two voters are never less
+  durable than one, so the top-up still adds one copy at a time.
+- The replication count counts copies the group reports voting. A stream
+  learner a re-form started cannot catch up across the re-form's gap yet
+  (#3005), so a re-formed stream group stays below its factor, shows as
+  under-replicated, and waits each pass for its group to report voters
+  that keep a majority of the next set. Only that shard's leader balance
+  stops; the rest of the pass goes on.
 - A balance pass gives a seat to a live broker outside the set when it
   leads two fewer than the shard's leader and no member does (#3113). A
   broker a drain swapped out of every set, then restarted, is that broker:
@@ -5794,7 +5875,12 @@ target counter (metadata level 36):
   counter the dropped target reached (`raft_target_counter`, metadata level
   50), so the next target is newer than the membership the group already
   made. A leader takes only a newer version, so a count started again would
-  leave the group on its old voters. A placement write that
+  leave the group on its old voters. A new broker that dies before it
+  reports would hold the target dropped for good, so placement gives its
+  seat to another live broker once it is lost, provided the group formed and
+  its reported voters do not name it (`docs/control-plane.md`, "Raft
+  shards"). The group never heard of the set that named it, and the next
+  set still needs a majority of the reported voters. A placement write that
   keeps the set, a leader report and a doomed-set write leave it alone. So
   within one incarnation a version names exactly one member set.
 - **It counts within one stream incarnation.** A stream deleted and
@@ -6297,6 +6383,25 @@ base, voters and dead set and applies `ShardAssignment::start_reform`. Every
 member decides it from the record and the command alone, and the command
 is refused below level 51.
 
+From level 55 a group of one has a command of its own,
+`StartAloneEpoch { key, node_id, start }`, for the broker that holds its only
+copy, sent as `POST /v1/nodes/{node_id}/reform/alone` once the fleet
+finalizes `raft_alone_reform`. In the same apply as the epoch compare and
+swap it refuses, and changes nothing, unless the stream or cache has
+replication factor 1; the shard's set and `placed` record are `node_id`
+alone; no pending set, successor, joining follower, learner, move reason or
+`Draining` state is on it; the epoch's seed, every target ordered in it and
+the stored target name only `node_id` (an unknown seed or list refuses); the
+plan's voters and starts name only `node_id` and its dead set is empty;
+`node_id` is not declared dead; and the plan is for the incarnation and
+epoch the shard is at, with the floor and base checks of
+`StartReformedEpoch`. Checking before the write would let placement grow
+between the check and the swap. A request the shard already holds the result
+of (`started_by`) answers the recorded shard without a second epoch; any
+other request from the old epoch is refused as moved. The broker plans and
+stops its copy first, asks for the epoch, then starts from the `starts` in
+the seed it reads back.
+
 From level 47 a copy id report also carries the group epoch the copy runs
 (`group_epoch`, absent meaning 0; epoch 0 is sent as absent and records
 at any level), and one for another epoch than the
@@ -6313,6 +6418,78 @@ change. This removes the last use of the control-plane lease. If its one
 copy rotates its id, the group has no voter. A copy that kept its records
 restarts as the single voter, and one that lost them waits for the
 operator command ("Re-forming a group"). See Questions, 1.
+
+In a cluster, a copy that a relaxed crash rotated re-forms itself through
+the control plane ("A cluster's RF 1 shard re-forms itself"), and needs no
+operator while the fleet has finalized `raft_alone_reform`. Until it has, the
+shard stays not ready for an operator's re-form, and re-forms itself once the
+fleet finalizes it.
+
+### A cluster's RF 1 shard re-forms itself
+
+The standalone rules ("A standalone broker re-forms itself") apply with one
+change: the control plane's record decides the epoch, not a file beside the
+copy. Before the member opens, the broker:
+
+1. Plans the next epoch from its kept copy with the standalone rule and
+   decides what the plan owes the control plane's record. A record one
+   epoch behind the plan gets a request. A record that already holds the
+   plan's epoch, with the same bases and this copy as its only voter, is
+   started from. Anything else, such as a directory restored from before an
+   earlier re-form, leaves the copy as it is and the shard not ready. Only
+   then is the copy stopped (`CopyRoot::stop_alone`). Nothing is started
+   and no epoch is written. The plan is recorded on disk, so after a crash
+   the same request is built again.
+2. Sends `POST /v1/nodes/{node_id}/reform/alone`. The control plane applies
+   `StartAloneEpoch` (metadata level 55) in one command: the group must be
+   alone on this broker, with no set change or move in flight, and the epoch
+   compare-and-swaps from the one the broker planned from. A request for an
+   epoch the record already holds is answered with the recorded shard and
+   writes nothing.
+3. Starts the copy from the seed the record holds, as an operator's re-form
+   would.
+
+A crash before step 2 sends the same request again. A crash between steps 2
+and 3 finds the epoch recorded, sends nothing, and starts from the recorded
+seed. After step 3 nothing is owed. A lost answer or a timeout is retried
+on the next pass, since the open of a stopped copy fails and the next pass
+claims it again. A refusal leaves the shard not ready and the copy stopped
+where an operator's own stop leaves it, so an operator's re-form still
+works: its stop round answers, and the next pass starts the copy from the
+epoch the operator's re-form wrote.
+
+The open may run before it can decide: before registration has said which
+fleet features are enabled, before the broker can reach the control plane,
+or on an assignment that does not yet name this broker the group's only
+broker. The member then opens held, with its copy rotated and the old one
+kept, and the broker logs why. The feed pass checks those conditions again
+and, once they all hold, closes the member and opens it again, and that open
+re-forms it. Only a member that never formed is reopened, so nothing it
+served is lost, and the reopen runs every check above again.
+
+Why it is safe:
+
+- An RF 1 shard acks on its one copy, so the ack level does not matter.
+  Under `Periodic` or `None` only the unsynced tail is lost, as it already
+  could be, and every synced record is kept: the plan vouches for the whole
+  log, not the saved commit.
+- `OnCommit` never takes this path. It rotates nothing, so there is no
+  evidence.
+- Offsets start past every reserved index plus the gap, so none given out
+  before is given out again.
+- An RF 3 group that lost members is refused by the control plane's atomic
+  check, and the broker only asks when membership and placement both name
+  only itself.
+- After a restore the plan's line is read from the broker's clock, as on a
+  standalone broker, and the same refusal applies, with the offset floor
+  the broker's assignment carries as one more index the line must clear.
+  The control plane checks only that the first index is above the floor.
+- A directory restored from before an earlier re-form plans an epoch the
+  record already holds, for another copy, so the broker neither asks nor
+  stops it. A start from that record's seed would be refused anyway: the
+  restored copy was rotated to a new copy id, and a start refuses a plan
+  whose voter is another copy. A second writer is refused by the epoch
+  compare-and-swap.
 
 ### A standalone broker re-forms itself
 
@@ -6346,11 +6523,47 @@ re-forms the same way, in every fsync mode:
    re-form of its own. So when a restore is among the rotations since the
    kept copy was minted, the epoch also starts no lower than the time line
    a backup-point restore uses ("A restore from a backup point is a
-   re-form"), read from the broker's own clock. That assumes the clock at a
-   later restore is not behind the clock at an earlier one by more than the
-   offsets written in between could cover. If the clock was set back, fix
+   re-form"), read from the broker's own clock, with the default gap.
+
+   Being above an earlier epoch is not enough when the clock is behind the
+   one that planned it: after the clock steps back by S, or on a host whose
+   clock is S behind the old one, a plan made a true time E after that
+   epoch began has moved the line only `2^14 * (E - S)`, while the epoch
+   can have given out `2^13 * E`. Any E up to 2S gives offsets out again.
+   So the plan is refused unless its line clears the copy's last index,
+   the control plane's offset floor in a cluster, and every earlier epoch's
+   first index by 2^32, the margin a backup-point restore takes. That is
+   2^18 ms, about 4.4 minutes of clock. The broker leaves the shard closed,
+   with the copy not stopped, and plans again on each pass, so the shard
+   starts by itself once the line clears. The log line says how long that
+   is. If the wait is longer than about 4.4 minutes, the clock is behind
+   the one that planned the last epoch; fix it, or wait.
+
+   Why it is safe: the check sees only epochs the restored copy holds, or,
+   in a cluster, the control plane's record holds. For such an epoch, with
+   S at most 2^18 ms, a plan let through has `E - S > 2^18 ms >= S`, so
+   E > 2S and the line is past everything that epoch gave out. It assumes,
+   as every restore does, a shard that gives out at most 2^13 offsets per
+   millisecond, and a clock never more than about 4.4 minutes behind the
+   one that planned an earlier epoch. A clock further behind is refused for
+   as long as it reads below that epoch's plan time plus the margin, but
+   not for the whole 2S.
+
+   What the code does not enforce: a standalone broker restored from a
+   backup taken before its last restore's epoch has no record of that
+   epoch, so nothing refuses a plan made too soon after it. In a cluster
+   the control plane's record holds it, and a plan that does not lead to
+   that record is refused. On a standalone broker the line alone covers it
+   only when the clock has not gone back. If the clock was set back, fix
    it, or wait until it has passed the time of the last restore, before
-   starting the broker. The tool writes
+   starting the broker.
+
+   Only restores wait: a relaxed crash's epoch starts past the copy's own
+   reservation, not on the clock, so an RF 1 shard that crashes twice in a
+   minute re-forms each time with no wait. A second restore within about
+   4.4 minutes of the first waits out the rest of that time.
+
+   The tool writes
    `restore-pending` first and removes it last, and a start that finds it
    refuses, so a crash part way through the tool never starts the restored
    data under its old id. A copy put back without the tool, by hand or by
@@ -6655,8 +6868,10 @@ on the hybrid.
   oldest kept change past it. A resume from past the
   edge, an offset a member further ahead gave out, waits for this one to
   apply that far, up to the publish quorum timeout, and is then refused as
-  retryable. A snapshot install, and a member left with no leader, end the
-  shard's watches as lagged at the first change they were not told of.
+  retryable. A snapshot install ends the shard's watches as lagged at the
+  first change they were not told of. A member left with no leader ends
+  them at the same change as moved, with no new owner named, for a client
+  that follows moves, and as lagged for one that does not.
   Closing a member, when its cache is deleted or made again, ends them
   outright.
   See [cache-on-log.md](cache-on-log.md#watch).

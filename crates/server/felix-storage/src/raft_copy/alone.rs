@@ -21,7 +21,10 @@ use serde::{Deserialize, Serialize};
 use super::epoch_file::{self, EpochBase};
 use super::judge::{CopyRoot, kept_copies, lock_dir, parent_of, reached_before};
 use super::start::{building, start_due, started_in};
-use super::vouch::{BrokerReport, DEFAULT_OFFSET_GAP, GroupRecord, RestoreAt};
+use super::vouch::{
+    BrokerReport, DEFAULT_OFFSET_GAP, GroupRecord, RestoreAt, line_behind_reason,
+    restore_line_clears,
+};
 use super::wire::{
     PlanView, SurveyStep, WireBase, WireReport, WireStart, first_probes, plan_starts_alone,
     survey_step_alone,
@@ -107,6 +110,9 @@ pub struct Alone<'a> {
     /// This copy's member id as its log stores a vote for it.
     pub member: &'a (dyn Fn(u64) -> String + Send + Sync),
     pub record: &'a dyn EpochRecord,
+    /// The highest index the control plane holds as committed in any epoch
+    /// of the shard, when it holds one. A restore's line must clear it.
+    pub floor: Option<u64>,
 }
 
 /// What [`CopyRoot::reform_alone`] did.
@@ -130,12 +136,54 @@ impl CopyRoot {
     /// which a second crash left, is dropped with the copy it was made for
     /// and the group is planned again above everything the first reserved.
     pub async fn reform_alone(&self, a: Alone<'_>) -> io::Result<Aloned> {
-        let sources = crate::run_state::reform_evidence(self.root()).map_err(io::Error::other)?;
-        if sources.is_empty() {
-            return Ok(Aloned::NotOwed);
-        }
         let parent = parent_of(a.dir)?;
         let step = || crash_point::reached(&parent);
+        match self.planned_alone(&a, &step).await? {
+            None => Ok(Aloned::NotOwed),
+            Some((plan, lock)) => self.finish(&a, &plan, &step, lock).await,
+        }
+    }
+
+    /// The cluster's half of [`Self::reform_alone`]: plan the copy, and stop
+    /// it only if `may_stop` accepts the plan, leaving the epoch to the
+    /// control plane. The plan is kept only so the request can be sent
+    /// again after a crash; nothing here starts the copy or counts the epoch
+    /// as written. Returns the plan once the copy is stopped for it, and
+    /// `None` when nothing is owed or `may_stop` refused, in which case the
+    /// copy is not stopped. Run again, it returns the same plan while the
+    /// copy is stopped for it, so the control plane's idempotent write is
+    /// never bumped twice.
+    pub async fn stop_alone(
+        &self,
+        a: Alone<'_>,
+        may_stop: &(dyn Fn(&AlonePlan) -> bool + Sync),
+    ) -> io::Result<Option<AlonePlan>> {
+        let parent = parent_of(a.dir)?;
+        let step = || crash_point::reached(&parent);
+        let Some((plan, lock)) = self.planned_alone(&a, &step).await? else {
+            return Ok(None);
+        };
+        // Decided before the stop: a plan the control plane's record does
+        // not lead to must leave the copy as it is.
+        if !may_stop(&plan) {
+            return Ok(None);
+        }
+        stop_for(&a, &plan, &step, &lock)?;
+        Ok(Some(plan))
+    }
+
+    /// The plan this copy owes, recorded, with the directory lock held; or
+    /// `None` when no re-form is owed or it already started.
+    async fn planned_alone(
+        &self,
+        a: &Alone<'_>,
+        step: &(dyn Fn() -> io::Result<()> + Sync),
+    ) -> io::Result<Option<(AlonePlan, DirLock)>> {
+        let sources = crate::run_state::reform_evidence(self.root()).map_err(io::Error::other)?;
+        if sources.is_empty() {
+            return Ok(None);
+        }
+        let parent = parent_of(a.dir)?;
         // Held from the plan's load to the start's last write, through the
         // rotation's open, so no other open of the copy runs in between.
         let mut lock = lock_dir(a.dir)?;
@@ -147,9 +195,9 @@ impl CopyRoot {
             if fresh {
                 let epoch = plan.bases.len() as u64;
                 if started_in(a.dir, epoch)? {
-                    return Ok(Aloned::NotOwed);
+                    return Ok(None);
                 }
-                return self.finish(&a, &plan, &step, lock).await;
+                return Ok(Some((plan, lock)));
             }
             if building(a.dir)? {
                 // Derived from a kept copy, which a start only reads, and
@@ -175,13 +223,13 @@ impl CopyRoot {
                 io::Error::other(format!("{}: closed under the re-form", a.dir.display()))
             })?;
         let Some(restored) = self.owed(a.dir, a.config.index_spacing_bytes, &sources)? else {
-            return Ok(Aloned::NotOwed);
+            return Ok(None);
         };
-        let plan = plan(&a, self.storage_id().to_hex(), restored)?;
+        let plan = plan(a, self.storage_id().to_hex(), restored)?;
         step()?;
         a.record.store(a.dir, &plan)?;
         step()?;
-        self.finish(&a, &plan, &step, lock).await
+        Ok(Some((plan, lock)))
     }
 
     /// Whether the copy in `dir` was rotated by a relaxed crash or a restore
@@ -235,11 +283,7 @@ impl CopyRoot {
     ) -> io::Result<Aloned> {
         let bases: Vec<EpochBase> = plan.bases.iter().copied().map(EpochBase::from).collect();
         let epoch = bases.len() as u64;
-        let at = super::group_epoch(a.dir)?.unwrap_or(0);
-        if !building(a.dir)? && stop_file::stopped(a.dir)?.is_none() && at + 1 == epoch {
-            stop_file::stop_holding(a.dir, plan.last, &lock)?;
-            step()?;
-        }
+        stop_for(a, plan, step, &lock)?;
         if !start_due(a.dir, epoch)? {
             return Err(io::Error::other(format!(
                 "{}: not a copy stopped for epoch {epoch}",
@@ -261,6 +305,22 @@ impl CopyRoot {
         .await?;
         Ok(Aloned::Reformed { epoch })
     }
+}
+
+/// Stop the copy for `plan`'s epoch unless it is stopped, building or past it.
+fn stop_for(
+    a: &Alone<'_>,
+    plan: &AlonePlan,
+    step: &(dyn Fn() -> io::Result<()> + Sync),
+    lock: &DirLock,
+) -> io::Result<()> {
+    let epoch = plan.bases.len() as u64;
+    let at = super::group_epoch(a.dir)?.unwrap_or(0);
+    if !building(a.dir)? && stop_file::stopped(a.dir)?.is_none() && at + 1 == epoch {
+        stop_file::stop_holding(a.dir, plan.last, lock)?;
+        step()?;
+    }
+    Ok(())
 }
 
 /// Plan the next epoch of the group of one from `a.dir`'s kept copies. After
@@ -301,9 +361,14 @@ fn plan(a: &Alone<'_>, minted: String, restored: bool) -> io::Result<AlonePlan> 
                 let last = reports[&me].copies.current.last.map(|last| last.index);
                 let mut base = new_base(&view);
                 if restored {
-                    let line = time_line()
-                        .ok_or_else(|| refuse("the clock is past the time line".into()))?;
-                    base.first_index = base.first_index.max(line);
+                    let given = bases
+                        .iter()
+                        .map(|base| base.first_index)
+                        .chain(a.floor)
+                        .chain(last)
+                        .max();
+                    base.first_index =
+                        restored_first(base.first_index, given, now_millis()).map_err(refuse)?;
                     tracing::warn!(
                         shard = a.label,
                         first_index = base.first_index,
@@ -332,19 +397,56 @@ fn plan(a: &Alone<'_>, minted: String, restored: bool) -> io::Result<AlonePlan> 
     Err(refuse("the plan needed more reads than allowed".into()))
 }
 
-/// `RESTORE_OFFSETS_PER_MILLI` times this broker's clock in Unix
-/// milliseconds, plus the default gap: the first index a backup-point
-/// restore planned now takes. `None` past the last index.
-fn time_line() -> Option<u64> {
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .ok()?;
-    RestoreAt {
+/// The first index of a group of one re-formed after a restore, planned at
+/// `now_millis` of this broker's clock: no lower than `first` and the time
+/// line a backup-point restore with the default gap takes.
+///
+/// Refused while that line does not clear `given`, the highest index the
+/// floor, the copy or an earlier epoch's first index reached, by the margin
+/// a backup-point restore takes (`restore_line_clears`). An epoch planned
+/// before this clock stepped back, or on a host whose clock ran ahead, can
+/// have given out offsets above its own first index that a line only just
+/// past it would give out again. The broker plans again on its next pass,
+/// so the shard starts once the line clears.
+pub(crate) fn restored_first(
+    first: u64,
+    given: Option<u64>,
+    now_millis: u64,
+) -> Result<u64, String> {
+    let line = RestoreAt {
         end: 0,
         gap: DEFAULT_OFFSET_GAP,
-        planned_at_millis: u64::try_from(now.as_millis()).ok()?,
+        planned_at_millis: now_millis,
     }
     .first_index()
+    .ok_or("the clock is past the time line")?;
+    if let Some(given) = given
+        && !restore_line_clears(line, DEFAULT_OFFSET_GAP, given)
+    {
+        return Err(format!(
+            "not re-forming after the restore yet, so no offset is given out twice: {}; the \
+             broker plans again on each pass and starts the shard then, or fix this host's clock",
+            line_behind_reason(line, DEFAULT_OFFSET_GAP, given)
+        ));
+    }
+    Ok(first.max(line))
+}
+
+/// This broker's clock in Unix milliseconds; 0 before 1970, which any
+/// earlier epoch on the line refuses.
+fn now_millis() -> u64 {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |now| u64::try_from(now.as_millis()).unwrap_or(u64::MAX));
+    #[cfg(test)]
+    let now = now.saturating_add(CLOCK_AHEAD_MILLIS.with(std::cell::Cell::get));
+    now
+}
+
+#[cfg(test)]
+thread_local! {
+    /// How far a test moves this thread's clock ahead.
+    pub(crate) static CLOCK_AHEAD_MILLIS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
 }
 
 fn new_base(view: &PlanView) -> WireBase {

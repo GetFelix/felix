@@ -1,0 +1,1 @@
+A cluster Raft shard with one replica that a relaxed crash rotated no longer stays held when its member opened before registration enabled `raft_alone_reform`, or before its assignment named the broker alone: the feed pass reopens the never-formed member once it can re-form, and the broker logs why it waited (#3312).

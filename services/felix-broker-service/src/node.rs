@@ -444,6 +444,7 @@ where
     // Before the catalog, the view or a peer registers a stream: one
     // registered earlier would have its shard 0 opened by the broker itself,
     // beside the log its Raft member opens.
+    startup::refuse_logless_cache(shard_engine, &broker)?;
     if shard_engine == crate::config::ShardEngine::Raft {
         crate::shards::routing::leave_stores_to_engines(&broker);
     }
@@ -559,6 +560,12 @@ where
             credential.clone(),
             sync_shutdown.clone(),
             run.writers(),
+        );
+        cluster::write_alone_reforms(
+            &raft_shards,
+            link.clone(),
+            membership.node_id.clone(),
+            credential.clone(),
         );
     }
     startup::bind_read_check(

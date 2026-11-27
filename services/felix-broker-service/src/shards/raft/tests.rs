@@ -41,6 +41,7 @@ pub(crate) fn assigned(key: ShardKey, incarnation: u64) -> ShardAssignment {
         raft_voters: None,
         raft_bases: None,
         raft_seed: None,
+        raft_floor: None,
         move_reason: None,
         placed: None,
     }
@@ -421,7 +422,10 @@ async fn a_copy_without_an_epoch_file_counts_only_at_epoch_zero() {
     assert_eq!(shards.held_copies().len(), 1);
 
     let mut reformed = assigned(orders.clone(), INCARNATION);
-    reformed.placed = Some(crate::shards::watch::PlacedEpoch { epoch: 1 });
+    reformed.placed = Some(crate::shards::watch::PlacedEpoch {
+        epoch: 1,
+        ..Default::default()
+    });
     shards.take(&mut assignments([reformed])).await;
     assert!(shards.runtime.status(&orders).is_some(), "still open");
     assert!(
@@ -468,7 +472,10 @@ async fn a_fresh_copy_past_epoch_zero_takes_the_records_epoch() {
     let shards = shards(&broker);
     let orders = key("orders", 0);
     let mut placed = assigned(orders.clone(), INCARNATION);
-    placed.placed = Some(crate::shards::watch::PlacedEpoch { epoch: 1 });
+    placed.placed = Some(crate::shards::watch::PlacedEpoch {
+        epoch: 1,
+        ..Default::default()
+    });
     placed.raft_bases = Some(reformed_once());
     shards.take(&mut assignments([placed])).await;
     assert!(shards.runtime.status(&orders).is_some(), "open");
@@ -723,14 +730,12 @@ async fn a_durable_stream_shard_opens_as_a_raft_member() {
     shards.take(&mut left).await;
     take_formed(&shards, assigned(orders.clone(), INCARNATION)).await;
 
-    // The in-memory stream and the cache are the hybrid's. The stream not
-    // registered yet is nobody's this pass.
-    let mut kept: Vec<_> = left.into_keys().collect();
-    kept.sort();
-    let mut expected = vec![key("scratch", 0), cache];
-    expected.sort();
-    assert_eq!(kept, expected);
+    // The in-memory stream is the hybrid's. The stream and the cache not
+    // registered yet are nobody's this pass: a cache is never in memory.
+    let kept: Vec<_> = left.into_keys().collect();
+    assert_eq!(kept, vec![key("scratch", 0)]);
     assert!(shards.engine_for(&key("unknown", 0)).is_none());
+    assert!(shards.engine_for(&cache).is_none());
     assert!(shards.engine_for(&key("scratch", 0)).is_none());
 
     until("the member to lead its group of one", || {
@@ -1536,7 +1541,10 @@ async fn a_member_the_copy_id_report_leaves_out_is_still_in_a_backup_point() {
     assert_eq!(read.term, term);
 
     let mut reformed = assigned(orders.clone(), INCARNATION);
-    reformed.placed = Some(crate::shards::watch::PlacedEpoch { epoch: 1 });
+    reformed.placed = Some(crate::shards::watch::PlacedEpoch {
+        epoch: 1,
+        ..Default::default()
+    });
     shards.take(&mut assignments([reformed])).await;
     assert!(shards.held_copies().is_empty(), "an unproven epoch");
     let [read] = shards.backup_members().try_into().expect("listed");
@@ -3459,6 +3467,7 @@ fn a_member_counts_written_entries_only_on_a_relaxed_run_the_fleet_allows() {
     );
 }
 
+mod alone_in_cluster;
 mod diskless;
 mod groups;
 mod purge;

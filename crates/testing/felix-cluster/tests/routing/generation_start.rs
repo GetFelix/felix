@@ -221,7 +221,10 @@ async fn move_shard(cluster: &Cluster) -> String {
 #[serial]
 #[tokio::test]
 async fn a_moved_shard_writes_a_generation_start_record_and_counts_from_it() {
-    if felix_cluster::skip_on_raft_until_moves_land() {
+    if felix_cluster::skip_on_raft_until(
+        3004,
+        "a planned move or leader change in this test does not complete on Raft yet",
+    ) {
         return;
     }
     let cluster = start(true).await;
@@ -252,7 +255,10 @@ async fn a_moved_shard_writes_a_generation_start_record_and_counts_from_it() {
 #[serial]
 #[tokio::test]
 async fn a_cancelled_move_hands_back_behind_a_generation_start_record() {
-    if felix_cluster::skip_on_raft_until_moves_land() {
+    if felix_cluster::skip_on_raft_until(
+        3004,
+        "a planned move or leader change in this test does not complete on Raft yet",
+    ) {
         return;
     }
     let cluster = start(true).await;
@@ -302,7 +308,10 @@ async fn a_cancelled_move_hands_back_behind_a_generation_start_record() {
 #[serial]
 #[tokio::test]
 async fn without_a_finalize_a_move_writes_no_generation_start_record() {
-    if felix_cluster::skip_on_raft_until_moves_land() {
+    if felix_cluster::skip_on_raft_until(
+        3004,
+        "a planned move or leader change in this test does not complete on Raft yet",
+    ) {
         return;
     }
     let cluster = start(false).await;
@@ -326,7 +335,10 @@ async fn without_a_finalize_a_move_writes_no_generation_start_record() {
 #[serial]
 #[tokio::test]
 async fn a_generation_older_than_the_finalize_serves_again_after_a_restart() {
-    if felix_cluster::skip_on_raft_until_moves_land() {
+    if felix_cluster::skip_on_raft_until(
+        3004,
+        "a planned move or leader change in this test does not complete on Raft yet",
+    ) {
         return;
     }
     let mut cluster = start_on_commit(false).await;

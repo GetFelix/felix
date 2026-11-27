@@ -399,9 +399,6 @@ async fn ingest_reports_what_it_published() {
 #[tokio::test]
 #[serial]
 async fn subscribe_counts_what_another_generator_published() {
-    if felix_cluster::skip_on_raft_until(3008, "subscribe refused while the shard opens") {
-        return;
-    }
     let cluster = Cluster::start(config()).await.expect("start cluster");
     let start_at = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)

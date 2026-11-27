@@ -813,6 +813,9 @@ impl Group {
         // snapshot plus the log above it. Either way nothing can rebuild
         // what a purge past the snapshot would drop.
         log.purge_within(&snapshots)?;
+        // openraft makes these calls on its core: one that outlasts a
+        // heartbeat stops the member's heartbeats (#3263).
+        log.warn_slow_calls(Duration::from_millis(timers.heartbeat));
         let copy_id = marks.as_ref().map(|(marks, _)| marks.copy());
         let root = marks.as_ref().map(|(marks, _)| marks.mark_log().clone());
         if let Some((marks, mode)) = marks {
@@ -2686,16 +2689,16 @@ impl Group {
         }
     }
 
-    /// End `observer`'s watches of this cache group as lagged at the live
-    /// edge. Under the state's lock, so no change lands between the edge
-    /// and the ending.
+    /// End `observer`'s watches of this cache group at the live edge, to be
+    /// carried on elsewhere. Under the state's lock, so no change lands
+    /// between the edge and the ending.
     pub(crate) fn end_cache_watches(&self, observer: &dyn felix_storage::CacheObserver) {
         let Some(cache) = self.cache.as_ref() else {
             return;
         };
         let state = cache.read();
         let shard = &self.id.shard;
-        observer.cache_reset(
+        observer.cache_unserved(
             &shard.tenant_id,
             &shard.namespace,
             &shard.stream,

@@ -159,6 +159,9 @@ impl RaftShards {
                 fold: &fold,
                 member: &member,
                 record: &LocalRecord,
+                // No control plane holds a floor; the copy and its
+                // bases are all there is.
+                floor: None,
             })
             .await?;
         if let Aloned::Reformed { epoch } = done {
@@ -195,6 +198,7 @@ fn alone(key: ShardKey, incarnation: u64, target: Option<RaftTarget>) -> ShardAs
         raft_voters: None,
         raft_bases: None,
         raft_seed: None,
+        raft_floor: None,
         move_reason: None,
         placed: None,
     }

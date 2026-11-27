@@ -285,8 +285,7 @@ async fn a_purge_under_none_finishes_with_flushes_queued() {
         .await
         .expect("append");
     let purged = tokio::time::timeout(BOUND, raft.purge(log_id(1, 0))).await;
-    purged.expect("the purge syncs first").expect("purge");
-    assert!(raft.positions().borrow().flushed.is_some());
+    purged.expect("the purge waits on no sync").expect("purge");
 }
 
 /// A written-commit log under a marked root, with two appends whose flushes

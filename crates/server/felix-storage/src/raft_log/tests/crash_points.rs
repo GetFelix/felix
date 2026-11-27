@@ -470,3 +470,156 @@ async fn a_cut_after_a_truncation_keeps_the_new_entries() {
         assert_eq!(kept, 16);
     }
 }
+
+/// Segments wholly below `first`, the active one aside: what a purge
+/// through `first - 1` unlinks.
+pub(super) fn wholly_below(raft: &RaftLog<Types, Codec>, first: u64) -> usize {
+    let segments = raft.disk_log().segments();
+    segments
+        .windows(2)
+        .filter(|pair| pair[1].base_offset <= first)
+        .count()
+}
+
+/// A purge returns once its id is on disk, and its removal runs behind it.
+/// The removal is stopped before its first unlink, after each one, and not
+/// at all. A stopped removal stops the log, so a purge past the end that
+/// would reset it beside the leftover segments is refused. Then the power
+/// cut. What reopens starts right after the purged id with every later
+/// entry and no gap, and the next purge's removal finishes what the crash
+/// left (#3263).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_cut_at_each_step_of_a_purges_removal_leaves_the_log_after_its_id() {
+    const PURGED: u64 = 60;
+    const PAST_THE_END: u64 = 95;
+    let written = entries(0..90);
+    let unlinks = {
+        let sim = Sim::new("purge-count", 0);
+        let mut raft = sim.open();
+        append_flushed(&mut raft, &written).await;
+        let doomed = wholly_below(&raft, PURGED + 1);
+        raft.disk_log().shutdown().await.expect("shutdown");
+        doomed
+    };
+    assert!(unlinks >= 2, "only {unlinks} segments below the purge");
+
+    for stop in 0..=unlinks {
+        for seed in 0..SEEDS {
+            let sim = Sim::new(&format!("purge-{stop}"), seed);
+            let mut raft = sim.open();
+            append_flushed(&mut raft, &written).await;
+            let stopped = stop < unlinks;
+            if stopped {
+                raft.disk_log().stop_after_unlinks(stop);
+            }
+            raft.purge(entry(PURGED).log_id)
+                .await
+                .expect("the purge returns before its removal");
+            raft.drain_flushes().await.expect("drain");
+            let at = format!("removal stopped after {stop} of {unlinks} unlinks, seed {seed}");
+            if stopped {
+                raft.purge(entry(PAST_THE_END).log_id)
+                    .await
+                    .expect_err("a reset after a stopped removal");
+            }
+            sim_fs::crash(&sim.0, seed).expect("crash");
+
+            let mut raft = sim.open();
+            assert_eq!(
+                wholly_below(&raft, PURGED + 1),
+                unlinks - stop,
+                "{at}: what the removal unlinked before the crash"
+            );
+            let state = raft.log_state().await.expect("state");
+            assert_eq!(
+                state.last_purged_log_id,
+                Some(entry(PURGED).log_id),
+                "{at}: the purged id"
+            );
+            assert_eq!(
+                all(&raft).await.expect("read"),
+                written[PURGED as usize + 1..],
+                "{at}: what follows the purged id"
+            );
+            raft.purge(entry(PURGED + 10).log_id)
+                .await
+                .expect("the next purge");
+            raft.drain_flushes().await.expect("drain");
+            assert_eq!(
+                wholly_below(&raft, PURGED + 11),
+                0,
+                "{at}: the next purge left purged segments"
+            );
+            let next = normal(1_000, 90, "after the cut");
+            append_flushed(&mut raft, std::slice::from_ref(&next)).await;
+            raft.disk_log().close().await.expect("close");
+            drop(raft);
+            let raft = sim.open();
+            let reopened = all(&raft).await.expect("read");
+            assert_eq!(
+                reopened.first(),
+                Some(&written[PURGED as usize + 11]),
+                "{at}"
+            );
+            assert_eq!(reopened.last(), Some(&next), "{at}");
+            raft.disk_log().shutdown().await.expect("shutdown");
+        }
+    }
+}
+
+/// An unlink behind a purge fails. Its segment is off the list by then, so
+/// a reset that went on would unlink only the listed ones and start its new
+/// base beside it, a gap the next open refuses. The failure stops the log
+/// instead: a purge past the end is refused, and the log reopens right
+/// after the purged id (#3263).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_failed_unlink_behind_a_purge_stops_the_log_before_a_reset() {
+    const PURGED: u64 = 60;
+    let written = entries(0..90);
+    let sim = Sim::new("purge-unlink-fails", 0);
+    let mut raft = sim.open();
+    append_flushed(&mut raft, &written).await;
+    let unlinks = wholly_below(&raft, PURGED + 1);
+    assert!(unlinks >= 2, "only {unlinks} segments below the purge");
+    sim_fs::fail_segment_unlink(&sim.0, 1).expect("arm");
+    raft.purge(entry(PURGED).log_id)
+        .await
+        .expect("the purge returns before its removal");
+    raft.drain_flushes().await.expect("drain");
+    assert_eq!(
+        wholly_below(&raft, PURGED + 1),
+        0,
+        "the removal took its segments off the list"
+    );
+    let reset = raft.purge(entry(95).log_id).await;
+    assert!(
+        reset.is_err(),
+        "a purge past the end reset a log whose removal failed"
+    );
+    raft.disk_log().shutdown().await.ok();
+    drop(raft);
+
+    let reopened = DiskLog::open(sim.0.join("log"), "t/ns/raft/0", config());
+    assert!(
+        reopened.is_ok(),
+        "the log does not reopen: {:?}",
+        reopened.err()
+    );
+    let mut raft = RaftLog::new(reopened.expect("open"), Codec).expect("a Raft log");
+    let state = raft.log_state().await.expect("state");
+    assert_eq!(state.last_purged_log_id, Some(entry(PURGED).log_id));
+    assert_eq!(
+        all(&raft).await.expect("read"),
+        written[PURGED as usize + 1..]
+    );
+    raft.purge(entry(PURGED + 10).log_id)
+        .await
+        .expect("the next purge");
+    raft.drain_flushes().await.expect("drain");
+    assert_eq!(
+        wholly_below(&raft, PURGED + 11),
+        0,
+        "the next purge removed what the failed one left"
+    );
+    raft.disk_log().shutdown().await.expect("shutdown");
+}
