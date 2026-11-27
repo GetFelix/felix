@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795749147710,
+  "lastUpdate": 1795754515110,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -72852,6 +72852,58 @@ window.BENCHMARK_DATA = {
             "range": "2786.74",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 820466.57\nmean: 821034.40\nstdev: 2786.74\ncv: 0.34%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "42c01ab5e5c22ea4d12b17c5af278e21875cf9b3",
+          "message": "fix(raft): a shard placed on too few brokers is filled once enough join (#3331) (#3334)\n\n* fix(placement): a Raft shard placed on too few brokers is written in full once enough join (#3331)\n\nA shard created at RF 3 while one or two brokers were live never formed:\nthe brokers form nothing on a short set and the store takes no copy id\nfor one, so no target was ever stored and the one-member top-up waited on\nseat_open every pass.\n\nPlacement now writes the full set in one step when the group cannot have\nformed: the epoch's placed record names fewer brokers than the factor, at\nepoch 0, with no target, kept counter, formed mark, voters, floor, seed,\nbases or ordered target. Same pause and budget as a swap. A held shard\nis logged at info once a minute with the reason.\n\nSpec-Unaffected: placement writes a full set only for a group no target was ever stored for, a state the Raft placement spec never forms a group in\n\n* fix(placement): the fill drops a never-formed set's dead or leaving leader (#3331)\n\nThe one-step fill needed a live leader that was not leaving, so an RF 3\nshard placed on one broker that then died or started draining stayed held\nfor good, though its group never formed and holds no record. The fill now\ndrops a leader that is down, lost or must leave like any follower; a kept\nfollower, else the first broker added, leads. The dropped broker is in no\nset and no target ever named it, so it forms nothing if it comes back.\n\nTests: the dead, lost and draining lone leader, a dead leader beside a live\nfollower, a dead leader not counted toward the brokers needed, seed and\nbases on the trace list, a once-full set whose target was cleared, and a\nstore test that a filled set's copy ids store a target. TooFewBrokers now\nsays it counts eligible brokers.\n\nSpec-Unaffected: the fill still writes only sets no target was ever stored for, which the Raft placement spec never forms a group in",
+          "timestamp": "2026-11-27T04:32:39Z",
+          "tree_id": "04333e5d1ab09e976b85d5e378229d8300ffc8db",
+          "url": "https://github.com/GetFelix/felix/commit/42c01ab5e5c22ea4d12b17c5af278e21875cf9b3"
+        },
+        "date": 1795754514350,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 492135.21,
+            "range": "53093.49",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 492135.21\nmean: 513354.07\nstdev: 53093.49\ncv: 10.34%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 492135.21,
+            "range": "53093.49",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 492135.21\nmean: 513354.07\nstdev: 53093.49\ncv: 10.34%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 120515.44,
+            "range": "919.66",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 120515.44\nmean: 120930.50\nstdev: 919.66\ncv: 0.76%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1205154.41,
+            "range": "9196.62",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1205154.41\nmean: 1209305.07\nstdev: 9196.62\ncv: 0.76%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
