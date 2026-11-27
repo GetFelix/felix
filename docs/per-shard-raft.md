@@ -204,6 +204,11 @@ records, in each of these cases:
 - The directory fails the restore check below.
 - The copy's log was poisoned in its last run ("A poisoned log" below).
 
+A normal open's file work (the lock, the checks, a rotation's syncs and the log's
+open) runs on the blocking pool. A bulk create opens hundreds of copies on
+each broker, and on a runtime worker each open's fsyncs would stall every task
+queued behind it.
+
 **Votes are always fsynced.** The vote, the copy id and the membership are
 synced before they are answered. Votes are rare, so this costs nothing on
 the write path. The log is fsync on commit and refuses any other mode
@@ -3267,10 +3272,15 @@ carries entries never waits.
   each heartbeat on its own, the bytes it always read, and so is a batch of
   one.
 - **One group cannot hold up the rest.** The receiver hands every
-  heartbeat to its member at once. Once one has answered, a member that stays
-  silent for one window past the latest answer is answered *slow*, which the
-  leader counts as not answered, with the broker up. A failure for one
-  group's heartbeat is that group's alone.
+  heartbeat to its member at once. Once one has answered, a member still
+  silent a quarter of the heartbeat (50 ms by default) after that first answer
+  is answered *slow*, which the leader counts as not answered, with the broker
+  up. A failure for one group's heartbeat is that group's alone. The wait is
+  that long because a stalled broker's members come back a few milliseconds
+  apart. Answered slow, each would fail its heartbeat, and a read-index round
+  that needed it would find no quorum and start again. The sender puts the
+  wait in the message. The wait also ends one wait before the batch's
+  deadline, so a late first answer still gets back in time.
 - **Off.** `beat_window` zero sends each heartbeat on its own. It must be
   shorter than `heartbeat`; the runtime refuses a config where it is not.
 
@@ -5239,8 +5249,11 @@ log, stored as group records (`docs/storage-format.md`, "Group records").
 Every member folds them, in log order, into the same group table, so a
 new leader serves the group from exactly the state the old one committed.
 `docs/formal/FelixRaftGroups.tla` models the rules the fold follows; it
-leaves out discard, which only drops a dead letter, and `if_new`, which the
-leader decides before it proposes the seek.
+leaves out discard, which only drops a dead letter, `if_new`, which the
+leader decides before it proposes the seek, and claims: the model has no
+claim entries, visibility timeouts or attempt counts. That a new leader
+holds every claim a consumer was told about is checked by tests only
+(`queue/raft/tests.rs`, `a_claim_survives_a_change_of_leader`).
 
 The group table is the shard's consumer groups as one member has applied
 them: per group, its creation token, its cursor (everything below it is

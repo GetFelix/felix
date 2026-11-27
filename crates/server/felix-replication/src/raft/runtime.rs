@@ -704,7 +704,7 @@ impl GroupRuntime {
                 },
                 raft: Arc::new(config.raft(ShardKind::Stream)?),
                 raft_cache: Arc::new(config.raft(ShardKind::Cache)?),
-                transport: super::beats::Beats::wrap(transport, config.beat_window),
+                transport: super::beats::Beats::for_config(transport, &config),
                 clock: parking_lot::RwLock::new(Arc::new(wall_clock_micros)),
                 registry: Arc::new(Registry {
                     slots: parking_lot::RwLock::default(),

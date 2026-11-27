@@ -87,12 +87,15 @@ start-up and drain helpers both services use.
 
 ### `felix-replication`: brokers talking to brokers
 
-The broker-to-broker transport in `peer/` (connection pool, listener, mTLS) and the log
-replication that travels over it: `driver/` ships committed records to each shard's
-followers, `replica.rs` stores them on a follower, `quorum.rs` is what a `Quorum` write waits
-on, and `reporter.rs` tells the control plane which replicas hold the log. What it needs from
-the broker service comes in through three small traits: `quorum::ShardServing`,
-`driver::WriteFence` and `reporter::Credential`.
+The broker-to-broker transport in `peer/` (connection pool, listener, mTLS) and the replication
+that travels over it. The default engine is a Raft group per shard (`raft/`, behind the `raft`
+feature the broker service enables by default), which `node/cluster.rs` opens and drives from
+one ticker. The older hybrid protocol is still in the crate, deprecated and selectable only
+with `FELIX_SHARD_ENGINE=hybrid`, until it is deleted (`docs/hybrid-retirement.md`): `driver/`
+ships committed records to each shard's followers, `replica.rs` stores them on a follower,
+`quorum.rs` is what a `Quorum` write waits on, and `reporter.rs` tells the control plane which
+replicas hold the log. What the hybrid needs from the broker service comes in through three
+small traits: `quorum::ShardServing`, `driver::WriteFence` and `reporter::Credential`.
 
 ### `felix-broker-service`: a broker node
 
@@ -110,8 +113,8 @@ listener and background task and owns the shutdown order. The rest groups into f
 - `shards/` is owning shards: `watch` follows assignments, `lifecycle` is what this broker has
   actually done about them, and `routing` answers whether a shard is local, remote or
   unavailable.
-- `node/cluster.rs` wires in `felix-replication`, which ships records to followers and
-  applies them on a follower, over its own broker-to-broker transport.
+- `node/cluster.rs` wires in `felix-replication`, which runs each shard's Raft group
+  over its own broker-to-broker transport.
 
 `config/` reads the environment, and `observability/` serves metrics and health.
 
