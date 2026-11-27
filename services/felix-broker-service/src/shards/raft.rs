@@ -41,6 +41,7 @@ use crate::cluster::lease::{Head, LeaseState};
 
 pub(crate) mod alone_cluster;
 pub(crate) mod copy_id;
+mod fleet_wait;
 pub(crate) mod floor;
 mod groups;
 pub(crate) mod reform_survey;
@@ -89,6 +90,11 @@ pub(crate) struct RaftShards {
     /// Whether the fleet finalized `raft_written_commit`, read at each
     /// open: a member opened strict stays strict until it opens again.
     fleet: Arc<FleetGate>,
+    /// Holds member opens until the fleet's features are known.
+    fleet_wait: parking_lot::Mutex<fleet_wait::FleetWait>,
+    /// Set by [`Self::stand_after`]: these members open before the control
+    /// plane answers, so they do not wait for the fleet.
+    votes_unchecked: std::sync::atomic::AtomicBool,
     leading: Arc<Leading>,
     /// Set when a member's log failed to close: its last sync may not have
     /// run, so the broker must not record a clean stop.
@@ -334,6 +340,8 @@ impl RaftShards {
             runtime,
             local,
             fleet,
+            fleet_wait: parking_lot::Mutex::default(),
+            votes_unchecked: std::sync::atomic::AtomicBool::new(false),
             leading,
             close_failed: std::sync::atomic::AtomicBool::new(false),
             placed: parking_lot::Mutex::default(),
@@ -397,6 +405,7 @@ impl RaftShards {
     /// Members that open before `registered` is cancelled vote but do not
     /// lead until it is ([`replication::raft::GroupRuntime::stand_after`]).
     pub(crate) fn stand_after(&self, registered: tokio_util::sync::CancellationToken) {
+        self.votes_unchecked.store(true, Ordering::Release);
         self.runtime.stand_after(registered);
     }
 
@@ -1771,6 +1780,8 @@ impl EngineShards for RaftShards {
             // One probe per pass: every shard shares the root, and each heal
             // costs a write, an fsync and a directory sync.
             let mut healed: Option<Result<(), String>> = None;
+            // Asked once per pass, and only if a member would open.
+            let mut fleet_known: Option<bool> = None;
             for (key, (assignment, full)) in &fed {
                 let brokers = brokers_of(assignment);
                 let held = || ShortShard {
@@ -1792,6 +1803,14 @@ impl EngineShards for RaftShards {
                         }
                         continue;
                     };
+                    // Held for the fleet like the restore gate holds
+                    // them: the pass after it is known opens the members.
+                    if !*fleet_known.get_or_insert_with(|| self.fleet_known()) {
+                        if keep {
+                            short.push(held());
+                        }
+                        continue;
+                    }
                     if !brokers.contains(self.local.as_str())
                         && !self.claimed(key, assignment.incarnation, &mut reads).await
                     {

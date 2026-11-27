@@ -2069,6 +2069,23 @@ the stream's spread is taken only where the destination also leads fewer in
 total than the leader, so it never trades a shard each way between two
 brokers. It is undone or stranded as an operator's RF 1 move is.
 
+A drain whose leader has no live member to hand to moves the shard off
+through the same steps, and the draining broker stays leader and voter
+until it is out of the set: it still serves, which is what a drain is for.
+An RF 1 shard grows to the draining broker and a live broker outside the
+set, then shrinks to that broker once its copy votes, so the old copy
+holds every acknowledged record until the new one does. A larger set whose
+members all drain swaps a follower for a live broker first and names it
+leader on a later pass. Each write takes a slot from the per-pass budget
+and a pause holds it. With no live broker outside the set the shard waits
+(`NoDestination`). A destination that goes down before it votes is
+dropped, and the next pass picks another. One that goes down after it
+votes stops the shard, since a group of two needs both votes, until that
+broker is back or the group is re-formed without it. If the draining
+broker goes down mid-move the shard stops too: before the destination
+votes it holds the only full copy, and after, the group needs both votes. A drain
+cancelled mid-move lets the move finish.
+
 A leader-only write copies nothing, so it takes no move slot. One pass names
 at most 64 new Raft leaders, since brokers follow placement: each one is a
 leadership transfer, which closes the shard for an election. Pausing placement holds them, and balance
@@ -2103,6 +2120,15 @@ shard".
 > and `a_raft_leader_balances_outside_its_set_by_swapping_within_a_zone`;
 > `crates/testing/felix-cluster/tests/routing/shutdown_handoff.rs`,
 > `a_broker_drained_out_of_every_set_leads_again_after_a_restart`.
+
+> `services/felix-controlplane-service/src/cluster/placement/tests/raft_drain.rs`,
+> `a_drain_moves_a_one_member_raft_shard_to_a_live_broker`,
+> `a_drain_move_picks_another_destination_when_the_first_dies`,
+> `a_cancelled_drain_finishes_the_move_it_started`,
+> `a_drain_of_a_one_member_raft_shard_waits_for_a_live_broker`,
+> `a_drain_of_one_member_raft_shards_is_paused_and_paced`,
+> `a_drain_move_waits_for_a_dead_old_copy_until_the_destination_votes`
+> and `a_drain_of_every_member_swaps_a_follower_for_a_live_broker`.
 
 #### In-memory shards
 
