@@ -420,7 +420,7 @@ Replicate(i, j) ==
     /\ LET p == MaxOf(Common(i, j))
            cut == p < LastIdx(j)
        IN /\ p < LastIdx(i)
-          /\ StampNotChecked \/ EOff(EntryAt(i, p + 1), p + 1) = NextAfter(j, p)
+          /\ ~Batch \/ StampNotChecked \/ EOff(EntryAt(i, p + 1), p + 1) = NextAfter(j, p)
           /\ log' = [log EXCEPT ![j] = Append(SubSeq(@, 1, p - base[j].idx), EntryAt(i, p + 1))]
           /\ flushed' = [flushed EXCEPT ![j] = IF AckBeforeFlush THEN p + 1 ELSE Min(@, p)]
           /\ synced' = [synced EXCEPT ![j] = Min(@, p)]
@@ -620,9 +620,7 @@ SkippedBefore(s, i) ==
 \* batch's end. A blank or membership entry is not delivered; with
 \* ZeroTakesOffset the batch after it reports its offset in
 \* `skipped_before`.
-Deliver(s) ==
-    /\ Consumer
-    /\ role[s] = "leader"
+DeliverBatch(s) ==
     /\ BaseNext(s) <= LastEnd
     /\ LET bound == IF DeliverUncommitted THEN LastIdx(s) ELSE Min(Len(applied[s]), LastIdx(s))
            recs == {i \in (base[s].idx + 1)..bound :
@@ -636,6 +634,29 @@ Deliver(s) ==
                                           EPos(e) + EN(e) = EOf(e),
                                           IF SkipsNotCounted \/ o > eo THEN 0 ELSE SkippedBefore(s, i),
                                           vote[s].term))
+
+\* Without batches the offset is the index, as before batches were modelled.
+\* Kept as it was so those configs cost what they did per state.
+LastOff == IF got = <<>> THEN 0 ELSE got[Len(got)].off
+
+SkippedBeforeIdx(s, o) ==
+    Cardinality({i \in (base[s].idx + 1)..(o - 1) :
+        \A k \in i..(o - 1) : EntryAt(s, k).kind # "record"})
+
+DeliverIdx(s) ==
+    /\ base[s].idx <= LastOff
+    /\ LET bound == IF DeliverUncommitted THEN LastIdx(s) ELSE Min(Len(applied[s]), LastIdx(s))
+           recs == {i \in (LastOff + 1)..bound : EntryAt(s, i).kind = "record"}
+       IN /\ recs # {}
+          /\ LET o == CHOOSE i \in recs : \A k \in recs : i <= k
+             IN got' = Append(got, [off |-> o, val |-> EntryAt(s, o).val,
+                                    skipped |-> IF SkipsNotCounted THEN 0 ELSE SkippedBeforeIdx(s, o),
+                                    by |-> vote[s].term])
+
+Deliver(s) ==
+    /\ Consumer
+    /\ role[s] = "leader"
+    /\ IF Batch THEN DeliverBatch(s) ELSE DeliverIdx(s)
     /\ UNCHANGED <<election, storage, machine, match, used, inst>>
 
 Next ==
@@ -670,7 +691,8 @@ TypeOK ==
         /\ inst[s].step \in {"none", "install", "purge"}
         /\ ~Idle(s) => LastIdx(s) < inst[s].snap.idx
     /\ acked \subseteq 1..MaxWrites
-    /\ LastEnd <= CommittedNext \/ DeliverUncommitted
+    /\ IF Batch THEN LastEnd <= CommittedNext \/ DeliverUncommitted
+       ELSE LastOff <= Len(committed) \/ DeliverUncommitted
 
 OneLeaderPerTerm == \A a, b \in elected : a[1] = b[1] => a[2] = b[2]
 
@@ -729,24 +751,30 @@ PurgedCoveredBySnapshot == \A s \in Servers : base[s].idx <= snap[s].idx
 \* whichever broker serves, so this fails if that log differs below the
 \* record from what the subscriber was given.
 OffsetsDense ==
-    \A k \in 1..Len(got) :
-        got[k].off = (IF k = 1 THEN 1 ELSE got[k - 1].off + GCnt(got[k - 1])) + got[k].skipped
+    IF Batch
+    THEN \A k \in 1..Len(got) :
+            got[k].off = (IF k = 1 THEN 1 ELSE got[k - 1].off + GCnt(got[k - 1])) + got[k].skipped
+    ELSE \A k \in 1..Len(got) :
+            got[k].off = (IF k = 1 THEN 0 ELSE got[k - 1].off) + got[k].skipped + 1
 
 IsBatch(c) == c.e.kind = "record"
 
 \* An offset names a committed batch and a position in it. No two committed
 \* batches share one, and a delivered offset names the record delivered.
 OffsetNeverReused ==
-    /\ \A x, y \in 1..Len(committed) :
-        (x < y /\ IsBatch(committed[x]) /\ IsBatch(committed[y])) =>
-            EOff(committed[x].e, x) + EN(committed[x].e) <= EOff(committed[y].e, y)
-    /\ \A k \in 1..Len(got) : got[k].off < CommittedNext =>
-        \E x \in 1..Len(committed) :
-            LET c == committed[x].e
-                co == EOff(c, x)
-            IN /\ IsBatch(committed[x]) /\ c.val = got[k].val
-               /\ co <= got[k].off /\ got[k].off < co + EN(c)
-               /\ EPos(c) + got[k].off - co = GPos(got[k])
+    IF ~Batch
+    THEN \A k \in 1..Len(got) : got[k].off <= Len(committed) =>
+            IsRecord(committed[got[k].off].e, got[k].val)
+    ELSE /\ \A x, y \in 1..Len(committed) :
+            (x < y /\ IsBatch(committed[x]) /\ IsBatch(committed[y])) =>
+                EOff(committed[x].e, x) + EN(committed[x].e) <= EOff(committed[y].e, y)
+         /\ \A k \in 1..Len(got) : got[k].off < CommittedNext =>
+            \E x \in 1..Len(committed) :
+                LET c == committed[x].e
+                    co == EOff(c, x)
+                IN /\ IsBatch(committed[x]) /\ c.val = got[k].val
+                   /\ co <= got[k].off /\ got[k].off < co + EN(c)
+                   /\ EPos(c) + got[k].off - co = GPos(got[k])
 
 \* The committed entries of a batch hold all of it, and every read ends at
 \* a batch's end: a reader that starts inside one gets the rest of it.
@@ -761,7 +789,7 @@ BatchWhole ==
 \* Counting only records gives the dense numbering consumers rely on.
 DeliveredInOrder ==
     LET recs == SelectSeq(committed, LAMBDA c : c.e.kind = "record")
-    IN \A k \in 1..Len(got) : got[k].off < CommittedNext =>
+    IN \A k \in 1..Len(got) : (IF Batch THEN got[k].off < CommittedNext ELSE got[k].off <= Len(committed)) =>
         k <= Len(recs) /\ recs[k].e.val = got[k].val
 
 VoteNeverLowers == [][\A s \in Servers : VoteGE(voteDisk'[s], voteDisk[s])]_vars
@@ -779,6 +807,7 @@ QuiescentServed ==
         /\ \A s \in Servers : applied[s] = applied[l]
         /\ (Consumer /\ MaxSnapshots = 0) =>
                 \A i \in 1..Len(log[l]) : log[l][i].kind = "record" =>
+                    IF ~Batch THEN \E k \in 1..Len(got) : got[k].off = i ELSE
                     LET last == EOff(log[l][i], base[l].idx + i) + EN(log[l][i]) - 1
                     IN \E k \in 1..Len(got) : got[k].off <= last /\ last < got[k].off + GCnt(got[k])
 
