@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795833997960,
+  "lastUpdate": 1795839807168,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -95040,6 +95040,72 @@ window.BENCHMARK_DATA = {
             "range": "576.68",
             "unit": "us",
             "extra": "trials: 5\nmedian: 388.00\nmean: 621.40\nstdev: 576.68\ncv: 92.80%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "aa8b54e720ba859f55218676ae317b2fe598b973",
+          "message": "feat(controlplane)!: the 0.8 API baseline; compatibility switches retired, long-poll wakes on change (#3362) (#3408)\n\n* refactor(controlplane)!: the 0.8 API baseline retires the migration switches (#3362)\n\n0.8 starts fresh, so the control plane and broker drop branches that only\nserved a peer or caller from before the baseline:\n\n- FELIX_CONTROLPLANE_ACCEPT_BROKER_AUDIENCE, _LEGACY_UNSCOPED_GROUPS and\n  _DELEGATE_UNBOUND_TOKENS move to RETIRED_AT_BASELINE: set, each is\n  reported at start and changes nothing. The secure behaviour each relaxed\n  (controlplane audience only, scoped groups only, may_act required) always\n  applies.\n- The registration answer's storage_placement field, and the diskless\n  broker's refusal of a control plane without it, are gone.\n\nSpec-Unaffected: auth configuration and a registration field only; no replication, placement or Raft state-machine change\n\n* perf(controlplane): the store wakes assignment long-polls; no 50 ms re-read (#3362)\n\nEvery shard assignment change, and a snapshot import, bumps a watch on the\nin-memory store. Under Raft a member writes only by applying, so a waiting\nchanges request on any member wakes as soon as that member applies the\nchange. The handler drops CHANGES_RECHECK, and PlacementWakes drops its\ninstance-local assignment wake, which the store now covers.\n\nSpec-Unaffected: the long-poll answers the same page sooner; no change to what the feed contains",
+          "timestamp": "2026-11-28T04:12:04Z",
+          "tree_id": "4d045bf560f5d4957e6abba6a0ed5441006a36f0",
+          "url": "https://github.com/GetFelix/felix/commit/aa8b54e720ba859f55218676ae317b2fe598b973"
+        },
+        "date": 1795839788678,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 155,
+            "range": "1.41",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 155.00\nmean: 155.00\nstdev: 1.41\ncv: 0.91%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 217,
+            "range": "4.83",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 217.00\nmean: 217.60\nstdev: 4.83\ncv: 2.22%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 279,
+            "range": "260.88",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 279.00\nmean: 454.00\nstdev: 260.88\ncv: 57.46%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 201,
+            "range": "1.10",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 201.00\nmean: 200.80\nstdev: 1.10\ncv: 0.55%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 402,
+            "range": "4.82",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 402.00\nmean: 400.80\nstdev: 4.82\ncv: 1.20%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 580,
+            "range": "499.78",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 580.00\nmean: 826.00\nstdev: 499.78\ncv: 60.51%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
