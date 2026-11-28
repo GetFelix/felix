@@ -213,7 +213,6 @@ async fn a_drain_ends_the_wait() {
     let mut state = app_state_ready(Arc::clone(&store) as _);
     state.placement_wakes = Arc::new(crate::cluster::placement::PlacementWakes::new(
         closing.clone(),
-        crate::cluster::placement::DEFAULT_FENCE_MAX_LAG_RECORDS,
     ));
     let fx = Fixture {
         app: build_router(state.clone()),

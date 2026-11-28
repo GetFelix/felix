@@ -2,20 +2,6 @@
 //!
 //! Defines shared payload shapes for the control-plane REST API and OpenAPI
 //! schema generation.
-// A leader's account of which replicas hold a shard's log.
-//
-// The shapes a broker sends live in felix-common, so a field renamed here and
-// not there cannot be a silent mismatch — both sides compile against one
-// definition. Re-exported rather than mirrored, for the same reason.
-//
-// A report is sent by the shard's *leader*, because it is the only party that
-// knows both ends of the comparison: its own tail, and how far each follower
-// has acknowledged. A follower knows where it is, not whether that is caught up.
-pub use felix_common::membership::{
-    ReplicaOffset, ReplicaStatusRequest, ReplicaStatusResponse, ReportOutcome, ShardReplicaStatus,
-    ShardReportOutcome,
-};
-
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 

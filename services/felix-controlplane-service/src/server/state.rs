@@ -67,10 +67,7 @@ pub(super) async fn build_state(
             store,
             readiness,
             in_flight: Default::default(),
-            placement_wakes: Arc::new(PlacementWakes::new(
-                api_shutdown.child_token(),
-                config.shard_moves.fence_max_lag_records,
-            )),
+            placement_wakes: Arc::new(PlacementWakes::new(api_shutdown.child_token())),
             oidc_validator: UpstreamOidcValidator::new_with_allowed_algorithms(
                 Duration::from_secs(3600),
                 Duration::from_secs(3600),

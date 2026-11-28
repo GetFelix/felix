@@ -48,7 +48,6 @@ async fn calls_reach_their_routes_with_the_bearer() {
         .route("/v1/nodes/{id}", get(record("node")))
         .route("/v1/nodes/{id}/heartbeat", post(record("heartbeat")))
         .route("/v1/nodes/{id}/{action}", post(record("lifecycle")))
-        .route("/v1/nodes/{id}/replica-status", post(record("status")))
         .route("/v1/nodes/{id}/raft-floors", post(record("floors")))
         .route("/v1/shard-assignments/snapshot", get(record("snapshot")))
         .route("/v1/shard-assignments/changes", get(record("changes")));
@@ -65,9 +64,6 @@ async fn calls_reach_their_routes_with_the_bearer() {
     link.assignment_changes(Some("t"), 7, wait, wait)
         .await
         .expect("changes");
-    link.replica_status(Some("t"), "n1", &body)
-        .await
-        .expect("status");
     link.report_raft_floors(Some("t"), "n1", &[])
         .await
         .expect("floors");
@@ -83,7 +79,6 @@ async fn calls_reach_their_routes_with_the_bearer() {
             "page",
             "snapshot",
             "changes",
-            "status",
             "floors"
         ]
     );

@@ -1421,138 +1421,10 @@ is in progress; it is always one of `replicas`, and absent otherwise. See
 
 #### Replica reports
 
-`POST /v1/nodes/{node_id}/replica-status` is how a shard's leader tells the
-control plane which replicas hold its log and how far each has got. Promotion
-is gated on it: a lost leader is replaced only by a replica reported caught up,
-and among those by the one reported furthest ahead. A replica on a draining
-broker is picked only when no live one is caught up; the drain then moves the
-shard off it as usual. A broker that has deregistered is never picked, even
-while placement still counts it as draining: it has stopped. A report may also
-carry `drained: true`, the leader's word that it has stopped serving the shard at
-that generation and its log will not grow: the fence of a planned move. For a
-cache, `replica_counter_offsets` says how far each replica has got with the
-counter log, which placement counts as a restore's progress; brokers that
-predate it leave it out. Requires `node.manage` over
-the reporting node, and the node must lead the shard it reports on; a report
-naming a generation ahead of the assignment is refused, since one claiming
-`u64::MAX` would otherwise block every real report after it.
-`stream_incarnation` names the stream incarnation whose log the report
-measured, and is left out at 0 (a cache, a stream from before incarnations,
-and brokers that predate it). A report naming another incarnation than the
-assignment's is refused as `stale`: after a control-plane restore a recreated
-stream can be at the deleted one's generation, and a broker that has not yet
-seen the recreate would otherwise report the old log, whose longer tail
-would then refuse every real report.
-`by_round: true` says the leader acknowledges the shard by its followers and
-confirms its reads by a round, so nothing it serves rests on its lease. It is
-kept only when the request's `incarnation` is the node's current one, and is
-recorded with it as `leader_incarnation`; placement ignores it once the node
-has registered again, since a restarted leader serves on its lease until its
-first pass.
-Placement replaces a leader on its followers' word only when its report at the
-current generation says so ([Failover on the followers'
-word](replication-design.md#failover-on-the-followers-word)). It is left out
-when false and by brokers that predate it, which placement reads as a leader on
-its lease. Under Raft it is recorded only once every member is at metadata
-level 11.
-`holds_start` lists the followers the leader saw holding the start record of
-its own generation (for a cache, its counter log's too), by node id, and only
-those that gave a storage id. A given-up leader's probe report lists the
-followers whose fence answer ends at that generation on every log.
-Placement re-admits a replaced copy on it
-([Re-admitting a replaced copy](#re-admitting-a-replaced-copy)). It is left
-out when empty and by brokers that predate it. Under Raft it is recorded only
-once every member is at metadata level 23.
-
-The answer is per shard, in request order: each entry names the shard and
-generation and says `accepted`, `stale`, `not_leader`, `unassigned` or
-`future_generation`. The status is 200 when every shard was accepted and 409
-when any was not. The leader moves a shard's quorum mark only on `accepted`,
-because a `Quorum` acknowledgement must rest on a report failover will read.
-Control planes before this answered 204 whatever they did with each shard.
-
-**Reports live in the store**, keyed like the assignment they describe and
-cascading from it, not in the memory of the instance that received them. The
-instance a report reaches and the instance that runs placement need not be the
-same process, and a report only one of them had seen was a position no
-promoter could use: a `Quorum` acknowledgement released on it could not be
-made good at failover. Under Raft the report is a log command, restamped with the leader's clock as a heartbeat
-is. Reports only move forward: one replaces the held report at a later
-generation, or at the same generation with a leader tail at least as far
-along, so a slow request cannot put back an older view of who is caught up.
-One from an older generation than the assignment's is refused as stale,
-because leadership moved on and it describes a replica set that may no longer
-exist.
-
-**The leadership check is repeated at the write.** The handler judges a report
-against the assignment it read, and a promotion can land between that read and
-the write. So every backend stores a report only if the reporting node still
-leads the shard at the report's generation, checked in the same step as the
-write: under the store lock in memory, and in the Raft state machine as
-the command applies, against the replicated assignment rather than the
-proposing instance's copy. A report refused there answers `not_leader` (another
-node leads) or `stale` (another generation), so a deposed leader never sees
-`accepted` and does not move its quorum mark. Report commands from members
-that predate the check carry no reporting node and apply unchecked, as they
-did; a member still on that build ignores the node and applies every report,
-so finish the roll before relying on the check.
-
-**One clock on both sides.** A report is stamped with the store's clock and its
-freshness is judged, by whichever instance plans, against the store's clock
-(the leader's process clock under Raft). A
-report is believed for twice the expiry timeout plus one heartbeat interval:
-long enough to outlive the detection of the leader that made it, since a
-report that expired sooner would leave a shard unpromotable forever, and no
-longer, since a stale one is how a failover loses the records written after
-it. Nothing about a report survives the assignment it describes: deleting the
-assignment deletes the report, so a shard removed and recreated does not
-inherit the old one's promotability.
-
-**A follower counts only under its own storage identity.** A broker registers
-with the identity of its data directory (`storage_id`, 32 lowercase hex
-digits; any other spelling is refused with 400), and a registration without
-one clears the stored one. The leader's report names the identity it saw for
-each follower (`follower_storage`). Placement counts a follower from a report
-only while the two match, never once they differ, and by the report's age
-alone when either is missing. The API also stamps each report with the node
-that made it (`leader`) and the incarnation every node it names is registered
-at (`node_incarnations`), read before the write. A `Leader` shard is promoted
-only on its current leader's report, and a follower without an identity counts
-only from a report taken at its current incarnation. While the report's leader, at the
-same incarnation, is still the assignment's leader and is `down` or `left`, a
-matching follower's report is aged to the leader's last heartbeat instead of
-now, through any move steps since, so a dead leader's last report does not
-expire while placement is slow (#1250). All of these are plain data written as
-received. Under Raft they need metadata levels 12 and 13 and are
-dropped by the proposer below them. See
-[replication-design.md](replication-design.md#who-may-be-promoted).
-
-**A deleted node leaves no stamp behind.** A node deleted and registered
-again starts at incarnation 0, the same number its old process may have been
-stamped at. So deleting a node also removes it from `node_incarnations` in
-every held report, and the API stamps only the nodes the shard's assignment
-names, none of which can be deleted while that assignment stands. A report
-taken before the delete then never counts the new registration through the
-incarnation check. The rest of the report stays, because it still speaks for
-the shard's other members. Under Raft the delete clears stamps only once every
-member is at metadata level 37; below it a report from before a delete can
-still count a re-registered node that has no storage identity (#2619). Reaching
-level 37 does not clear a stamp a delete left at 36: it goes when the node is
-deleted again or the shard's leader sends a new report.
-
-A leader also reports, for each follower it has not reached yet at its
-generation, the identity it inherited for it: the one the failover that
-promoted it named, or after a set change that kept it as leader, the one it
-named the follower by at its previous generation
-(`inherited_storage_ids`, stored as `inherited_storage`; a malformed one is
-dropped). A leader that stood for election inherits none, so for a member
-the report names no identity for and inherits none for, the control plane
-stores the one the shard's previous report named it by. The next failover names such a follower by it in the assignment's
-`fence_storage_ids` instead of by an empty identity, so its fence answer can
-count (#1574, #1922). It never makes a follower caught up. Under Raft it needs metadata
-level 20 and is dropped below it, which names the follower by none, as
-before. See
-[replication-design.md](replication-design.md#fencing-a-promotion).
+Brokers no longer send replica reports: `POST /v1/nodes/{node_id}/replica-status`
+is gone. A Raft group's leader reports its committed log id
+(`POST /v1/nodes/{node_id}/raft-floors`, with the voters it holds) and each
+member its copy id (`raft-copy-id`); see [Raft shards](#raft-shards).
 
 #### How shards get placed
 
@@ -3428,7 +3300,7 @@ catalog while every forward to it fails. Leases keep that safe, and
 `felix_broker_shard_watch_failures_total` plus the forwarding metrics make it
 visible, but placement today cannot act on it. The cheap version of SWIM's
 insight (brokers reporting peer reachability to the control plane as an
-advisory placement input, alongside the replica-status reports they already
+advisory placement input, alongside the Raft reports they already
 send) covers that gap without a second membership protocol, and is the
 first thing to build if it starts biting in practice.
 

@@ -204,10 +204,6 @@ pub fn build_router(state: AppState) -> Router {
             axum::routing::post(api::nodes::reports::report_health),
         )
         .route(
-            "/v1/nodes/{node_id}/replica-status",
-            axum::routing::post(api::nodes::reports::report_replica_status),
-        )
-        .route(
             "/v1/nodes/{node_id}/raft-copy-id",
             axum::routing::post(api::nodes::reports::report_raft_copy_id),
         )

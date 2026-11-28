@@ -140,15 +140,6 @@ impl ControlPlaneLink for FakeLink {
         self.answer("assignment_changes")
     }
 
-    async fn replica_status(
-        &self,
-        _: Option<&str>,
-        _: &str,
-        _: &(impl Serialize + Sync),
-    ) -> Result<LinkResponse> {
-        self.answer("replica_status")
-    }
-
     async fn report_raft_floors(
         &self,
         _: Option<&str>,

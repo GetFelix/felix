@@ -20,7 +20,6 @@ const MAX_VOTERS_SEEN: usize = 1 << 16;
 pub struct PlacementWakes {
     pass: Notify,
     closing: CancellationToken,
-    fence_max_lag_records: u64,
     voters_seen: parking_lot::Mutex<HashMap<ShardKey, VotersSeen>>,
 }
 
@@ -34,31 +33,19 @@ struct VotersSeen {
 
 impl Default for PlacementWakes {
     fn default() -> Self {
-        Self::new(
-            CancellationToken::new(),
-            super::DEFAULT_FENCE_MAX_LAG_RECORDS,
-        )
+        Self::new(CancellationToken::new())
     }
 }
 
 impl PlacementWakes {
     /// Long-polls waiting on these wakes return once `closing` fires, so a
     /// drain is not held open by requests that are only waiting.
-    ///
-    /// `fence_max_lag_records` is the placement policy's, so a report puts a
-    /// destination close enough to fence exactly when placement will.
-    pub(crate) fn new(closing: CancellationToken, fence_max_lag_records: u64) -> Self {
+    pub(crate) fn new(closing: CancellationToken) -> Self {
         Self {
             pass: Notify::new(),
             closing,
-            fence_max_lag_records,
             voters_seen: Default::default(),
         }
-    }
-
-    /// How far behind a move's destination may be to be fenced.
-    pub(crate) fn fence_max_lag_records(&self) -> u64 {
-        self.fence_max_lag_records
     }
 
     /// Ask the placement loop for a pass now.

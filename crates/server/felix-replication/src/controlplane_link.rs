@@ -103,14 +103,6 @@ pub trait ControlPlaneLink: Send + Sync + 'static {
         timeout: Duration,
     ) -> impl Future<Output = Result<LinkResponse>> + Send;
 
-    /// `POST /v1/nodes/{node_id}/replica-status`.
-    fn replica_status(
-        &self,
-        bearer: Option<&str>,
-        node_id: &str,
-        body: &(impl Serialize + Sync),
-    ) -> impl Future<Output = Result<LinkResponse>> + Send;
-
     /// `POST /v1/nodes/{node_id}/raft-floors`.
     fn report_raft_floors(
         &self,
@@ -328,19 +320,6 @@ impl ControlPlaneLink for HttpControlPlaneLink {
                 wait.as_millis()
             )))
             .timeout(timeout);
-        finish(bearer_if(request, bearer)).await
-    }
-
-    async fn replica_status(
-        &self,
-        bearer: Option<&str>,
-        node_id: &str,
-        body: &(impl Serialize + Sync),
-    ) -> Result<LinkResponse> {
-        let request = self
-            .client
-            .post(self.url(&format!("/v1/nodes/{node_id}/replica-status")))
-            .json(body);
         finish(bearer_if(request, bearer)).await
     }
 
