@@ -213,6 +213,8 @@
 (*                      record would.                                      *)
 (*   LostNotReported -- removes a rule: the whole jump is reported as      *)
 (*                      skipped by re-form, none of it as lost.            *)
+(*   EarlierNotBound -- removes a rule: an epoch's first index and first   *)
+(*                      offset are not held above every earlier epoch's.   *)
 (*                                                                         *)
 (* Three constants are not knobs:                                          *)
 (*                                                                         *)
@@ -355,6 +357,7 @@ OffsetBounds == "offsets"
 OffsetBoundsIndex == "index"
 OffsetBoundsBase == "base"
 LostNotReported == FALSE
+EarlierNotBound == FALSE
 Yes == TRUE
 
 \* What an entry that holds no record takes.
@@ -945,8 +948,17 @@ StartPad(base, n, offs, e) ==
        THEN Append(p, [Gap(e) EXCEPT !.n = first - NextOffOf(p)])
        ELSE p
 
+\* With Batch an epoch also starts at or above every earlier epoch's first
+\* index and first offset, as raft_copy/vouch.rs does. Without Batch the
+\* model leaves this bound out, so those state spaces stay as they were.
+EarlierIndex ==
+    IF Batch /\ ~EarlierNotBound THEN MaxIn({Len(f.base) : f \in forms} \cup {0}) ELSE 0
+EarlierOffs == IF Batch /\ ~EarlierNotBound THEN {f.first : f \in forms} ELSE {}
+
 \* Offsets up to the floor are not given out again.
-Pad(base, e) == IF Floor = "none" THEN StartPad(base, 0, {}, e) ELSE StartPad(base, cpFloor.i, {cpFloor.o}, e)
+Pad(base, e) ==
+    IF Floor = "none" THEN StartPad(base, EarlierIndex, EarlierOffs, e)
+    ELSE StartPad(base, Max(cpFloor.i, EarlierIndex), {cpFloor.o} \cup EarlierOffs, e)
 
 \* The split of the jump in offsets at the epoch's start: below lostEnd it
 \* is lost in re-form, above it skipped by re-form.
@@ -1116,8 +1128,8 @@ ReformKept(p, src) ==
         V(c) == IF one /\ Alone = "whole" THEN Min(Cap(c.e, e), Len(c.log)) ELSE VouchK(c, e, T, mk)
         base == SubSeq(src.log, 1, V(src))
         voters == {<<b, cid[b]>> : b \in {x \in S : \E c \in Copies(x) : IsPrefix(base, c.log)}}
-        top == Max(Len(base), Max(IF Floor = "none" THEN 0 ELSE cpFloor.i,
-                                   MaxOf({c.res.i : c \in R})))
+        top == Max(Max(Len(base), EarlierIndex),
+                   Max(IF Floor = "none" THEN 0 ELSE cpFloor.i, MaxOf({c.res.i : c \in R})))
         \* Unmarked, and no vote a majority reached is above every entry read.
         tEntry == ~mk /\ Top(e, R, FALSE) = MaxKey({LastKey(c.log) : c \in R})
         held == IF tEntry \/ one
@@ -1132,7 +1144,7 @@ ReformKept(p, src) ==
        /\ ReportNotPromise \/ \A b \in S : ep[b] = e => retired[b]
        /\ \A c \in R : V(c) <= V(src)
        /\ voters # {}
-       /\ WriteForm(e, base, StartPad(base, top, {FloorOff} \cup {c.res.o : c \in R}, e + 1),
+       /\ WriteForm(e, base, StartPad(base, top, {FloorOff} \cup {c.res.o : c \in R} \cup EarlierOffs, e + 1),
                      voters, TRUE, mk, Decided(R, e, T, mk), held)
        /\ lost' = lost \cup
             {x \in acked : x.e <= e /\ \A c \in R : ~Has(c.log, x) \/ x.i > V(c)}

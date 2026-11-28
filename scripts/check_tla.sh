@@ -631,6 +631,7 @@ expectations=(
   "FelixRaftReformBatchAloneIndex violates ReservedCovers"
   "FelixRaftReformBatchAloneIndexReuse violates OffsetNeverReused"
   "FelixRaftReformBatchAloneLostNotReported violates LossReported"
+  "FelixRaftReformBatchAbandonNoEarlier violates OffsetNeverReused"
   "FelixRaftReformTwoRotatedOneVoter violates NeverOneVoterCommits"
   "FelixRaftReformTwoRotatedOffsetsPads violates NeverPads"
   "FelixRaftReformRejoinHappens violates NeverRetiredRejoins"
