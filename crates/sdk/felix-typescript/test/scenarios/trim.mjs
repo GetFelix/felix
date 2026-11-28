@@ -114,7 +114,7 @@ export default function register(ctx) {
       );
     }));
 
-  it("a broker that advertised no head trims is sent none", () =>
+  it("a broker below the baseline is refused and sent no trim", () =>
     scenario("head_trim.negotiated", async () => {
       const { fixture, felix } = ctx;
       if (!fixture.no_commit_addrs?.length || !fixture.control_url) {
@@ -124,15 +124,10 @@ export default function register(ctx) {
         );
         return;
       }
-      const bare = await connect(fixture, { addrs: fixture.no_commit_addrs });
-      try {
-        await assert.rejects(
-          bare.trimBefore(fixture.tenant_id, fixture.namespace, fixture.durable_stream, 0, 0n, 0n),
-          (err) => err instanceof felix.TrimError,
-        );
-      } finally {
-        bare.close();
-      }
+      await assert.rejects(
+        connect(fixture, { addrs: fixture.no_commit_addrs }),
+        (err) => err instanceof felix.FelixError,
+      );
       const sent = await fetch(`${fixture.control_url}/no-commit/requests`);
       assert.equal(Number(await sent.text()), 0, "the broker was sent a trim");
     }));

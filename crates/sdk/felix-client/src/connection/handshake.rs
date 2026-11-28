@@ -188,11 +188,8 @@ pub(crate) struct Negotiated {
 /// listener ports. Negotiation rides on the auth handshake because that is
 /// already the first round trip on every stream, so it costs no extra latency.
 ///
-/// A broker that predates negotiation ignores `client_flags` (serde skips
-/// unknown fields) and answers with a plain `Ok`. That silence is not treated
-/// as "supports everything": it resolves to [`felix_wire::ORIGINAL_V1_FLAGS`],
-/// the three bits that existed before negotiation, which is the only
-/// assumption that is safe against a broker we cannot interrogate.
+/// A broker that does not advertise the 0.8 baseline is refused here, so
+/// nothing past the handshake checks for a baseline bit.
 async fn authenticate_stream(
     send: &mut SendStream,
     recv: &mut RecvStream,
@@ -226,38 +223,40 @@ async fn authenticate_stream(
             server_flags_ext,
             listener_ports,
             publish_window,
-        }) => Ok(Negotiated {
-            server_flags,
-            // Absent means a broker that predates features. It implements none:
-            // an unrecognised message type is fatal to the broker's control
-            // loop, so a client that guessed would cost itself the connection.
-            server_features: server_features.unwrap_or(0),
-            server_features_hi: felix_wire::peer_features_hi(
-                server_features.unwrap_or(0),
+        }) => {
+            let missing = felix_wire::broker_missing_baseline(
+                server_flags,
+                server_features,
                 server_features_hi,
-            ),
-            server_flags_ext: felix_wire::peer_flags_ext(server_flags, server_flags_ext),
-            listener_ports: listener_ports.unwrap_or_default(),
-            // Only meaningful with the feature bit; a window without it would
-            // be a broker promising an order it never agreed to.
-            publish_window: publish_window
-                .filter(|_| {
-                    felix_wire::supports_feature(
-                        server_features.unwrap_or(0),
-                        felix_wire::FEATURE_PUBLISH_PIPELINE,
-                    )
-                })
-                .unwrap_or(0),
-        }),
-        // Legacy broker: no advertisement, so assume only the original bits.
-        Some(Message::Ok) => Ok(Negotiated {
-            server_flags: felix_wire::ORIGINAL_V1_FLAGS,
-            server_features: 0,
-            server_features_hi: 0,
-            server_flags_ext: 0,
-            listener_ports: Vec::new(),
-            publish_window: 0,
-        }),
+            );
+            if missing != (0, 0, 0) {
+                let (flags, features, features_hi) = missing;
+                return Err(anyhow::anyhow!(
+                    "broker does not advertise the 0.8 baseline: missing flags {flags:#06x}, \
+                     features {features:#010x}, features_hi {features_hi:#010x}"
+                ));
+            }
+            Ok(Negotiated {
+                server_flags,
+                server_features: server_features.unwrap_or(0),
+                server_features_hi: felix_wire::peer_features_hi(
+                    server_features.unwrap_or(0),
+                    server_features_hi,
+                ),
+                server_flags_ext: felix_wire::peer_flags_ext(server_flags, server_flags_ext),
+                listener_ports: listener_ports.unwrap_or_default(),
+                // Only meaningful with the feature bit; a window without it would
+                // be a broker promising an order it never agreed to.
+                publish_window: publish_window
+                    .filter(|_| {
+                        felix_wire::supports_feature(
+                            server_features.unwrap_or(0),
+                            felix_wire::FEATURE_PUBLISH_PIPELINE,
+                        )
+                    })
+                    .unwrap_or(0),
+            })
+        }
         Some(Message::Error {
             message,
             code: Some(code),

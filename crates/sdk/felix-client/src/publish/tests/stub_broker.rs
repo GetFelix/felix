@@ -34,7 +34,7 @@ async fn publish_reports_server_error() -> Result<()> {
                 let (mut send, mut recv) = connection.accept_bi().await?;
                 let mut frame_scratch = BytesMut::with_capacity(64 * 1024);
                 let _ = read_message(&mut recv, &mut frame_scratch).await?;
-                write_message(&mut send, Message::Ok).await?;
+                write_message(&mut send, felix_wire::baseline_auth_ok()).await?;
                 let next = read_message(&mut recv, &mut frame_scratch).await?;
                 if let Some(Message::Publish { request_id, .. }) = next {
                     let id = request_id.unwrap_or(1);
@@ -93,7 +93,7 @@ async fn publish_batch_ack_succeeds() -> Result<()> {
             let (mut send, mut recv) = connection.accept_bi().await?;
             let mut frame_scratch = BytesMut::with_capacity(64 * 1024);
             let _ = read_message(&mut recv, &mut frame_scratch).await?;
-            write_message(&mut send, Message::Ok).await?;
+            write_message(&mut send, felix_wire::baseline_auth_ok()).await?;
             let next = read_frame_into(&mut recv, &mut frame_scratch, false).await?;
             if next.is_some() {
                 write_message(
@@ -185,24 +185,32 @@ async fn a_plain_client_sends_unkeyed_and_keyed_publishes_on_one_stream() -> Res
                     tokio::spawn(async move {
                         let mut scratch = BytesMut::with_capacity(64 * 1024);
                         let _ = read_message(&mut recv, &mut scratch).await?;
-                        write_message(&mut send, Message::Ok).await?;
-                        while let Some(message) = read_message(&mut recv, &mut scratch).await? {
-                            if let Message::PublishBatch {
-                                request_id: Some(id),
-                                ..
-                            } = message
-                            {
+                        write_message(&mut send, felix_wire::baseline_auth_ok()).await?;
+                        while let Some(frame) =
+                            read_frame_into(&mut recv, &mut scratch, false).await?
+                        {
+                            if frame.header.flags & felix_wire::FLAG_BINARY_PUBLISH_ACKED != 0 {
+                                let batch = felix_wire::binary::decode_acked_publish_batch(&frame)?;
                                 seen.lock()
                                     .expect("seen")
                                     .push((format!("{connection_id:?}"), recv.id()));
-                                write_message(
-                                    &mut send,
-                                    Message::PublishOk {
-                                        request_id: id,
-                                        offset: None,
-                                    },
-                                )
+                                send.write_all(&felix_wire::binary::encode_publish_ack_bytes(
+                                    batch.request_id,
+                                    None,
+                                )?)
                                 .await?;
+                            }
+                            if frame.header.flags == 0
+                                && let Ok(Message::StreamShards { request_id, .. }) =
+                                    Message::decode(frame)
+                            {
+                                let answer = Message::StreamShardsView {
+                                    shards: 1,
+                                    request_id,
+                                    routing: None,
+                                    ack_durability: None,
+                                };
+                                write_message(&mut send, answer).await?;
                             }
                         }
                         Ok::<(), anyhow::Error>(())

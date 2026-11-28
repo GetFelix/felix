@@ -5,8 +5,7 @@
 /// A stale expected offset is an answer, as it is for a conditional publish.
 /// Every other refusal is an error: a [`crate::BrokerError`] whose code says
 /// which (`feature_not_enabled`, `stream_has_commits`, `invalid_request`,
-/// `forbidden`), or [`TrimError::Unsupported`] when the broker was never
-/// asked.
+/// `forbidden`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ConditionalTrim {
     /// The trim is durable (on a `Quorum` stream, on a majority). Reads of

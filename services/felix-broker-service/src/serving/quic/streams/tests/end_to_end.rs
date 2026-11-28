@@ -46,7 +46,10 @@ async fn cache_put_get_round_trip() -> Result<()> {
     let response =
         crate::serving::quic::read_message_limited(&mut recv, max_frame_bytes, &mut frame_scratch)
             .await?;
-    assert_eq!(response, Some(Message::Ok));
+    assert!(
+        matches!(response, Some(Message::AuthOk { .. })),
+        "{response:?}"
+    );
     crate::serving::quic::write_message(
         &mut send,
         Message::CachePut {
@@ -71,7 +74,10 @@ async fn cache_put_get_round_trip() -> Result<()> {
     let response =
         crate::serving::quic::read_message_limited(&mut recv, max_frame_bytes, &mut frame_scratch)
             .await?;
-    assert_eq!(response, Some(Message::Ok));
+    assert!(
+        matches!(response, Some(Message::AuthOk { .. })),
+        "{response:?}"
+    );
     crate::serving::quic::write_message(
         &mut send,
         Message::CacheGet {
@@ -87,17 +93,13 @@ async fn cache_put_get_round_trip() -> Result<()> {
     let response =
         crate::serving::quic::read_message_limited(&mut recv, max_frame_bytes, &mut frame_scratch)
             .await?;
-    assert_eq!(
-        response,
-        Some(Message::CacheValue {
-            tenant_id: "t1".to_string(),
-            namespace: "default".to_string(),
-            cache: "primary".to_string(),
-            key: "demo-key".to_string(),
-            value: Some(Bytes::from_static(b"cached")),
-            request_id: None,
-            version: None,
-        })
+    assert!(
+        matches!(
+            &response,
+            Some(Message::CacheValue { key, value: Some(value), version: Some(_), .. })
+                if key == "demo-key" && value == &Bytes::from_static(b"cached")
+        ),
+        "{response:?}"
     );
 
     drop(connection);
@@ -139,7 +141,10 @@ async fn publish_rejects_unknown_stream() -> Result<()> {
     let response =
         crate::serving::quic::read_message_limited(&mut recv, max_frame_bytes, &mut frame_scratch)
             .await?;
-    assert_eq!(response, Some(Message::Ok));
+    assert!(
+        matches!(response, Some(Message::AuthOk { .. })),
+        "{response:?}"
+    );
     crate::serving::quic::write_message(
         &mut send,
         Message::Publish {

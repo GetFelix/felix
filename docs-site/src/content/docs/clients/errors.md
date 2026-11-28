@@ -52,6 +52,7 @@ The class column is the usual one. When the broker sends the class `outcome_unkn
 | `stale_width` | `retry` | `BrokerError`; a `Client` re-asks the width itself | `FelixError` | `Error` | `FELIX_STATUS_ERROR` |
 | `feature_not_enabled` | `fatal` | `BrokerError` | `FelixError` | `Error` | `FELIX_STATUS_ERROR` |
 | `stream_has_commits` | `fatal` | `BrokerError` | `FelixError` | `Error` | `FELIX_STATUS_ERROR` |
+| `below_baseline` | `fatal` | `BrokerError` | `FelixError` | `Error` | `FELIX_STATUS_ERROR` |
 | a code from a newer broker | the class sent | `BrokerError` with the unknown code | `FelixError` | `Error` | `FELIX_STATUS_ERROR` |
 
 In Rust every row is a `BrokerError` with `code`, `retry` and `detail`. Recover it with `err.downcast_ref::<BrokerError>()`. In Python and TypeScript every exception carries `code`, `retry` and `detail`, so you can read the broker's code even when the class is generic. C# and C do not carry the code.

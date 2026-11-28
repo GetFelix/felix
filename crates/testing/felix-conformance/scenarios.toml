@@ -373,11 +373,11 @@ at the first time.
 [[scenario]]
 id = "ack.offset_negotiated"
 required = false
-title = "The offset goes only to a client that offered it"
+title = "A client that does not offer the offset flag is refused"
 detail = """
-The broker advertises FLAG_BINARY_PUBLISH_ACK_OFFSET in auth_ok. A client that
-did not offer it gets the ack frames it always did, byte for byte: no flag bit
-on a binary ack and no offset field in a JSON publish_ok.
+The broker advertises FLAG_BINARY_PUBLISH_ACK_OFFSET in auth_ok. The flag is
+part of the 0.8 baseline, so an auth that leaves it out is refused with
+below_baseline instead of being sent ack frames without the offset.
 """
 
 # ---------------------------------------------------------------------------
@@ -1045,8 +1045,9 @@ required = true
 title = "Commits are sent only to a broker that advertised them"
 detail = """
 The broker advertises FEATURE_ATOMIC_COMMIT in auth_ok. A client uses commit
-and state_get only when it saw the bit, and a peer that offers no capabilities
-gets the same plain ok, byte for byte, that it always did.
+and state_get only when it saw the bit. A peer that does not offer the 0.8
+baseline, including one that offers nothing, is refused with below_baseline
+and is never sent a plain ok.
 """
 
 # ---------------------------------------------------------------------------

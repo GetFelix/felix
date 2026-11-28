@@ -134,7 +134,6 @@ async fn an_acked_batch_routed_by_a_stale_width_is_told_stale_width() {
     ));
     let stale = declared("stream", 4, ShardRouting::Modulo);
     handle_publish_batch_message(
-        0,
         &broker,
         &publish_ctx,
         Some(&stale),

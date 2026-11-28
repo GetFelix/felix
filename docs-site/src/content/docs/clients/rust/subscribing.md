@@ -198,7 +198,7 @@ without its bound.
 ### Offsets are how you notice a drop
 
 Subscriber queues shed under the default policy rather than blocking the
-publisher, so a subscriber can silently miss records. **A jump between
+publisher, so a subscriber can miss records. A durable stream's subscription ends with `subscription_lagged` at its first dropped batch; the rest of this section is how to read the gap. **A jump between
 consecutive offsets is a drop**, with one exception the broker tells you about:
 a leader that takes or reopens the shard writes a generation-start record that
 takes an offset and is never delivered, and the event after it says so in `skipped_before`.

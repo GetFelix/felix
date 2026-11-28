@@ -27,9 +27,7 @@ pub(super) async fn unsupported(
             None => ("unknown".to_string(), None, None),
         },
     };
-    if session.auth_ctx.is_none()
-        || !felix_wire::supports_feature(session.peer_features, felix_wire::FEATURE_UNSUPPORTED)
-    {
+    if session.auth_ctx.is_none() {
         tracing::debug!(
             request_type,
             "closing a control stream on an unknown request"

@@ -114,7 +114,6 @@ async fn a_publish_if_to_a_raft_shard_is_written_only_at_its_offset() -> Result<
             frames_with_auth,
             config.clone(),
             publish_ctx(),
-            Default::default(),
         )
     };
 
@@ -201,7 +200,6 @@ async fn a_publish_if_batch_to_a_raft_shard_is_written_or_refused_whole() -> Res
                 &config,
                 cluster.clone(),
             ),
-            Default::default(),
         )
     };
 
@@ -290,7 +288,6 @@ async fn a_trim_before_to_a_raft_shard_is_answered_as_on_the_hybrid() -> Result<
                 &config,
                 cluster.clone(),
             ),
-            Default::default(),
         )
     };
 
@@ -425,7 +422,6 @@ async fn a_commit_to_a_raft_shard_is_answered_as_on_the_hybrid() -> Result<()> {
                 &config,
                 cluster.clone(),
             ),
-            Default::default(),
         )
     };
 
@@ -523,7 +519,6 @@ async fn a_state_read_on_raft_waits_for_the_view_to_reach_the_read_index() -> Re
                 &config,
                 cluster.clone(),
             ),
-            Default::default(),
         )
     };
 

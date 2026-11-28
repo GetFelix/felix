@@ -17,6 +17,7 @@
 //! individual test names.
 
 mod ack_durability;
+mod baseline;
 mod control_auth;
 mod control_cache;
 mod control_cache_keys;
@@ -152,17 +153,7 @@ fn default_perms() -> Vec<String> {
 }
 
 fn auth_message(fixture: &AuthFixture) -> Message {
-    // Auth messages always carry tenant id + token.
-    Message::Auth {
-        tenant_id: fixture.tenant_id.clone(),
-        token: fixture.token.clone(),
-        // Legacy handshake: no capabilities offered, so the broker
-        // answers with a plain `Ok`.
-        client_flags: None,
-        client_features: None,
-        client_features_hi: None,
-        client_flags_ext: None,
-    }
+    felix_wire::baseline_auth(&fixture.tenant_id, &fixture.token)
 }
 
 async fn open_authenticated_bi(
@@ -177,7 +168,7 @@ async fn open_authenticated_bi(
         crate::serving::quic::read_message_limited(&mut recv, max_frame_bytes, frame_scratch)
             .await?;
     match response {
-        Some(Message::Ok) => Ok((send, recv)),
+        Some(Message::AuthOk { .. }) => Ok((send, recv)),
         other => Err(anyhow::anyhow!("auth failed: {other:?}")),
     }
 }
@@ -279,30 +270,17 @@ async fn run_control_loop_with_frames(
     frames: Vec<Result<Option<Frame>>>,
     config: BrokerConfig,
 ) -> Result<(bool, Vec<Outgoing>)> {
-    run_control_loop_with_codes(broker, auth, frames, config, Default::default()).await
-}
-
-/// As `run_control_loop_with_frames`, sharing `error_codes` with the loop the
-/// way the writer does, so a test can shape what it got as the writer would.
-async fn run_control_loop_with_codes(
-    broker: Arc<Broker>,
-    auth: Arc<BrokerAuth>,
-    frames: Vec<Result<Option<Frame>>>,
-    config: BrokerConfig,
-    error_codes: Arc<crate::serving::quic::client_error::ErrorCodeSupport>,
-) -> Result<(bool, Vec<Outgoing>)> {
     let publish_ctx = build_publish_context(Arc::clone(&broker)).await;
-    run_control_loop_on(broker, auth, frames, config, publish_ctx, error_codes).await
+    run_control_loop_on(broker, auth, frames, config, publish_ctx).await
 }
 
-/// As `run_control_loop_with_codes`, over `publish_ctx`.
+/// As `run_control_loop_with_frames`, over `publish_ctx`.
 async fn run_control_loop_on(
     broker: Arc<Broker>,
     auth: Arc<BrokerAuth>,
     frames: Vec<Result<Option<Frame>>>,
     config: BrokerConfig,
     publish_ctx: PublishContext,
-    error_codes: Arc<crate::serving::quic::client_error::ErrorCodeSupport>,
 ) -> Result<(bool, Vec<Outgoing>)> {
     let (server_config, cert) = build_server_config()?;
     let server = QuicServer::bind(
@@ -351,7 +329,6 @@ async fn run_control_loop_on(
         cancel_rx,
         commit_acks,
         &mut scratch,
-        error_codes,
         Default::default(),
     )
     .await?;

@@ -108,14 +108,13 @@ pub(super) fn not_served_here(
                     format!("shard {} of {} is served elsewhere", key.shard, key.stream),
                 ),
             };
-            if felix_wire::supports_feature(peer_features, felix_wire::FEATURE_REDIRECT)
-                && let Some(answer @ Message::NotLeader { .. }) =
-                    crate::serving::quic::handlers::redirect::redirect_from(
-                        dispatched,
-                        publish_ctx.client_endpoints.as_deref(),
-                        &target.stream,
-                        peer_features,
-                    )
+            if let Some(answer @ Message::NotLeader { .. }) =
+                crate::serving::quic::handlers::redirect::redirect_from(
+                    dispatched,
+                    publish_ctx.client_endpoints.as_deref(),
+                    &target.stream,
+                    peer_features,
+                )
             {
                 return Some(answer);
             }

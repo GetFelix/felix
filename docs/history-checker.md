@@ -205,7 +205,8 @@ rule 1 cannot be trusted for that list. `malformed-history` means the recorder
 itself is wrong, for example because one value was appended twice.
 
 A read that is *missing* a record in the middle is not a violation. Subscribers
-may drop records by design (`DropNew`), and the offsets show the gap. What a
+may drop records by design (`DropNew`), and the subscription ends at its first drop with
+`subscription_lagged`. What a
 read does hold has to agree with the final log.
 
 For rule 4, A must be acknowledged, because an unknown append can land at any

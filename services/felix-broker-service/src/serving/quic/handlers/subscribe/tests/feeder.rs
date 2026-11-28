@@ -145,10 +145,6 @@ async fn feed_with(
         .await?
         .into_parts();
     let mut config = EventWriterConfig {
-        offsets_enabled: false,
-        skip_enabled: false,
-        shard_moved_enabled: false,
-        stream_deleted_enabled: false,
         subscription_id: 1,
         max_events: 64,
         max_bytes,
@@ -843,11 +839,8 @@ struct Lagged {
 
 /// Feed `event_rx` through a lane and return how many records it delivered
 /// and the frame that ended it.
-async fn feed_to_the_end(
-    event_rx: felix_broker::SubscriptionReceiver,
-    shard_moved_enabled: bool,
-) -> Result<(usize, Message)> {
-    let (delivered, last) = feed_until_unregistered(event_rx, shard_moved_enabled, false).await?;
+async fn feed_to_the_end(event_rx: felix_broker::SubscriptionReceiver) -> Result<(usize, Message)> {
+    let (delivered, last) = feed_until_unregistered(event_rx).await?;
     Ok((delivered, last.expect("a last frame")))
 }
 
@@ -855,15 +848,9 @@ async fn feed_to_the_end(
 /// frame at all.
 async fn feed_until_unregistered(
     event_rx: felix_broker::SubscriptionReceiver,
-    shard_moved_enabled: bool,
-    stream_deleted_enabled: bool,
 ) -> Result<(usize, Option<Message>)> {
     let (manager, mut lane_rx) = capture_lane();
     let config = EventWriterConfig {
-        offsets_enabled: true,
-        skip_enabled: false,
-        shard_moved_enabled,
-        stream_deleted_enabled,
         subscription_id: 1,
         max_events: 64,
         max_bytes: 64 * 1024,
@@ -905,11 +892,10 @@ async fn feed_until_unregistered(
     Ok((delivered, last))
 }
 
-/// A subscriber of a deleted stream gets what was queued, then
-/// `stream_deleted` when it offered the feature and a plain end otherwise.
+/// A subscriber of a deleted stream gets what was queued, then `stream_deleted`.
 #[tokio::test]
 async fn lane_feeder_ends_a_deleted_stream_with_stream_deleted() -> Result<()> {
-    for offered in [true, false] {
+    {
         let broker = Broker::new(EphemeralCache::new().into());
         broker.register_tenant("t1").await?;
         broker.register_namespace("t1", "default").await?;
@@ -928,10 +914,9 @@ async fn lane_feeder_ends_a_deleted_stream_with_stream_deleted() -> Result<()> {
         publish(&broker).await?;
         assert!(broker.remove_stream("t1", "default", "orders").await?);
 
-        let (delivered, last) = feed_until_unregistered(event_rx, true, offered).await?;
+        let (delivered, last) = feed_until_unregistered(event_rx).await?;
         assert_eq!(delivered, 1);
-        let expected = offered.then_some(Message::StreamDeleted { subscription_id: 1 });
-        assert_eq!(last, expected, "offered: {offered}");
+        assert_eq!(last, Some(Message::StreamDeleted { subscription_id: 1 }));
     }
     Ok(())
 }
@@ -942,7 +927,7 @@ async fn lane_feeder_ends_a_deleted_stream_with_stream_deleted() -> Result<()> {
 async fn lane_feeder_ends_a_lagged_subscription_with_where_to_resume() -> Result<()> {
     let lagged = lagged_subscription().await?;
 
-    let (delivered, last) = feed_to_the_end(lagged.event_rx, false).await?;
+    let (delivered, last) = feed_to_the_end(lagged.event_rx).await?;
     assert_eq!(delivered, 1);
     assert_eq!(
         last,
@@ -977,7 +962,7 @@ async fn lane_feeder_reports_a_lag_over_a_shard_move() -> Result<()> {
         .await;
     assert_eq!(ended, 1);
 
-    let (delivered, last) = feed_to_the_end(lagged.event_rx, true).await?;
+    let (delivered, last) = feed_to_the_end(lagged.event_rx).await?;
     assert_eq!(delivered, 1);
     assert_eq!(
         last,
@@ -1027,10 +1012,6 @@ async fn a_feeder_started_revoked_sends_only_the_refusal() -> Result<()> {
         };
         let (manager, mut lane_rx) = capture_lane();
         let config = EventWriterConfig {
-            offsets_enabled: false,
-            skip_enabled: false,
-            shard_moved_enabled: false,
-            stream_deleted_enabled: false,
             subscription_id: 1,
             max_events: 64,
             max_bytes: 64 * 1024,
@@ -1112,10 +1093,6 @@ async fn writer_drops_resume_from_the_feeders_offsets() -> Result<()> {
 
     let (manager, mut lane_rx) = capture_lane();
     let config = EventWriterConfig {
-        offsets_enabled: true,
-        skip_enabled: false,
-        shard_moved_enabled: false,
-        stream_deleted_enabled: false,
         subscription_id: 1,
         max_events: 2,
         max_bytes: 64 * 1024,

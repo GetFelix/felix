@@ -3792,10 +3792,10 @@ static long no_commit_requests(const struct fixture *f) {
   return used ? atol(out) : -1;
 }
 
-/* A client sends commit and state_get only to a broker that advertised
-   FEATURE_ATOMIC_COMMIT: against one that advertised nothing both fail at the
-   call with UNSUPPORTED, and nothing reaches the broker. The commit that
-   succeeds against a broker that did advertise it is in commits(). */
+/* A client refuses a broker that does not advertise the 0.8 baseline, which
+   includes FEATURE_ATOMIC_COMMIT: connecting to one that advertised nothing
+   fails, and nothing reaches it. The commit that succeeds against a baseline
+   broker is in commits(). */
 static void commits_negotiated(const struct fixture *f, const char *run) {
   if (!f->no_commit_addrs[0] || !f->control_url[0]) {
     SKIP("commit.negotiated", "the fixture file has no no_commit_addrs or control_url");
@@ -3803,20 +3803,16 @@ static void commits_negotiated(const struct fixture *f, const char *run) {
   }
   FelixClient *client = NULL;
   SCENARIO_BEGIN("commit.negotiated");
-  REQUIRE_OK(connect_sync(f->no_commit_addrs, f->tenant, f->token, f->ca_file, &client));
-  struct kctx k = {client, f};
-  struct kres r;
-  char key[160];
-  snprintf(key, sizeof key, "cn-%s", run);
-  FelixStatus status = k_commit(&k, -1, key, "placed", key, "placed", false, 0, &r);
-  CHECK(status == FELIX_STATUS_UNSUPPORTED, "commit to a broker without the feature gave %d",
+  (void)run;
+  FelixStatus status =
+      connect_sync(f->no_commit_addrs, f->tenant, f->token, f->ca_file, &client);
+  CHECK(status != FELIX_STATUS_OK, "connect to a broker below the baseline gave %d",
         (int)status);
-  status = k_state(&k, -1, key, key, &r);
-  CHECK(status == FELIX_STATUS_UNSUPPORTED, "state_get from a broker without the feature gave %d",
-        (int)status);
+  if (status == FELIX_STATUS_OK) {
+    felix_client_free(client);
+  }
   long sent = no_commit_requests(f);
-  CHECK(sent == 0, "the broker without the feature was sent %ld commits or state reads", sent);
-  felix_client_free(client);
+  CHECK(sent == 0, "the broker below the baseline was sent %ld commits or state reads", sent);
   SCENARIO_END("commit.negotiated");
 }
 
@@ -3899,7 +3895,7 @@ static FelixStatus c_trim(FelixClient *client, const struct fixture *f,
 
 /* Head trims: a trim at the tail lands there and moves the floor, a stale tail
    is an answer, a token without stream.trim is refused as AUTH, and a broker
-   that advertised no head trims is sent none. */
+   below the baseline is not connected to. */
 static void head_trims(const struct fixture *f) {
   if (!f->trimmer_token[0] || !f->trim_stream[0]) {
     SKIP("head_trim.lands_at_the_expected_offset",
@@ -4003,13 +3999,14 @@ static void head_trims(const struct fixture *f) {
     return;
   }
   SCENARIO_BEGIN("head_trim.negotiated");
-  REQUIRE_OK(connect_sync(f->no_commit_addrs, f->tenant, f->token, f->ca_file, &client));
-  status = c_trim(client, f, f->stream, 0, 0, NULL, &t);
-  CHECK(status == FELIX_STATUS_UNSUPPORTED && !t.has_outcome,
-        "a trim to a broker without the feature gave %d", (int)status);
+  status = connect_sync(f->no_commit_addrs, f->tenant, f->token, f->ca_file, &client);
+  CHECK(status != FELIX_STATUS_OK, "connect to a broker below the baseline gave %d",
+        (int)status);
+  if (status == FELIX_STATUS_OK) {
+    felix_client_free(client);
+  }
   long sent = no_commit_requests(f);
-  CHECK(sent == 0, "the broker without the feature was sent %ld requests", sent);
-  felix_client_free(client);
+  CHECK(sent == 0, "the broker below the baseline was sent %ld requests", sent);
   SCENARIO_END("head_trim.negotiated");
 }
 

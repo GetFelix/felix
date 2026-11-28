@@ -512,13 +512,7 @@ async fn answer_draining(
 ) {
     let mut scratch = super::codec::FrameScratch::new();
     let first = super::codec::read_message_limited(&mut recv, max_frame_bytes, &mut scratch).await;
-    let asked = matches!(
-        first,
-        Ok(Some(felix_wire::Message::Auth {
-            client_features: Some(features),
-            ..
-        })) if felix_wire::supports_feature(features, felix_wire::FEATURE_ERROR_CODES)
-    );
+    let asked = matches!(first, Ok(Some(felix_wire::Message::Auth { .. })));
     if asked {
         let refusal = ClientError::draining("broker is shutting down; connect to another broker");
         if super::codec::write_message(&mut send, refusal.into_message())

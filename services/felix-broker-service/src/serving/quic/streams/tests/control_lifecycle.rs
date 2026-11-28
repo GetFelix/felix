@@ -109,7 +109,6 @@ async fn control_loop_handles_publish_and_cache_requests() -> Result<()> {
         commit_acks,
         &mut scratch,
         Default::default(),
-        Default::default(),
     )
     .await?;
     assert!(!result);
@@ -212,7 +211,6 @@ async fn control_loop_handles_binary_and_decode_error() -> Result<()> {
             commit_acks,
             &mut scratch,
             Default::default(),
-            Default::default(),
         )
         .await
         .is_err()
@@ -283,7 +281,6 @@ async fn control_loop_handles_cancel_and_graceful_close() -> Result<()> {
         commit_acks,
         &mut scratch,
         Default::default(),
-        Default::default(),
     )
     .await?;
     assert!(!result);
@@ -349,7 +346,6 @@ async fn control_loop_handles_cancel_toggle_and_continues() -> Result<()> {
         commit_acks,
         &mut scratch,
         Default::default(),
-        Default::default(),
     )
     .await?;
     assert!(result);
@@ -408,7 +404,6 @@ async fn control_loop_pre_canceled_exits() -> Result<()> {
         cancel_rx,
         commit_acks,
         &mut scratch,
-        Default::default(),
         Default::default(),
     )
     .await?;
@@ -475,7 +470,6 @@ async fn control_loop_cancel_changed_breaks() -> Result<()> {
         cancel_rx,
         commit_acks,
         &mut scratch,
-        Default::default(),
         Default::default(),
     )
     .await?;
@@ -544,7 +538,6 @@ async fn control_loop_cancel_changed_continues() -> Result<()> {
         cancel_rx,
         commit_acks,
         &mut scratch,
-        Default::default(),
         Default::default(),
     )
     .await?;
@@ -619,7 +612,6 @@ async fn control_loop_subscribe_done_true() -> Result<()> {
         commit_acks,
         &mut scratch,
         Default::default(),
-        Default::default(),
     )
     .await?;
     assert!(result);
@@ -681,7 +673,6 @@ async fn control_loop_error_message_returns_false() -> Result<()> {
         cancel_rx,
         commit_acks,
         &mut scratch,
-        Default::default(),
         Default::default(),
     )
     .await?;
