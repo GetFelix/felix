@@ -2637,8 +2637,9 @@ async fn voters_become(cluster: &Cluster, want: &[String], within: Duration) {
 }
 
 /// **An operator move outside a Raft shard's set swaps the leader's seat.**
-/// The destination joins as a learner, the voters change through joint
-/// consensus, the old leader hands its leadership on before it leaves, and
+/// The destination joins as a learner, the voters change one at a time
+/// (openraft 0.10 writes no joint entry for a single-voter change, #3402),
+/// the old leader hands its leadership on before it leaves, and
 /// the new broker ends up leading with every acknowledged record, including
 /// those published during the change.
 #[tokio::test]
