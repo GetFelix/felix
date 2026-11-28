@@ -348,9 +348,12 @@ pub(crate) async fn handle_cache_watch_message(
             // A resume from past the edge is an offset another member gave
             // out, so this one is behind: wait for it to apply that far. The
             // watch registered at the old edge, so every change from there on
-            // is queued and none is missed by joining at `from`.
+            // is queued and none is missed by joining at `from`. One past a
+            // leader's log was given out by no member, and is refused below
+            // as in the future.
             if let (false, Some(from)) = (request.retained, request.from_offset)
                 && from > tail
+                && !raft_never_reaches(&publish_ctx.engine, &shard_key, from)
             {
                 if !raft_reaches(
                     &publish_ctx.engine,
@@ -666,6 +669,31 @@ async fn raft_reaches(
     #[cfg(not(feature = "raft"))]
     {
         let _ = (engine, key, from, timeout);
+        false
+    }
+}
+
+/// Whether no member of `key`'s Raft group ever gave out `from`: this one
+/// leads, and a leader's log holds every committed entry, so an offset past
+/// its log's end was never a version or an edge anywhere.
+fn raft_never_reaches(
+    engine: &crate::shards::routing::StreamEngine,
+    key: &crate::shards::ShardKey,
+    from: u64,
+) -> bool {
+    #[cfg(feature = "raft")]
+    {
+        if engine.raft_term(key).is_none() {
+            return false;
+        }
+        engine
+            .raft(key)
+            .and_then(|raft| raft.status(key))
+            .is_some_and(|status| from > status.last_index.map_or(0, |last| last + 1))
+    }
+    #[cfg(not(feature = "raft"))]
+    {
+        let _ = (engine, key, from);
         false
     }
 }

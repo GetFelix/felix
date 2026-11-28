@@ -116,8 +116,8 @@ where
     served
 }
 
-/// A broker's durable shards run as Raft groups of one, from
-/// [`start_standalone_engine`].
+/// For tests: what [`start_standalone_engine`] started.
+#[doc(hidden)]
 #[cfg(feature = "raft")]
 pub struct StandaloneEngine {
     /// The engine to serve the shards with, as
@@ -136,23 +136,9 @@ impl StandaloneEngine {
     }
 }
 
-/// Run `broker`'s durable streams and caches as a broker with durable storage
-/// and no node id does: each shard a Raft group of one, opened off the
-/// broker's own registrations.
-///
-/// For a broker built in process, as the integration tests build one. Call it
-/// before any stream or cache registers. Until a shard's group opens and
-/// leads, its operations are refused as retryable, as at a broker's start.
-/// The groups' feed stops when `stop` is cancelled, and `writers` tracks the
-/// tasks that write under the root. The groups take the `FELIX_SHARD_RAFT_*`
-/// settings from the environment, as the binary does, except that
-/// `cache_snapshot_every`, when given, replaces how many entries a cache
-/// shard commits between snapshots.
-///
-/// # Errors
-/// When `broker` has no durable storage, a cache store that keeps no logs,
-/// a root whose storage id cannot be read, or a Raft setting in the
-/// environment that does not parse.
+/// For tests: run `broker`'s durable shards as a standalone broker does, each
+/// a Raft group of one; call before anything registers.
+#[doc(hidden)]
 #[cfg(feature = "raft")]
 pub fn start_standalone_engine(
     broker: &Arc<felix_broker::Broker>,

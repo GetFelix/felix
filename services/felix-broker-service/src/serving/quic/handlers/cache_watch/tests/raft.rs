@@ -374,8 +374,8 @@ async fn a_raft_cache_watch_ends_when_its_credential_is_revoked() -> Result<()> 
 /// **A resume joins at the applied edge.** From the edge it is handed
 /// nothing until the next change; from below where the member began keeping
 /// changes, every change from there on, replayed from the Raft log as the
-/// hybrid replays its shard log; from past an edge this member never
-/// reaches, a retryable refusal.
+/// hybrid replays its shard log; from past the leader's log, which no
+/// member gave out, the typed in-future refusal.
 #[tokio::test]
 async fn a_raft_cache_watch_resumes_by_offset() -> Result<()> {
     let cache = RaftCache::start().await;
@@ -411,15 +411,16 @@ async fn a_raft_cache_watch_resumes_by_offset() -> Result<()> {
     assert_eq!(events.change().await?, (Some(b"two".to_vec()), now));
     assert_eq!(events.change().await?, (Some(b"three".to_vec()), next));
 
-    let (refused, _) = cache.watch(false, Some(cache.edge() + 5)).await?;
+    let past = cache.edge() + 5;
+    let (refused, _) = cache.watch(false, Some(past)).await?;
     assert!(
         matches!(
             refused,
-            Message::Error {
-                code: Some(felix_wire::ErrorCode::ShardUnavailable),
-                retry: Some(felix_wire::RetryClass::Retry),
+            Message::SubscribeCursorError {
+                reason: felix_wire::CursorErrorReason::InFuture,
+                requested,
                 ..
-            }
+            } if requested == past
         ),
         "{refused:?}"
     );

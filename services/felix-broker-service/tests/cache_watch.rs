@@ -528,10 +528,9 @@ async fn a_watch_from_a_compacted_offset_resnapshots() -> Result<()> {
     Ok(())
 }
 
-/// An offset past what the shard's member has applied is refused, not
-/// reinterpreted: silently starting lower would deliver history below the
-/// requested position. On Raft such an offset may be one another member gave
-/// out, so the member waits for it, then refuses retryably.
+/// An offset past the tail is refused with the typed error, exactly as a
+/// stream resume is: silently reinterpreting it would deliver history below
+/// the requested position.
 #[tokio::test]
 async fn a_watch_from_a_future_offset_is_refused() -> Result<()> {
     let dir = tempfile::tempdir()?;
@@ -548,11 +547,10 @@ async fn a_watch_from_a_future_offset_is_refused() -> Result<()> {
         )
         .await
         .expect_err("an offset past the tail must be refused");
-    let message = format!("{err:#}");
-    assert!(
-        message.contains("short of the resume offset 1000"),
-        "{message}"
-    );
+    let cursor = err
+        .downcast_ref::<felix_client::SubscribeCursorError>()
+        .expect("a typed cursor error");
+    assert_eq!(cursor.requested, 1_000);
 
     running.stop().await;
     Ok(())
