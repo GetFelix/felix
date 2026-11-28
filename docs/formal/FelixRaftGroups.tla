@@ -4,11 +4,11 @@
 (*                                                                         *)
 (* Group writes are entries in the stream's own Raft log, and every member *)
 (* folds the committed ones, in order, into the same group table: the      *)
-(* cursor, the dead letters and the redriven records. The leader serves    *)
-(* the group from an in-memory tracker (claims, acknowledgements above a   *)
-(* gap) hydrated from that table. One group, records 1..N; the other      *)
-(* groups of the shard appear only through their deletes, since the        *)
-(* delete watermark is shard-wide.                                         *)
+(* cursor, the dead letters, the redriven records and the acks above a    *)
+(* gap. The leader serves the group from an in-memory tracker of claims    *)
+(* hydrated from that table. One group, records 1..N; the other groups of  *)
+(* the shard appear only through their deletes, since the delete           *)
+(* watermark is shard-wide.                                                *)
 (*                                                                         *)
 (* `log` is every committed entry; `tail` is the leader's uncommitted      *)
 (* entries. A change of leader commits a prefix of the tail and drops the  *)
@@ -21,6 +21,7 @@
 (* Entries:                                                                *)
 (*                                                                         *)
 (*   advance(to)  -- the tracker closed a run; the cursor moves to `to`    *)
+(*   ack(o)       -- `o` was acknowledged above a gap                      *)
 (*   dead(o)      -- `o` ran out of attempts and is a dead letter          *)
 (*   redrive(o)   -- a dead letter is put back; it is owed again           *)
 (*   finish(o)    -- a redriven record was acknowledged                    *)
@@ -57,6 +58,12 @@
 (* decides that under the shard lock from the table and its tracker: a     *)
 (* group with nothing committed but records handed out exists.             *)
 (*                                                                         *)
+(* An acknowledgement is answered once every entry it proposed, and every *)
+(* entry the leader decided before it, has committed and applied: the      *)
+(* advance it closed, the finish of a redriven record, or the ack of a     *)
+(* record above a gap. A new leader's tracker takes the table's acks       *)
+(* above the cursor as settled, as it does its dead letters there.         *)
+(*                                                                         *)
 (* What is checked:                                                        *)
 (*                                                                         *)
 (*   NoSkip           -- every record between where the group started (or *)
@@ -73,6 +80,9 @@
 (*                       serves on after the table threw its writes away   *)
 (*                       (with NoSkip, the model shows only that a dropped *)
 (*                       dead letter's record is never passed over).       *)
+(*   AckedStaysSettled -- no record whose acknowledgement was answered is  *)
+(*                       handed out again by a tracker of the same         *)
+(*                       incarnation of the group, in any term.            *)
 (*                                                                         *)
 (* Each knob removes one rule:                                             *)
 (*                                                                         *)
@@ -103,6 +113,10 @@
 (*                                 advance, in any order with it.          *)
 (*   KeepRedriven = FALSE       -- a redrive deletes the dead letter and   *)
 (*                                 the record is owed only in memory.      *)
+(*   DurableAckAhead = FALSE    -- an ack above a gap is kept in the       *)
+(*                                 leader's tracker only and answered at   *)
+(*                                 once, so the next leader hands it out   *)
+(*                                 again.                                  *)
 (*                                                                         *)
 (* Abstracted: elections and replication (a change of leader is one step), *)
 (* the group marks' place in the stream's offsets (skipping them proposes  *)
@@ -130,7 +144,8 @@ CONSTANTS
     StaleByHyd,
     RefreshOnDrop,
     DeadBeforeAdvance,
-    KeepRedriven
+    KeepRedriven,
+    DurableAckAhead
 
 ASSUME
     /\ N \in Nat /\ N > 0 /\ MaxChanges \in Nat /\ MaxLog \in Nat
@@ -140,6 +155,7 @@ ASSUME
     /\ HydrateFromApplied \in BOOLEAN /\ KeepRedriven \in BOOLEAN
     /\ WaitOwnProposals \in BOOLEAN /\ StaleByHyd \in BOOLEAN
     /\ DeadBeforeAdvance \in BOOLEAN /\ RefreshOnDrop \in BOOLEAN
+    /\ DurableAckAhead \in BOOLEAN
 
 VARIABLES
     log,       \* every committed entry, in order
@@ -153,9 +169,13 @@ VARIABLES
     served,    \* history: the highest hyd of a tracker that handed out a record
                \* in this term, -1 if none
     badIfNew,  \* history: an if_new seek was placed over a group that had served
-    changes
+    changes,
+    waiting,   \* acknowledgements not yet answered, with the entries they wait on
+    answered,  \* history: [o, cre] of every acknowledgement answered
+    reissued   \* history: a record was handed out again after its answered ack
 
-vars == <<log, tail, pend, leader, trk, acks, served, badIfNew, changes>>
+hist == <<waiting, answered, reissued>>
+vars == <<log, tail, pend, leader, trk, acks, served, badIfNew, changes, hist>>
 
 Symm == Permutations(Members)
 
@@ -168,6 +188,7 @@ NoCre == [term |-> 0, at |-> 0, by |-> "none"]
 Cre(i, by) == [term |-> changes, at |-> i, by |-> by]
 
 Full == log \o tail
+Range(L) == {L[i] : i \in 1..Len(L)}
 
 ----------------------------------------------------------------------------
 \* The group table.
@@ -176,7 +197,7 @@ Full == log \o tail
 \* of its last seek or delete whatever the knobs say, for the checks only.
 \* `reset` is the index of the last seek, for the StaleByHyd rule only.
 T0 == [exists |-> FALSE, cre |-> NoCre, cursor |-> 1, from |-> 1, reset |-> 0,
-       lastDel |-> 0, gfloor |-> 0, dead |-> {}, red |-> {}]
+       lastDel |-> 0, gfloor |-> 0, dead |-> {}, red |-> {}, acked |-> {}]
 
 Stale(T, e) ==
     IF StaleByHyd THEN e.hyd < T.lastDel \/ e.hyd < T.reset
@@ -190,7 +211,7 @@ Live(T, e) == [T EXCEPT !.exists = TRUE, !.cre = IF T.exists THEN @ ELSE e.cre]
 Step(T, e, i) ==
     CASE e.kind = "seek" ->
             [T EXCEPT !.exists = TRUE, !.cre = e.cre, !.cursor = e.to,
-                      !.dead = {o \in @ : o < e.to},
+                      !.dead = {o \in @ : o < e.to}, !.acked = {},
                       !.from = e.to, !.reset = i, !.gfloor = i]
       [] e.kind = "delete" ->
             [T0 EXCEPT !.lastDel = i, !.gfloor = i]
@@ -198,6 +219,8 @@ Step(T, e, i) ==
       [] Stale(T, e) -> T
       [] e.kind = "advance" ->
             [Live(T, e) EXCEPT !.cursor = Max2(T.cursor, e.to)]
+      [] e.kind = "ack" ->
+            [Live(T, e) EXCEPT !.acked = @ \cup {e.o}]
       [] e.kind = "dead" ->
             [Live(T, e) EXCEPT !.dead = @ \cup {e.o}, !.red = @ \ {e.o}]
       [] e.kind = "redrive" ->
@@ -213,8 +236,9 @@ FoldFrom(T, L, i) == IF i > Len(L) THEN T ELSE FoldFrom(Step(T, L[i], i), L, i +
 Fold(L) == FoldFrom(T0, L, 1)
 
 \* Apply drops `e` (seeks and deletes always apply).
-Dropped(T, e) ==
-    e.kind \in {"advance", "dead", "redrive", "finish"} /\ Stale(T, e)
+Tracked == {"advance", "ack", "dead", "redrive", "finish"}
+
+Dropped(T, e) == e.kind \in Tracked /\ Stale(T, e)
 
 \* The `cre` of every entry of `L` that apply dropped.
 RECURSIVE DroppedFrom(_, _, _, _)
@@ -222,6 +246,13 @@ DroppedFrom(T, L, i, S) ==
     IF i > Len(L) THEN S
     ELSE DroppedFrom(Step(T, L[i], i), L, i + 1,
                      IF Dropped(T, L[i]) THEN S \cup {L[i].cre} ELSE S)
+
+\* Every entry of `L` that apply took.
+RECURSIVE KeptFrom(_, _, _, _)
+KeptFrom(T, L, i, S) ==
+    IF i > Len(L) THEN S
+    ELSE KeptFrom(Step(T, L[i], i), L, i + 1,
+                  IF Dropped(T, L[i]) THEN S ELSE S \cup {L[i]})
 
 ----------------------------------------------------------------------------
 \* Trackers.
@@ -267,11 +298,14 @@ Init ==
     /\ served = -1
     /\ badIfNew = FALSE
     /\ changes = 0
+    /\ waiting = {}
+    /\ answered = {}
+    /\ reissued = FALSE
 
-\* A dead letter at or above the cursor starts settled: it is listed before
-\* the advance over it, so a leader change in between leaves it there.
+\* A dead letter or an ack at or above the cursor starts settled: a leader
+\* change before the advance over it leaves it there.
 Rebuilt(k, T) ==
-    LET D == {o \in T.dead : o >= T.cursor}
+    LET D == {o \in T.dead \cup T.acked : o >= T.cursor}
         p == RunEnd(T.cursor, D)
         t == Tracker(k, T.cre, p, T.red)
     IN [t EXCEPT !.done = {o \in D : o >= p}]
@@ -285,7 +319,7 @@ Hydrate ==
         LET t == IF T.exists THEN Rebuilt(k, T)
                  ELSE Tracker(k, Cre(k, "hydrate"), 1, {})
         IN trk' = [trk EXCEPT ![leader] = [t EXCEPT !.any = Lead.any]]
-    /\ UNCHANGED <<log, tail, pend, leader, acks, served, badIfNew, changes>>
+    /\ UNCHANGED <<log, tail, pend, leader, acks, served, badIfNew, changes, hist>>
 
 HandOut(o) ==
     LET t == Lead IN
@@ -295,22 +329,51 @@ HandOut(o) ==
        \/ o >= t.pos /\ o \notin t.done
     /\ trk' = [trk EXCEPT ![leader] = [t EXCEPT !.out = @ \cup {o}, !.any = TRUE]]
     /\ served' = Max2(served, t.hyd)
-    /\ UNCHANGED <<log, tail, pend, leader, acks, badIfNew, changes>>
+    /\ reissued' = (reissued \/ \E a \in answered : a.o = o /\ a.cre = t.cre)
+    /\ UNCHANGED <<log, tail, pend, leader, acks, badIfNew, changes, waiting, answered>>
 
+\* The acknowledgement is answered once what it proposed has applied (see
+\* Answer), and so has everything the leader decided before it: the code
+\* waits for its own last proposal before any operation of the group. With
+\* nothing to wait on it is answered at once. An ack that closes no run
+\* and that the table's cursor has not passed proposes `ack(o)` of its own.
+\* The tracker's position is not enough: a rebuilt tracker settles a dead
+\* letter above the cursor with no advance, and its redrive is then below
+\* the tracker only. The cursor is read with the leader's own entries
+\* applied, as the code waits for them before any operation.
 Ack(o) ==
     LET t == Lead
         t1 == [t EXCEPT !.out = @ \ {o}, !.owed = @ \ {o}]
         s == Settle(t1, o)
+        fin == IF o \in t.owed
+               THEN {[kind |-> "finish", o |-> o, hyd |-> t.hyd, cre |-> t.cre]}
+               ELSE {}
+        ahead == IF DurableAckAhead /\ s.adv = {} /\ o >= Fold(Full).cursor
+                 THEN {[kind |-> "ack", o |-> o, hyd |-> t.hyd, cre |-> t.cre]}
+                 ELSE {}
+        es == s.adv \cup fin \cup ahead
+        wait == es \cup pend \cup Range(tail)
     IN
     /\ ~t.none
     /\ o \in t.out
     /\ trk' = [trk EXCEPT ![leader] = s.t]
-    /\ pend' = pend \cup s.adv
-               \cup (IF o \in t.owed
-                     THEN {[kind |-> "finish", o |-> o, hyd |-> t.hyd, cre |-> t.cre]}
-                     ELSE {})
+    /\ pend' = pend \cup es
     /\ acks' = [acks EXCEPT ![o] = @ \cup {t.hyd}]
-    /\ UNCHANGED <<log, tail, leader, served, badIfNew, changes>>
+    /\ IF wait = {}
+       THEN /\ answered' = answered \cup {[o |-> o, cre |-> t.cre]}
+            /\ UNCHANGED waiting
+       ELSE /\ waiting' = waiting \cup {[o |-> o, cre |-> t.cre, es |-> wait]}
+            /\ UNCHANGED answered
+    /\ UNCHANGED <<log, tail, leader, served, badIfNew, changes, reissued>>
+
+\* Every entry the acknowledgement waits on has committed and applied.
+Answer(w) ==
+    /\ w \in waiting
+    /\ w.es \subseteq KeptFrom(T0, log, 1, {})
+    /\ answered' = answered \cup {[o |-> w.o, cre |-> w.cre]}
+    /\ waiting' = waiting \ {w}
+    /\ UNCHANGED <<log, tail, pend, leader, trk, acks, served, badIfNew, changes,
+                   reissued>>
 
 \* The dead letter is appended before the run closes, as the code writes it
 \* before settling: an advance past it never lands ahead of it.
@@ -329,7 +392,7 @@ DeadLetter(o) ==
             /\ pend' = pend \cup s.adv
        ELSE /\ pend' = pend \cup s.adv \cup {d}
             /\ UNCHANGED tail
-    /\ UNCHANGED <<log, leader, acks, served, badIfNew, changes>>
+    /\ UNCHANGED <<log, leader, acks, served, badIfNew, changes, hist>>
 
 \* A tracker's decision reaches the log, in any order.
 Propose(e) ==
@@ -337,7 +400,7 @@ Propose(e) ==
     /\ Room
     /\ tail' = Append(tail, e)
     /\ pend' = pend \ {e}
-    /\ UNCHANGED <<log, leader, trk, acks, served, badIfNew, changes>>
+    /\ UNCHANGED <<log, leader, trk, acks, served, badIfNew, changes, hist>>
 
 \* User operations, decided and appended under the shard lock.
 Redrive(o) ==
@@ -349,7 +412,7 @@ Redrive(o) ==
                                   hyd |-> Len(Full) + 1, cre |-> View(k).cre])
     /\ trk' = IF Lead.none THEN trk
               ELSE [trk EXCEPT ![leader].owed = @ \cup {o}]
-    /\ UNCHANGED <<log, pend, leader, acks, served, badIfNew, changes>>
+    /\ UNCHANGED <<log, pend, leader, acks, served, badIfNew, changes, hist>>
 
 Seek(to, ifNew) ==
     LET t == Lead
@@ -368,19 +431,19 @@ Seek(to, ifNew) ==
                               cre |-> Cre(i, "seek")])
     /\ badIfNew' = (badIfNew \/
                     (ifNew /\ served >= Fold(Full).gfloor))
-    /\ UNCHANGED <<log, pend, leader, acks, served, changes>>
+    /\ UNCHANGED <<log, pend, leader, acks, served, changes, hist>>
 
 Delete ==
     /\ Room
     /\ tail' = Append(tail, [kind |-> "delete", hyd |-> Len(Full) + 1])
     /\ trk' = [trk EXCEPT ![leader] = None]
-    /\ UNCHANGED <<log, pend, leader, acks, served, badIfNew, changes>>
+    /\ UNCHANGED <<log, pend, leader, acks, served, badIfNew, changes, hist>>
 
 \* Another group of the shard is deleted.
 ForeignDelete ==
     /\ Room
     /\ tail' = Append(tail, [kind |-> "fdelete", hyd |-> Len(Full) + 1])
-    /\ UNCHANGED <<log, pend, leader, trk, acks, served, badIfNew, changes>>
+    /\ UNCHANGED <<log, pend, leader, trk, acks, served, badIfNew, changes, hist>>
 
 \* The leader applies what commits. A dropped entry of its own tracker means
 \* the table will never take that tracker's writes, so it starts over.
@@ -391,12 +454,12 @@ Commit ==
     /\ tail' = Tail(tail)
     /\ trk' = IF /\ RefreshOnDrop
                  /\ ~Lead.none
-                 /\ e.kind \in {"advance", "dead", "redrive", "finish"}
+                 /\ e.kind \in Tracked
                  /\ e.cre = Lead.cre
                  /\ Dropped(Fold(log), e)
               THEN [trk EXCEPT ![leader] = [None EXCEPT !.any = Lead.any]]
               ELSE trk
-    /\ UNCHANGED <<pend, leader, acks, served, badIfNew, changes>>
+    /\ UNCHANGED <<pend, leader, acks, served, badIfNew, changes, hist>>
 
 ChangeLeader(m) ==
     /\ changes < MaxChanges
@@ -404,17 +467,20 @@ ChangeLeader(m) ==
         /\ log' = log \o SubSeq(tail, 1, k)
         /\ tail' = <<>>
         /\ acks' = [o \in Records |-> {h \in acks[o] : h <= Len(log) + k}]
+        \* What the old leader dropped never commits.
+        /\ waiting' = {w \in waiting : w.es \subseteq Range(log')}
     /\ pend' = {}
     /\ leader' = m
     /\ trk' = IF TermBoundTrackers THEN [x \in Members |-> None] ELSE trk
     /\ changes' = changes + 1
     /\ served' = -1
-    /\ UNCHANGED badIfNew
+    /\ UNCHANGED <<badIfNew, answered, reissued>>
 
 Next ==
     \/ Hydrate
     \/ \E o \in Records : HandOut(o) \/ Ack(o) \/ DeadLetter(o) \/ Redrive(o)
     \/ \E e \in pend : Propose(e)
+    \/ \E w \in waiting : Answer(w)
     \/ \E to \in SeekTo, ifNew \in BOOLEAN : Seek(to, ifNew)
     \/ Delete
     \/ ForeignDelete
@@ -442,5 +508,7 @@ IfNewKeepsServed == ~badIfNew
 
 TrackerHeard ==
     ~Lead.none => Lead.cre \notin DroppedFrom(T0, log, 1, {})
+
+AckedStaysSettled == ~reissued
 
 =============================================================================

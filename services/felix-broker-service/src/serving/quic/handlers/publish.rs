@@ -142,10 +142,6 @@ pub(crate) struct PublishContext {
     /// What a write waits on before it is acknowledged and how far a read may
     /// see. Replicates nothing off a cluster.
     pub(crate) engine: Arc<crate::shards::routing::StreamEngine>,
-    /// What replication last knew of each shard led here. Nothing on the
-    /// publish path reads it; it rides here with the rest of the cluster view
-    /// for `shard_inspect`.
-    pub(crate) shard_status: Option<Arc<felix_replication::status::ShardStatusBoard>>,
     /// How long such a write waits for its majority before saying it cannot
     /// confirm one.
     pub(crate) quorum_timeout: Duration,

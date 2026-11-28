@@ -150,8 +150,7 @@ async fn init_observability_succeeds() {
 /// The halted listing is served by the *real* router, and says which
 /// replica rather than how many.
 ///
-/// `felix_broker_replication_halted` is a bare count and has to stay one,
-/// so this is the only place an operator can learn which replica of which
+/// This is the only place an operator can learn which replica of which
 /// shard stopped and why. Read-only on purpose: this listener has no
 /// authentication, so it may carry things worth knowing and nothing worth
 /// doing.

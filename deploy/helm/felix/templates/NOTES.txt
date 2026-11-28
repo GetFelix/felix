@@ -24,7 +24,7 @@ Brokers: {{ $b.replicas }}, region {{ $b.region }}
   Credential Secret:       {{ $b.credential.existingSecret }}{{ if $b.credential.perBroker }} (one key per broker, named after the pod){{ end }}
   Peer mTLS:               {{ if $b.peerTls.enabled }}on, issued per pod by cert-manager ({{ $b.peerTls.issuerKind }}/{{ $b.peerTls.issuerName }}){{ else }}OFF (allowUnauthenticated): the internal port is encrypted but unauthenticated; the NetworkPolicy is the boundary{{ end }}
   Control-plane API TLS:   {{ if and $cp.enabled $cp.tls.enabled }}on, from Secret {{ $cp.tls.existingSecret }}{{ else if $cp.enabled }}OFF: node credentials and tokens cross the network as plain HTTP{{ else }}whatever broker.controlplaneUrl says{{ end }}
-  Halted replicas:         kubectl -n {{ .Release.Namespace }} exec {{ include "felix.broker.fullname" . }}-0 -- wget -qO- http://127.0.0.1:{{ $b.ports.metrics }}/replication/halted
+  Stopped Raft copies:     kubectl -n {{ .Release.Namespace }} exec {{ include "felix.broker.fullname" . }}-0 -- wget -qO- http://127.0.0.1:{{ $b.ports.metrics }}/metrics | grep felix_broker_raft_shards_stopped
 {{- if $b.clientTls.enabled }}
 
   Clients verify brokers with the CA that issued Secret {{ $b.clientTls.existingSecret }},

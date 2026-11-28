@@ -25,7 +25,7 @@ Both go over the authenticated client listener and need a broker token allowed
 `node.view` on `cluster:*`. See [felixctl](/getting-started/felixctl/#inspecting-a-cluster).
 
 The broker's metrics listener (`FELIX_BROKER_METRICS_BIND`, port `8080` in the
-chart) serves `/metrics`, `/replication/halted` and `/backup/offsets`. It has no
+chart) serves `/metrics` and `/backup/offsets`. It has no
 authentication, so it carries counts and listings and nothing that changes
 anything. Keep it on an internal network.
 
@@ -126,9 +126,8 @@ after a move finished and its destination then failed.
 the peer listener. Check each replica's broker is running, that the peer port
 (`5001` in the chart) is open between them, and that peer mTLS is accepted
 (see [A peer is refused](/reference/troubleshooting/#a-peer-is-refused)). The shard opens on the next attempt after
-a majority answers. `felix_broker_promotions_opened_total{path="fenced"}`
-counts promotions that opened this way, and
-`felix_broker_shard_phase{phase="fencing"}` how many shards wait now.
+a majority answers. `felix_broker_shard_phase{phase="fencing"}` counts how
+many shards wait now.
 
 ### Two of three replicas lost power together
 
@@ -200,49 +199,51 @@ generation. Records only the old leader held are lost, acknowledged ones
 included. The control plane refuses with `409 not_stranded` while the leader
 is serving or a replica can take over without loss.
 
-## A follower is lagging or halted
+## A follower is lagging or stopped
 
-**What you see.** `felix_broker_replication_lag_records` on a leader keeps
-growing, or `felix_broker_replication_halted` is above zero. On the control
-plane, `felix_shard_replicas_halted` counts the same halts.
+**What you see.** On a broker, `felix_broker_raft_shards_stopped_on_storage_error`
+is above zero (the `FelixRaftShardStopped` alert), or `felix_shards_under_replicated`
+is on the control plane.
 
 **What to run.**
 
 ```bash
-curl -s http://broker-a:8080/replication/halted | jq
+curl -s http://broker-a:8080/metrics | grep felix_broker_raft_shards_stopped
 felixctl inspect shard orders --shard 3
 ```
 
 ```
-REPLICA   ROLE      NEXT OFFSET  LAG      FENCE  STATE
-broker-a  leader    1048576      -        -      active
-broker-b  follower  1048510      66       -      shipping
-broker-c  learner   900          1047676  -      halted (diverged)
+REPLICA   ROLE      NEXT OFFSET  LAG  FENCE  STATE
+broker-a  leader    -            -    -      active
+broker-b  follower  -            -    -      shipping
+broker-c  learner   -            -    -      stalled
 ```
 
-**How to read it.** `STATE` is the leader's view of each follower:
+**How to read it.** The leader lists each other member of the group. `NEXT OFFSET`
+and `LAG` stay empty: a Raft group counts log entries, not stream offsets.
+`STATE` is the leader's view of the member:
 
 | State | Meaning |
 | --- | --- |
-| `shipping` | The follower answered the last batch and is moving. A small `LAG` is normal under load. |
-| `stalled` | The last batch did not reach it or was refused. A new cursor starts stalled until the first answer. |
-| `copying` | A move's destination still copying the log. It counts toward no quorum yet. |
-| `rebuilding` | The follower discarded its copy at the leader's request and is copying it again. |
-| `halted` | Shipping stopped. The reason is in brackets. |
+| `shipping` | The member answered the leader and is moving. |
+| `stalled` | The leader has not heard from it, or has not seen it match yet. A new member starts here until its first answer. |
 
-`/replication/halted` lists the same halts with a `remedy`. `diverged` means
-the follower holds different bytes at an offset the leader also holds.
-`needs_bootstrap` means it needs records the leader's retention removed. Both
-are rebuilt by the leader itself, as many at once as
-`FELIX_REPLICATION_REBUILD_MAX_CONCURRENT` allows (default `1`), and the entry
-clears when the rebuild is done. `fenced` means the follower knows a newer
-leader: this broker is no longer the leader, and it clears when the assignment
-feed catches up.
+`ROLE` is `follower` for a voter and `learner` for a member still being added,
+as in a move. A member that falls behind a log the leader has trimmed is sent
+the leader's snapshot, so it is not left out and needs no rebuild.
 
-**What to do.** For a `stalled` follower, check that its broker is up and the
-peer port is reachable. For a halt that stays, see
+Run `felixctl inspect shard` on the member's own broker to see a copy that
+stopped. Its role is `none`, and the detail carries the term and the storage
+error. `felix_broker_raft_shards_stopped_on_storage_error` counts those copies
+and clears once the copy has heard a leader again. `felix_broker_raft_membership_stuck`
+counts groups whose leader cannot get a membership step through.
+
+**What to do.** For a `stalled` member, check that its broker is up and the
+peer port is reachable. For a stopped copy, check the disk: the broker reopens
+the copy under a new copy id once it takes writes. If it stays stopped with no
+other copy to catch up from, the shard needs a re-form. See
 [Replication has stopped for a replica](/reference/troubleshooting/#replication-has-stopped-for-a-replica).
-Placement replaces a copy that stays halted past `FELIX_SHARD_RESTORE_AFTER_MS`.
+Placement replaces a copy that stays missing past `FELIX_SHARD_RESTORE_AFTER_MS`.
 
 ## Quorum writes time out
 
@@ -258,8 +259,7 @@ majority. The leader writes it, ships it, and waits up to
 The retry class is `outcome_unknown`: the record may be on the leader and may yet
 reach a majority, so a retry can write it twice unless the producer is
 idempotent. `leadership_lost` is the same outcome when the leader changed
-during the wait. `felix_broker_publish_quorum_failed_total{reason}` counts
-both.
+during the wait.
 
 **What to run.**
 
@@ -272,14 +272,6 @@ follower. If both followers are `stalled` or `halted`, or listed as
 `unreachable`, no majority can form, and every `Quorum` write to the shard
 times out. A `committed` mark well below `tail` that does not move is the same
 thing seen from the mark.
-
-If the followers are level and idle but the mark still lags, the shard may be
-waiting for a pass slot. The leader ships at most 16 shards at a time, and
-shards with new writes take turns at the slots. Check
-`felix_broker_replication_passes_waiting` and
-`felix_broker_replication_slot_wait_seconds` on the leader: a wait that is a
-large part of the quorum timeout means the broker leads more busy shards than it
-ships at once, and moving some shards to another broker helps.
 
 **What to do.** Restore a majority: start the followers' brokers or fix the
 peer network between them. Placement restores a follower whose broker has been

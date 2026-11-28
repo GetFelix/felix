@@ -14,8 +14,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use std::time::Duration;
 
+use crate::cluster::credential::NodeCredential;
 use felix_replication::controlplane_link::{ControlPlaneLink, RaftCopyId};
-use felix_replication::reporter::Credential;
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 
@@ -240,7 +240,7 @@ pub(crate) async fn run<L: ControlPlaneLink>(
     shards: Arc<RaftShards>,
     link: L,
     node_id: String,
-    credential: Option<Arc<dyn Credential>>,
+    credential: Option<NodeCredential>,
     registration: RootSequenceSlot,
     stop: CancellationToken,
 ) {

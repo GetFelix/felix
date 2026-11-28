@@ -32,9 +32,8 @@ use super::propose::Clock;
 use super::reach::Reach;
 use super::ticker;
 use super::types::{GroupId, MemberId, ShardTypes};
-use crate::driver::WriteFence;
+use crate::engine::WriteFence;
 use crate::engine::{EngineHost, Host};
-use crate::quorum::ShardServing;
 use crate::{ShardKey, ShardKind};
 
 mod admission;
@@ -745,12 +744,11 @@ impl GroupRuntime {
     ///
     /// Call it before the first [`Self::open_copy`]: a group opened earlier
     /// reports to nobody. Only the first call counts.
-    pub fn report_to<S, F>(&self, serving: Arc<S>, fence: Arc<F>)
+    pub fn report_to<F>(&self, fence: Arc<F>)
     where
-        S: ShardServing + ?Sized + 'static,
         F: WriteFence + ?Sized + 'static,
     {
-        self.set_host(Arc::new(Host::new(serving, fence)));
+        self.set_host(Arc::new(Host::new(fence)));
     }
 
     /// Tell `observer` of every change a cache shard's applied entries make

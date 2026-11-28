@@ -5,7 +5,7 @@ name: Simulation sweep (nightly)
 # catches a regression that shows on most seeds, not one that needs a rare
 # fault schedule. The sweep is split into shards that each run a range of
 # seeds, two at a time, on a release build with `--cfg tokio_unstable` so a
-# failing seed replays exactly with `task sim:replay`.
+# failing seed replays exactly with `task sim:raft-replay`.
 #
 # Every mode is the Raft group simulation: the hybrid's modes went with the
 # hybrid engine (docs/hybrid-retirement.md). Besides the default faults
@@ -161,8 +161,8 @@ jobs:
           key: sim-sweep-tokio-unstable
 
       # Built once and handed to every shard, so the jobs do not each compile
-      # the workspace. The build matches `task sim:replay` and `task
-      # sim:raft-replay`, so a failing seed replays the run the sweep saw.
+      # the workspace. The build matches `task sim:raft-replay`, so a failing
+      # seed replays the run the sweep saw.
       - name: Build the seeds tests
         env:
           RUSTFLAGS: "--cfg tokio_unstable"

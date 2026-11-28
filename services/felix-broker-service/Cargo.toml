@@ -156,13 +156,9 @@ default = ["raft"]
 # `serving::auth::demo`: a fixed signing key and a token minted with it, so a
 # demo broker needs no control plane. Never for a deployed broker.
 demo = []
-# `sim`: a broker's cluster machinery run in-process over an injected peer
-# transport and control-plane link, for the deterministic simulator. Off in
-# the release binary.
-sim = []
 # The per-shard Raft engine, the default shard engine; see
-# docs/per-shard-raft.md. A build without it runs every shard on the
-# deprecated hybrid engine.
+# docs/per-shard-raft.md. A build without it is standalone and in-memory
+# only: a broker with a node id or durable storage refuses to start.
 raft = ["felix-replication/raft"]
 telemetry = ["felix-client/telemetry", "felix-broker/telemetry"]
 perf_debug = ["felix-broker/perf_debug"]

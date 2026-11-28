@@ -94,7 +94,6 @@ enabled, the brokers can do it themselves:
 == broker-1
 ... INFO felix_replication::election::candidate: standing for election: the leader is unreachable or stuck and a majority agreed stream=orders shard=0 generation=2 leader=broker-2 broker_suspected=true
 ... INFO felix_replication::driver: a majority took the fence; opening the shard for writes stream=orders shard=0 generation=2 caught_up_from=None
-felix_broker_promotions_opened_total{path="fenced"} 1
 ```
 
 Two of three brokers are alive, which is what an election needs, so a

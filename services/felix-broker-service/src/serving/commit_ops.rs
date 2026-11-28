@@ -71,8 +71,7 @@ pub(crate) async fn commit(
     if publish_ctx.ingress.is_some()
         && !publish_ctx
             .engine
-            .marks()
-            .is_some_and(|marks| marks.fleet_supports(felix_common::fleet::ATOMIC_COMMIT))
+            .fleet_supports(felix_common::fleet::ATOMIC_COMMIT)
     {
         return Err(ClientError::new(
             felix_wire::ErrorCode::InvalidRequest,
@@ -135,8 +134,7 @@ async fn commit_on_raft(
     if publish_ctx.ingress.is_some()
         && !publish_ctx
             .engine
-            .marks()
-            .is_some_and(|marks| marks.fleet_supports(felix_common::fleet::RAFT_ATOMIC_COMMIT))
+            .fleet_supports(felix_common::fleet::RAFT_ATOMIC_COMMIT)
     {
         return Err(ClientError::new(
             felix_wire::ErrorCode::InvalidRequest,
@@ -533,19 +531,12 @@ async fn state_get_on_raft(
         .map_err(|err| ClientError::from_broker(&err, "state read not served"))
 }
 
-/// Refuse a read of shard-local state up front when the lease decides
-/// leadership and has lapsed. A fleet that reads by round skips this and
-/// relies on [`confirm_read_leader`].
+/// Refuse a read of shard-local state up front when the lease has lapsed.
 pub(crate) fn refuse_read_without_lease(publish_ctx: &PublishContext) -> Result<(), ClientError> {
-    let by_round = publish_ctx
-        .engine
-        .marks()
-        .is_some_and(|marks| marks.reads_by_round().is_some());
-    if !by_round
-        && publish_ctx
-            .ingress
-            .as_deref()
-            .is_some_and(|ingress| !ingress.fence().lease_valid())
+    if publish_ctx
+        .ingress
+        .as_deref()
+        .is_some_and(|ingress| !ingress.fence().lease_valid())
     {
         return Err(ClientError::from(fence::Fenced::LeaseLapsed));
     }
@@ -553,8 +544,8 @@ pub(crate) fn refuse_read_without_lease(publish_ctx: &PublishContext) -> Result<
 }
 
 /// Confirm, after a read of shard-local state took its value, that this
-/// broker still leads `shard`: by a round where the fleet reads by round,
-/// by the lease otherwise. A deposed leader would answer from stale state.
+/// broker still leads `shard`, by the lease. A deposed leader would answer
+/// from stale state.
 pub(crate) async fn confirm_read_leader(
     publish_ctx: &PublishContext,
     shard: &ShardKey,

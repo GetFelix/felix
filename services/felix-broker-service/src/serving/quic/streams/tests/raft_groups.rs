@@ -85,13 +85,8 @@ async fn group_operations_on_a_raft_shard_are_answered_as_on_the_hybrid() -> Res
     fixture::take_formed(&shards, assigned).await;
     fixture::until("the term is served", || shards.leading(&orders).is_some()).await;
     let gate = Arc::new(FleetGate::new([RAFT_CONSUMER_GROUPS.name()]));
-    let marks = Arc::new(felix_replication::quorum::QuorumMarks::with_fleet(
-        Arc::clone(&gate),
-    ));
-    let engine = Arc::new(StreamEngine::new(
-        Some(marks),
-        Some(fixture::ingress(&shards)),
-    ));
+    let engine =
+        Arc::new(StreamEngine::new(Some(fixture::ingress(&shards))).with_fleet(Arc::clone(&gate)));
     engine.set_raft(Arc::clone(&shards));
     let config = BrokerConfig::default();
     let cluster = ClusterContext {

@@ -66,47 +66,16 @@ fn reopening_at_a_new_generation_admits_again() {
     assert!(fence.enter(&stream, 1).is_none());
 }
 
-/// A shard ended for silence and reopened at the same generation serves
-/// readers again: silence is not a newer leader. A deposal still holds.
+/// A deposal outlives a close and reopen at the same generation.
 #[test]
-fn reopening_clears_silence_but_not_a_deposal() {
+fn reopening_does_not_clear_a_deposal() {
     let fence = ShardFence::default();
     let stream = key(ShardKind::Stream);
     fence.open(&stream, 4);
-    fence.unheard(&stream, 4);
-    assert!(fence.is_deposed(&stream, 4));
-    fence.close(&stream);
-    fence.open(&stream, 4);
-    assert!(
-        !fence.is_deposed(&stream, 4),
-        "still unheard after reopening"
-    );
-
     fence.depose(&stream, 4);
     fence.close(&stream);
     fence.open(&stream, 4);
     assert!(fence.is_deposed(&stream, 4));
-}
-
-/// What tells the replication driver a route naming this broker is one it
-/// opened, rather than one it led only before a restart.
-#[test]
-fn opened_since_counts_every_open_and_outlives_a_close() {
-    use felix_replication::driver::WriteFence;
-
-    let fence = ShardFence::default();
-    let stream = key(ShardKind::Stream);
-    assert!(!fence.opened_since(&stream, 0), "never opened");
-
-    fence.open(&stream, 3);
-    fence.close(&stream);
-    assert!(fence.opened_since(&stream, 3));
-    assert!(fence.opened_since(&stream, 2));
-    assert!(!fence.opened_since(&stream, 4));
-    assert!(
-        !fence.opened_since(&key(ShardKind::Cache), 3),
-        "a cache of the same name is another shard"
-    );
 }
 
 #[tokio::test]
@@ -192,65 +161,4 @@ async fn a_held_place_is_rechecked_against_the_lease_at_the_claim() {
         enter_or_keep(&mut held, Some(&ingress), Some(&stream), 1).err(),
         Some(Fenced::LeaseLapsed)
     );
-}
-
-/// A shard whose followers decide its acknowledgements takes writes at that
-/// generation without the lease, and at no other. Group state still asks for
-/// the lease.
-#[tokio::test]
-async fn a_shard_acknowledging_by_its_followers_admits_without_the_lease() {
-    use felix_replication::driver::WriteFence;
-
-    let fence = ShardFence::default();
-    let stream = key(ShardKind::Stream);
-    fence.open(&stream, 1);
-    let lease = Arc::new(LeaseState::new(std::time::Duration::from_secs(60)));
-    fence.bind_lease(Arc::clone(&lease));
-    assert_eq!(fence.admit(&stream, 1).err(), Some(Fenced::LeaseLapsed));
-
-    fence.serve_without_lease(&stream, 1);
-    let inside = fence.admit(&stream, 1).expect("no lease needed");
-    assert_eq!(fence.recheck(&inside), Ok(()));
-    assert_eq!(fence.require_lease(), Err(Fenced::LeaseLapsed));
-
-    // A new generation starts back on the lease until the driver says so.
-    fence.open(&stream, 2);
-    assert_eq!(fence.admit(&stream, 2).err(), Some(Fenced::LeaseLapsed));
-    let cache = key(ShardKind::Cache);
-    fence.open(&cache, 1);
-    assert_eq!(fence.admit(&cache, 1).err(), Some(Fenced::LeaseLapsed));
-}
-
-/// Sessions go on without the lease at the generation the driver named, until
-/// this broker learns it was deposed there. The first deposal at a generation
-/// is queued once.
-#[tokio::test]
-async fn sessions_leave_the_lease_until_the_shard_is_deposed() {
-    use felix_replication::driver::WriteFence;
-
-    let fence = ShardFence::default();
-    let stream = key(ShardKind::Stream);
-    assert!(!fence.sessions_lease_free(&stream, 1), "never opened");
-    fence.open(&stream, 1);
-    assert!(!fence.sessions_lease_free(&stream, 1), "not named yet");
-
-    fence.sessions_without_lease(&stream, 1);
-    assert!(fence.sessions_lease_free(&stream, 1));
-    assert!(!fence.sessions_lease_free(&stream, 2), "another generation");
-
-    WriteFence::deposed(&fence, &stream, 1);
-    WriteFence::deposed(&fence, &stream, 1);
-    assert!(!fence.sessions_lease_free(&stream, 1));
-    assert!(
-        fence.confirms_by_round(&stream, 1),
-        "group writes still go to the round, which refuses them"
-    );
-    fence.deposed().await;
-    assert_eq!(fence.take_deposals(), vec![(stream.clone(), 1)]);
-    assert!(fence.take_deposals().is_empty(), "queued once");
-
-    // A deposal at the old generation says nothing about the next one.
-    fence.open(&stream, 2);
-    fence.sessions_without_lease(&stream, 2);
-    assert!(fence.sessions_lease_free(&stream, 2));
 }

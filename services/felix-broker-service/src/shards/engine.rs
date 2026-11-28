@@ -3,36 +3,60 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use felix_replication::engine::{CommitError, Engine, Hybrid, Placement, Written};
-use felix_replication::quorum::{Access, CacheWrite, QuorumMarks, Unreadable};
+use felix_replication::engine::{
+    Access, CacheWrite, CommitError, Engine, Placement, Unreadable, Written,
+};
 use felix_wire::internal::{InternalMessage, PeerCapabilities};
 
 use super::ShardKey;
 use super::routing::IngressRouter;
 
-/// The engines this broker runs, read against how it serves each shard.
-/// What the stream write and read paths hold in place of the marks and the
-/// router.
+mod local;
+
+/// The engine this broker runs, read against how it serves each shard. What
+/// the stream write and read paths hold in place of the router.
 ///
-/// A shard has one engine: a Raft group's when this broker holds a member
-/// of it ([`StreamEngine::raft`]), the hybrid's otherwise. A Raft shard is
-/// written through [`StreamEngine::publish_on_raft`] and read up to its
-/// commit index. Every other [`Engine`] call goes to the hybrid, whose own
-/// methods are reached by deref.
+/// A shard a Raft member runs here ([`StreamEngine::raft`]) is written
+/// through [`StreamEngine::publish_on_raft`] and read up to its commit
+/// index. Any other shard has no follower to wait on: an in-memory stream
+/// shard, or a shard of a standalone broker without durable storage. Those
+/// answer from how this broker serves them (`local`).
 pub struct StreamEngine {
-    hybrid: Hybrid<IngressRouter>,
+    local: local::Local<IngressRouter>,
+    /// The fleet's features, for the paths that wait for one. `None` outside
+    /// a cluster.
+    fleet: Option<Arc<felix_common::fleet::FleetGate>>,
     #[cfg(feature = "raft")]
     raft: std::sync::OnceLock<Arc<super::raft::RaftShards>>,
 }
 
 impl StreamEngine {
-    /// `None` for either outside a cluster, where nothing is replicated.
-    pub fn new(marks: Option<Arc<QuorumMarks>>, serving: Option<Arc<IngressRouter>>) -> Self {
+    /// `serving` is `None` outside a cluster.
+    pub fn new(serving: Option<Arc<IngressRouter>>) -> Self {
         Self {
-            hybrid: Hybrid::new(marks, serving),
+            local: local::Local::new(serving),
+            fleet: None,
             #[cfg(feature = "raft")]
             raft: std::sync::OnceLock::new(),
         }
+    }
+
+    /// Read the fleet's features from `fleet`.
+    pub fn with_fleet(mut self, fleet: Arc<felix_common::fleet::FleetGate>) -> Self {
+        self.fleet = Some(fleet);
+        self
+    }
+
+    /// The shard routing this broker serves by, in a cluster.
+    pub fn serving(&self) -> Option<&Arc<IngressRouter>> {
+        self.local.serving()
+    }
+
+    /// Whether the fleet has enabled `feature`. False outside a cluster.
+    pub fn fleet_supports(&self, feature: felix_common::fleet::FleetFeature) -> bool {
+        self.fleet
+            .as_ref()
+            .is_some_and(|fleet| fleet.supports(feature))
     }
 
     /// Send the shards `raft` holds to their groups. Only the first call
@@ -174,7 +198,7 @@ impl StreamEngine {
 impl StreamEngine {
     /// Confirm by a read-index round that this broker still leads `shard`'s
     /// Raft group in `term`, before a read of the shard's state takes its
-    /// value. `None` when the hybrid runs the shard.
+    /// value. `None` when no Raft member runs it here.
     pub async fn confirm_raft_read(
         &self,
         shard: &ShardKey,
@@ -371,7 +395,7 @@ impl StreamEngine {
     /// which is a standalone one: the Raft group's answer when a group runs
     /// the shard here, `None` for a shard that is simply local.
     pub(crate) fn standalone_dispatch(&self, key: &ShardKey) -> Option<super::routing::Dispatch> {
-        if self.hybrid.serving().is_some() {
+        if self.serving().is_some() {
             return None;
         }
         #[cfg(feature = "raft")]
@@ -411,7 +435,7 @@ impl StreamEngine {
 
     /// `shard`'s Raft group on this broker, looked up once.
     /// [`Self::publish_to_raft`] given it looks the shard up no more. `None`
-    /// when the hybrid runs the shard.
+    /// when no Raft member runs it here.
     pub(crate) fn raft_shard(&self, shard: &ShardKey) -> Option<RaftShard> {
         #[cfg(feature = "raft")]
         return self.raft.get()?.shard_for(shard).map(RaftShard);
@@ -423,7 +447,7 @@ impl StreamEngine {
     }
 
     /// Propose a plain publish to `shard`'s Raft group, at the `term`
-    /// routing answered. `None` when the hybrid runs the shard.
+    /// routing answered. `None` when no Raft member runs it here.
     ///
     /// Call it in the shard's publish order: the batch takes its offsets
     /// and its place in the delivery order here. [`RaftPublish::complete`]
@@ -432,8 +456,7 @@ impl StreamEngine {
     /// written the batch, if that is first. A `Leader` stream's publisher is answered once the
     /// batch is on this leader's log, while the group's leader lease holds,
     /// and at the commit while it does not. Subscribers get the batch at
-    /// its commit either way. No write waits on the hybrid's marks or this
-    /// broker's lease.
+    /// its commit either way. No write waits on this broker's lease.
     #[allow(clippy::too_many_arguments)]
     pub fn publish_on_raft(
         &self,
@@ -523,7 +546,7 @@ impl StreamEngine {
 impl StreamEngine {
     /// Propose a conditional publish to `shard`'s Raft group, at the `term`
     /// routing answered: one record, written only at offset `expected`.
-    /// `None` when the hybrid runs the shard.
+    /// `None` when no Raft member runs it here.
     ///
     /// The leader's log decides the condition at the entry's final index and
     /// followers copy it, so a refused publish still takes an offset (a blank readers skip) and is
@@ -589,7 +612,7 @@ impl StreamEngine {
 impl StreamEngine {
     /// Propose an atomic commit to `shard`'s Raft group, at the `term`
     /// routing answered: `event` and `ops` as one entry, only at offset
-    /// `expected` when there is one. `None` when the hybrid runs the shard.
+    /// `expected` when there is one. `None` when no Raft member runs it here.
     ///
     /// A commit refused at its final index takes an offset, as a
     /// conditional publish does. Either answer waits for the commit.
@@ -647,7 +670,7 @@ impl StreamEngine {
 impl StreamEngine {
     /// Propose a head trim to `shard`'s Raft group, at the `term` routing
     /// answered: hide the shard below `before`, only if its next offset is
-    /// `expected`. `None` when the hybrid runs the shard.
+    /// `expected`. `None` when no Raft member runs it here.
     ///
     /// Checked and answered as on the hybrid, except that a trim the
     /// leader's log refuses at its final index still takes an offset, as a
@@ -702,7 +725,7 @@ impl StreamEngine {
 
 impl StreamEngine {
     /// Propose an idempotent producer's batch to `shard`'s Raft group, at
-    /// the `term` routing answered. `None` when the hybrid runs the shard.
+    /// the `term` routing answered. `None` when no Raft member runs it here.
     ///
     /// The sequence is checked against this broker's log, which holds what
     /// every earlier leader committed, and a batch it already holds is
@@ -771,7 +794,7 @@ impl StreamEngine {
     /// records, not batches (Kafka, and MQTT on Raft): `payloads` are
     /// records `first_sequence..`, each its own one-record batch, proposed
     /// together under one turn. `reuse` says how a held record whose payload
-    /// differs is answered. `None` when the hybrid runs the shard.
+    /// differs is answered. `None` when no Raft member runs it here.
     #[allow(clippy::too_many_arguments)]
     pub fn publish_records_idempotent_on_raft(
         &self,
@@ -830,24 +853,16 @@ impl StreamEngine {
 }
 
 impl Default for StreamEngine {
-    /// For tests only. See [`Hybrid::default`].
+    /// For tests only: a standalone broker's engine, with no router, so a
+    /// `Quorum` wait has nothing to wait on and returns at once.
     fn default() -> Self {
-        Self::new(None, None)
-    }
-}
-
-impl std::ops::Deref for StreamEngine {
-    type Target = Hybrid<IngressRouter>;
-
-    fn deref(&self) -> &Self::Target {
-        &self.hybrid
+        Self::new(None)
     }
 }
 
 impl Engine for StreamEngine {
-    fn appended(&self, shard: &ShardKey, written: Written) {
-        self.hybrid.appended(shard, written);
-    }
+    /// A Raft shard's group takes its own appends; no other shard ships.
+    fn appended(&self, _shard: &ShardKey, _written: Written) {}
 
     async fn await_commit(
         &self,
@@ -862,13 +877,15 @@ impl Engine for StreamEngine {
         if outcome.offsets.is_none() {
             return Ok(());
         }
-        self.hybrid
-            .await_commit(handle, shard, outcome, generation, timeout)
-            .await
+        let _ = (generation, timeout);
+        Ok(self
+            .local
+            .await_commit(handle.consistency(), shard, outcome.offsets)?)
     }
 
-    fn admit_local_ack(&self, shard: &ShardKey, generation: u64) -> Result<(), CommitError> {
-        self.hybrid.admit_local_ack(shard, generation)
+    /// The lease was checked when the write entered the write fence.
+    fn admit_local_ack(&self, _shard: &ShardKey, _generation: u64) -> Result<(), CommitError> {
+        Ok(())
     }
 
     fn read_bound(
@@ -881,7 +898,7 @@ impl Engine for StreamEngine {
         if let Some(raft) = self.raft_shard(shard) {
             return Ok(Some(raft.0.read_bound()));
         }
-        self.hybrid.read_bound(consistency, shard)
+        self.local.read_bound(consistency, shard)
     }
 
     fn committed_bound(&self, shard: &ShardKey) -> felix_broker::ReadBound {
@@ -891,7 +908,7 @@ impl Engine for StreamEngine {
         if let Some(raft) = self.raft_shard(shard) {
             return felix_broker::ReadBound::Committed(raft.0.read_bound());
         }
-        self.hybrid.committed_bound(shard)
+        self.local.committed_bound(shard)
     }
 
     fn records_end(&self, shard: &ShardKey, end: u64) -> u64 {
@@ -899,51 +916,49 @@ impl Engine for StreamEngine {
         if let Some(raft) = self.raft(shard) {
             return raft.records_end(shard, end);
         }
-        self.hybrid.records_end(shard, end)
+        end
     }
 
-    async fn confirm_read(&self, shard: &ShardKey) -> anyhow::Result<()> {
-        self.hybrid.confirm_read(shard).await
+    async fn confirm_read(&self, _shard: &ShardKey) -> anyhow::Result<()> {
+        Ok(self.local.confirm_read()?)
     }
 
+    /// No cache outside a Raft group waits for a majority: a Raft cluster
+    /// has no cache without a log, and a standalone broker no followers.
     async fn cache_write_at(
         &self,
-        broker: &felix_broker::Broker,
-        shard: &ShardKey,
-        generation: u64,
+        _broker: &felix_broker::Broker,
+        _shard: &ShardKey,
+        _generation: u64,
     ) -> Option<CacheWrite> {
-        self.hybrid.cache_write_at(broker, shard, generation).await
+        None
     }
 
     async fn await_cache_quorum(
         &self,
-        broker: &felix_broker::Broker,
-        shard: &ShardKey,
-        timeout: Duration,
-        access: Access,
-        written: Option<CacheWrite>,
+        _broker: &felix_broker::Broker,
+        _shard: &ShardKey,
+        _timeout: Duration,
+        _access: Access,
+        _written: Option<CacheWrite>,
     ) -> anyhow::Result<()> {
-        self.hybrid
-            .await_cache_quorum(broker, shard, timeout, access, written)
-            .await
+        Ok(())
     }
 
     async fn await_counter_quorum(
         &self,
-        broker: &felix_broker::Broker,
-        shard: &ShardKey,
-        timeout: Duration,
-        end: Option<u64>,
-        generation: u64,
-        what: &'static str,
+        _broker: &felix_broker::Broker,
+        _shard: &ShardKey,
+        _timeout: Duration,
+        _end: Option<u64>,
+        _generation: u64,
+        _what: &'static str,
     ) -> anyhow::Result<()> {
-        self.hybrid
-            .await_counter_quorum(broker, shard, timeout, end, generation, what)
-            .await
+        Ok(())
     }
 
-    async fn read_skips_lease(&self, broker: &felix_broker::Broker, shard: &ShardKey) -> bool {
-        self.hybrid.read_skips_lease(broker, shard).await
+    async fn read_skips_lease(&self, _broker: &felix_broker::Broker, _shard: &ShardKey) -> bool {
+        false
     }
 
     async fn await_readable(
@@ -953,21 +968,19 @@ impl Engine for StreamEngine {
         end: u64,
         timeout: Duration,
     ) -> Result<(), CommitError> {
-        self.hybrid
-            .await_readable(consistency, key, end, timeout)
-            .await
+        let _ = end;
+        self.local.await_readable(consistency, key, timeout).await
     }
 
-    fn placement_changed(&self, shard: &ShardKey, placement: &Placement) {
-        self.hybrid.placement_changed(shard, placement);
-    }
+    /// A Raft group follows its placement through the routing feed.
+    fn placement_changed(&self, _shard: &ShardKey, _placement: &Placement) {}
 
     async fn handle(
         &self,
-        from: Option<&str>,
-        caller: PeerCapabilities,
+        _from: Option<&str>,
+        _caller: PeerCapabilities,
         request: InternalMessage,
     ) -> InternalMessage {
-        self.hybrid.handle(from, caller, request).await
+        local::refuse_replication(&request)
     }
 }

@@ -19,9 +19,9 @@ use std::ops::Bound;
 use std::sync::Arc;
 use std::time::Duration;
 
+use crate::cluster::credential::NodeCredential;
 use felix_replication::controlplane_link::{ControlPlaneLink, RaftFloor};
 use felix_replication::raft::LogPoint;
-use felix_replication::reporter::Credential;
 use tokio_util::sync::CancellationToken;
 
 use super::{RaftShards, ShardKey};
@@ -236,7 +236,7 @@ pub(crate) async fn run<L: ControlPlaneLink>(
     shards: Arc<RaftShards>,
     link: L,
     node_id: String,
-    credential: Option<Arc<dyn Credential>>,
+    credential: Option<NodeCredential>,
     stop: CancellationToken,
 ) {
     let mut floors = Floors::default();

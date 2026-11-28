@@ -73,9 +73,6 @@ pub mod config;
 pub mod inspect;
 pub mod node;
 
-/// A broker's cluster machinery for the deterministic simulator.
-#[cfg(feature = "sim")]
-pub use node::sim;
 pub mod observability;
 pub mod restore;
 pub mod rotate_storage;
