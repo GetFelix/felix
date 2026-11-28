@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795830584034,
+  "lastUpdate": 1795832225448,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -94776,6 +94776,72 @@ window.BENCHMARK_DATA = {
             "range": "786.74",
             "unit": "us",
             "extra": "trials: 5\nmedian: 369.00\nmean: 706.40\nstdev: 786.74\ncv: 111.37%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "466134fdadd5d0e50d92cc76a62fd5b33dfbaf1c",
+          "message": "refactor!: one shard engine at run time; the hybrid is refused (#2259) (#3396)\n\n* feat(broker): Raft is the only shard engine at run time (#2259)\n\nFELIX_SHARD_ENGINE=hybrid is refused by brokers and control planes; raft\nor unset start. A broker without the raft feature refuses unless it is\nstandalone with no durable storage. No broker starts the hybrid's\ndriver, suspicion heartbeat, election driver or promotion fence; only\nthe simulator's hybrid clusters still do, until #2260 deletes them.\n\nThe hybrid's eleven variables and FELIX_SHARD_ENGINE are retired:\nreported at start by name and ignored. The history campaign has one\nmode. CI drops the hybrid cluster jobs, the hybrid nightly simulator\nmodes and perf-raft-rf3.yml.\n\nSpec-Unaffected: no TLA-modelled behaviour changes; the hybrid stops being reachable at run time and Raft is unchanged\n\n* docs: drop claims the hybrid's run-time retirement made false (#2259)\n\nSpec-Unaffected: docs only\n\n* ci: the gate workflows run on Raft; docs say what replaced the hybrid sim modes and election (#2259)\n\nSpec-Unaffected: workflow and documentation changes only\n\n* docs: cite the renamed engine-refusal test (#2259)\n\nSpec-Unaffected: documentation only\n\n* ci: the gate report defaults to the Raft engine (#2259)\n\nSpec-Unaffected: CI script default only\n\n* fix(broker): FELIX_UNIFIED_FENCE=0 still lets a Raft broker vote from its view (#2259)\n\nRetiring FELIX_UNIFIED_FENCE with the hybrid pinned unified_fence on, and\non Raft that field also decides votes_unchecked: whether a broker started\nfrom its control-plane view opens its members and votes before the\ncontrol plane has checked its directory (#3102). With it pinned, such a\nbroker waited for the control plane, so two live members of three could\nnot elect while it was down. The switch is read again, as on main.\n\nSpec-Unaffected: restores main's configuration reading; no protocol or state-machine change\n\n* fix(broker): FELIX_UNIFIED_FENCE stays retired; a view start waits to vote (#2259)\n\nReverts 3f40ca8b3. The unified fence is always on, so a broker restarted\nfrom its control-plane view while the control plane is down holds its vote\nuntil its restore check can run. The cluster test of the removed opt-out\n(a_broker_restarted_while_the_control_plane_is_down_votes) is deleted; the\nsafe-rule test stays. A unit test pins that a start from the view does not\nvote unchecked, and the docs and changelog say the fence is always on.\n\nSpec-Unaffected: keeps the always-on unified fence; no protocol or state-machine change",
+          "timestamp": "2026-11-27T18:10:09-08:00",
+          "tree_id": "3ba457f1178271b0df7308d7df87fe50c812abe8",
+          "url": "https://github.com/GetFelix/felix/commit/466134fdadd5d0e50d92cc76a62fd5b33dfbaf1c"
+        },
+        "date": 1795832193164,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 112,
+            "range": "4.76",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 112.00\nmean: 111.20\nstdev: 4.76\ncv: 4.28%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 171,
+            "range": "10.46",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 171.00\nmean: 168.00\nstdev: 10.46\ncv: 6.23%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 238,
+            "range": "73.16",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 238.00\nmean: 264.00\nstdev: 73.16\ncv: 27.71%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 126,
+            "range": "0.45",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 126.00\nmean: 125.80\nstdev: 0.45\ncv: 0.36%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 274,
+            "range": "35.40",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 274.00\nmean: 289.00\nstdev: 35.40\ncv: 12.25%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 970,
+            "range": "435.03",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 970.00\nmean: 890.40\nstdev: 435.03\ncv: 48.86%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
