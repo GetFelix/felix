@@ -71,7 +71,9 @@ flowchart LR
 
 Paths are relative to `crates/server/felix-replication/src/` unless they start
 with `services/` or `crates/`. Line numbers are as of the commit that added
-this page.
+this page. The hybrid's files named here were deleted in 0.8 and are cited
+without line numbers; read them at
+[v0.7.0](https://github.com/GetFelix/felix/tree/v0.7.0).
 
 ### The seams that already exist
 
@@ -80,12 +82,12 @@ through traits the service implements:
 
 | Seam | Defined | Implemented by | What it gives the engine |
 | --- | --- | --- | --- |
-| `quorum::ShardServing` | `felix-replication/src/quorum.rs:1049` | `IngressRouter`, `services/felix-broker-service/src/shards/routing.rs:534` | Is the shard replicated, which generation do I serve, is my lease valid |
-| `driver::WriteFence` | `felix-replication/src/driver.rs:298` | `ShardFence`, `services/felix-broker-service/src/shards/lifecycle/fence.rs:444` | Is the shard quiet; callbacks for serving without the lease, deposed, withheld, probed |
-| `reporter::Credential` | `reporter.rs:121` | `NodeCredential`, `services/felix-broker-service/src/cluster/credential.rs:62` | The bearer token a replica report carries |
-| `promotion::PromotionGate` | `felix-replication/src/promotion.rs:66` | `LifecycleGate`, `services/felix-broker-service/src/shards/lifecycle/promotion.rs:46` | Whether a promoted shard may open |
-| `confirmed::ConfirmedRoutes` | `felix-replication/src/confirmed.rs:49` | `ControlPlaneRoutes`, `services/felix-broker-service/src/shards/confirmed.rs:77` | An assignment read no older than the control plane's last acknowledged write |
-| `quorum::LeadershipCheck` | `felix-replication/src/quorum.rs:92` | `leadership::ReadIndex`, `felix-replication/src/leadership.rs:90` | A read round: does a majority still answer at my generation |
+| `quorum::ShardServing` | `felix-replication/src/quorum.rs` | `IngressRouter`, `services/felix-broker-service/src/shards/routing.rs` | Is the shard replicated, which generation do I serve, is my lease valid |
+| `driver::WriteFence` | `felix-replication/src/driver.rs` | `ShardFence`, `services/felix-broker-service/src/shards/lifecycle/fence.rs` | Is the shard quiet; callbacks for serving without the lease, deposed, withheld, probed |
+| `reporter::Credential` | `reporter.rs` | `NodeCredential`, `services/felix-broker-service/src/cluster/credential.rs` | The bearer token a replica report carries |
+| `promotion::PromotionGate` | `felix-replication/src/promotion.rs` | `LifecycleGate`, `services/felix-broker-service/src/shards/lifecycle/promotion.rs` | Whether a promoted shard may open |
+| `confirmed::ConfirmedRoutes` | `felix-replication/src/confirmed.rs` | `ControlPlaneRoutes`, `services/felix-broker-service/src/shards/confirmed.rs` | An assignment read no older than the control plane's last acknowledged write |
+| `quorum::LeadershipCheck` | `felix-replication/src/quorum.rs` | `leadership::ReadIndex`, `felix-replication/src/leadership.rs` | A read round: does a majority still answer at my generation |
 
 ### Wiring
 
@@ -105,18 +107,18 @@ The broker's publish path takes offsets before it waits on durability
 `Completion::commit` makes the batch durable and marks the shard in
 `AppendedShards` (`crates/server/felix-broker/src/broker/publish/completion.rs:293`,
 `crates/server/felix-broker/src/broker/appended.rs:18`). That wakes the
-driver, which ships each follower one batch from its cursor (`felix-replication/src/driver.rs:167`,
-`ship.rs:20` `ship_once`, `follower.rs:24` `FollowerCursor`). The follower
-stores it at the leader's offsets (`replica.rs:663` `apply`, through
+driver, which ships each follower one batch from its cursor (`felix-replication/src/driver.rs`,
+`ship.rs` `ship_once`, `follower.rs` `FollowerCursor`). The follower
+stores it at the leader's offsets (`replica.rs` `apply`, through
 `crates/server/felix-broker/src/durable.rs:599` `append_pending_at`).
 
 ### 2. Commit mark
 
-The driver computes a majority offset over the cursors (`felix-replication/src/quorum.rs:1777`
-`quorum_offset`, `driver/shard.rs:501`), counted only from the leader's own
-generation start (`felix-replication/src/quorum.rs:2007` `counted_offset`), and publishes it to
-`QuorumMarks` (`felix-replication/src/quorum.rs:37`, `:618`). Writers wait in `await_quorum`
-(`felix-replication/src/quorum.rs:1018`), called from the service:
+The driver computes a majority offset over the cursors (`felix-replication/src/quorum.rs`
+`quorum_offset`, `driver/shard.rs`), counted only from the leader's own
+generation start (`felix-replication/src/quorum.rs` `counted_offset`), and publishes it to
+`QuorumMarks` (`felix-replication/src/quorum.rs`). Writers wait in `await_quorum`
+(`felix-replication/src/quorum.rs`), called from the service:
 
 - QUIC publish: `serving/quic/handlers/publish/worker.rs:508` and `:591`,
   `serving/quic/handlers/publish/direct.rs:202`
@@ -126,26 +128,26 @@ generation start (`felix-replication/src/quorum.rs:2007` `counted_offset`), and 
 - Forwarded writes: `serving/forward/owner.rs:195`
 
 Caches and counters have their own waits: `await_cache_quorum`
-(`felix-replication/src/quorum.rs:1140`), `cache_write_at` (`felix-replication/src/quorum.rs:1673`) and
-`await_counter_quorum` (`felix-replication/src/quorum.rs:1295`), called from
+(`felix-replication/src/quorum.rs`), `cache_write_at` (`felix-replication/src/quorum.rs`) and
+`await_counter_quorum` (`felix-replication/src/quorum.rs`), called from
 `serving/cache_routing.rs` and `serving/forward/owner.rs`.
 
 ### 3. Leadership and fencing
 
 The control plane assigns a leader and a generation. A promoted leader runs
-the fence before it opens: `felix-replication/src/promotion.rs:168` `fence_shard` asks a majority to
-promise the generation (the follower answers in `replica.rs:1275` `fence`),
+the fence before it opens: `felix-replication/src/promotion.rs` `fence_shard` asks a majority to
+promise the generation (the follower answers in `replica.rs` `fence`),
 catches up, appends a generation-start record, and the driver opens it
-(`felix-replication/src/driver.rs:677` `open_promoted`). A follower refuses a stale leader with
-`FencedEpoch` (`replica.rs:2101` `check_shard_fence`). The engine tells the
-broker through `WriteFence` callbacks (`felix-replication/src/driver.rs:298` onward): `deposed`,
+(`felix-replication/src/driver.rs` `open_promoted`). A follower refuses a stale leader with
+`FencedEpoch` (`replica.rs` `check_shard_fence`). The engine tells the
+broker through `WriteFence` callbacks (`felix-replication/src/driver.rs` onward): `deposed`,
 `withheld`, `serve_without_lease`, `passed`.
 
 Around that core sit the parts that make it safe across crashes and lost
 disks: ballots (`crates/server/felix-storage/src/disk_log/ballot.rs:191`),
-vouching and copy trust (`replica.rs:1896` `record_vouch`, `follower.rs:107`),
+vouching and copy trust (`replica.rs` `record_vouch`, `follower.rs`),
 unclean starts (`unclean.rs`), reclaim (`reclaim.rs`), and opt-in election
-without the control plane (`felix-replication/src/election.rs:31`, `election/candidate.rs:403`,
+without the control plane (`felix-replication/src/election.rs`, `election/candidate.rs`,
 `replica/election.rs`), switched on by `FELIX_INTERNAL_ELECTION`
 (`services/felix-broker-service/src/config/membership.rs:166`).
 
@@ -153,22 +155,22 @@ without the control plane (`felix-replication/src/election.rs:31`, `election/can
 
 The control plane picks the new set. A promotion across a set change runs a
 joint fence that needs answers from both the old and the new set
-(`promotion/joint.rs:216` `JointSets`, `replica.rs:2552` `joint_fence`). A new
+(`promotion/joint.rs` `JointSets`, `replica.rs` `joint_fence`). A new
 replica joins as a learner that ships but does not count toward the mark
-(`ship.rs:665`, `driver/shard.rs:768`), and a follower too far behind is
-rebuilt (`felix-replication/src/rebuild.rs:40`). The driver learns of a change when the router
-notifies `routes_changed` (`felix-replication/src/driver.rs:176`).
+(`ship.rs`, `driver/shard.rs`), and a follower too far behind is
+rebuilt (`felix-replication/src/rebuild.rs`). The driver learns of a change when the router
+notifies `routes_changed` (`felix-replication/src/driver.rs`).
 
 ### 5. Read bound
 
-`read_bound` (`felix-replication/src/quorum.rs:1298`) and `committed_bound` (`felix-replication/src/quorum.rs:1452`) give
+`read_bound` (`felix-replication/src/quorum.rs`) and `committed_bound` (`felix-replication/src/quorum.rs`) give
 the highest offset a reader may see; `engine::CommittedReads` answers the
 broker's `ReadBounds` trait
 (`crates/server/felix-broker/src/stream/committed.rs:58`) from
 `Engine::committed_bound`. A reader confirms the broker still leads either by
-its control-plane lease or by a read round (`felix-replication/src/leadership.rs:34` `ReadIndex`,
-chosen by `FELIX_QUORUM_READS`). `confirm_state_read` (`felix-replication/src/quorum.rs:1574`) and
-`read_skips_lease` (`felix-replication/src/quorum.rs:1553`) are the entry points. Callers: `serving/kafka.rs:257`,
+its control-plane lease or by a read round (`felix-replication/src/leadership.rs` `ReadIndex`,
+chosen by `FELIX_QUORUM_READS`). `confirm_state_read` (`felix-replication/src/quorum.rs`) and
+`read_skips_lease` (`felix-replication/src/quorum.rs`) are the entry points. Callers: `serving/kafka.rs:257`,
 `serving/group_ops.rs:221` and `:321`, `serving/commit_ops.rs:308`,
 `serving/quic/handlers/cache_watch.rs:515`.
 
@@ -1294,7 +1296,7 @@ change (`ShardKind`, `crates/server/felix-replication/src/shard.rs:18`).
 
 **Performance.** Today a cache shard writes two logs, the cache log and the
 counter log, each with its own group commit, fsync and quorum mark
-(`QuorumMarks::counters`, `felix-replication/src/quorum.rs:37`). One log means one fsync per group
+(`QuorumMarks::counters`, `felix-replication/src/quorum.rs`). One log means one fsync per group
 commit for both kinds of write. Under mixed load that is fewer fsyncs per
 write, never more. Write amplification does not rise as long as the counter
 store becomes a projection of the group log, rebuilt from a snapshot plus the
@@ -1355,7 +1357,7 @@ can be elected, which is the job the control-plane lease does today.
 to `Quorum` streams: the broker asks for it only for `Quorum`
 (`crates/server/felix-broker/src/stream/committed.rs:15-16`), and
 `quorum::read_bound` returns unbounded for any other level
-(`crates/server/felix-replication/src/quorum.rs:1256`). Under the new rule
+(`crates/server/felix-replication/src/quorum.rs`). Under the new rule
 `Engine::read_bound` returns the commit offset for every consistency level on
 a replicated shard, and the local durable tail on an RF 1 shard. Each read
 path takes its bound from it:
@@ -1385,8 +1387,8 @@ open. The check measures on the monotonic clock and compares it with
 
 **The margin.** Followers refuse to vote for `election_timeout_max` after they
 last heard the leader. openraft 0.10 sets its follower-side `leader_lease` to
-`election_timeout_max` (`engine/engine_config.rs:59`; `:56` in 0.9) and refuses
-a vote while that lease is live (`engine/engine_impl.rs:393`; `:282` in 0.9).
+`election_timeout_max` (`engine/engine_config.rs`;  in 0.9) and refuses
+a vote while that lease is live (`engine/engine_impl.rs`;  in 0.9).
 The value is the same in both versions. Clocks drift in rate by at most `ρ`, so the
 leader's lease must satisfy
 
@@ -1415,7 +1417,7 @@ An RF 1 stream pays nothing, because its commit is the local append. The
 gate measures delivered latency on an RF 3 `Leader` stream. A gap of much
 more than one replication round trip over today is a bug to fix, not a cost
 to document. `Quorum` reads already confirm leadership with a shared read
-round (`crates/server/felix-replication/src/leadership.rs:15`), so a
+round (`crates/server/felix-replication/src/leadership.rs`), so a
 deployment that opted into lease reads now pays one majority round trip per
 round. The gate's `Quorum` read p99 measures it. The lease adds no messages
 on a busy group, where appends and heartbeats renew it. The first write after
@@ -1711,7 +1713,7 @@ unit, integration and simulator seed tests pass unchanged after each.
    `Engine` yet (step 4).
 4. Read confirmation and bounds: `confirm_state_read` and the `ReadIndex`
    setup in `node/startup.rs` behind `confirm_read`, and the broker's
-   `ReadBounds` answer (`CommittedReads`, `felix-replication/src/quorum.rs:1443`) behind
+   `ReadBounds` answer (`CommittedReads`, `felix-replication/src/quorum.rs`) behind
    `read_bound`, so every read path takes its bound from the engine.
    Done as built: `Engine::confirm_read` calls `confirm_state_read`, and atomic
    commits, group reads and the simulator's state reads call it.

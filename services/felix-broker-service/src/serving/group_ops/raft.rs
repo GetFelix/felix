@@ -72,8 +72,7 @@ pub(super) async fn on_raft(
     if publish_ctx.ingress.is_some()
         && !publish_ctx
             .engine
-            .marks()
-            .is_some_and(|marks| marks.fleet_supports(felix_common::fleet::RAFT_CONSUMER_GROUPS))
+            .fleet_supports(felix_common::fleet::RAFT_CONSUMER_GROUPS)
     {
         return Err(ClientError::new(
             felix_wire::ErrorCode::InvalidRequest,

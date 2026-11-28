@@ -267,10 +267,10 @@ impl ForwardingHandler {
                     // now, so it is told the leadership moved rather than that
                     // the write failed.
                     let deposed = matches!(
-                        err.downcast_ref::<felix_replication::quorum::QuorumError>(),
+                        err.downcast_ref::<felix_replication::engine::CommitError>(),
                         Some(
-                            felix_replication::quorum::QuorumError::LeadershipLost { .. }
-                                | felix_replication::quorum::QuorumError::NotAppended { .. }
+                            felix_replication::engine::CommitError::LeadershipLost { .. }
+                                | felix_replication::engine::CommitError::NotAppended { .. }
                         )
                     );
                     let code = if deposed && publish.producer.is_some() {
@@ -765,9 +765,9 @@ impl ForwardingHandler {
                 &key,
                 self.quorum_timeout,
                 if writes {
-                    felix_replication::quorum::Access::Write
+                    felix_replication::engine::Access::Write
                 } else {
-                    felix_replication::quorum::Access::Read
+                    felix_replication::engine::Access::Read
                 },
                 at,
             )

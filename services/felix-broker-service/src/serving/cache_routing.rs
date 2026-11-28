@@ -332,7 +332,7 @@ pub(crate) async fn apply_cache_local(
                     broker,
                     &written,
                     quorum_timeout,
-                    felix_replication::quorum::Access::Write,
+                    felix_replication::engine::Access::Write,
                     at,
                 )
                 .await?;
@@ -354,7 +354,7 @@ pub(crate) async fn apply_cache_local(
                     broker,
                     &written,
                     quorum_timeout,
-                    felix_replication::quorum::Access::Read,
+                    felix_replication::engine::Access::Read,
                     None,
                 )
                 .await?;
@@ -378,7 +378,7 @@ pub(crate) async fn apply_cache_local(
                     broker,
                     &written,
                     quorum_timeout,
-                    felix_replication::quorum::Access::Write,
+                    felix_replication::engine::Access::Write,
                     at,
                 )
                 .await?;
@@ -413,7 +413,7 @@ pub(crate) async fn apply_cache_local(
                     broker,
                     &written,
                     quorum_timeout,
-                    felix_replication::quorum::Access::Write,
+                    felix_replication::engine::Access::Write,
                     at,
                 )
                 .await?;
@@ -443,7 +443,7 @@ pub(crate) async fn apply_cache_local(
                     broker,
                     &written,
                     quorum_timeout,
-                    felix_replication::quorum::Access::Write,
+                    felix_replication::engine::Access::Write,
                     at,
                 )
                 .await?;
@@ -467,7 +467,7 @@ pub(crate) async fn apply_cache_local(
                     broker,
                     &written,
                     quorum_timeout,
-                    felix_replication::quorum::Access::Read,
+                    felix_replication::engine::Access::Read,
                     None,
                 )
                 .await?;

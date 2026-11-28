@@ -1,38 +1,29 @@
 #!/usr/bin/env bash
-# Run a range of simulator seeds, a few at a time, one process per seed.
+# Run a range of Raft group simulator seeds, a few at a time, one process
+# per seed.
 #
 #   scripts/sim-sweep.sh <first seed> <count> [out dir]
 #
-# Each seed runs the `replay` test of crates/testing/felix-sim/tests/seeds.rs
-# with FELIX_SIM_SEED set, so its outcome lands in <out>/seed-<n>.log. The
-# Raft modes run the `raft_seeds` batch of tests/raft_seeds.rs on that one
-# seed instead.
+# Each seed runs the `raft_seeds` batch of
+# crates/testing/felix-sim/tests/raft_seeds.rs on that one seed, so its
+# outcome lands in <out>/seed-<n>.log.
 #
-# FELIX_SIM_MODE picks the nemeses beyond the default faults: `off` (default),
-# `clocks` (bounded clock skew), `placement` (placement faults),
-# `power-loss` (power cuts in place of kills), `relaxed-power-loss` (the same
-# on brokers that do not sync), `majority-cut` and `majority-cut-relaxed`
-# (several brokers lose power at once) or `wipe` (shard directories and data
-# directories emptied). `raft` and `raft-clocks` run Raft groups
-# (docs/simulation.md, "Raft groups"), the second with skewed timers;
+# FELIX_SIM_MODE picks the nemeses (docs/simulation.md, "Raft groups"):
+# `raft` (default) and `raft-clocks`, the second with skewed timers;
 # `raft-wipe` and `raft-restore` run them with members stopped and a shard
 # directory or data root wiped or put back from an older copy.
 # `raft-power-loss`, `raft-relaxed-power-loss`, `raft-majority-cut` and
-# `raft-majority-cut-relaxed` cut members' power, as their hybrid twins do.
+# `raft-majority-cut-relaxed` cut members' power.
 #
-# A failing seed is sorted by what its log says:
+# A failing seed is sorted by what its log says. Its categories are
+# `history`, `stalled` (a run still going at its virtual bound), `group` (any
+# other group finding), `too-little` (a seed that exercised too little to
+# count) or `crash`.
 #
-#   real bug  a history violation, an undecided key, a safety finding (more
-#             than one serving broker, two leaders in a generation, an
-#             acknowledged write a leader does not hold), or a crash.
-#             Listed in <out>/failed.txt. The script exits 1.
-#   stall     only the liveness findings `stalled`, `election-settles` and
-#             `final-reads`, the tracked ones in docs/simulation.md. Listed
-#             in <out>/stalls.txt. The script still exits 0.
-#
-# A Raft seed's categories are `history`, `stalled` (a run still going at its
-# virtual bound), `group` (any other group finding), `too-little` (a seed
-# that exercised too little to count) or `crash`; only `stalled` is a stall.
+#   real bug  any category but `stalled`. Listed in <out>/failed.txt. The
+#             script exits 1.
+#   stall     only `stalled`. Listed in <out>/stalls.txt. The script still
+#             exits 0.
 #
 # A seed with a real bug runs again up to FELIX_SIM_RETRIES more times
 # (default 1) to say how often it fails. Each line names the categories and the
@@ -42,8 +33,8 @@
 # FELIX_SIM_JOBS sets how many seeds run at once (default 2). A seed holds one
 # core most of the time; running more than the machine has makes the stall
 # watchdog report a busy machine as a stuck run. FELIX_SIM_BIN names a test
-# binary built already (the `raft_seeds` one for a Raft mode); without it the
-# script builds one the way `task sim:replay` does.
+# binary built already (the `raft_seeds` one); without it the script builds
+# one the way `task sim:raft-replay` does.
 set -euo pipefail
 
 first=${1:?first seed}
@@ -51,41 +42,27 @@ count=${2:?seed count}
 out=${3:-target/sim-sweep}
 jobs=${FELIX_SIM_JOBS:-2}
 retries=${FELIX_SIM_RETRIES:-1}
-mode=${FELIX_SIM_MODE:-off}
+mode=${FELIX_SIM_MODE:-raft}
 
 for value in "$first" "$count" "$jobs" "$retries"; do
   [[ "$value" =~ ^[0-9]{1,9}$ ]] || { echo "not a number: $value" >&2; exit 2; }
 done
 
-# Mode flags go in the environment the test reads, and in the replay command
-# when a log does not print one.
-test=seeds
+# Mode flags go in the environment the test reads, and in the replay command.
+test=raft_seeds
 case "$mode" in
-  off) mode_env=() ; mode_prefix="" ;;
-  clocks) mode_env=(FELIX_SIM_CLOCKS=bounded); mode_prefix="FELIX_SIM_CLOCKS=bounded " ;;
-  placement) mode_env=(FELIX_SIM_PLACEMENT=1); mode_prefix="FELIX_SIM_PLACEMENT=1 " ;;
-  power-loss) mode_env=(FELIX_SIM_POWER_LOSS=1); mode_prefix="FELIX_SIM_POWER_LOSS=1 " ;;
-  relaxed-power-loss) mode_env=(FELIX_SIM_POWER_LOSS=relaxed); mode_prefix="FELIX_SIM_POWER_LOSS=relaxed " ;;
-  majority-cut) mode_env=(FELIX_SIM_MAJORITY_CUT=1); mode_prefix="FELIX_SIM_MAJORITY_CUT=1 " ;;
-  majority-cut-relaxed) mode_env=(FELIX_SIM_POWER_LOSS=relaxed FELIX_SIM_MAJORITY_CUT=1); mode_prefix="FELIX_SIM_POWER_LOSS=relaxed FELIX_SIM_MAJORITY_CUT=1 " ;;
-  wipe) mode_env=(FELIX_SIM_WIPE=1); mode_prefix="FELIX_SIM_WIPE=1 " ;;
-  raft) test=raft_seeds; mode_env=(); mode_prefix="" ;;
-  raft-clocks) test=raft_seeds; mode_env=(FELIX_SIM_CLOCKS=bounded); mode_prefix="FELIX_SIM_CLOCKS=bounded " ;;
-  raft-wipe) test=raft_seeds; mode_env=(FELIX_SIM_WIPE=1); mode_prefix="FELIX_SIM_WIPE=1 " ;;
-  raft-restore) test=raft_seeds; mode_env=(FELIX_SIM_RESTORE=1); mode_prefix="FELIX_SIM_RESTORE=1 " ;;
-  raft-power-loss) test=raft_seeds; mode_env=(FELIX_SIM_POWER_LOSS=1); mode_prefix="FELIX_SIM_POWER_LOSS=1 " ;;
-  raft-relaxed-power-loss) test=raft_seeds; mode_env=(FELIX_SIM_POWER_LOSS=relaxed); mode_prefix="FELIX_SIM_POWER_LOSS=relaxed " ;;
-  raft-majority-cut) test=raft_seeds; mode_env=(FELIX_SIM_MAJORITY_CUT=1); mode_prefix="FELIX_SIM_MAJORITY_CUT=1 " ;;
-  raft-majority-cut-relaxed) test=raft_seeds; mode_env=(FELIX_SIM_POWER_LOSS=relaxed FELIX_SIM_MAJORITY_CUT=1); mode_prefix="FELIX_SIM_POWER_LOSS=relaxed FELIX_SIM_MAJORITY_CUT=1 " ;;
-  *) echo "FELIX_SIM_MODE must be off, clocks, placement, power-loss, relaxed-power-loss, majority-cut, majority-cut-relaxed, wipe, raft, raft-clocks, raft-wipe, raft-restore, raft-power-loss, raft-relaxed-power-loss, raft-majority-cut or raft-majority-cut-relaxed, got $mode" >&2; exit 2 ;;
+  raft) mode_env=(); mode_prefix="" ;;
+  raft-clocks) mode_env=(FELIX_SIM_CLOCKS=bounded); mode_prefix="FELIX_SIM_CLOCKS=bounded " ;;
+  raft-wipe) mode_env=(FELIX_SIM_WIPE=1); mode_prefix="FELIX_SIM_WIPE=1 " ;;
+  raft-restore) mode_env=(FELIX_SIM_RESTORE=1); mode_prefix="FELIX_SIM_RESTORE=1 " ;;
+  raft-power-loss) mode_env=(FELIX_SIM_POWER_LOSS=1); mode_prefix="FELIX_SIM_POWER_LOSS=1 " ;;
+  raft-relaxed-power-loss) mode_env=(FELIX_SIM_POWER_LOSS=relaxed); mode_prefix="FELIX_SIM_POWER_LOSS=relaxed " ;;
+  raft-majority-cut) mode_env=(FELIX_SIM_MAJORITY_CUT=1); mode_prefix="FELIX_SIM_MAJORITY_CUT=1 " ;;
+  raft-majority-cut-relaxed) mode_env=(FELIX_SIM_POWER_LOSS=relaxed FELIX_SIM_MAJORITY_CUT=1); mode_prefix="FELIX_SIM_POWER_LOSS=relaxed FELIX_SIM_MAJORITY_CUT=1 " ;;
+  *) echo "FELIX_SIM_MODE must be raft, raft-clocks, raft-wipe, raft-restore, raft-power-loss, raft-relaxed-power-loss, raft-majority-cut or raft-majority-cut-relaxed, got $mode" >&2; exit 2 ;;
 esac
-# The test one seed runs: `replay` takes FELIX_SIM_SEED, the Raft batch a
-# range of one.
-if [ "$test" = seeds ]; then
-  case_name=replay; case_flags=(--exact)
-else
-  case_name=raft_seeds; case_flags=(--exact --ignored)
-fi
+# The test one seed runs: the batch, on a range of one.
+case_name=raft_seeds; case_flags=(--exact --ignored)
 
 bin=${FELIX_SIM_BIN:-}
 if [ -z "$bin" ]; then
@@ -103,22 +80,14 @@ mkdir -p "$out"
 : > "$out/failed.txt"
 : > "$out/stalls.txt"
 
-# The categories a log shows, comma separated: `history` for violations or an
-# undecided key, otherwise each failing checker's name, `crash` when the log
-# names none.
+# The categories a log shows, comma separated, `crash` when the log names
+# none.
 categories() {
   local log=$1 found=""
-  if [ "$test" = raft_seeds ]; then
-    grep -q '^history: ' "$log" && found="history"
-    grep -q '^group: stalled: ' "$log" && found+=" stalled"
-    grep '^group: ' "$log" | grep -vq '^group: stalled: ' && found+=" group"
-    grep -q 'checked too little' "$log" && found+=" too-little"
-    found=$(echo $found | tr ' ' ',')
-    echo "${found:-crash}"
-    return
-  fi
-  grep -qE '^[0-9]+ violation\(s\)|undecided' "$log" && found="history"
-  found+=" $(grep -oE '^\[[a-z-]+\]' "$log" | tr -d '[]' | sort -u | tr '\n' ' ')"
+  grep -q '^history: ' "$log" && found="history"
+  grep -q '^group: stalled: ' "$log" && found+=" stalled"
+  grep '^group: ' "$log" | grep -vq '^group: stalled: ' && found+=" group"
+  grep -q 'checked too little' "$log" && found+=" too-little"
   found=$(echo $found | tr ' ' ',')
   echo "${found:-crash}"
 }
@@ -128,22 +97,17 @@ only_liveness() {
   local category
   for category in ${1//,/ }; do
     case "$category" in
-      stalled|election-settles|final-reads) ;;
+      stalled) ;;
       *) return 1 ;;
     esac
   done
 }
 
-# The command the failed run printed, or one built from the mode. A Raft run
-# prints none that carries the mode, so its command is always built.
+# The command that replays a seed, built from the mode: a run prints none
+# that carries it.
 replay_command() {
-  local seed=$1 log=$2 line
-  if [ "$test" = raft_seeds ]; then
-    echo "${mode_prefix}FELIX_SIM_SEED=$seed task sim:raft-replay"
-    return
-  fi
-  line=$(grep -A1 'To run it again' "$log" | sed -n 2p | sed 's/^ *//' || true)
-  echo "${line:-${mode_prefix}FELIX_SIM_SEED=$seed task sim:replay}"
+  local seed=$1
+  echo "${mode_prefix}FELIX_SIM_SEED=$seed task sim:raft-replay"
 }
 
 # Runs one seed; prints "<kind> <seed> <categories> <failures> <runs>" when it
@@ -186,7 +150,7 @@ seq "$first" $((first + count - 1)) |
   xargs -P "$jobs" -I{} bash -c 'mode_env=($MODE_ENV); case_flags=($CASE_FLAGS); run_one {}' |
   sort -k2,2n |
   while read -r kind seed cats failures runs; do
-    line="seed $seed ($cats) failed $failures of $runs, mode $mode: $(replay_command "$seed" "$out/seed-$seed.log")"
+    line="seed $seed ($cats) failed $failures of $runs, mode $mode: $(replay_command "$seed")"
     if [ "$kind" = stall ]; then
       echo "stall $line" | tee -a "$out/stalls.txt"
     else

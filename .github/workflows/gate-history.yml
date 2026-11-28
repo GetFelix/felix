@@ -160,7 +160,7 @@ jobs:
         with:
           key: sim-sweep-tokio-unstable
 
-      # The same build as dst-nightly.yml and `task sim:replay`, so a failing
+      # The same build as dst-nightly.yml and `task sim:raft-replay`, so a failing
       # seed replays the run the sweep saw.
       - name: Build the Raft seeds test
         env:

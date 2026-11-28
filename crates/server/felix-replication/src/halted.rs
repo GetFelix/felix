@@ -1,24 +1,14 @@
 //! Which replicas replication has stopped for, and why.
 //!
-//! The metric next door is a bare count, deliberately: a label per shard is a
-//! label per stream per tenant, which is unbounded in a multi-tenant broker. So
-//! `felix_broker_replication_halted` can say *three replicas have stopped* and
-//! nothing more, and the only way to learn which was to grep the broker's logs
-//! for the warning that accompanied each halt.
-//!
-//! That is a poor position to be in, because a halt does not resolve on its
-//! own. The follower is out of every quorum until an operator acts, and acting
-//! means knowing exactly which replica of which shard, on which node, and
-//! whether it diverged or simply needs history this leader no longer holds —
-//! the answers decide whether a rebuild is the right move at all.
+//! A halt does not resolve on its own. The follower is out of every quorum
+//! until an operator acts, and acting means knowing exactly which replica of
+//! which shard, on which node, and why it stopped.
 //!
 //! This is a *listing*, not a metric, which is why it can carry the identity a
 //! metric cannot: it is read on demand and its size is the number of halted
 //! replicas, normally zero.
 use parking_lot::Mutex;
 use serde::Serialize;
-
-use super::Halt;
 
 /// One replica this broker has stopped shipping to.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -42,39 +32,6 @@ pub struct HaltedReplica {
     /// What to do about it, in a sentence. The reason alone does not say
     /// whether the follower's data is wrong or merely incomplete.
     pub remedy: &'static str,
-}
-
-/// Why replication stopped, as a stable string and a remedy.
-///
-/// Stable because an operator's dashboard or runbook keys off it; the enum's
-/// `Display` is prose and may be reworded.
-pub(crate) fn describe(halt: Halt) -> (&'static str, &'static str) {
-    match halt {
-        Halt::Diverged => (
-            "diverged",
-            "the follower holds different bytes at an offset this leader also \
-             holds, and no generation history bounds the disagreement. Its copy \
-             of this shard has to be discarded and rebuilt; the leader does that \
-             itself when FELIX_REPLICATION_REBUILD_MAX_CONCURRENT allows, and \
-             this entry clears once it has.",
-        ),
-        Halt::Fenced => (
-            "fenced",
-            "the follower knows a newer generation than this broker is shipping \
-             at, so this broker is no longer the leader. Resolves itself once \
-             the assignment feed catches up; persistent means this broker is \
-             partitioned from the control plane.",
-        ),
-        Halt::NeedsBootstrap => (
-            "needs_bootstrap",
-            "the follower wants records retention has already removed from this \
-             leader, so shipping cannot reach it, and it holds records of its \
-             own so it refused a log placed at the surviving base. Its copy of \
-             this shard has to be discarded and rebuilt; the leader does that \
-             itself when FELIX_REPLICATION_REBUILD_MAX_CONCURRENT allows, and \
-             this entry clears once it has.",
-        ),
-    }
 }
 
 /// The halted replicas as of the last replication pass.

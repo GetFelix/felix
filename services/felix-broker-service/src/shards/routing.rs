@@ -644,26 +644,6 @@ impl IngressRouter {
     }
 }
 
-impl felix_replication::quorum::ShardServing for IngressRouter {
-    fn replicated(&self, key: &ShardKey) -> bool {
-        IngressRouter::replicated(self, key)
-    }
-
-    fn generation(&self, key: &ShardKey) -> Option<u64> {
-        IngressRouter::generation(self, key)
-    }
-
-    fn lease_valid(&self) -> bool {
-        self.fence.lease_valid()
-    }
-
-    fn record_ack_refusal(&self) {
-        crate::cluster::lease::metrics::record_refusal(
-            crate::cluster::lease::metrics::BOUNDARY_ACK,
-        );
-    }
-}
-
 /// Whether `key`'s leader in `view` has been fenced for a move.
 fn draining(view: &View, key: &ShardKey) -> bool {
     view.routes
@@ -793,116 +773,6 @@ pub fn routing_table_from<A: std::hash::BuildHasher, N: std::hash::BuildHasher>(
         }),
         nodes,
     )
-}
-
-/// `assignments` with the leaderships the replicas elected laid over them
-/// (`felix_replication::election`): the lifecycle opens one this broker
-/// stood for as a promotion, and the routes send its followers' clients and
-/// batches to it. Each stands until the control plane names its generation
-/// or a newer one.
-fn with_elected(
-    mut assignments: felix_common::random::HashMap<ShardKey, crate::shards::watch::ShardAssignment>,
-    elections: &felix_replication::election::Elections,
-) -> felix_common::random::HashMap<ShardKey, crate::shards::watch::ShardAssignment> {
-    if elections.is_empty() {
-        return assignments;
-    }
-    let by_router_key: HashMap<felix_router::ShardKey, ShardKey> = assignments
-        .keys()
-        .map(|key| (to_router_key(key), key.clone()))
-        .collect();
-    let elected = elections.overlay(|key| {
-        by_router_key
-            .get(key)
-            .and_then(|key| assignments.get(key))
-            .map(|assignment| felix_replication::election::Named {
-                generation: assignment.generation,
-                incarnation: assignment.incarnation,
-                leader: assignment.leader.clone(),
-            })
-    });
-    for (key, elected) in elected {
-        let Some(assignment) = by_router_key
-            .get(&key)
-            .and_then(|key| assignments.get_mut(key))
-        else {
-            continue;
-        };
-        // The route below hides the control plane's set, which a candidate
-        // must still compare its own with.
-        let ids = if assignment.member_storage_ids.is_empty() {
-            &assignment.fence_storage_ids
-        } else {
-            &assignment.member_storage_ids
-        };
-        elections.note_recorded(
-            key.clone(),
-            felix_replication::election::Recorded {
-                generation: assignment.generation,
-                leader: assignment.leader.clone(),
-                members: std::iter::once(&assignment.leader)
-                    .chain(&assignment.replicas)
-                    .map(|node| (node.clone(), ids.get(node).cloned()))
-                    .collect(),
-                pending: assignment.pending_set.is_some(),
-            },
-        );
-        assignment.replicas = elected
-            .set
-            .members
-            .iter()
-            .map(|member| member.node.clone())
-            .filter(|node| *node != elected.leader)
-            .collect();
-        assignment.member_storage_ids = elected
-            .set
-            .members
-            .iter()
-            .filter_map(|member| Some((member.node.clone(), member.storage?.to_hex())))
-            .collect();
-        assignment.leader = elected.leader;
-        assignment.generation = elected.generation;
-        assignment.state = "active".to_string();
-        assignment.successor = None;
-        assignment.fence_storage_ids.clear();
-        assignment.pending_set = None;
-    }
-    assignments
-}
-
-/// The shards `after` names `local` a follower of, by key and incarnation,
-/// that `before`, the assignments the feed last applied, did not. Nothing
-/// while `before` is empty, as in the first view after a start, whose
-/// copies mostly hold promises already and would each start a read for
-/// nothing. A shard's creation naming `local` is left out too, since that
-/// copy skips the read (`ReplicaHandler::created_here`).
-fn newly_named<'a>(
-    before: &'a felix_common::random::HashMap<ShardKey, crate::shards::watch::ShardAssignment>,
-    after: &'a felix_common::random::HashMap<ShardKey, crate::shards::watch::ShardAssignment>,
-    local: &'a str,
-) -> impl Iterator<Item = (felix_router::ShardKey, u64)> + 'a {
-    let follows = move |assignment: &crate::shards::watch::ShardAssignment| {
-        assignment.leader != local
-            && (assignment.successor.as_deref() == Some(local)
-                || assignment.replicas.iter().any(|node| node == local)
-                || assignment
-                    .pending_set
-                    .as_ref()
-                    .is_some_and(|pending| pending.replicas.iter().any(|node| node == local)))
-    };
-    after
-        .values()
-        .filter(move |assignment| {
-            !before.is_empty()
-                && follows(assignment)
-                && !(assignment.generation == 1
-                    && assignment.incarnation != 0
-                    && assignment.member_storage_ids.contains_key(local))
-                && !before
-                    .get(&assignment.key)
-                    .is_some_and(|was| was.incarnation == assignment.incarnation && follows(was))
-        })
-        .map(|assignment| (to_router_key(&assignment.key), assignment.incarnation))
 }
 
 /// The shards an engine took in one pass, each with its stream's key mapping.
@@ -1035,13 +905,6 @@ pub struct FeedState {
     /// Priors are read only once `joint_fence` is finalized here, so they are
     /// built only then.
     pub joint_fence: Option<Arc<felix_common::fleet::FleetGate>>,
-    /// Starts a copy's confirmed read as soon as the assignments name it a
-    /// follower, before the routes are even published, so the read is
-    /// usually done before the leader's first request.
-    pub prefetch: Option<felix_replication::confirmed::Prefetch>,
-    /// Leaderships the replicas elected, laid over the control plane's
-    /// assignments. Notifies `assignments_changed` when it changes.
-    pub elections: Option<Arc<felix_replication::election::Elections>>,
     /// Node addresses to route by until the first catalog read lands: those
     /// a start from the control-plane view kept. Empty otherwise.
     pub nodes: HashMap<String, felix_router::NodeRef>,
@@ -1092,8 +955,6 @@ pub fn spawn_feed<L: ControlPlaneLink>(
         assignments_changed,
         routes_changed,
         joint_fence,
-        prefetch,
-        elections,
         nodes,
         engine_shards,
         memory,
@@ -1173,19 +1034,12 @@ pub fn spawn_feed<L: ControlPlaneLink>(
                 None => Taken::new(),
             };
             // After the Raft engine took the durable ones, so only in-memory
-            // shards are left to take. None of them reaches the elections,
-            // the prefetch or the lifecycle below.
+            // shards are left to take. None of them reaches the lifecycle
+            // below.
             let in_memory = match &memory {
                 Some(memory) => memory.take(&mut assignments),
                 None => HashMap::default(),
             };
-            let assignments = match &elections {
-                Some(elections) => with_elected(assignments, elections),
-                None => assignments,
-            };
-            if let Some(prefetch) = &prefetch {
-                prefetch.named(newly_named(&applied, &assignments, ingress.local_node_id()));
-            }
 
             // Shards new to this pass are routed as they open, not when the
             // whole pass is done: a bulk create opens hundreds one after
@@ -1212,7 +1066,6 @@ pub fn spawn_feed<L: ControlPlaneLink>(
                 &mut early,
             )
             .await;
-            let mut assignments = assignments;
             if let Some(memory) = &memory {
                 memory.apply(&in_memory).await;
                 // Routed like any other shard, so every broker forwards to

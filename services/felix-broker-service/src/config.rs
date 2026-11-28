@@ -26,8 +26,6 @@ pub(crate) use env::{
 pub use kafka::KafkaListenerConfig;
 pub use limits::{LimitsConfig, TenantQuota};
 pub use membership::MembershipConfig;
-#[cfg(feature = "sim")]
-pub(crate) use membership::cluster_features;
 pub use mqtt::{MqttListenerConfig, MqttWsConfig};
 pub use subscriber::{SubStreamMode, SubscriberLaneShard};
 pub use tls::{ClientTlsConfig, ClientTlsFiles, ControlPlaneClientCert};
@@ -334,22 +332,12 @@ pub struct BrokerConfig {
     /// How long a publish to a `Quorum` stream waits for a majority before the
     /// broker says it cannot vouch for the write.
     pub publish_quorum_timeout_ms: u64,
-    /// Halted followers this broker rebuilds at once, across every shard it
-    /// leads; zero leaves every halt to an operator. A rebuild is a full
-    /// transfer, and every follower of a failed broker at once is an outage.
-    pub replication_rebuild_max_concurrent: usize,
-    /// Bytes per second a rebuilding follower is shipped at; zero is unlimited.
-    pub replication_rebuild_bytes_per_sec: u64,
     /// How long a write to a shard that is moving waits for the move to cut
     /// over before it is refused as `moving`; zero refuses at once.
     pub shard_move_hold_ms: u64,
     /// How many writes may wait on moving shards at once. Each holds its
     /// payload, so this bounds the memory a move can pin.
     pub shard_move_hold_max: usize,
-    /// Bytes per second this broker ships to move destinations, across every
-    /// shard it leads; zero is unlimited. Never applied to a follower the
-    /// quorum needs.
-    pub shard_move_bytes_per_sec: u64,
     /// Per-address connection caps, per-tenant publish quotas and the
     /// per-tenant metrics guard.
     pub limits: LimitsConfig,
@@ -585,11 +573,8 @@ impl Default for BrokerConfig {
             sub_streams_per_conn: DEFAULT_SUB_STREAMS_PER_CONN,
             sub_stream_mode: DEFAULT_SUB_STREAM_MODE,
             publish_quorum_timeout_ms: DEFAULT_PUBLISH_QUORUM_TIMEOUT_MS,
-            replication_rebuild_max_concurrent: DEFAULT_REPLICATION_REBUILD_MAX_CONCURRENT,
-            replication_rebuild_bytes_per_sec: DEFAULT_REPLICATION_REBUILD_BYTES_PER_SEC,
             shard_move_hold_ms: DEFAULT_SHARD_MOVE_HOLD_MS,
             shard_move_hold_max: DEFAULT_SHARD_MOVE_HOLD_MAX,
-            shard_move_bytes_per_sec: DEFAULT_SHARD_MOVE_BYTES_PER_SEC,
             limits: LimitsConfig::default(),
         }
     }

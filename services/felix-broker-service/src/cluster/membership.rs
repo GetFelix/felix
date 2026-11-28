@@ -155,11 +155,6 @@ pub struct Registered {
 #[derive(Debug, Serialize)]
 struct HeartbeatRequest {
     incarnation: u64,
-    /// Leaders of shards this broker follows that have stopped answering it.
-    /// Left out when there are none, so the request is what an older control
-    /// plane always read.
-    #[serde(skip_serializing_if = "BTreeSet::is_empty")]
-    suspects: BTreeSet<String>,
     /// Set while the lease waits on the routes, which then have to reach the
     /// answer's `assignment_seq`. Left out otherwise, as before.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
@@ -673,7 +668,6 @@ pub async fn run_heartbeat(
     consecutive_failures: Arc<AtomicU64>,
     lease: Arc<crate::cluster::lease::LeaseState>,
     fleet: Arc<FleetGate>,
-    suspects: Arc<felix_replication::suspicion::Suspects>,
 ) -> HeartbeatEnd {
     run_heartbeat_checked(
         link,
@@ -682,7 +676,6 @@ pub async fn run_heartbeat(
         consecutive_failures,
         lease,
         fleet,
-        suspects,
         None,
     )
     .await
@@ -698,10 +691,8 @@ async fn run_heartbeat_checked(
     consecutive_failures: Arc<AtomicU64>,
     lease: Arc<crate::cluster::lease::LeaseState>,
     fleet: Arc<FleetGate>,
-    suspects: Arc<felix_replication::suspicion::Suspects>,
     pulse: Option<Arc<RuntimePulse>>,
 ) -> HeartbeatEnd {
-    let mut suspected = suspects.subscribe();
     let mut interval = Duration::from_millis(registration.heartbeat_interval_ms.max(1));
     let mut last_success = std::time::Instant::now();
     // The lease is invalid until a beat is answered, so the first one goes at
@@ -721,11 +712,7 @@ async fn run_heartbeat_checked(
         tokio::select! {
             _ = shutdown.cancelled() => return HeartbeatEnd::Shutdown,
             _ = tokio::time::sleep(if delay.is_zero() { delay } else { jittered(delay) }) => {}
-            // A new suspicion goes now rather than an interval later: the
-            // control plane promotes on it. Not while backing off.
-            Ok(()) = suspected.changed(), if failures == 0 => {}
         }
-        let suspects = suspected.borrow_and_update().clone();
         if let Some(silent) = pulse.as_ref().and_then(|pulse| pulse.hung()) {
             // Renewing here would keep the shards this broker leads on a
             // process that serves nothing. Letting the lease run out hands
@@ -749,7 +736,6 @@ async fn run_heartbeat_checked(
             &registration.token.bearer(),
             HeartbeatRequest {
                 incarnation: registration.incarnation,
-                suspects,
                 want_assignment_seq: lease.awaits_routes() || lease.wants_head(),
                 root: registration
                     .root
@@ -917,8 +903,6 @@ pub fn spawn(
     shutdown: CancellationToken,
     lease: Arc<crate::cluster::lease::LeaseState>,
     fleet: Arc<FleetGate>,
-    suspects: Arc<felix_replication::suspicion::Suspects>,
-    incarnation: Arc<AtomicU64>,
     registered: tokio::sync::watch::Sender<Option<u64>>,
     storage_id: Option<StorageId>,
     record_in: Option<std::path::PathBuf>,
@@ -933,8 +917,6 @@ pub fn spawn(
         shutdown,
         lease,
         fleet,
-        suspects,
-        incarnation,
         registered,
         storage_id,
         record_in.clone(),
@@ -957,8 +939,6 @@ pub(crate) fn spawn_with(
     shutdown: CancellationToken,
     lease: Arc<crate::cluster::lease::LeaseState>,
     fleet: Arc<FleetGate>,
-    suspects: Arc<felix_replication::suspicion::Suspects>,
-    incarnation: Arc<AtomicU64>,
     registered: tokio::sync::watch::Sender<Option<u64>>,
     storage_id: Option<StorageId>,
     record_in: Option<std::path::PathBuf>,
@@ -1077,7 +1057,6 @@ pub(crate) fn spawn_with(
                 }
                 consecutive_failures.store(0, Ordering::Release);
                 adopt_fleet(&fleet, &registration.fleet_features);
-                incarnation.store(registration.incarnation, Ordering::Release);
                 root.registered(registration.incarnation, registration.registered_at_millis);
                 registered.send_replace(Some(registration.incarnation));
                 let pace = Duration::from_millis(registration.heartbeat_interval_ms.max(1));
@@ -1090,7 +1069,6 @@ pub(crate) fn spawn_with(
                     Arc::clone(&consecutive_failures),
                     Arc::clone(&lease),
                     Arc::clone(&fleet),
-                    Arc::clone(&suspects),
                     pulse.clone(),
                 )
                 .await

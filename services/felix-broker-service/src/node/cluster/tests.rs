@@ -12,7 +12,7 @@ use felix_storage::EphemeralCache;
 
 /// **The client listeners, the Kafka and MQTT writes, forwarded writes, the
 /// peer handler and the read bounds share one engine.** A second engine would
-/// read different marks or never see the replica the peer listener sets.
+/// answer from different routing state.
 #[tokio::test]
 async fn every_component_holds_the_one_engine() {
     let config = BrokerConfig {
@@ -32,25 +32,11 @@ async fn every_component_holds_the_one_engine() {
     };
     let cluster = shard_state(&config);
     let (router, ingress, _, _) = cluster.as_ref().expect("shard state");
-    let marks = Arc::new(QuorumMarks::new());
-    let engine = Arc::new(shard_routing::StreamEngine::new(
-        Some(Arc::clone(&marks)),
-        Some(Arc::clone(ingress)),
-    ));
+    let engine = Arc::new(shard_routing::StreamEngine::new(Some(Arc::clone(ingress))));
     let broker = Arc::new(Broker::new(EphemeralCache::new().into()));
     let auth = Arc::new(BrokerAuth::new("http://localhost".to_string()));
 
-    let (handler, _) = peer_handler(
-        &config,
-        router,
-        &engine,
-        &broker,
-        &marks,
-        &auth,
-        felix_storage::StorageId::from_bytes([1; 16]),
-        None,
-        None,
-    );
+    let handler = peer_handler(&config, router, &engine, &broker, &auth);
     assert!(Arc::ptr_eq(handler.engine(), &engine), "peer handler");
     assert!(
         Arc::ptr_eq(handler.forwarding().engine(), &engine),
@@ -80,97 +66,8 @@ async fn every_component_holds_the_one_engine() {
     .expect("kafka cluster");
     assert!(Arc::ptr_eq(kafka.engine(), &engine), "kafka");
 
-    // The same marks and shard routing as the ones the engine was built from.
-    assert!(std::ptr::eq(engine.marks().expect("marks"), &*marks));
+    // The same shard routing as the one the engine was built from.
     assert!(Arc::ptr_eq(engine.serving().expect("ingress"), ingress));
-
-    // The replica the peer handler was built with sits on this engine, so a
-    // second one is refused.
-    let replica = replication::ReplicaHandler::new(broker, Arc::clone(router));
-    assert!(engine.set_replica(replica).is_err(), "replica");
-}
-
-/// Dials nobody: the shard tasks below never get as far as a peer.
-struct NoPeers;
-
-impl PeerRequester for NoPeers {
-    async fn request(
-        &self,
-        node_id: &str,
-        _addr: std::net::SocketAddr,
-        _message: felix_wire::internal::InternalMessage,
-    ) -> Result<felix_wire::internal::InternalMessage, replication::peer::pool::PeerError> {
-        panic!("dialled {node_id}");
-    }
-}
-
-/// The shard tasks of a cluster member with a peer transport, on `raft` or
-/// on the simulator's hybrid.
-fn shard_tasks(raft: bool) -> ShardTasks {
-    let config = BrokerConfig {
-        membership: Some(MembershipConfig {
-            node_id: "broker-a".to_string(),
-            advertise_addr: "127.0.0.1:7001".to_string(),
-            client_advertise_addr: None,
-            kafka_advertise_addr: None,
-            region: "local".to_string(),
-            zone: None,
-            internal: false,
-            durable_storage: false,
-            region_bridges: Vec::new(),
-            features: Default::default(),
-        }),
-        ..BrokerConfig::default()
-    };
-    let cluster = shard_state(&config);
-    let (_, ingress, _, _) = cluster.as_ref().expect("shard state");
-    let marks = Arc::new(QuorumMarks::new());
-    let engine = Arc::new(shard_routing::StreamEngine::new(
-        Some(Arc::clone(&marks)),
-        Some(Arc::clone(ingress)),
-    ));
-    let shutdown = CancellationToken::new();
-    let tasks = spawn_shard_tasks(ShardTaskDeps {
-        config: &config,
-        cluster: &cluster,
-        durable_storage: &None,
-        link: &Some(crate::test_support::fake_link::FakeLink::default()),
-        credential: &None,
-        client_endpoints: &Arc::new(ClientEndpoints::new()),
-        peers: &Some(Arc::new(NoPeers)),
-        broker: &Arc::new(Broker::new(EphemeralCache::new().into())),
-        engine: &engine,
-        quorum_marks: &marks,
-        halted_replicas: &Arc::new(HaltedReplicas::new()),
-        shard_status: &Arc::new(replication::status::ShardStatusBoard::new()),
-        fleet: &Arc::new(felix_common::fleet::FleetGate::new(
-            std::collections::BTreeSet::<String>::new(),
-        )),
-        suspects: &Arc::new(replication::suspicion::Suspects::default()),
-        incarnation: &Arc::new(std::sync::atomic::AtomicU64::new(0)),
-        storage_id: None,
-        unclean: &None,
-        prefetch: None,
-        nodes: Default::default(),
-        reports_held: None,
-        leads_after: None,
-        engine_shards: None,
-        raft,
-        sync_shutdown: &shutdown,
-    })
-    .expect("a cluster member runs shard tasks");
-    shutdown.cancel();
-    tasks
-}
-
-/// **A Raft broker starts none of the hybrid's replication**: no driver, no
-/// suspicion heartbeat, no election driver. Its groups replicate and elect
-/// for themselves, so nothing on a broker reaches the hybrid's tasks. Only
-/// the simulator's hybrid clusters still start them, until #2260.
-#[tokio::test]
-async fn a_raft_broker_starts_no_hybrid_replication() {
-    assert!(shard_tasks(true).replication.is_none());
-    assert!(shard_tasks(false).replication.is_some());
 }
 
 /// **The restore gate runs only after the start's restore check has
@@ -568,11 +465,7 @@ async fn the_backup_endpoint_sees_the_members_behind_the_engine_check() {
     let ingress = cluster
         .as_ref()
         .map(|(_, ingress, _, _)| Arc::clone(ingress));
-    let marks = Arc::new(QuorumMarks::new());
-    let engine = Arc::new(shard_routing::StreamEngine::new(
-        Some(Arc::clone(&marks)),
-        ingress.clone(),
-    ));
+    let engine = Arc::new(shard_routing::StreamEngine::new(ingress.clone()));
     let broker = Arc::new(Broker::new(EphemeralCache::new().into()));
     let key = crate::shards::ShardKey {
         tenant_id: "t1".to_string(),
@@ -605,7 +498,6 @@ async fn the_backup_endpoint_sees_the_members_behind_the_engine_check() {
         node_id: Some("broker-a".to_string()),
         broker,
         ingress,
-        marks,
     };
     let answer = serde_json::to_value(offsets.collect().await).expect("json");
     let members = answer["raft_members"].as_array().expect("raft_members");

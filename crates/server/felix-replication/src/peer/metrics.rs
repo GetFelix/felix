@@ -66,60 +66,6 @@ pub const OUTCOME_EXHAUSTED: &str = "exhausted";
 /// only outcome where the broker cannot say whether the write landed.
 pub const OUTCOME_INDETERMINATE: &str = "indeterminate";
 
-/// Replication batches this broker stored as a follower, by `outcome`.
-///
-/// The failure outcomes are separated because they need different responses.
-/// `gap` is ordinary during catch-up and self-repairing. `conflict` and
-/// `fenced` are not: the first means two logs have diverged, the second that a
-/// superseded leader is still shipping. Either one standing is worth waking
-/// someone for.
-pub(crate) const REPLICATED_TOTAL: &str = "felix_broker_replicated_total";
-
-/// The sender named an epoch older than this broker's, so it is no longer the
-/// leader.
-pub(crate) const OUTCOME_FENCED: &str = "fenced";
-/// This broker's routing view has not caught up with the epoch the sender
-/// named. Transient by nature.
-pub(crate) const OUTCOME_BEHIND: &str = "behind";
-/// The batch starts past this broker's tail. The leader resumes from the offset
-/// in the answer.
-pub(crate) const OUTCOME_GAP: &str = "gap";
-/// The batch disagrees with bytes already stored.
-pub(crate) const OUTCOME_CONFLICT: &str = "conflict";
-/// A divergent suffix from a previous generation was dropped and replication
-/// resumed. Not an error — but worth watching, because a steady rate means
-/// leadership is changing more often than it should.
-pub(crate) const OUTCOME_TRUNCATED: &str = "truncated";
-/// The batch did not survive the trip.
-pub(crate) const OUTCOME_CORRUPT: &str = "corrupt";
-/// A batch named a writer generation below the one of the record before it.
-/// The leader halts the follower; it needs a person or a rebuild.
-pub(crate) const OUTCOME_BELOW_FLOOR: &str = "below_floor";
-/// A batch from a leader that did not say which generations wrote its
-/// records, refused by a follower that stamps them.
-pub(crate) const OUTCOME_WRITERS_UNKNOWN: &str = "writers_unknown";
-/// This broker took a promoted leader's fence.
-pub(crate) const OUTCOME_FENCE_TAKEN: &str = "fence_taken";
-/// A fence at the generation this replica had already accepted: the leader
-/// confirming, for a read, that nobody newer has reached it.
-pub(crate) const OUTCOME_FENCE_CONFIRMED: &str = "fence_confirmed";
-/// This broker placed a shard log to begin where the leader's surviving log
-/// begins. Rare and deliberate: it happens once per replica per shard.
-pub(crate) const OUTCOME_BOOTSTRAPPED: &str = "bootstrapped";
-/// This broker discarded its copy of a shard at the leader's request.
-pub(crate) const OUTCOME_REBUILT: &str = "rebuilt";
-/// A truncation or rebuild was refused because it would have discarded
-/// records this broker knows are committed. It means a leader holds a log
-/// that disagrees with an acknowledged record, so it always needs a person.
-pub(crate) const OUTCOME_BELOW_COMMIT: &str = "below_commit";
-
-/// A crashed leader's copy refused a fence it would have taken but for a
-/// copy the failover's fence ids name beside the set of two. With this
-/// control plane that is a staged or joining successor the failover left
-/// out (#1635). The shard stays closed until an operator acts.
-pub(crate) const FENCE_REFUSED_IDS_BEYOND_TWO_TOTAL: &str =
-    "felix_broker_fence_refused_ids_beyond_two_total";
-
 pub(crate) fn record_connect_attempt(outcome: &'static str) {
     metrics::counter!(CONNECT_ATTEMPTS_TOTAL, "outcome" => outcome).increment(1);
 }
@@ -167,12 +113,4 @@ pub fn record_forward(outcome: &'static str) {
 
 pub fn record_forward_retry() {
     metrics::counter!(FORWARD_RETRIES_TOTAL).increment(1);
-}
-
-pub(crate) fn record_replicated(outcome: &'static str) {
-    metrics::counter!(REPLICATED_TOTAL, "outcome" => outcome).increment(1);
-}
-
-pub(crate) fn record_fence_refused_ids_beyond_two() {
-    metrics::counter!(FENCE_REFUSED_IDS_BEYOND_TWO_TOTAL).increment(1);
 }

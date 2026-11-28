@@ -263,7 +263,7 @@ async fn a_quorum_timeout_is_answered_as_outcome_unknown() {
     let (out_tx, mut out_rx) = mpsc::channel(8);
     let acks = acks(&out_tx, 4, Duration::from_secs(5));
     let timed_out = || {
-        anyhow::Error::from(felix_replication::quorum::QuorumError::TimedOut {
+        anyhow::Error::from(felix_replication::engine::CommitError::TimedOut {
             what: "batch",
             timeout: Duration::from_millis(50),
         })
@@ -319,7 +319,7 @@ async fn a_publish_path_deadline_is_answered_with_its_error_when_it_passes() {
     let (_cancel_tx, cancel_rx) = watch::channel(false);
     let _sweep = tokio::spawn(acks.clone().run_deadlines(cancel_rx));
     let timed_out = |timeout| {
-        anyhow::Error::from(felix_replication::quorum::QuorumError::TimedOut {
+        anyhow::Error::from(felix_replication::engine::CommitError::TimedOut {
             what: "batch",
             timeout,
         })

@@ -526,8 +526,7 @@ right either way.
 Set per stream on the control plane, not on the client.
 
 - **`Leader`**: acknowledged once the owning broker has it durably. Fast, and
-  loses whatever it had not yet replicated if that broker's storage is lost. The
-  window is the broker's `felix_broker_replication_lag_records`.
+  loses whatever it had not yet replicated if that broker's storage is lost.
 - **`Quorum`**: acknowledged once a majority of the replica set holds it. A
   publish that cannot reach a majority comes back as `quorum_timeout`, retry
   class `outcome_unknown`. That is not the same as "it failed": the record may

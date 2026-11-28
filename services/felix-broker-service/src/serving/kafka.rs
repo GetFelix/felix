@@ -35,7 +35,6 @@ use crate::shards::routing::{
 };
 use crate::shards::{ShardKey, ShardKind};
 use felix_replication::engine::{CommitError, Engine};
-use felix_replication::quorum::QuorumError;
 
 /// A TLS handshake that has not finished by now is abandoned, so a client
 /// that connects and sends nothing does not hold a connection slot.
@@ -331,8 +330,8 @@ impl Cluster for BrokerCluster {
                 self.quorum_timeout,
             )
             .await
-            .map_err(|err| match err.downcast_ref::<QuorumError>() {
-                Some(QuorumError::TimedOut { .. }) => WriteError::QuorumTimeout,
+            .map_err(|err| match err.downcast_ref::<CommitError>() {
+                Some(CommitError::TimedOut { .. }) => WriteError::QuorumTimeout,
                 _ => WriteError::LeadershipLost,
             })
     }
@@ -346,10 +345,10 @@ impl Cluster for BrokerCluster {
         self.replication
             .read_bound(Some(handle.consistency()), &key)
             .map_err(|unreadable| match unreadable {
-                felix_replication::quorum::Unreadable::NotServed => {
+                felix_replication::engine::Unreadable::NotServed => {
                     felix_kafka::Unreadable::NotServed
                 }
-                felix_replication::quorum::Unreadable::Settling => {
+                felix_replication::engine::Unreadable::Settling => {
                     felix_kafka::Unreadable::Settling
                 }
             })

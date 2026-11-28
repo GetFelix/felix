@@ -173,7 +173,6 @@ fn source(broker: Arc<Broker>, ingress: Option<Arc<IngressRouter>>) -> BackupOff
         node_id: Some("broker-a".to_string()),
         broker,
         ingress,
-        marks: Arc::new(QuorumMarks::default()),
     }
 }
 

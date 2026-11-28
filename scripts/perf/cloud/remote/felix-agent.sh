@@ -211,7 +211,6 @@ cmd_snapshot() {
         else if (n == "felix_storage_sync_batch_appends_sum") sbs += v
         else if (n == "felix_storage_sync_batch_appends_count") sbc += v
         else if (n == "felix_storage_sync_failures_total") sf += v
-        else if (n == "felix_broker_publish_quorum_failed_total") qf += v
         else if (n == "felix_broker_ingress_dropped_total") { idr += v; idrs = 1 }
         else if (n == "felix_broker_ingress_rejected_total") { irj += v; irjs = 1 }
         else if (n == "felix_broker_forwards_total") fwt += v
@@ -226,7 +225,7 @@ cmd_snapshot() {
         # Only a telemetry build exports these; an absent series is n/a, never a zero.
         if (idrs) printf "m.ingress_dropped=%.0f\n", idr; else print "m.ingress_dropped=n/a"
         if (irjs) printf "m.ingress_rejected=%.0f\n", irj; else print "m.ingress_rejected=n/a"
-        printf "m.quorum_failed=%.0f\nm.publish_bytes=%.0f\nm.publish_requests=%.0f\nm.forwarded=%.0f\nm.forwards_total=%.0f\n", qf, pb, pr, fw, fwt
+        printf "m.publish_bytes=%.0f\nm.publish_requests=%.0f\nm.forwarded=%.0f\nm.forwards_total=%.0f\n", pb, pr, fw, fwt
       }'
   fi
   awk '/^Udp:/ { if (!h) { for (i = 2; i <= NF; i++) k[i] = $i; h = 1 } else { for (i = 2; i <= NF; i++) print "udp." k[i] "=" $i } }' /proc/net/snmp
