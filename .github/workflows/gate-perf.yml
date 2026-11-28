@@ -133,6 +133,11 @@ jobs:
         id: run
         env:
           SECONDS_PER_TRIAL: ${{ inputs.seconds }}
+          # The shipped defaults, named so both sides run the same policy; both
+          # releases read these exact variables.
+          FELIX_DURABLE_FSYNC_MODE: periodic
+          FELIX_DURABLE_FSYNC_INTERVAL_MS: "250"
+          UP_LOG_DIR: /tmp/felix-gate/up-logs
         run: |
           set -euo pipefail
           results=/tmp/felix-gate/results.jsonl
@@ -195,6 +200,15 @@ jobs:
           path: /tmp/felix-gate/results.jsonl
           if-no-files-found: ignore
           retention-days: 30
+
+      - name: Upload the cluster logs
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: gate-perf-cluster-logs
+          path: /tmp/felix-gate/up-logs
+          if-no-files-found: ignore
+          retention-days: 14
 
       - name: Upload the verdict
         if: always()
