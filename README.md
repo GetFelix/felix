@@ -165,6 +165,7 @@ subscribe/fanout path and the backpressure/concurrency model function by functio
 In the repository:
 - `ARCHITECTURE.md`: a map of the code, for anyone about to change it
 - `CONTRIBUTING.md`: how to contribute, and how the code is organized
+- `docs/overview.md`: the whole system in ten minutes; start here
 - `docs/architecture.md`: system architecture
 - `docs/protocol.md`: wire protocol specification
 - `docs/control-plane.md`: control plane. It opens with the original Raft sketch, marked as such, then points at the design that was built
