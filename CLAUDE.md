@@ -102,8 +102,10 @@ Per-subscriber bounded queues with an explicit overflow policy (`SubQueuePolicy`
 `DropNew`). A publisher never blocks on a slow subscriber. `handlers/subscribe/feeder.rs`
 and `event_writer.rs` do per-subscriber batching and writing behind a lane manager.
 
-Because dropping is the default, **a subscriber can silently miss records**. That is why
-delivered events carry log offsets for durable streams: a jump in offsets is exactly a drop.
+Because dropping is the default, **a slow subscriber loses records**: its subscription ends
+with `subscription_lagged` at the first dropped batch, naming the offset to resume from.
+Delivered events carry log offsets for durable streams, so a reader that resumes can tell
+exactly what it missed.
 
 ### Wire protocol uses capability negotiation instead of versions
 
