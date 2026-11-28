@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795830587382,
+  "lastUpdate": 1795832229770,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -74620,6 +74620,58 @@ window.BENCHMARK_DATA = {
             "range": "27688.97",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1161337.31\nmean: 1146990.71\nstdev: 27688.97\ncv: 2.41%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "466134fdadd5d0e50d92cc76a62fd5b33dfbaf1c",
+          "message": "refactor!: one shard engine at run time; the hybrid is refused (#2259) (#3396)\n\n* feat(broker): Raft is the only shard engine at run time (#2259)\n\nFELIX_SHARD_ENGINE=hybrid is refused by brokers and control planes; raft\nor unset start. A broker without the raft feature refuses unless it is\nstandalone with no durable storage. No broker starts the hybrid's\ndriver, suspicion heartbeat, election driver or promotion fence; only\nthe simulator's hybrid clusters still do, until #2260 deletes them.\n\nThe hybrid's eleven variables and FELIX_SHARD_ENGINE are retired:\nreported at start by name and ignored. The history campaign has one\nmode. CI drops the hybrid cluster jobs, the hybrid nightly simulator\nmodes and perf-raft-rf3.yml.\n\nSpec-Unaffected: no TLA-modelled behaviour changes; the hybrid stops being reachable at run time and Raft is unchanged\n\n* docs: drop claims the hybrid's run-time retirement made false (#2259)\n\nSpec-Unaffected: docs only\n\n* ci: the gate workflows run on Raft; docs say what replaced the hybrid sim modes and election (#2259)\n\nSpec-Unaffected: workflow and documentation changes only\n\n* docs: cite the renamed engine-refusal test (#2259)\n\nSpec-Unaffected: documentation only\n\n* ci: the gate report defaults to the Raft engine (#2259)\n\nSpec-Unaffected: CI script default only\n\n* fix(broker): FELIX_UNIFIED_FENCE=0 still lets a Raft broker vote from its view (#2259)\n\nRetiring FELIX_UNIFIED_FENCE with the hybrid pinned unified_fence on, and\non Raft that field also decides votes_unchecked: whether a broker started\nfrom its control-plane view opens its members and votes before the\ncontrol plane has checked its directory (#3102). With it pinned, such a\nbroker waited for the control plane, so two live members of three could\nnot elect while it was down. The switch is read again, as on main.\n\nSpec-Unaffected: restores main's configuration reading; no protocol or state-machine change\n\n* fix(broker): FELIX_UNIFIED_FENCE stays retired; a view start waits to vote (#2259)\n\nReverts 3f40ca8b3. The unified fence is always on, so a broker restarted\nfrom its control-plane view while the control plane is down holds its vote\nuntil its restore check can run. The cluster test of the removed opt-out\n(a_broker_restarted_while_the_control_plane_is_down_votes) is deleted; the\nsafe-rule test stays. A unit test pins that a start from the view does not\nvote unchecked, and the docs and changelog say the fence is always on.\n\nSpec-Unaffected: keeps the always-on unified fence; no protocol or state-machine change",
+          "timestamp": "2026-11-27T18:10:09-08:00",
+          "tree_id": "3ba457f1178271b0df7308d7df87fe50c812abe8",
+          "url": "https://github.com/GetFelix/felix/commit/466134fdadd5d0e50d92cc76a62fd5b33dfbaf1c"
+        },
+        "date": 1795832229068,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 417500.29,
+            "range": "19519.79",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 417500.29\nmean: 415030.43\nstdev: 19519.79\ncv: 4.70%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 417500.29,
+            "range": "19519.79",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 417500.29\nmean: 415030.43\nstdev: 19519.79\ncv: 4.70%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 99499.13,
+            "range": "1290.62",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 99499.13\nmean: 98942.70\nstdev: 1290.62\ncv: 1.30%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 994991.28,
+            "range": "12906.17",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 994991.28\nmean: 989426.97\nstdev: 12906.17\ncv: 1.30%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
