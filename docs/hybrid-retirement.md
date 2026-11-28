@@ -113,6 +113,15 @@ REST routes removed: `/v1/nodes/{node_id}/replica-status` and
 `/v1/shard-assignments/confirmed`. Moves, placement, the assignment watch,
 heartbeats and fleet features stay.
 
+Done in PR 6 so far: both routes, leader suspicions (soft state, the
+heartbeat's `suspects`, `shard_election_hold_ms`) and adoption
+(`adopt_elected_leader`, now a reserved op in
+`store/raft/command.rs`, `RESERVED_OPS`). Still to go: the
+`record_replica_report` command and the report table, the hybrid branch of
+`plan_once` (promotion, re-admission, reclaim, pending sets, ballots and
+refusals, seat fences, vouching), and the four remaining placement timer
+config keys. Their environment variables were retired in PR 3.
+
 ### Configuration
 
 Removed from `crates/server/felix-common/src/env_registry.rs` and the
