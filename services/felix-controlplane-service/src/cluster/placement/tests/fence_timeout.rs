@@ -133,13 +133,7 @@ async fn pass(
         super::super::reconciler::plan_pass(store, &Default::default(), policy.clone(), progress)
             .await
             .expect("plan");
-    super::super::reconciler::apply_pass(
-        store,
-        &planned,
-        &mut Default::default(),
-        &Default::default(),
-    )
-    .await
+    super::super::reconciler::apply_pass(store, &planned, &mut Default::default()).await
 }
 
 /// A shard fenced to move from broker-x to broker-y, the new leader already
@@ -237,13 +231,12 @@ async fn placement_memory_carries_a_fence_across_passes() {
         fence_timeout_millis: Some(1),
         ..MovePolicy::default()
     };
-    let wakes = PlacementWakes::default();
     let liveness = Default::default();
 
     let (store, generation) = fenced_in_store().await;
     let mut memory = PlacementMemory::default();
     for _ in 0..2 {
-        reconcile_remembering(&store, &liveness, policy.clone(), &wakes, &mut memory).await;
+        reconcile_remembering(&store, &liveness, policy.clone(), &mut memory).await;
         tokio::time::sleep(std::time::Duration::from_millis(20)).await;
         report(&store, generation, &["broker-y"], false).await;
     }
@@ -255,7 +248,7 @@ async fn placement_memory_carries_a_fence_across_passes() {
 
     let (store, generation) = fenced_in_store().await;
     for _ in 0..3 {
-        reconcile_once_waking(&store, &liveness, policy.clone(), &wakes).await;
+        reconcile_once(&store, &liveness, policy.clone()).await;
         tokio::time::sleep(std::time::Duration::from_millis(20)).await;
         report(&store, generation, &["broker-y"], false).await;
     }

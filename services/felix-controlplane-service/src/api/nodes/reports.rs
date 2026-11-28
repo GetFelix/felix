@@ -335,7 +335,6 @@ pub(crate) async fn report_raft_copy_id(
                     copy_id = request.copy_id,
                     "recorded a broker's Raft copy id",
                 );
-                state.placement_wakes.assignment_written();
                 // The id may complete the set's target, or make a voter the
                 // leader already reported count: either can let a waiting
                 // set step go ahead.

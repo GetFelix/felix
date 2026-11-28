@@ -478,6 +478,7 @@ impl InMemoryStore {
                 changes: ChangeLog::new(capacity),
                 unplaced: Default::default(),
                 placement: PlacementState::default(),
+                written: Arc::new(tokio::sync::watch::Sender::new(0)),
             })),
             replica_reports: Arc::new(RwLock::new(HashMap::default())),
             suspicions: Arc::new(RwLock::new(HashMap::default())),
@@ -1023,6 +1024,10 @@ impl ControlPlaneStore for InMemoryStore {
         since: u64,
     ) -> StoreResult<ChangeSet<ShardAssignmentChange>> {
         shards::shard_assignment_changes(self, since).await
+    }
+
+    async fn watch_shard_assignment_changes(&self) -> tokio::sync::watch::Receiver<u64> {
+        self.shards.read().await.written.subscribe()
     }
 
     async fn record_replica_report_with(
@@ -1616,6 +1621,10 @@ struct ShardState {
     /// Under the same lock as the records, so a fenced write checks and
     /// advances the token in the same step as it writes.
     placement: PlacementState,
+    /// Bumped on every change recorded or imported. Under Raft every member
+    /// writes only by applying, so this is what wakes a long-poll on a
+    /// member other than the one that took the write.
+    written: Arc<tokio::sync::watch::Sender<u64>>,
 }
 
 /// The placement lease and token (`ControlPlaneStore::acquire_placement_lease`).
@@ -1641,6 +1650,12 @@ impl ShardState {
             key: key.clone(),
             assignment,
         });
+        self.wake();
+    }
+
+    fn wake(&self) {
+        self.written
+            .send_modify(|count| *count = count.wrapping_add(1));
     }
 }
 

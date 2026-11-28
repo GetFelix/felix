@@ -914,7 +914,6 @@ pub async fn run_operator(
             .map_err(OperatorError::Store)?
         {
             OperatorWrite::Written(written) => {
-                wakes.assignment_written();
                 // The next step, a fence or the move this one freed a slot
                 // for, need not wait for the tick.
                 wakes.request_pass();
