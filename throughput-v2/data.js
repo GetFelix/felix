@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795834002599,
+  "lastUpdate": 1795839811827,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -74828,6 +74828,58 @@ window.BENCHMARK_DATA = {
             "range": "27422.74",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1198373.76\nmean: 1181289.21\nstdev: 27422.74\ncv: 2.32%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "aa8b54e720ba859f55218676ae317b2fe598b973",
+          "message": "feat(controlplane)!: the 0.8 API baseline; compatibility switches retired, long-poll wakes on change (#3362) (#3408)\n\n* refactor(controlplane)!: the 0.8 API baseline retires the migration switches (#3362)\n\n0.8 starts fresh, so the control plane and broker drop branches that only\nserved a peer or caller from before the baseline:\n\n- FELIX_CONTROLPLANE_ACCEPT_BROKER_AUDIENCE, _LEGACY_UNSCOPED_GROUPS and\n  _DELEGATE_UNBOUND_TOKENS move to RETIRED_AT_BASELINE: set, each is\n  reported at start and changes nothing. The secure behaviour each relaxed\n  (controlplane audience only, scoped groups only, may_act required) always\n  applies.\n- The registration answer's storage_placement field, and the diskless\n  broker's refusal of a control plane without it, are gone.\n\nSpec-Unaffected: auth configuration and a registration field only; no replication, placement or Raft state-machine change\n\n* perf(controlplane): the store wakes assignment long-polls; no 50 ms re-read (#3362)\n\nEvery shard assignment change, and a snapshot import, bumps a watch on the\nin-memory store. Under Raft a member writes only by applying, so a waiting\nchanges request on any member wakes as soon as that member applies the\nchange. The handler drops CHANGES_RECHECK, and PlacementWakes drops its\ninstance-local assignment wake, which the store now covers.\n\nSpec-Unaffected: the long-poll answers the same page sooner; no change to what the feed contains",
+          "timestamp": "2026-11-28T04:12:04Z",
+          "tree_id": "4d045bf560f5d4957e6abba6a0ed5441006a36f0",
+          "url": "https://github.com/GetFelix/felix/commit/aa8b54e720ba859f55218676ae317b2fe598b973"
+        },
+        "date": 1795839810992,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 320041.06,
+            "range": "7545.14",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 320041.06\nmean: 324085.34\nstdev: 7545.14\ncv: 2.33%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 320041.06,
+            "range": "7545.14",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 320041.06\nmean: 324085.34\nstdev: 7545.14\ncv: 2.33%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 71713.69,
+            "range": "4697.76",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 71713.69\nmean: 69848.11\nstdev: 4697.76\ncv: 6.73%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 717136.85,
+            "range": "46977.59",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 717136.85\nmean: 698481.11\nstdev: 46977.59\ncv: 6.73%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
