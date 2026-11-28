@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795833658741,
+  "lastUpdate": 1795833997960,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -94974,6 +94974,72 @@ window.BENCHMARK_DATA = {
             "range": "564.83",
             "unit": "us",
             "extra": "trials: 5\nmedian: 350.00\nmean: 689.40\nstdev: 564.83\ncv: 81.93%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "e1dbbbb03971f5140b371528e3dcd6660aa760db",
+          "message": "test(raft): a timed-out hand-off and a drained seed lose no acknowledged write (#3330) (#3405)\n\n* test(cluster): Raft tests for kills before a move's change commits, a timed-out handoff, and a drained seed (#3330)\n\n- raft_shards/moves.rs: a leader move whose old leader and destination are\n  killed while the grown four-voter membership is written on the old leader\n  but uncommitted (a follower with slow flushes holds the commit open). Any\n  survivor that leads holds every acknowledged record; after both restart\n  the move finishes and every voter holds the log. A seat move changes one\n  voter at a time, and openraft 0.10 writes no joint entry for that, so\n  this uncommitted window is the nearest a move gets to a joint change.\n- routing/shutdown_handoff.rs: the Raft half of\n  a_handoff_that_times_out_loses_no_acknowledged_record (16 Quorum shards,\n  RF 3, on_commit, 1.5 s handoff): every shard is served again and each\n  shard's whole replay holds every acked record once, nothing twice.\n- routing/shutdown_handoff.rs: readers seeded only with a broker that is\n  drained out of a Raft group (one subscribed before, one connected after)\n  read every acked record once and in order, and keep following after the\n  drained broker stops.\n\nSpec-Unaffected: tests only; no broker behaviour changes\n\n* test(cluster): a Raft seat move changes one voter at a time, with no joint entry (#3402)\n\nSpec-Unaffected: test doc comments only\n\n* test(cluster): the Raft handoff-timeout test runs no placement during the handoff, so it always gives up (#3330)\n\nOn Raft a placement pass renames leaders at once, so a few passes handed\nevery shard off inside 1.5 s and the give-up path never ran. With no pass\nthe handoff times out with every shard it led, and the test now asserts\nall of them are still led at exit.\n\nSpec-Unaffected: test only\n\n* test(cluster): drop the Raft kill-before-commit move test (#3330)\n\nIt could not hold the uncommitted window: with one voter cut off and the\nother flushing in 5 s the group storms on vote saves (#2317) and the grown\nset commits first. The scenario needs a hook that withholds the\nmembership entry and is tracked on its own.\n\nSpec-Unaffected: test only",
+          "timestamp": "2026-11-27T18:36:01-08:00",
+          "tree_id": "aa037a9496df02fdf8f5ffda4d3dec471da179d1",
+          "url": "https://github.com/GetFelix/felix/commit/e1dbbbb03971f5140b371528e3dcd6660aa760db"
+        },
+        "date": 1795833981664,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 96,
+            "range": "0.84",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 96.00\nmean: 95.80\nstdev: 0.84\ncv: 0.87%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 128,
+            "range": "3.56",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 128.00\nmean: 130.20\nstdev: 3.56\ncv: 2.74%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 171,
+            "range": "959.87",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 171.00\nmean: 684.00\nstdev: 959.87\ncv: 140.33%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 133,
+            "range": "0.89",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 133.00\nmean: 133.40\nstdev: 0.89\ncv: 0.67%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 260,
+            "range": "4.98",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 260.00\nmean: 260.60\nstdev: 4.98\ncv: 1.91%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 388,
+            "range": "576.68",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 388.00\nmean: 621.40\nstdev: 576.68\ncv: 92.80%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
