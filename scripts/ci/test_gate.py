@@ -228,6 +228,9 @@ class Workflow(unittest.TestCase):
     def test_each_side_runs_its_own_cluster_harness(self):
         text = (pathlib.Path(__file__).parents[2] / ".github/workflows/gate-perf.yml").read_text()
         self.assertIn('"$CARGO_TARGET_DIR_BASELINE/release/felix-cluster"', text)
+        self.assertIn('"$CARGO_TARGET_DIR_BASELINE/release/felix-loadgen"', text)
+        self.assertNotIn('cp "$CARGO_TARGET_DIR_HEAD/release/felix-loadgen" /tmp/felix-gate/baseline/', text)
+        self.assertIn("0.8 wire baseline", text)
         self.assertNotIn('for side in baseline head; do\n            dir=/tmp/felix-gate/$side', text)
         self.assertIn("side_engine=raft; else side_engine=;", text)
 

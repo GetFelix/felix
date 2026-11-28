@@ -5,8 +5,8 @@
 #   gate-perf-cell.sh <bin dir> <side> <cell> <rf> <payload bytes> <batch> <secs> <round> <results.jsonl>
 #
 # <bin dir> holds felix-cluster, felix-loadgen and the side's felix-broker, which
-# the cluster finds next to its own executable. Both sides run the same
-# harness and load generator, so only the broker differs.
+# the cluster finds next to its own executable. The gate gives each side its own
+# harness and load generator (see gate-perf.yml for why).
 #
 # Optional environment:
 #   ENGINE=raft            sets FELIX_SHARD_ENGINE for the brokers, then checks the shard
@@ -63,6 +63,7 @@ if [ -n "${FANOUT_TOTAL:-}" ]; then
 else
   load=(--scenario ingest --in-flight 8 --concurrency 4 --duration-secs "$secs")
 fi
+echo "loadgen: $side $cell round $round uses the felix-loadgen built from $(cat "$bin/loadgen.version" 2>/dev/null || echo unknown)"
 "$bin/felix-loadgen" --brokers "$brokers" \
   --tenant "$(jq -r .tenant_id "$session")" --namespace "$(jq -r .namespace "$session")" \
   --token "$(jq -r .client_token "$session")" \

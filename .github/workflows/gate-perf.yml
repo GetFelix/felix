@@ -113,17 +113,20 @@ jobs:
           fi
           (cd /tmp/felix-gate-baseline && CARGO_TARGET_DIR="$CARGO_TARGET_DIR_BASELINE" \
             cargo build --locked --release -p felix-broker-service --bin felix-broker \
-            -p felix-cluster --bin felix-cluster)
+            -p felix-cluster --bin felix-cluster -p felix-loadgen --bin felix-loadgen)
           CARGO_TARGET_DIR="$CARGO_TARGET_DIR_HEAD" cargo build --locked --release \
             -p felix-broker-service --bin felix-broker \
             -p felix-cluster --bin felix-cluster \
             -p felix-loadgen --bin felix-loadgen
-          # Head's load generator drives both brokers; each side's cluster
-          # harness starts the felix-broker that sits beside it.
+          # Each side brings its own cluster harness and load generator. Since
+          # the 0.8 wire baseline the 0.8 client refuses a broker that does not
+          # advertise it, so head's loadgen cannot drive the baseline release.
           mkdir -p /tmp/felix-gate/baseline /tmp/felix-gate/head
           cp "$CARGO_TARGET_DIR_HEAD/release/felix-cluster" "$CARGO_TARGET_DIR_HEAD/release/felix-loadgen" /tmp/felix-gate/head/
-          cp "$CARGO_TARGET_DIR_HEAD/release/felix-loadgen" /tmp/felix-gate/baseline/
-          cp "$CARGO_TARGET_DIR_BASELINE/release/felix-cluster" "$CARGO_TARGET_DIR_BASELINE/release/felix-broker" /tmp/felix-gate/baseline/
+          cp "$CARGO_TARGET_DIR_BASELINE/release/felix-cluster" "$CARGO_TARGET_DIR_BASELINE/release/felix-loadgen" \
+            "$CARGO_TARGET_DIR_BASELINE/release/felix-broker" /tmp/felix-gate/baseline/
+          git -C /tmp/felix-gate-baseline rev-parse --short HEAD > /tmp/felix-gate/baseline/loadgen.version
+          git rev-parse --short HEAD > /tmp/felix-gate/head/loadgen.version
           cp "$CARGO_TARGET_DIR_HEAD/release/felix-broker" /tmp/felix-gate/head/
 
       - name: Run the cells, alternating sides
@@ -238,6 +241,8 @@ jobs:
             '{part: "perf", engine: $e, status: $s, summary: $m}' > "$out/result.json"
           {
             echo "### 2, 3. Throughput and p99 ($ENGINE against $BASELINE)"
+            echo
+            echo "Each side runs its own load generator and cluster harness: the 0.8 client refuses a broker that does not advertise the 0.8 wire baseline, so it cannot drive the baseline release."
             echo
             echo "RF 1 on one broker and RF 3 on three, 1 KiB and 64 KiB, batch 64 for throughput and batch 1 for p50 and p99, $SECONDS_PER_TRIAL s per trial, 6 rounds and more where a cell is undecided. Paired rule: the median of the per-round candidate/baseline ratios with its exact interval. Throughput passes when the lower end is above 0.97, p99 when the upper end is under 1.10, p50 turned over like throughput at 0.97. A cell with a void A/A check fails."
             echo
