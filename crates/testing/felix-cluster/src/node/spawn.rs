@@ -203,7 +203,7 @@ fn broker_command(binary: &PathBuf) -> Command {
 pub fn broker_binary() -> Result<PathBuf> {
     built_binary("felix-broker").map_err(|err| {
         anyhow!(
-            "{err}; build it first with `cargo build -p felix-broker-service --bin felix-broker`"
+            "{err}; build it first with `cargo build -p felix-broker-service --bin felix-broker --features fault-injection`"
         )
     })
 }

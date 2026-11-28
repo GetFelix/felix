@@ -306,7 +306,7 @@ scenario can cut a leader's links and speed up its clock at once.
 | Fault | Effect | Mechanism |
 | --- | --- | --- |
 | `Drop`, `Delay` | Traffic on one link, one direction, lost or late | Harness-owned proxies (`ClusterConfig::proxy_links`) |
-| `Refuse` | A broker's requests to chosen peers fail at once | `FELIX_PEER_PARTITION_FILE` |
+| `Refuse` | A broker's requests to chosen peers fail at once | `FELIX_PEER_PARTITION_FILE` (debug and `fault-injection` builds only) |
 | `Suspend` | `SIGSTOP`: the broker stays alive, holds its lease and answers nothing | Signal (Unix only) |
 | `Clock` | Time stepped or running at a different rate | `FELIX_CLOCK_FAULT_FILE` |
 | `Fsync` | Flushes delayed, failing with `EIO`, or failing once | `FELIX_STORAGE_FAULT_FILE` |

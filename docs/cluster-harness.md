@@ -274,6 +274,14 @@ broker, both ways, while it keeps running and heartbeating. They work through
 the broker's test-only partition file (`FELIX_PEER_PARTITION_FILE`), so a
 severed request fails at once rather than timing out.
 
+Only debug brokers and brokers built with felix-broker-service's
+`fault-injection` feature read that file. A release broker has no partition
+code and ignores the variable. Every harness build in `Taskfile.yml` and CI
+passes `--features fault-injection`, so an optimised harness run keeps it too.
+Before writing a partition, the harness checks that the broker binary carries
+the partition code, and fails the test if it does not. A partition test can
+therefore never pass against a broker that severed nothing.
+
 ### The fault API
 
 Every fault above, and the ones below, is also a value. `Cluster::inject`
@@ -389,7 +397,8 @@ because cluster tests are `#[serial]`.
 The fault seam is compiled into debug builds and builds with felix-common's
 `fault-injection` feature. A plain release build has no such module: it reads
 the real clocks directly and ignores `FELIX_CLOCK_FAULT_FILE`. The brokers the
-harness starts are debug builds; to skew the in-process control plane from an
+harness starts are debug builds or built with `--features fault-injection`; to
+skew the in-process control plane from an
 optimised test build, enable felix-cluster's `fault-injection` feature, or a
 control-plane clock fault is an error.
 

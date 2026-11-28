@@ -47,6 +47,7 @@ NOT_OPERATIONAL = {
     # deliberately not advertised as a production setting.
     "FELIX_BROKER_WRAPPER",
     "FELIX_CLOCK_FAULT_FILE",
+    # Debug and `fault-injection` builds only; a release broker ignores it.
     "FELIX_PEER_PARTITION_FILE",
     "FELIX_STORAGE_BOOT_ID_FILE",
     "FELIX_STORAGE_FAULT_FILE",

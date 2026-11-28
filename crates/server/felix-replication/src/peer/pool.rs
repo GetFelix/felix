@@ -63,6 +63,7 @@ pub struct PeerPool {
     config: PeerTransportConfig,
     /// Test-only peer severing. `None` in any deployment that did not ask for
     /// it by setting `FELIX_PEER_PARTITION_FILE`.
+    #[cfg(any(debug_assertions, test, feature = "fault-injection"))]
     partition: Option<super::PartitionInjector>,
     local_node_id: String,
     client: QuicClient,
@@ -111,6 +112,7 @@ impl PeerPool {
             .map(|tls| tls.chain_expiry(felix_common::tls::Presenter::Server));
 
         let pool = Arc::new(Self {
+            #[cfg(any(debug_assertions, test, feature = "fault-injection"))]
             partition: config
                 .partition_file
                 .clone()
@@ -210,6 +212,7 @@ impl PeerPool {
         if self.shutdown.is_cancelled() {
             return Err(PeerError::ShuttingDown);
         }
+        #[cfg(any(debug_assertions, test, feature = "fault-injection"))]
         if let Some(partition) = &self.partition
             && partition.blocks(node_id)
         {
@@ -283,6 +286,7 @@ impl PeerPool {
         if self.shutdown.is_cancelled() {
             return Err(PeerError::ShuttingDown);
         }
+        #[cfg(any(debug_assertions, test, feature = "fault-injection"))]
         if let Some(partition) = &self.partition
             && partition.blocks(node_id)
         {
@@ -309,6 +313,7 @@ impl PeerPool {
         // every partition test wait out a timeout, and what is under test is how
         // the broker behaves when a peer is unreachable, not how long the
         // transport takes to notice.
+        #[cfg(any(debug_assertions, test, feature = "fault-injection"))]
         if let Some(partition) = &self.partition
             && partition.blocks(node_id)
         {
