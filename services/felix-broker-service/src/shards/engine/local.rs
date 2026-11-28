@@ -7,8 +7,6 @@
 //! read only while its lease holds: an in-memory shard's owner is placed by
 //! the control plane and must stop once cut off from it.
 
-use std::time::Duration;
-
 use felix_broker::{ConsistencyLevel, ReadBound};
 use felix_replication::engine::{CommitError, Unreadable};
 use felix_wire::internal::{ErrorCode, ForwardPublishError, InternalMessage};
@@ -48,10 +46,6 @@ impl Serves for IngressRouter {
         );
     }
 }
-
-/// How often [`Local::await_readable`] looks again at a shard with no
-/// committed position.
-const SETTLING_RECHECK: Duration = Duration::from_millis(50);
 
 /// The answers for shards with no Raft member here. `serving` is `None` on a
 /// standalone broker, which has nothing to wait for and nothing to refuse.
@@ -151,38 +145,6 @@ impl<S: Serves + ?Sized> Local<S> {
             what: "read",
             detail: "the lease lapsed",
         })
-    }
-
-    pub(crate) async fn await_readable(
-        &self,
-        consistency: Option<ConsistencyLevel>,
-        key: &ShardKey,
-        timeout: Duration,
-    ) -> Result<(), CommitError> {
-        if consistency != Some(ConsistencyLevel::Quorum) || self.serving.is_none() {
-            return Ok(());
-        }
-        let deadline = tokio::time::Instant::now() + timeout;
-        loop {
-            match self.committed_bound(key) {
-                ReadBound::Unbounded => return Ok(()),
-                ReadBound::Refused => {
-                    return Err(CommitError::LeadershipLost {
-                        what: "read",
-                        detail: "this broker is not serving the shard",
-                    });
-                }
-                ReadBound::Committed(_) | ReadBound::Settling => {}
-            }
-            let left = deadline.saturating_duration_since(tokio::time::Instant::now());
-            if left.is_zero() {
-                return Err(CommitError::TimedOut {
-                    what: "read",
-                    timeout,
-                });
-            }
-            tokio::time::sleep(left.min(SETTLING_RECHECK)).await;
-        }
     }
 }
 

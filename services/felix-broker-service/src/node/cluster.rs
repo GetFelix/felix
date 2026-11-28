@@ -210,7 +210,7 @@ pub(super) fn start_standalone_raft_shards(
     );
     engine.set_raft(Arc::clone(&shards));
     // Readers see only what a group committed, as on a cluster member.
-    broker.set_read_bounds(Arc::new(replication::engine::CommittedReads::new(
+    broker.set_read_bounds(Arc::new(crate::shards::routing::CommittedReads::new(
         Arc::clone(engine),
     )));
     let (members, broker, stop) = (Arc::clone(&shards), Arc::clone(broker), stop.clone());

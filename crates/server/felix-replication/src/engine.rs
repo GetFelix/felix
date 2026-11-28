@@ -3,7 +3,6 @@
 //! (`crate::raft`) implements it. See `docs/replication-engine.md`.
 
 use std::future::Future;
-use std::sync::Arc;
 use std::time::Duration;
 
 mod host;
@@ -64,21 +63,6 @@ pub enum Unreadable {
     Settling,
 }
 
-/// Whether a cache access is a write or a read.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Access {
-    Write,
-    Read,
-}
-
-/// Where a cache write landed: the generation it was taken at and the cache
-/// log's tail before it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct CacheWrite {
-    pub generation: u64,
-    pub from: u64,
-}
-
 /// Where a write landed: the offset one past its last record, and the
 /// generation it was written at.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -115,11 +99,6 @@ impl Placement {
 
 /// What a durable write and a read ask of a shard's replication.
 pub trait Engine: Send + Sync {
-    /// Records of `shard` up to `written.end` are durable on this leader's
-    /// log, in the broker's commit order: get them to the other copies. Call
-    /// it after the batch is durable. It never waits.
-    fn appended(&self, shard: &ShardKey, written: Written);
-
     /// Wait until the batch in `outcome`, written at `generation`, is
     /// committed: held by enough of the shard's replicas that no later leader
     /// can lose it. Returns at once for a stream that does not acknowledge by
@@ -150,12 +129,6 @@ pub trait Engine: Send + Sync {
         shard: &ShardKey,
     ) -> Result<Option<u64>, Unreadable>;
 
-    /// How far the broker core's readers of stream `shard` (subscribe fanout,
-    /// cursor replay) may see. Unlike [`Engine::read_bound`] it also refuses
-    /// a broker whose lease no longer lets it serve the shard. Asked only for
-    /// `Quorum` streams.
-    fn committed_bound(&self, shard: &ShardKey) -> felix_broker::ReadBound;
-
     /// `end`, a bound of `shard`, less the offsets just below it that hold
     /// no record. See `felix_broker::ReadBounds::records_end`.
     fn records_end(&self, _shard: &ShardKey, end: u64) -> u64 {
@@ -165,56 +138,6 @@ pub trait Engine: Send + Sync {
     /// Confirm, after a read of `shard`'s state took its value, that this
     /// broker still leads `shard`.
     fn confirm_read(&self, shard: &ShardKey) -> impl Future<Output = anyhow::Result<()>> + Send;
-
-    /// Where a cache write landed, for [`Engine::await_cache_quorum`]. Call it
-    /// inside the write's fence, right before the write.
-    fn cache_write_at(
-        &self,
-        broker: &felix_broker::Broker,
-        shard: &ShardKey,
-        generation: u64,
-    ) -> impl Future<Output = Option<CacheWrite>> + Send;
-
-    /// Wait until a cache write at `written` (or, for a read, the value just
-    /// taken) is held by a quorum.
-    fn await_cache_quorum(
-        &self,
-        broker: &felix_broker::Broker,
-        shard: &ShardKey,
-        timeout: Duration,
-        access: Access,
-        written: Option<CacheWrite>,
-    ) -> impl Future<Output = anyhow::Result<()>> + Send;
-
-    /// As [`Engine::await_cache_quorum`] for a counter on `shard`'s cache.
-    /// `end` is the counter log offset after the write, `None` for a read.
-    fn await_counter_quorum(
-        &self,
-        broker: &felix_broker::Broker,
-        shard: &ShardKey,
-        timeout: Duration,
-        end: Option<u64>,
-        generation: u64,
-        what: &'static str,
-    ) -> impl Future<Output = anyhow::Result<()>> + Send;
-
-    /// Whether a read of this cache or counter may skip the lease check it
-    /// would otherwise make before taking its value.
-    fn read_skips_lease(
-        &self,
-        broker: &felix_broker::Broker,
-        shard: &ShardKey,
-    ) -> impl Future<Output = bool> + Send;
-
-    /// Wait until the records of `key` up to `end` are safe to show a reader
-    /// at `consistency`.
-    fn await_readable(
-        &self,
-        consistency: Option<felix_broker::ConsistencyLevel>,
-        key: &ShardKey,
-        end: u64,
-        timeout: Duration,
-    ) -> impl Future<Output = Result<(), CommitError>> + Send;
 
     /// The control plane placed `shard` on `placement`. Safe to repeat.
     fn placement_changed(&self, shard: &ShardKey, placement: &Placement);
@@ -229,61 +152,6 @@ pub trait Engine: Send + Sync {
         caller: PeerCapabilities,
         request: InternalMessage,
     ) -> impl Future<Output = InternalMessage> + Send;
-}
-
-/// [`Engine::committed_bound`] as the broker core asks for it
-/// (`felix_broker::ReadBounds`).
-pub struct CommittedReads<E> {
-    engine: Arc<E>,
-}
-
-impl<E> CommittedReads<E> {
-    pub fn new(engine: Arc<E>) -> Self {
-        Self { engine }
-    }
-}
-
-impl<E> std::fmt::Debug for CommittedReads<E> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("CommittedReads").finish_non_exhaustive()
-    }
-}
-
-impl<E: Engine> felix_broker::ReadBounds for CommittedReads<E> {
-    fn stream_bound(
-        &self,
-        tenant_id: &str,
-        namespace: &str,
-        stream: &str,
-        shard: u32,
-    ) -> felix_broker::ReadBound {
-        let key = ShardKey {
-            tenant_id: tenant_id.to_string(),
-            namespace: namespace.to_string(),
-            stream: stream.to_string(),
-            shard,
-            kind: crate::ShardKind::Stream,
-        };
-        self.engine.committed_bound(&key)
-    }
-
-    fn records_end(
-        &self,
-        tenant_id: &str,
-        namespace: &str,
-        stream: &str,
-        shard: u32,
-        end: u64,
-    ) -> u64 {
-        let key = ShardKey {
-            tenant_id: tenant_id.to_string(),
-            namespace: namespace.to_string(),
-            stream: stream.to_string(),
-            shard,
-            kind: crate::ShardKind::Stream,
-        };
-        self.engine.records_end(&key, end)
-    }
 }
 
 #[cfg(test)]

@@ -277,7 +277,7 @@ async fn test_brokers_run_at_the_hard_open_file_limit() {
 /// `broker`'s Raft shards, with its readers bound by them as startup does.
 pub(crate) fn shards(broker: &Arc<Broker>) -> Arc<RaftShards> {
     let shards = unbound_shards(broker);
-    broker.set_read_bounds(Arc::new(felix_replication::engine::CommittedReads::new(
+    broker.set_read_bounds(Arc::new(crate::shards::routing::CommittedReads::new(
         Arc::new(engine(&shards)),
     )));
     shards
@@ -2390,7 +2390,7 @@ async fn shutdown_writes_the_last_batched_log_marks() {
         "broker-a".to_string(),
         no_fleet(),
     );
-    broker.set_read_bounds(Arc::new(felix_replication::engine::CommittedReads::new(
+    broker.set_read_bounds(Arc::new(crate::shards::routing::CommittedReads::new(
         Arc::new(engine(&shards)),
     )));
     open_root(&broker, &shards);
@@ -2719,7 +2719,7 @@ impl Member {
         });
         open_root(&broker, &shards);
         let engine = Arc::new(engine(&shards));
-        broker.set_read_bounds(Arc::new(felix_replication::engine::CommittedReads::new(
+        broker.set_read_bounds(Arc::new(crate::shards::routing::CommittedReads::new(
             Arc::clone(&engine),
         )));
         Self {
@@ -2783,7 +2783,6 @@ impl Member {
 
     /// One past the last offset this member knows committed.
     fn bound(&self) -> u64 {
-        use felix_replication::engine::Engine;
         match self.engine.committed_bound(&key("orders", 0)) {
             felix_broker::ReadBound::Committed(bound) => bound,
             other => panic!("no bound: {other:?}"),
@@ -3146,8 +3145,6 @@ async fn readers_of_a_raft_shard_get_what_committed() {
 /// acknowledged offset, so its first record lands above them all.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_stopped_leader_is_replaced_and_no_acked_record_is_lost() {
-    use felix_replication::engine::Engine;
-
     let (net, mut members, leader) = trio().await;
     let orders = key("orders", 0);
     let term = members[leader].shards.leading(&orders).expect("term");

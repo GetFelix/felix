@@ -3,9 +3,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use felix_replication::engine::{
-    Access, CacheWrite, CommitError, Engine, Placement, Unreadable, Written,
-};
+use felix_replication::engine::{CommitError, Engine, Placement, Unreadable};
 use felix_wire::internal::{InternalMessage, PeerCapabilities};
 
 use super::ShardKey;
@@ -860,10 +858,23 @@ impl Default for StreamEngine {
     }
 }
 
-impl Engine for StreamEngine {
-    /// A Raft shard's group takes its own appends; no other shard ships.
-    fn appended(&self, _shard: &ShardKey, _written: Written) {}
+impl StreamEngine {
+    /// How far the broker core's readers of stream `shard` (subscribe fanout,
+    /// cursor replay) may see. A Raft shard's is its commit index. Any other
+    /// shard's is refused once this broker stops serving it, and, for one
+    /// placed with followers, once its lease lapses.
+    pub fn committed_bound(&self, shard: &ShardKey) -> felix_broker::ReadBound {
+        // Asked once per publish, before the broker releases the batch: one
+        // lookup, not one to pick the engine and one to read it.
+        #[cfg(feature = "raft")]
+        if let Some(raft) = self.raft_shard(shard) {
+            return felix_broker::ReadBound::Committed(raft.0.read_bound());
+        }
+        self.local.committed_bound(shard)
+    }
+}
 
+impl Engine for StreamEngine {
     async fn await_commit(
         &self,
         handle: &felix_broker::StreamHandle,
@@ -901,16 +912,6 @@ impl Engine for StreamEngine {
         self.local.read_bound(consistency, shard)
     }
 
-    fn committed_bound(&self, shard: &ShardKey) -> felix_broker::ReadBound {
-        // Asked once per publish, before the broker releases the batch: one
-        // lookup, not one to pick the engine and one to read it.
-        #[cfg(feature = "raft")]
-        if let Some(raft) = self.raft_shard(shard) {
-            return felix_broker::ReadBound::Committed(raft.0.read_bound());
-        }
-        self.local.committed_bound(shard)
-    }
-
     fn records_end(&self, shard: &ShardKey, end: u64) -> u64 {
         #[cfg(feature = "raft")]
         if let Some(raft) = self.raft(shard) {
@@ -923,55 +924,6 @@ impl Engine for StreamEngine {
         Ok(self.local.confirm_read()?)
     }
 
-    /// No cache outside a Raft group waits for a majority: a Raft cluster
-    /// has no cache without a log, and a standalone broker no followers.
-    async fn cache_write_at(
-        &self,
-        _broker: &felix_broker::Broker,
-        _shard: &ShardKey,
-        _generation: u64,
-    ) -> Option<CacheWrite> {
-        None
-    }
-
-    async fn await_cache_quorum(
-        &self,
-        _broker: &felix_broker::Broker,
-        _shard: &ShardKey,
-        _timeout: Duration,
-        _access: Access,
-        _written: Option<CacheWrite>,
-    ) -> anyhow::Result<()> {
-        Ok(())
-    }
-
-    async fn await_counter_quorum(
-        &self,
-        _broker: &felix_broker::Broker,
-        _shard: &ShardKey,
-        _timeout: Duration,
-        _end: Option<u64>,
-        _generation: u64,
-        _what: &'static str,
-    ) -> anyhow::Result<()> {
-        Ok(())
-    }
-
-    async fn read_skips_lease(&self, _broker: &felix_broker::Broker, _shard: &ShardKey) -> bool {
-        false
-    }
-
-    async fn await_readable(
-        &self,
-        consistency: Option<felix_broker::ConsistencyLevel>,
-        key: &ShardKey,
-        end: u64,
-        timeout: Duration,
-    ) -> Result<(), CommitError> {
-        let _ = end;
-        self.local.await_readable(consistency, key, timeout).await
-    }
-
     /// A Raft group follows its placement through the routing feed.
     fn placement_changed(&self, _shard: &ShardKey, _placement: &Placement) {}
 
@@ -982,5 +934,58 @@ impl Engine for StreamEngine {
         request: InternalMessage,
     ) -> InternalMessage {
         local::refuse_replication(&request)
+    }
+}
+
+/// [`StreamEngine::committed_bound`] as the broker core asks for it
+/// (`felix_broker::ReadBounds`).
+pub struct CommittedReads {
+    engine: Arc<StreamEngine>,
+}
+
+impl CommittedReads {
+    pub fn new(engine: Arc<StreamEngine>) -> Self {
+        Self { engine }
+    }
+}
+
+impl std::fmt::Debug for CommittedReads {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CommittedReads").finish_non_exhaustive()
+    }
+}
+
+impl felix_broker::ReadBounds for CommittedReads {
+    fn stream_bound(
+        &self,
+        tenant_id: &str,
+        namespace: &str,
+        stream: &str,
+        shard: u32,
+    ) -> felix_broker::ReadBound {
+        self.engine
+            .committed_bound(&stream_key(tenant_id, namespace, stream, shard))
+    }
+
+    fn records_end(
+        &self,
+        tenant_id: &str,
+        namespace: &str,
+        stream: &str,
+        shard: u32,
+        end: u64,
+    ) -> u64 {
+        self.engine
+            .records_end(&stream_key(tenant_id, namespace, stream, shard), end)
+    }
+}
+
+fn stream_key(tenant_id: &str, namespace: &str, stream: &str, shard: u32) -> ShardKey {
+    ShardKey {
+        tenant_id: tenant_id.to_string(),
+        namespace: namespace.to_string(),
+        stream: stream.to_string(),
+        shard,
+        kind: felix_replication::ShardKind::Stream,
     }
 }
