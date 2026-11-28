@@ -62,7 +62,11 @@ fn request(body: Request) -> RaftRequest {
         group: group(),
         reform_epoch: 3,
         to: member("b"),
-        beat: crate::raft::network::Beat { gap: 2_000, seq: 5 },
+        beat: crate::raft::network::Beat {
+            gap: 2_000,
+            seq: 5,
+            alone: false,
+        },
         report: crate::raft::network::Ask::Nothing,
         deadline: std::time::Duration::from_millis(200),
         body,

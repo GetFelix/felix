@@ -39,7 +39,7 @@ use super::propose::{
     self, AckAt, Batch, Clock, Heard, Proposal, Stamper, Unacknowledged, Unstamped, Waiting,
 };
 use super::reach::{Reach, Refusals};
-use super::read_rounds::ReadRounds;
+use super::read_rounds::{ReadRounds, Reading};
 use super::runtime::{Admission, FollowerProgress, GroupStatus, OpenError, Role};
 use super::ticker::{VoteClock, VoteSaves};
 use super::types::{GroupId, MemberId, ShardTypes};
@@ -210,6 +210,9 @@ pub(crate) struct Group {
     stop: CancellationToken,
     /// The read-index rounds the shard's reads share.
     reads: Arc<ReadRounds<Round>>,
+    /// Reads waiting in [`Self::read_index`]; the router sends heartbeats
+    /// alone while there are any.
+    reading: Arc<Reading>,
     /// Where the group's openraft core runs: its group thread, or else the
     /// runtime it was opened on. The publish task starts there, not on the
     /// first publisher's runtime, which may end while the group lives on.
@@ -874,6 +877,7 @@ impl Group {
         let lease = Arc::new(Lease::new(Duration::from_millis(timers.lease)));
         let reports = Arc::new(Reports::new());
         let refusals = Arc::new(Refusals::new(id.clone()));
+        let reading = Arc::new(Reading::default());
         let network = Network {
             router: Router::new(
                 Arc::clone(&transport),
@@ -885,7 +889,8 @@ impl Group {
                 reform_epoch,
                 Arc::clone(&config),
                 unsendable,
-            ),
+            )
+            .reading(Arc::clone(&reading)),
             group: id.clone(),
             commit_hold: timers.commit_hold,
         };
@@ -1000,6 +1005,7 @@ impl Group {
             client_writes: Arc::default(),
             stop,
             reads: Arc::default(),
+            reading,
             runtime,
             _thread: thread,
         })
@@ -2466,17 +2472,21 @@ impl Group {
         let timers = self.pace.timers;
         let patience = Duration::from_millis(timers.election_max);
         let started = tokio::time::Instant::now();
-        // The error names how long the read waited, which is less than
-        // `patience` when no majority answered within a round.
+        // The error names how long the read waited.
         let unanswered = || CommitError::TimedOut {
             what: "read",
             timeout: started.elapsed().min(patience),
         };
-        let deadline = started + patience;
+        let mut deadline = started + patience;
         // A majority answers a round within a lease or is not there. Held to
         // the election timeout instead, a leader cut off from every peer
         // keeps each group call waiting that long before it can refuse.
         let round_limit = Duration::from_millis(timers.lease.max(timers.heartbeat)).min(patience);
+        // A round that found no majority may have sent its last heartbeat
+        // too late to hear the answer. One peer deadline past the first
+        // round covers that answer and still refuses a cut-off leader early.
+        let unanswered_by = started + round_limit + timers.peer_deadline;
+        let _waiting = self.reading.enter();
         loop {
             let raft = self.raft.clone();
             let stop = self.stop.clone();
@@ -2510,8 +2520,9 @@ impl Group {
                     ));
                 }
                 Round::LeaseExpired => {}
+                // Asked again, a fresh round that needs its own majority.
+                Round::QuorumNotEnough => deadline = deadline.min(unanswered_by),
                 Round::NotLeader => return Err(lost("this broker does not lead the shard")),
-                Round::QuorumNotEnough => return Err(unanswered()),
                 Round::Stopped => return Err(propose::stopped()),
             }
             // The leader is still the leader. Ask for a heartbeat, wait for
@@ -3503,6 +3514,11 @@ impl Group {
     #[cfg(test)]
     pub(crate) fn reports(&self) -> &Reports {
         &self.reports
+    }
+
+    #[cfg(test)]
+    pub(crate) fn reads_waiting(&self) -> bool {
+        self.reading.waiting()
     }
 
     #[cfg(test)]

@@ -1,7 +1,8 @@
 //! Heartbeats sent together: every group's heartbeat for members on one
 //! broker that is handed off within a short window goes in one message,
 //! and the answer holds one result per heartbeat, in order. Appends that
-//! carry entries, and every other message, go on their own at once. See
+//! carry entries, heartbeats a read waits on, and every other message, go on
+//! their own at once. See
 //! `docs/per-shard-raft.md`, "Heartbeats sent together".
 
 use std::future::Future;
@@ -109,7 +110,9 @@ fn is_beat(request: &RaftRequest) -> bool {
 #[async_trait]
 impl RaftTransport for Beats {
     async fn send(&self, request: RaftRequest) -> Answer {
-        if !is_beat(&request) {
+        // A heartbeat a read waits on is answered whenever its member
+        // answers, not cut short by another group's answer in the batch.
+        if !is_beat(&request) || request.beat.alone {
             return self.inner.send(request).await;
         }
         let broker = Arc::clone(&request.to().broker);
