@@ -73,7 +73,8 @@ and an operator command for a group that lost its majority.
 ## The engine interface
 
 The trait in `crates/server/felix-replication/src/engine.rs` was shaped by
-routing the hybrid's callers through it. Raft needs it smaller. The target:
+routing the hybrid's callers through it. With the hybrid deleted it is down
+to what Raft needs:
 
 ```rust
 /// Where a write landed: the offset one past its last record, and the
@@ -84,28 +85,27 @@ pub struct Written {
 }
 
 pub trait Engine: Send + Sync {
-    /// Write `batch` on this leader. Raft assigns the offsets and the
-    /// adapter appends. Returns when the records are on this leader's log
-    /// as far as the stream's fsync policy asks: written, or fsynced.
-    fn propose(&self, shard: &ShardKey, batch: Batch)
-        -> impl Future<Output = Result<Written, CommitError>> + Send;
-
-    /// Wait until `written` is committed. An error means this broker cannot
-    /// say so, not that the write is lost.
-    fn await_commit(&self, shard: &ShardKey, written: Written, timeout: Duration)
-        -> impl Future<Output = Result<(), CommitError>> + Send;
+    /// Wait until the batch in `outcome` is committed. An error means this
+    /// broker cannot say so, not that the write is lost.
+    fn await_commit(&self, handle: &StreamHandle, shard: Option<&ShardKey>,
+        outcome: &PublishOutcome, generation: u64, timeout: Duration)
+        -> impl Future<Output = anyhow::Result<()>> + Send;
 
     /// May a write at `generation` be acknowledged on local durability
-    /// alone? The leader lease check for `Leader` streams. On an error the
-    /// caller waits on `await_commit`. A refusal never closes the shard.
+    /// alone? On an error the caller waits on `await_commit`. A refusal
+    /// never closes the shard.
     fn admit_local_ack(&self, shard: &ShardKey, generation: u64) -> Result<(), CommitError>;
 
     /// One past the highest committed offset, at every consistency level.
-    fn read_bound(&self, shard: &ShardKey) -> Result<u64, Unreadable>;
+    fn read_bound(&self, consistency: Option<ConsistencyLevel>, shard: &ShardKey)
+        -> Result<Option<u64>, Unreadable>;
+
+    /// `end` less the offsets just below it that hold no record.
+    fn records_end(&self, shard: &ShardKey, end: u64) -> u64;
 
     /// Confirm this broker still leads `shard`, for a read of state.
     fn confirm_read(&self, shard: &ShardKey)
-        -> impl Future<Output = Result<(), CommitError>> + Send;
+        -> impl Future<Output = anyhow::Result<()>> + Send;
 
     /// The control plane placed `shard` on `placement`.
     fn placement_changed(&self, shard: &ShardKey, placement: &Placement);
@@ -120,31 +120,30 @@ pub(crate) trait EngineHost: Send + Sync {
     fn opened(&self, shard: &ShardKey, generation: u64);
     /// This broker no longer leads `shard` at `generation`.
     fn deposed(&self, shard: &ShardKey, generation: u64);
-    /// Whether `shard` is closed with no write still inside.
-    fn quiesced(&self, shard: &ShardKey) -> bool;
 }
 ```
 
-The hybrid keeps implementing everything it has today until it is deleted.
-The first pull request only adds to the trait. What goes away when the
-hybrid is deleted, and why it is safe to drop then:
+`EngineHost` reaches the broker through `WriteFence` (`opened`, `deposed`,
+`quiesced`). A Raft shard writes through its group ("Writing through openraft").
 
-- `appended` is how the hybrid learns of a write the broker has already
-  appended. A Raft shard writes through `propose` ("Writing through
-  openraft"), which the stream shards pull request adds.
-- `cache_write_at`, `await_cache_quorum` and `await_counter_quorum` become
-  `await_commit`. A cache shard has one log and one commit index (see "Cache
-  and counters").
-- `committed_bound` merges into `read_bound`. Today it differs by a lease
-  check. Under Raft a deposed leader's commit index is still a true lower
-  bound on what is committed, so delivering up to it is always safe and needs
-  no lease.
-- `read_skips_lease` and `await_readable` go with the control-plane lease,
-  which the shipping hybrid still serves on. Under Raft every read is bounded
-  by `read_bound`.
-- `EngineHost::generation` and `replicated` go. The engine tells the host the
-  generation through `opened`, and every shard is a group.
-- The `HybridHost` callbacks stay on the hybrid until it is deleted.
+What went with the hybrid, and why it was safe to drop:
+
+- `appended` told the hybrid of a write. A Raft shard writes through propose.
+- `cache_write_at`, `await_cache_quorum` and `await_counter_quorum` became
+  the group's commit wait: a cache shard has one log and one commit index
+  (see "Cache and counters").
+- `read_skips_lease` and `await_readable` went with the control-plane lease
+  reads. A Raft read is bounded by `read_bound`, and a cache read on an
+  in-memory shard checks the lease, as it did.
+- `committed_bound` is a method of the broker service's `StreamEngine`, not
+  of the trait. For a Raft shard it is `read_bound`: a deposed leader's
+  commit index is still a true lower bound on what is committed, so
+  delivering up to it needs no lease. An in-memory shard's still refuses
+  once the broker stops serving it, or once the lease lapses on one placed
+  with followers.
+- `EngineHost::generation` and `replicated` went. The engine tells the host
+  the generation through `opened`, and every durable shard is a group.
+- `HybridHost` and its callbacks went with the hybrid.
 
 The interface does not assume one group per stream. A `ShardKey` maps to a
 group through a registry inside the engine, so several small streams could

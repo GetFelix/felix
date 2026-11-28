@@ -1056,7 +1056,6 @@ dependencies = [
  "crc32fast",
  "felix-broker",
  "felix-common",
- "felix-router",
  "felix-storage",
  "felix-transport",
  "felix-wire",

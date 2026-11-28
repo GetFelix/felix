@@ -617,7 +617,6 @@ mod feed {
             _key: &ShardKey,
             _generation: u64,
             _incarnation: u64,
-            _begins_here: bool,
         ) -> anyhow::Result<()> {
             tokio::time::sleep(self.delay).await;
             Ok(())
@@ -759,76 +758,6 @@ mod feed {
         let _ = feed.await;
     }
 
-    /// **A shard whose fence finishes mid-pass stays served.** The fence
-    /// publishes it on its own; the pass's interim publishes must not put it
-    /// back to not ready until the pass ends.
-    #[tokio::test]
-    async fn a_shard_fenced_mid_pass_stays_served() {
-        let (mut state, _router) = state(&[assignment(0, "broker-a", 1)]);
-        state.lifecycle.lock().await.fence_promotions();
-        state.store = Arc::new(SlowStore {
-            delay: Duration::from_millis(150),
-        });
-        let ingress = Arc::clone(&state.ingress);
-        let lifecycle = Arc::clone(&state.lifecycle);
-        let ownership = Arc::clone(&state.ownership);
-        let changed = Arc::clone(&state.assignments_changed);
-        let fencing = || async {
-            lifecycle
-                .lock()
-                .await
-                .counts()
-                .get(&crate::shards::lifecycle::Phase::Fencing)
-                .copied()
-                .unwrap_or(0)
-        };
-        let shutdown = CancellationToken::new();
-        let feed = spawn_feed(
-            state,
-            no_catalog(),
-            Duration::from_secs(60),
-            shutdown.clone(),
-        );
-        for _ in 0..200 {
-            if fencing().await == 1 {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(20)).await;
-        }
-        // Let the first pass end and publish shard 0 as not yet servable.
-        tokio::time::sleep(Duration::from_millis(100)).await;
-
-        ownership.write().await.reset(
-            (0..5)
-                .map(|shard| assignment(shard, "broker-a", 1))
-                .collect(),
-        );
-        changed.notify_one();
-        for _ in 0..200 {
-            if fencing().await >= 2 {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(20)).await;
-        }
-        {
-            let mut owned = lifecycle.lock().await;
-            assert!(owned.fenced(&key(0), 1), "shard 0 was not fencing");
-            ingress.publish_servable(owned.servable());
-        }
-        // Long enough for at least one interim publish.
-        tokio::time::sleep(Duration::from_millis(250)).await;
-        let mid_pass = ingress.dispatch(&key(0));
-        let opened = fencing().await;
-
-        assert!(opened < 4, "the pass ended before the check");
-        assert!(
-            matches!(mid_pass, Dispatch::Local { generation: 1 }),
-            "shard 0 went back mid-pass: {mid_pass:?}"
-        );
-        shutdown.cancel();
-        let _ = feed.await;
-    }
-
     /// **A removal a fence publishes mid-pass stays published.** The pass
     /// holds back its own removals, but must not put back one the fence's
     /// publish already made.
@@ -875,59 +804,6 @@ mod feed {
         assert!(
             !matches!(mid_pass, Dispatch::Local { .. }),
             "shard 0 was served again mid-pass: {mid_pass:?}"
-        );
-        shutdown.cancel();
-        let _ = feed.await;
-    }
-
-    /// **A fence finishing as the pass publishes stays published.** The pass
-    /// reads the servable set and then publishes it; a fence that lands in
-    /// between must not be overwritten by the older set.
-    #[tokio::test]
-    async fn a_fence_finishing_during_the_end_of_pass_publish_is_kept() {
-        let (state, _router) = state(&[assignment(0, "broker-a", 1)]);
-        state.lifecycle.lock().await.fence_promotions();
-        let ingress = Arc::clone(&state.ingress);
-        let lifecycle = Arc::clone(&state.lifecycle);
-        let publishes = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-        // A fence finishing just before the view is stored, if it can get
-        // the lock it finishes under.
-        *ingress.before_publish.lock().unwrap() = Some(Box::new({
-            let lifecycle = Arc::clone(&lifecycle);
-            let publishes = Arc::clone(&publishes);
-            move |ingress: &IngressRouter| {
-                if let Ok(mut owned) = lifecycle.try_lock()
-                    && owned.fenced(&key(0), 1)
-                {
-                    ingress.publish_servable(owned.servable());
-                }
-                publishes.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-            }
-        }));
-        let shutdown = CancellationToken::new();
-        let feed = spawn_feed(
-            state,
-            no_catalog(),
-            Duration::from_secs(60),
-            shutdown.clone(),
-        );
-        // One interim publish for the new shard, then the end-of-pass one.
-        until("the first pass to publish", || {
-            publishes.load(std::sync::atomic::Ordering::SeqCst) >= 2
-        })
-        .await;
-        // The fence finishes after the pass, if the pass kept it out.
-        {
-            let mut owned = lifecycle.lock().await;
-            if owned.fenced(&key(0), 1) {
-                ingress.publish_servable(owned.servable());
-            }
-        }
-
-        let after = ingress.dispatch(&key(0));
-        assert!(
-            matches!(after, Dispatch::Local { generation: 1 }),
-            "the pass undid the fence's publish: {after:?}"
         );
         shutdown.cancel();
         let _ = feed.await;

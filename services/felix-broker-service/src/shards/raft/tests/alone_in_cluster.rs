@@ -20,7 +20,6 @@ use super::super::standalone::tests::reform::{
 use super::super::standalone::{LOCAL_MEMBER, fleet_of_one};
 use super::*;
 use crate::shards::watch::{PlacedEpoch, RaftBases, RaftEpochBase, RaftFloor, RaftVoters};
-use felix_replication::engine::Engine;
 
 /// What the control plane says to a re-form request.
 #[derive(Clone, Copy, PartialEq)]

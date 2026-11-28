@@ -66,18 +66,6 @@ fn reopening_at_a_new_generation_admits_again() {
     assert!(fence.enter(&stream, 1).is_none());
 }
 
-/// A deposal outlives a close and reopen at the same generation.
-#[test]
-fn reopening_does_not_clear_a_deposal() {
-    let fence = ShardFence::default();
-    let stream = key(ShardKind::Stream);
-    fence.open(&stream, 4);
-    fence.depose(&stream, 4);
-    fence.close(&stream);
-    fence.open(&stream, 4);
-    assert!(fence.is_deposed(&stream, 4));
-}
-
 #[tokio::test]
 async fn quiesce_waits_for_the_last_write_in_flight() {
     let fence = Arc::new(ShardFence::default());

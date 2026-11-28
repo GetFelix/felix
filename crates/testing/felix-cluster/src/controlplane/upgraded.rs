@@ -150,3 +150,6 @@ where
         .context("remove the upgraded fleet's broker")?;
     Ok(())
 }
+
+#[cfg(test)]
+mod tests;

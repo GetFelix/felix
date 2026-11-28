@@ -356,59 +356,6 @@ impl ConsumerGroups {
         Ok(moved)
     }
 
-    /// Take another replica's cursor records, `records` being its cursor log
-    /// in order: each group goes to the further of its position here and its
-    /// latest there. Appended, never cut, so no group this broker had is
-    /// erased and a crash part way leaves each group at one or the other. A
-    /// group deleted there keeps its position here. Returns how many moved.
-    ///
-    /// For a promoted leader taking a replica's group state. What it takes
-    /// is checked against the dead-letter log like any cursor before the
-    /// shard is served.
-    pub async fn adopt(
-        &self,
-        tenant_id: &str,
-        namespace: &str,
-        stream: &str,
-        shard: u32,
-        records: &[bytes::Bytes],
-    ) -> Result<usize> {
-        let mut latest: HashMap<String, Option<Stored>> = HashMap::default();
-        for record in records {
-            match felix_storage::cache::CacheOp::decode(record) {
-                Ok(felix_storage::cache::CacheOp::Put { key, value, .. }) => {
-                    if let Ok(stored) = Stored::decode(&value) {
-                        latest.insert(key, Some(stored));
-                    }
-                }
-                Ok(felix_storage::cache::CacheOp::Delete { key }) => {
-                    latest.insert(key, None);
-                }
-                Err(_) => {}
-            }
-        }
-        let _guard = self.lock_shard(tenant_id, namespace, stream, shard).await;
-        let mut moved = 0;
-        for (group, theirs) in latest {
-            let Some(theirs) = theirs else {
-                continue;
-            };
-            let ours = self
-                .stored(tenant_id, namespace, stream, shard, &group)
-                .await?;
-            if ours.is_some_and(|ours| ours.offset >= theirs.offset) {
-                continue;
-            }
-            self.write(tenant_id, namespace, stream, shard, &group, theirs)
-                .await?;
-            moved += 1;
-        }
-        if moved > 0 {
-            self.sync(tenant_id, namespace, stream, shard).await?;
-        }
-        Ok(moved)
-    }
-
     /// Each group's records in this shard's log, oldest first, from its last
     /// delete on.
     async fn history(

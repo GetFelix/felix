@@ -405,14 +405,12 @@ async fn take_leaves_cache_shards_in_the_feed() {
 }
 
 /// **Through the routing feed, an in-memory shard on a Raft broker serves at
-/// once and the hybrid lifecycle never holds it**, though that lifecycle
-/// fences every promotion.
+/// once and the lifecycle never holds it**.
 #[tokio::test]
 async fn the_feed_serves_it_without_the_lifecycle() {
     let root = tempfile::tempdir().expect("tempdir");
     let broker = broker(root.path()).await;
-    let mut lifecycle = ShardLifecycle::new(LOCAL);
-    lifecycle.fence_promotions();
+    let lifecycle = ShardLifecycle::new(LOCAL);
     let fence = Arc::clone(lifecycle.fence());
     let memory = Arc::new(memory(&broker, &fence));
     let router = Arc::new(ShardRouter::new(
@@ -456,9 +454,8 @@ async fn the_feed_serves_it_without_the_lifecycle() {
     assert_eq!(
         lifecycle.lock().await.phase(&key(0)),
         crate::shards::lifecycle::Phase::Unassigned,
-        "the hybrid lifecycle opened an in-memory shard",
+        "the lifecycle opened an in-memory shard",
     );
-    assert!(fence.awaiting_promotion(&key(0)).is_none());
     assert_eq!(
         paths_naming_stream(root.path()),
         Vec::<std::path::PathBuf>::new()

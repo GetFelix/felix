@@ -38,7 +38,6 @@ bytes = { workspace = true }
 crc32fast = { workspace = true, optional = true }
 felix-broker = { path = "../felix-broker", version = "0.8.0-preview.2" }
 felix-common = { path = "../felix-common", version = "0.8.0-preview.2", features = ["blocking", "hasher", "tls"] }
-felix-router = { path = "../felix-router", version = "0.8.0-preview.2" }
 felix-storage = { path = "../felix-storage", version = "0.8.0-preview.2" }
 felix-transport = { path = "../../protocol/felix-transport", version = "0.8.0-preview.2" }
 felix-wire = { path = "../../protocol/felix-wire", version = "0.8.0-preview.2" }

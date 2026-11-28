@@ -116,6 +116,59 @@ where
     served
 }
 
+/// For tests: what [`start_standalone_engine`] started.
+#[doc(hidden)]
+#[cfg(feature = "raft")]
+pub struct StandaloneEngine {
+    /// The engine to serve the shards with, as
+    /// [`ClusterContext::engine`](crate::serving::quic::ClusterContext).
+    pub engine: Arc<shard_routing::StreamEngine>,
+    shards: Arc<dyn shard_routing::EngineShards>,
+}
+
+#[cfg(feature = "raft")]
+impl StandaloneEngine {
+    /// Close every member's log, so the data directory can be opened again.
+    /// Call it once the groups' feed is stopped. False if a member did not
+    /// close cleanly.
+    pub async fn shutdown(&self) -> bool {
+        self.shards.shutdown().await
+    }
+}
+
+/// For tests: run `broker`'s durable shards as a standalone broker does, each
+/// a Raft group of one; call before anything registers.
+#[doc(hidden)]
+#[cfg(feature = "raft")]
+pub fn start_standalone_engine(
+    broker: &Arc<felix_broker::Broker>,
+    cache_snapshot_every: Option<u64>,
+    stop: &CancellationToken,
+    writers: &TaskTracker,
+) -> Result<StandaloneEngine> {
+    startup::refuse_logless_cache(crate::config::ShardEngine::Raft, broker)?;
+    shard_routing::leave_stores_to_engines(broker);
+    let fleet = Arc::new(crate::shards::raft::standalone::fleet_of_one());
+    let engine = Arc::new(shard_routing::StreamEngine::new(None).with_fleet(Arc::clone(&fleet)));
+    let root = broker
+        .durable_storage()
+        .context("a standalone broker runs Raft shards only on durable storage")?
+        .root()
+        .to_path_buf();
+    let storage_id = storage::storage_id(Some(&root))?;
+    let mut settings = crate::config::shard_raft_settings()?;
+    if cache_snapshot_every.is_some() {
+        settings.cache_snapshot_every = cache_snapshot_every;
+    }
+    let started = cluster::start_standalone_raft_shards(
+        settings, broker, &engine, &fleet, storage_id, stop, writers,
+    )?;
+    let shards = started
+        .engine_shards
+        .context("a standalone start has engine shards")?;
+    Ok(StandaloneEngine { engine, shards })
+}
+
 /// The rest of [`run_with_shutdown`], under the lock `run` holds. Whatever
 /// it starts that writes under the root is handed to `run`, so an early
 /// return here stops it before the lock goes.

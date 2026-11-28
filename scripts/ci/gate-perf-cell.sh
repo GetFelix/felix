@@ -5,15 +5,18 @@
 #   gate-perf-cell.sh <bin dir> <side> <cell> <rf> <payload bytes> <batch> <secs> <round> <results.jsonl>
 #
 # <bin dir> holds felix-cluster, felix-loadgen and the side's felix-broker, which
-# the cluster finds next to its own executable. Both sides run the same
-# harness and load generator, so only the broker differs.
+# the cluster finds next to its own executable. The gate gives each side its own
+# harness and load generator (see gate-perf.yml for why).
 #
 # Optional environment:
 #   ENGINE=raft            sets FELIX_SHARD_ENGINE for the brokers, then checks the shard
 #                          directories carry the Raft engine marker. A cell that ran without
 #                          it fails instead of reporting. A build before the hybrid's removal
 #                          also takes ENGINE=hybrid.
-#   FELIX_DURABLE_FSYNC_MODE is passed through to the brokers as it is.
+#   FELIX_DURABLE_FSYNC_MODE and FELIX_DURABLE_FSYNC_INTERVAL_MS are passed through to the
+#   brokers as they are.
+#   UP_LOG_DIR=<dir>       keeps the cluster's up.log there, gzipped, win or lose.
+#   Without ENGINE the side must carry no raft marker, so a baseline that ran on Raft fails.
 #   FANOUT_TOTAL=N         runs felix-loadgen's pubsub scenario instead of ingest: one
 #                          publisher sends N records unacked in <batch>-record batches to
 #                          FANOUT subscribers (default 4) and <secs> is ignored. msg_s is
@@ -34,6 +37,9 @@ engine=${ENGINE:-}
 case "$engine" in ''|raft|hybrid) ;; *) echo "ENGINE must be raft or hybrid" >&2; exit 2 ;; esac
 [ -z "$engine" ] || export FELIX_SHARD_ENGINE=$engine
 cleanup() {
+  if [ -n "${UP_LOG_DIR:-}" ] && [ -f "$work/up.log" ]; then
+    mkdir -p "$UP_LOG_DIR" && gzip -c "$work/up.log" > "$UP_LOG_DIR/$side-$cell-r$round.up.log.gz" || true
+  fi
   if [ -n "$cluster_pid" ]; then
     kill "$cluster_pid" 2>/dev/null || true
     wait "$cluster_pid" 2>/dev/null || true
@@ -54,6 +60,12 @@ for _ in $(seq 1 240); do
 done
 grep -q '^cluster up\.' "$work/up.log" || { cat "$work/up.log"; echo "cluster did not come up" >&2; exit 1; }
 
+# What the brokers resolved, once per side and cell, so a mislabelled side shows in the log.
+if [ "$round" = 1 ]; then
+  echo "broker settings: $side $cell (FELIX_DURABLE_FSYNC_MODE=${FELIX_DURABLE_FSYNC_MODE:-unset} FELIX_DURABLE_FSYNC_INTERVAL_MS=${FELIX_DURABLE_FSYNC_INTERVAL_MS:-unset} FELIX_SHARD_ENGINE=${FELIX_SHARD_ENGINE:-unset})"
+  sed 's/\x1b\[[0-9;]*m//g' "$work/up.log" | grep -iE "fsync every|engine|ack level|ack_level|AckLevel|quorum" | sort -u | head -8 | sed "s/^/  [$side $cell] /" || true
+fi
+
 session=$work/felix-cluster.json
 brokers=$(jq -r '[.nodes[].client_addr] | join(",")' "$session")
 # Let placement and the first leases settle before measuring.
@@ -63,6 +75,7 @@ if [ -n "${FANOUT_TOTAL:-}" ]; then
 else
   load=(--scenario ingest --in-flight 8 --concurrency 4 --duration-secs "$secs")
 fi
+echo "loadgen: $side $cell round $round uses the felix-loadgen built from $(cat "$bin/loadgen.version" 2>/dev/null || echo unknown)"
 "$bin/felix-loadgen" --brokers "$brokers" \
   --tenant "$(jq -r .tenant_id "$session")" --namespace "$(jq -r .namespace "$session")" \
   --token "$(jq -r .client_token "$session")" \
@@ -70,15 +83,14 @@ fi
   --environment "gate-$side-$cell" >"$work/loadgen.out" 2>"$work/loadgen.err" \
   || { tail -20 "$work/loadgen.err"; echo "loadgen failed" >&2; exit 1; }
 
-if [ -n "$engine" ]; then
-  markers=$(find "$work" -type f -name engine -exec grep -lx raft {} + 2>/dev/null | wc -l | tr -d ' ')
-  echo "engine check: $side $cell round $round asked for $engine, $markers shard directories carry the raft marker"
-  case "$engine:$markers" in
-    raft:0) echo "asked for raft but no shard directory carries the raft marker" >&2; exit 1 ;;
-    hybrid:0|raft:*) ;;
-    *) echo "asked for hybrid but $markers shard directories carry the raft marker" >&2; exit 1 ;;
-  esac
-fi
+markers=$(find "$work" -type f -name engine -exec grep -lx raft {} + 2>/dev/null | wc -l | tr -d ' ')
+echo "engine check: $side $cell round $round asked for ${engine:-the release default}, $markers shard directories carry the raft marker"
+case "${engine:-default}:$markers" in
+  raft:0) echo "asked for raft but no shard directory carries the raft marker" >&2; exit 1 ;;
+  raft:*|hybrid:0) ;;
+  default:0) ;;
+  *) echo "asked for ${engine:-the release default} but $markers shard directories carry the raft marker" >&2; exit 1 ;;
+esac
 
 line=$(grep '^LOADGEN_JSON ' "$work/loadgen.out" | head -1 | cut -d' ' -f2-)
 [ -n "$line" ] || { echo "no LOADGEN_JSON line" >&2; exit 1; }

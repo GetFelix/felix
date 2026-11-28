@@ -150,8 +150,8 @@ async fn a_watch_after_the_watches_were_ended_is_refused() -> Result<()> {
 }
 
 /// **An ending between admission and registration still reaches the watch.**
-/// The routing check and the registration are separate steps, and a lapse or
-/// deposal on another thread can end the shard's watches between them. The
+/// The routing check and the registration are separate steps, and a lapse
+/// on another thread can end the shard's watches between them. The
 /// check made once the watch is registered is what catches that one.
 #[tokio::test]
 async fn a_watch_registered_after_its_shard_stopped_serving_is_let_go() {
@@ -163,10 +163,6 @@ async fn a_watch_registered_after_its_shard_stopped_serving_is_let_go() {
     assert!(stopped_serving(Some(&lapsed.ingress), &key).is_none());
     lease.surrender();
     assert!(stopped_serving(Some(&lapsed.ingress), &key).is_some());
-
-    let deposed = Leader::start().await;
-    deposed.ingress.fence().depose(&key, leader::GENERATION);
-    assert!(stopped_serving(Some(&deposed.ingress), &key).is_some());
 }
 
 #[cfg(feature = "raft")]

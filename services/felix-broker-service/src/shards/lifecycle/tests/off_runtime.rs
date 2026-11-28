@@ -76,7 +76,7 @@ async fn opening_a_shard_does_not_flush_on_the_runtime() {
     let _held = HeldFlushes::hold(flush);
 
     let (took, longest) =
-        stall_while(async { store.open(&key(0), 1, 0, true).await.expect("open") }).await;
+        stall_while(async { store.open(&key(0), 1, 0).await.expect("open") }).await;
     assert!(took >= flush, "the open flushed nothing: {took:?}");
     assert!(
         longest < flush / 2,
@@ -127,7 +127,7 @@ async fn opening_group_and_cache_logs_does_not_flush_on_the_runtime() {
 
     for (shard, label) in [(key(0), "stream"), (cache, "cache")] {
         let (took, longest) =
-            stall_while(async { store.open(&shard, 1, 0, true).await.expect("open") }).await;
+            stall_while(async { store.open(&shard, 1, 0).await.expect("open") }).await;
         assert!(took >= flush, "the {label} open flushed nothing: {took:?}");
         assert!(
             longest < flush / 2,
