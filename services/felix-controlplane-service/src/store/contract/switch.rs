@@ -5,8 +5,7 @@ use std::collections::BTreeMap;
 
 use super::shards::{CACHE, assignment, clear, key, next_stream, on_streams_of_its_own, seed};
 use crate::model::{
-    ElectedLeader, SealReport, SealedSideLog, ShardAssignment, ShardKey, ShardKind, ShardState,
-    StreamKey,
+    SealReport, SealedSideLog, ShardAssignment, ShardKey, ShardKind, ShardState, StreamKey,
 };
 use crate::store::{AssignmentWrite, ControlPlaneStore, StoreError};
 
@@ -509,20 +508,6 @@ async fn nothing_is_written_to_a_switched_shard(store: &dyn ControlPlaneStore) {
         .put_shard_assignment_if(failover, Some(switched.generation), token)
         .await
         .expect_err("a placement write");
-    assert!(matches!(err, StoreError::Conflict(_)), "got {err:?}");
-    let err = store
-        .adopt_elected_leader(
-            &switched.key,
-            switched.generation,
-            ElectedLeader {
-                leader: "broker-y".to_string(),
-                generation: switched.generation + 1,
-                replicas: vec!["broker-x".to_string()],
-                set_generation: switched.generation,
-            },
-        )
-        .await
-        .expect_err("a hybrid election");
     assert!(matches!(err, StoreError::Conflict(_)), "got {err:?}");
     let err = store
         .seal_shard(&switched.key, switched.generation)

@@ -297,28 +297,6 @@ pub enum MetaCommand {
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         keep_counter: bool,
     },
-    /// Adopt a leader that elected itself
-    /// ([`crate::store::ControlPlaneStore::adopt_elected_leader`]). Level 21.
-    AdoptElectedLeader {
-        key: ShardKey,
-        expected_generation: u64,
-        elected: crate::model::ElectedLeader,
-        /// Level 26: a leader elected on another set is named on it
-        /// (`ShardAssignment::adopting_elected_set`) instead of the
-        /// generation alone being taken.
-        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-        elected_set: bool,
-        /// Level 27: so is this set's own leader elected on another set,
-        /// instead of only its generation being taken (#1929).
-        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-        own_leader_set: bool,
-        /// Level 45: as for `PutShardAssignment`.
-        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-        hold_unformed: bool,
-        /// Level 50: as for `PutShardAssignment`.
-        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-        keep_counter: bool,
-    },
     /// The placement lease goes to `holder`, advancing the token if it
     /// changes hands. Proposed only by a confirmed leader, so no expiry.
     TakePlacementLease {
@@ -805,9 +783,6 @@ impl MetaCommand {
                 55
             }
             Self::RegisterNodeInFleet { .. } | Self::FinalizeFleetFeature { .. } => 2,
-            // Writes a generation the store did not pick, which a member
-            // before level 21 cannot apply.
-            Self::AdoptElectedLeader { .. } => 21,
             Self::CreateResources { .. } => 5,
             Self::RevokePrincipals { .. } => 7,
             Self::ChangeAuthAndRevoke { .. } | Self::RotateRefreshToken { .. } => 9,
@@ -1397,6 +1372,11 @@ const REFORM_ALONE_OP: &str = "start_alone_epoch";
 /// An abandon's epoch compare and swap, by op.
 const ABANDON_EPOCH_OP: &str = "abandon_raft_epoch";
 
+/// Ops of commands retired with the hybrid. A new command never takes one: an
+/// older build's log may hold it, and members built from different commits
+/// would apply that entry differently.
+pub(crate) const RESERVED_OPS: &[&str] = &["adopt_elected_leader"];
+
 /// Whether `op` is refused below its level and otherwise appended as sent.
 fn is_gated(op: &str) -> bool {
     SWITCH_OPS.contains(&op)
@@ -1461,6 +1441,11 @@ pub fn decode_command(bytes: &[u8]) -> Result<MetaCommand, MetaError> {
 /// [`decode_command`], with the command's [`MetaCommand::version`] worked
 /// out from the same decoding rather than serializing it again.
 pub(crate) fn decode_command_with_level(bytes: &[u8]) -> Result<(MetaCommand, u16), MetaError> {
+    if let Some(op) = op_of(bytes).filter(|op| RESERVED_OPS.contains(&op.as_str())) {
+        return Err(MetaError::Unsupported(format!(
+            "command {op} was retired with the hybrid"
+        )));
+    }
     let envelope: Envelope = serde_json::from_slice(bytes)
         .map_err(|err| MetaError::Unsupported(format!("undecodable command: {err}")))?;
     if envelope.v > COMMAND_VERSION {

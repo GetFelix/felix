@@ -478,26 +478,6 @@ impl MetadataStateMachine {
                 .await
                 .map(assignment_written)
                 .map_err(Into::into),
-            MetaCommand::AdoptElectedLeader {
-                key,
-                expected_generation,
-                elected,
-                elected_set,
-                own_leader_set,
-                hold_unformed,
-                keep_counter,
-            } => store
-                .apply_adopt_elected_leader(
-                    &key,
-                    expected_generation,
-                    &elected,
-                    elected_set,
-                    own_leader_set,
-                    self.set_hold(hold_unformed, keep_counter),
-                )
-                .await
-                .map(assignment_written)
-                .map_err(Into::into),
             MetaCommand::SealShard {
                 key,
                 expected_generation,

@@ -108,16 +108,6 @@ const MOUNT_LEVEL: u16 = 24;
 /// its generation was promised to another node (#1730).
 const REFUSED_LEVEL: u16 = 25;
 
-/// The metadata level whose members name a leader elected on another set on
-/// that set when they adopt it, instead of taking only its generation
-/// (#1009).
-const ELECTED_SET_LEVEL: u16 = 26;
-
-/// The metadata level whose members also name the shard's own leader on the
-/// other set it was elected on, instead of taking only its generation
-/// (#1929).
-const OWN_LEADER_SET_LEVEL: u16 = 27;
-
 /// The metadata level whose members store the ballot a leader's refusal
 /// carries and name it past that ballot (#1951).
 const REFUSED_BALLOT_LEVEL: u16 = 28;
@@ -1330,41 +1320,6 @@ impl ControlPlaneStore for RaftStore {
                 current: current_generation,
             }),
             MetaResponse::FencedAssignment { token } => Ok(AssignmentWrite::Fenced { token }),
-            _ => Err(unexpected_shape("assignment")),
-        }
-    }
-
-    async fn adopt_elected_leader(
-        &self,
-        key: &ShardKey,
-        expected_generation: u64,
-        elected: crate::model::ElectedLeader,
-    ) -> StoreResult<AssignmentWrite> {
-        // Refused below level 21, before it reaches the log: the generation
-        // stays the one every member holds, and the election is not adopted.
-        // Below 26 every member applies the older form, which takes only the
-        // generation of a leader elected on another set, and below 27 it
-        // still does for the shard's own leader.
-        let level = self.group_level().await?;
-        match self
-            .propose_at(
-                level,
-                MetaCommand::AdoptElectedLeader {
-                    key: key.clone(),
-                    expected_generation,
-                    elected,
-                    elected_set: level >= ELECTED_SET_LEVEL,
-                    own_leader_set: level >= OWN_LEADER_SET_LEVEL,
-                    hold_unformed: level >= FIRST_FORM_LEVEL,
-                    keep_counter: level >= TARGET_COUNTER_LEVEL,
-                },
-            )
-            .await?
-        {
-            MetaResponse::Assignment { assignment } => Ok(AssignmentWrite::Written(assignment)),
-            MetaResponse::StaleAssignment { current_generation } => Ok(AssignmentWrite::Stale {
-                current: current_generation,
-            }),
             _ => Err(unexpected_shape("assignment")),
         }
     }

@@ -2,6 +2,21 @@
 //! leaves alone.
 use super::*;
 
+/// A retired op is answered as unsupported, the same on every member, and
+/// never read as a live command.
+#[test]
+fn a_reserved_op_is_refused_by_name() {
+    for op in RESERVED_OPS {
+        let entry = format!(r#"{{"v":1,"op":"{op}"}}"#);
+        match decode_command(entry.as_bytes()) {
+            Err(MetaError::Unsupported(reason)) => {
+                assert!(reason.contains("retired"), "{op}: {reason}")
+            }
+            other => panic!("{op} decoded: {other:?}"),
+        }
+    }
+}
+
 #[test]
 fn a_heartbeat_is_restamped() {
     // Goes through `encode_command` rather than a hand-written string, so a

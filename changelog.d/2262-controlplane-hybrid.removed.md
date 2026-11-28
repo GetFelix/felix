@@ -8,3 +8,6 @@
 - Breaking: `POST /v1/nodes/{node_id}/replica-status` is gone, with the
   `felix_replica_status_rejected_total` metric. Only the hybrid's leaders reported
   there; a Raft group reports through `raft-floors` and `raft-copy-id`.
+- The control plane no longer adopts a leader its replicas elected. The
+  `adopt_elected_leader` metadata command is retired and its op stays reserved: a
+  member that meets it in its log answers it as unsupported.

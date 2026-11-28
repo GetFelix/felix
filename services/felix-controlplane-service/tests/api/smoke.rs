@@ -1226,15 +1226,6 @@ impl ControlPlaneStore for FailingStore {
         Err(StoreError::Unexpected(anyhow::anyhow!("fail")))
     }
 
-    async fn adopt_elected_leader(
-        &self,
-        _key: &ShardKey,
-        _expected_generation: u64,
-        _elected: felix_controlplane_service::model::ElectedLeader,
-    ) -> StoreResult<felix_controlplane_service::store::AssignmentWrite> {
-        Err(StoreError::Unexpected(anyhow::anyhow!("fail")))
-    }
-
     async fn seal_shard(
         &self,
         _key: &ShardKey,
