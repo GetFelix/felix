@@ -26,8 +26,6 @@ pub(crate) use env::{
 pub use kafka::KafkaListenerConfig;
 pub use limits::{LimitsConfig, TenantQuota};
 pub use membership::MembershipConfig;
-#[cfg(feature = "sim")]
-pub(crate) use membership::cluster_features;
 pub use mqtt::{MqttListenerConfig, MqttWsConfig};
 pub use subscriber::{SubStreamMode, SubscriberLaneShard};
 pub use tls::{ClientTlsConfig, ClientTlsFiles, ControlPlaneClientCert};

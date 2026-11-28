@@ -2,9 +2,8 @@
 //! the `raft` feature, which the broker service enables by default), whose
 //! messages travel over the broker-internal transport in [`peer`]. The
 //! engine seam the broker writes and reads through is [`engine`]; the broker
-//! service hands in its serving state and write fence through
-//! [`engine::ShardServing`] and [`engine::WriteFence`], so nothing here
-//! depends on the service.
+//! service hands in its write fence through [`engine::WriteFence`], so
+//! nothing here depends on the service.
 
 pub mod peer;
 

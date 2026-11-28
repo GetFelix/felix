@@ -182,8 +182,6 @@ pub struct ClusterContext {
     /// Where a client may connect, for answering `Topology`. `None` on a broker
     /// with no cluster behind it, which then advertises no such feature.
     pub client_endpoints: Option<Arc<crate::cluster::client_endpoints::ClientEndpoints>>,
-    /// What replication last knew of each shard led here, for `shard_inspect`.
-    pub shard_status: Option<Arc<felix_replication::status::ShardStatusBoard>>,
 }
 
 /// How loudly to report a connection ending with `err`.

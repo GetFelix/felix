@@ -31,7 +31,6 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use felix_broker::{Broker, CacheWatchFilter, CacheWatchSubscription};
-use felix_storage::log::{AppendOnlyLog, ReadRange};
 use felix_wire::Message;
 use tokio::sync::mpsc;
 
@@ -44,10 +43,6 @@ use crate::serving::quic::codec::write_message;
 /// a control-plane-sized feed — one key or prefix, not a stream's firehose —
 /// so this bounds memory without a per-deployment knob.
 const WATCH_QUEUE_CAPACITY: usize = 1024;
-
-/// One page of history per read, bounding broker memory for a resume that
-/// starts arbitrarily far back.
-const HISTORY_PAGE_BYTES: usize = 1024 * 1024;
 
 /// Everything `handle_cache_watch_message` needs to answer on the control
 /// stream, bundled so the failure paths cannot drift apart.
@@ -335,7 +330,7 @@ pub(crate) async fn handle_cache_watch_message(
     let raft_ended = raft
         .is_some()
         .then(|| (Arc::clone(&publish_ctx.engine), shard_key.clone()));
-    let (log, tail, base, gate) = match &raft {
+    let (tail, base) = match &raft {
         Some(join) => {
             let mut tail = join.tail;
             // A resume from past the edge is an offset another member gave
@@ -373,12 +368,12 @@ pub(crate) async fn handle_cache_watch_message(
             // Replayed changes reach back to the resume offset; without
             // them, anything below the edge is resnapshotted.
             let base = if replayed.is_some() { 0 } else { tail };
-            (None, tail, base, None)
+            (tail, base)
         }
-        // A broker that runs its caches on Raft has no member of this shard
-        // open yet. Its hybrid store is never written, so a watch served from
-        // it would join an empty log and hand out no state.
-        None if publish_ctx.engine.runs_raft() => {
+        // No Raft member of this shard is open here yet: the shard's store
+        // is never written outside its group, so a watch served from it would
+        // join an empty log and hand out no state. Retryable.
+        None => {
             subscriptions.release();
             let refusal = crate::serving::cache_routing::raft::not_open(&shard_key);
             responder
@@ -386,88 +381,13 @@ pub(crate) async fn handle_cache_watch_message(
                 .await?;
             return Ok(true);
         }
-        None => {
-            let Some(log) = broker
-                .cache()
-                .shard_log(
-                    &request.tenant_id,
-                    &request.namespace,
-                    &request.cache,
-                    shard,
-                )
-                .await
-            else {
-                subscriptions.release();
-                responder
-                    .send(
-                        ClientError::new(
-                            felix_wire::ErrorCode::Storage,
-                            "the cache shard's log could not be opened",
-                        )
-                        .with_retry(felix_wire::RetryClass::Retry)
-                        .into_message(),
-                    )
-                    .await?;
-                return Ok(true);
-            };
-            // The applied frontier where the cache reports one: a write
-            // already in the log but not yet applied is in no snapshot, and
-            // with the log's tail its change would arrive below the live edge
-            // and be dropped.
-            let applied = broker
-                .cache()
-                .applied_through(
-                    &request.tenant_id,
-                    &request.namespace,
-                    &request.cache,
-                    shard,
-                )
-                .await;
-            let tail = match (log.tail_offset().await, applied) {
-                (Ok(tail), Ok(applied)) => applied.map_or(tail, |applied| applied.min(tail)),
-                (Err(err), _) | (_, Err(err)) => {
-                    subscriptions.release();
-                    responder
-                        .send(
-                            ClientError::new(
-                                felix_wire::ErrorCode::Storage,
-                                format!("the cache shard's log could not be read: {err}"),
-                            )
-                            .with_retry(felix_wire::RetryClass::Retry)
-                            .into_message(),
-                        )
-                        .await?;
-                    return Ok(true);
-                }
-            };
-            let base = log.readable_base();
-
-            // Everything the catch-up hands out is below the tail, so on a
-            // `Quorum` cache it waits for the mark to get there first.
-            let gate = CommitGate {
-                broker: Arc::clone(&broker),
-                key: shard_key,
-                engine: Arc::clone(&publish_ctx.engine),
-                timeout: publish_ctx.quorum_timeout,
-            };
-            if let Err(err) = gate.wait(tail).await {
-                subscriptions.release();
-                responder
-                    .send(ClientError::from_anyhow(&anyhow::Error::new(err)).into_message())
-                    .await?;
-                return Ok(true);
-            }
-            (Some(log), tail, base, Some(gate))
-        }
     };
 
     // What fills the gap between the requested position and the live edge.
     enum CatchUp {
         None,
-        /// Replay `[from, tail)` from the log.
-        Replay {
-            from: u64,
-        },
+        /// Replay the changes from the resume offset up to the tail.
+        Replay,
         /// Each matching key's current value, then live — either because the
         /// watch asked for retained delivery, or because the offset it asked
         /// to resume from was collapsed by compaction and current state is the
@@ -501,7 +421,7 @@ pub(crate) async fn handle_cache_watch_message(
                 .await?;
             return Ok(true);
         }
-        (false, Some(from)) if from >= base => CatchUp::Replay { from },
+        (false, Some(from)) if from >= base => CatchUp::Replay,
         (false, Some(_)) => CatchUp::Snapshot,
     };
     // The compacted-resume case, distinct from asked-for retained delivery
@@ -516,22 +436,6 @@ pub(crate) async fn handle_cache_watch_message(
     // them here would double them.
     let snapshot = match (&catch_up, raft) {
         (CatchUp::Snapshot, Some(join)) => Some(join.entries),
-        (CatchUp::Snapshot, None) => {
-            match snapshot_entries(broker.cache(), &request, shard, &filter, tail).await {
-                Ok(entries) => Some(entries),
-                Err(err) => {
-                    subscriptions.release();
-                    responder
-                        .send(
-                            ClientError::internal(format!("cache snapshot failed: {err}"))
-                                .with_retry(felix_wire::RetryClass::Retry)
-                                .into_message(),
-                        )
-                        .await?;
-                    return Ok(true);
-                }
-            }
-        }
         (_, _) => None,
     };
     let retained_count = request
@@ -583,12 +487,11 @@ pub(crate) async fn handle_cache_watch_message(
         .await?;
 
     let catch_up_result = match (catch_up, snapshot) {
-        (CatchUp::Replay { from }, _) => match &log {
-            Some(log) => write_replayed_changes(&mut event_send, log, &filter, from, tail).await,
-            // A Raft shard replays its recent changes, or nothing when the
-            // resume is at or past its edge.
-            None => write_raft_changes(&mut event_send, replayed.unwrap_or_default()).await,
-        },
+        // A Raft shard replays its recent changes, or nothing when the
+        // resume is at or past its edge.
+        (CatchUp::Replay, _) => {
+            write_raft_changes(&mut event_send, replayed.unwrap_or_default()).await
+        }
         (CatchUp::Snapshot, Some(entries)) => write_snapshot(&mut event_send, entries).await,
         _ => Ok(()),
     };
@@ -613,16 +516,7 @@ pub(crate) async fn handle_cache_watch_message(
         )
     });
     tokio::spawn(async move {
-        run_watch_delivery(
-            watch,
-            event_send,
-            tail,
-            subscriptions,
-            shard_moved,
-            gate,
-            revoked,
-        )
-        .await;
+        run_watch_delivery(watch, event_send, tail, subscriptions, shard_moved, revoked).await;
         if let Some((engine, key)) = raft_ended {
             raft_watch_ended(&engine, &key);
         }
@@ -637,7 +531,7 @@ struct RaftJoin {
 }
 
 /// The join point of `key`'s Raft group on this broker, read after the
-/// watch registered. `None` when the hybrid runs the shard. Values are read
+/// watch registered. `None` when no Raft member runs the shard here. Values are read
 /// only when `entries` asks for them, and then the join first passes the
 /// group's read barrier; its error is retryable.
 async fn raft_join(
@@ -775,158 +669,6 @@ async fn raft_reaches(
     }
 }
 
-/// What a watch of a `Quorum` cache waits on before handing out a change.
-struct CommitGate {
-    broker: Arc<Broker>,
-    key: crate::shards::ShardKey,
-    engine: Arc<crate::shards::routing::StreamEngine>,
-    timeout: std::time::Duration,
-}
-
-impl CommitGate {
-    /// Wait until every change below `end` is committed. Returns at once for
-    /// a cache that is not `Quorum`, or a broker with no replicas to wait for.
-    async fn wait(&self, end: u64) -> Result<(), felix_replication::quorum::QuorumError> {
-        use felix_replication::engine::Engine;
-        let consistency = self
-            .broker
-            .cache_consistency(&self.key.tenant_id, &self.key.namespace, &self.key.stream)
-            .await;
-        self.engine
-            .await_readable(consistency, &self.key, end, self.timeout)
-            .await
-    }
-
-    /// [`Self::wait`] for as long as it takes, for a live change. False once
-    /// this broker stops serving the shard: the change is not committed here
-    /// and never will be.
-    async fn wait_live(&self, end: u64) -> bool {
-        loop {
-            match self.wait(end).await {
-                Ok(()) => return true,
-                Err(felix_replication::quorum::QuorumError::TimedOut { .. }) => continue,
-                Err(
-                    felix_replication::quorum::QuorumError::LeadershipLost { .. }
-                    | felix_replication::quorum::QuorumError::NotAppended { .. },
-                ) => {
-                    return false;
-                }
-                // Only a conditional stream publish or a proposal is
-                // answered with these.
-                Err(
-                    felix_replication::quorum::QuorumError::OffsetMismatch { .. }
-                    | felix_replication::quorum::QuorumError::TooLarge { .. },
-                ) => {
-                    return false;
-                }
-            }
-        }
-    }
-}
-
-/// Replay `[from, tail)` from the shard log, delivering only matching changes.
-///
-/// Deletes replay as tombstoned changes: the history of a key includes its
-/// removals, and a resuming client folding the sequence must see them. Paged,
-/// so a resume from far back costs one page of memory at a time and a slow
-/// client backpressures the read instead of buffering the whole range.
-async fn write_replayed_changes(
-    event_send: &mut quinn::SendStream,
-    log: &felix_storage::DiskLog,
-    filter: &CacheWatchFilter,
-    from: u64,
-    until: u64,
-) -> Result<()> {
-    let mut at = from;
-    while at < until {
-        let page = log
-            .read_range(ReadRange {
-                start: at,
-                max_bytes: HISTORY_PAGE_BYTES,
-            })
-            .await?;
-        // Empty below the tail when only trim records are left: go on past
-        // them, and stop only where the log ends.
-        if page.next <= at {
-            break;
-        }
-        at = page.next;
-        for record in page.records {
-            if record.offset >= until {
-                return Ok(());
-            }
-            if let Some(message) = replayed_change(record, filter)? {
-                write_message(event_send, message).await?;
-            }
-        }
-    }
-    Ok(())
-}
-
-/// The change a replayed record delivers, if it is data and matches.
-fn replayed_change(
-    record: felix_storage::log::LogRecord,
-    filter: &CacheWatchFilter,
-) -> Result<Option<Message>> {
-    if !record.mark.is_data() {
-        // Not a change; see the cache index.
-        return Ok(None);
-    }
-    let op = match felix_storage::cache::CacheOp::decode(&record.payload) {
-        Ok(op) => op,
-        Err(err) => return Err(anyhow::anyhow!("cache record did not decode: {err}")),
-    };
-    if !filter.matches(op.key()) {
-        return Ok(None);
-    }
-    Ok(Some(match op {
-        felix_storage::cache::CacheOp::Put {
-            key,
-            value,
-            expires_at_millis,
-            ..
-        } => Message::CacheEvent {
-            key,
-            value: Some(value),
-            offset: record.offset,
-            expires_at_millis,
-        },
-        felix_storage::cache::CacheOp::Delete { key } => Message::CacheEvent {
-            key,
-            value: None,
-            offset: record.offset,
-            expires_at_millis: 0,
-        },
-    }))
-}
-
-/// Each matching key's current value below `tail`, in offset order.
-///
-/// Entries at or past `tail` are left out: they were applied after the
-/// watcher registered, so their changes arrive live and including them here
-/// would double them. Offset order, so the client's checkpoint advances
-/// monotonically through the snapshot exactly as it does through a replay.
-async fn snapshot_entries(
-    cache: &(dyn felix_storage::StorageApi + Send),
-    request: &WatchRequest,
-    shard: u32,
-    filter: &CacheWatchFilter,
-    tail: u64,
-) -> Result<Vec<felix_storage::CacheSnapshotEntry>> {
-    let mut entries = cache
-        .live_entries(
-            &request.tenant_id,
-            &request.namespace,
-            &request.cache,
-            shard,
-        )
-        .await
-        .map_err(|err| anyhow::anyhow!("{err}"))?;
-    entries.retain(|entry| entry.offset < tail && filter.matches(&entry.key));
-    entries.sort_by_key(|entry| entry.offset);
-    Ok(entries)
-}
-
 /// Deliver a snapshot's current values on the event stream.
 async fn write_snapshot(
     event_send: &mut quinn::SendStream,
@@ -956,8 +698,6 @@ async fn run_watch_delivery(
     subscriptions: Arc<super::publish::IdentityLimits>,
     // The watch's id, when the client offered `FEATURE_SHARD_MOVED`.
     shard_moved: Option<u64>,
-    // `None` on a Raft shard, whose changes are committed before they apply.
-    gate: Option<CommitGate>,
     // The credential the watch was opened with, and the last frame to send
     // when it is revoked.
     revoked: Option<(crate::serving::revocation::Revocable, Message)>,
@@ -987,36 +727,6 @@ async fn run_watch_delivery(
                     // covered it; the offset is what makes the duplicate cheap
                     // to detect.
                     continue;
-                }
-                let committed = match &gate {
-                    Some(gate) => gate.wait_live(event.offset + 1).await,
-                    None => true,
-                };
-                if !committed {
-                    // Not committed here, and this broker has stopped serving
-                    // the shard: the client resumes from this change wherever
-                    // it is served now. Without `shard_moved` a reset, which a
-                    // client reads as a lost watch, not a finished one.
-                    match shard_moved {
-                        Some(subscription_id) => {
-                            let to = watch.moved().map(|moved| moved.to.clone());
-                            let _ = write_message(
-                                &mut event_send,
-                                Message::ShardMoved {
-                                    subscription_id,
-                                    resume_from: Some(event.offset),
-                                    node_id: to.as_ref().and_then(|to| to.node_id.clone()),
-                                    addr: to.as_ref().and_then(|to| to.addr.clone()),
-                                    generation: to.map_or(0, |to| to.generation),
-                                },
-                            )
-                            .await;
-                        }
-                        None => {
-                            let _ = event_send.reset(quinn::VarInt::from_u32(1));
-                        }
-                    }
-                    break;
                 }
                 let message = Message::CacheEvent {
                     key: event.key,

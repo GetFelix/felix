@@ -9,7 +9,6 @@ mod incarnation;
 mod mounts;
 mod pass;
 mod provisional;
-mod refresh;
 mod replay;
 mod retention;
 mod seeding;

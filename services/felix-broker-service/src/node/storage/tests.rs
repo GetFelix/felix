@@ -989,31 +989,3 @@ fn a_mint_record_for_an_older_id_is_removed() {
     assert!(kept.minted, "the rotation's credit");
     assert_eq!(mint_record(root), None);
 }
-
-/// **An uncredited rotation record is removed from a simulated directory
-/// too.** The record lives only in the simulator's memory, so a check of the
-/// real disk would leave it there.
-#[cfg(feature = "sim")]
-#[test]
-fn an_uncredited_rotation_record_is_removed_under_the_simulator() {
-    let root = std::env::temp_dir().join(format!(
-        "felix-sim-uncredited-rotation-{}",
-        std::process::id()
-    ));
-    felix_storage::sim_fs::register_root(&root);
-    let log = felix_storage::log::LogConfig::default();
-    start_run(&root, &log, None, None).expect("first run");
-    register(&root, 1);
-    let after = rotate_mid_run(&root, 7);
-    assert!(!root.exists(), "the directory is only in memory");
-
-    let added_again = Registered {
-        registered_at_millis: Some(REGISTERED_AT + 1),
-        ..dated(after, 1)
-    };
-    let (_, kept) = restart(&root, Some(&added_again));
-    let left = rotation_record(&root);
-    felix_storage::sim_fs::unregister_root(&root);
-    assert!(!kept.minted);
-    assert_eq!(left, None);
-}

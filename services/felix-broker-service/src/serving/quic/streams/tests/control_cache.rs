@@ -634,65 +634,6 @@ async fn control_loop_cache_put_missing_no_request_id_returns_true() -> Result<(
     Ok(())
 }
 
-/// Retained and resume are refused together: the replay already reconstructs
-/// the state a retained start would shortcut, and serving both would hand
-/// over every value twice. The typed client cannot express the combination,
-/// so the refusal is proven here at the control loop, where a raw frame can.
-#[tokio::test]
-async fn control_loop_refuses_a_retained_watch_with_an_offset() -> Result<()> {
-    let dir = tempfile::tempdir()?;
-    let cache = felix_storage::LogCache::open(
-        dir.path(),
-        felix_storage::log::LogConfig {
-            fsync_mode: felix_storage::log::FsyncMode::None,
-            preallocate_segments: false,
-            ..felix_storage::log::LogConfig::default()
-        },
-    )?;
-    let broker = Arc::new(Broker::new(Box::new(cache)));
-    broker.register_tenant("t1").await?;
-    broker.register_namespace("t1", "default").await?;
-    broker
-        .register_cache(
-            "t1",
-            "default",
-            "primary",
-            felix_broker::CacheMetadata::default(),
-        )
-        .await?;
-    let auth = auth_fixture("t1", default_perms());
-    let frames = vec![
-        Ok(Some(frame_from_message(auth_message(&auth)))),
-        Ok(Some(frame_from_message(Message::CacheWatch {
-            tenant_id: "t1".to_string(),
-            namespace: "default".to_string(),
-            cache: "primary".to_string(),
-            key: Some("k".to_string()),
-            prefix: None,
-            shard: None,
-            from_offset: Some(3),
-            retained: true,
-            subscription_id: None,
-        }))),
-    ];
-    let (_, messages) = run_control_loop_with_frames(
-        broker,
-        Arc::clone(&auth.auth),
-        frames,
-        BrokerConfig::default(),
-    )
-    .await?;
-    assert!(
-        messages.iter().any(|message| matches!(
-            message,
-            Outgoing::Message(Message::Error { message, .. })
-                if message.contains("retained or from_offset")
-        )),
-        "the combination must be refused, not guessed at",
-    );
-    Ok(())
-}
-
 /// A watch with both key and prefix is refused, and so is one with neither.
 #[tokio::test]
 async fn control_loop_refuses_a_watch_with_an_ambiguous_filter() -> Result<()> {

@@ -5,7 +5,6 @@ use std::time::Duration;
 use crate::shards::routing::StreamEngine;
 use felix_authz::TenantKeyCache;
 use felix_broker::Broker;
-use felix_replication::ReplicaHandler;
 use felix_router::{RegionRouter, ShardRouter};
 use felix_storage::EphemeralCache;
 use felix_wire::internal::{
@@ -28,13 +27,10 @@ fn handler() -> BrokerPeerHandler<StreamEngine> {
         "http://localhost".to_string(),
         Arc::new(TenantKeyCache::default()),
     ));
-    let engine = Arc::new(StreamEngine::new(
-        None,
-        Some(Arc::new(IngressRouter::new(
-            Arc::clone(&router),
-            Arc::default(),
-        ))),
-    ));
+    let engine = Arc::new(StreamEngine::new(Some(Arc::new(IngressRouter::new(
+        Arc::clone(&router),
+        Arc::default(),
+    )))));
     let forwarding = ForwardingHandler::new(
         Arc::clone(&broker),
         Arc::clone(&engine),
@@ -43,9 +39,6 @@ fn handler() -> BrokerPeerHandler<StreamEngine> {
         Duration::from_millis(100),
         Arc::new(BrokerAuth::with_key_store(key_store)),
     );
-    engine
-        .set_replica(ReplicaHandler::new(broker, router))
-        .expect("set once");
     BrokerPeerHandler::new(forwarding, engine)
 }
 
@@ -248,19 +241,4 @@ async fn every_replication_request_reaches_the_engine() {
             "{kind:?} was not routed: {text}"
         );
     }
-}
-
-/// A forwarded write never reaches the engine, and a response is no request.
-#[tokio::test]
-async fn the_engine_refuses_what_is_not_replication() {
-    let answer = handler()
-        .engine
-        .handle(None, PeerCapabilities::NONE, publish())
-        .await;
-    assert!(
-        matches!(&answer, InternalMessage::ForwardPublishError(error)
-        if error.code == ErrorCode::Malformed
-            && error.detail.ends_with("is not a replication request")),
-        "{answer:?}"
-    );
 }

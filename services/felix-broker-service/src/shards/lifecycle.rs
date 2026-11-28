@@ -21,7 +21,6 @@
 //! is handed over, so the cut-over only has to record the new generation.
 pub mod fence;
 pub mod metrics;
-pub mod promotion;
 
 use felix_common::random::HashMap;
 use std::sync::Arc;
@@ -1026,8 +1025,8 @@ pub trait ShardStore: Send + Sync {
     ) -> anyhow::Result<()>;
     /// Whether this broker may lead `key` at `generation` from the copy it
     /// holds, checked before anything is written for the open. A
-    /// [`GaveUp`] when it gave the copy up after a crash; see
-    /// `felix_replication::unclean`. `replicated` is whether the assignment
+    /// [`GaveUp`] when it gave the copy up after a crash. `replicated` is
+    /// whether the assignment
     /// names followers: an only copy is led whatever it lost.
     async fn may_lead(
         &self,
@@ -1098,12 +1097,6 @@ pub(crate) fn no_owner(generation: u64) -> felix_broker::ShardHandoff {
     }
 }
 
-/// The round a leadership check confirms by right now, if the fleet reads by
-/// round. Asked at each check: the fleet can start reading by round at any
-/// time.
-pub(crate) type Rounds =
-    Arc<dyn Fn() -> Option<Arc<dyn felix_replication::quorum::LeadershipCheck>> + Send + Sync>;
-
 /// Ends the readers of a released shard, for the stores that serve them.
 #[derive(Clone)]
 pub struct ShardReaders {
@@ -1129,39 +1122,21 @@ impl ShardReaders {
     }
 
     /// End the readers of the shards this broker may no longer serve, until
-    /// `shutdown`.
+    /// `shutdown`: those [`ShardLifecycle::active`] holds and those `memory`
+    /// serves.
     ///
     /// A lapsed lease means another broker may lead these shards by now, so a
     /// reader here could be following a log the new leader has moved past.
     /// Each subscription and watch ends the way a moved one does, with where
     /// to resume and no named owner, and the client finds the shard again
     /// through its entry broker. New reads are refused until the lease comes
-    /// back (`redirect_for`). What a `Quorum` stream held back stays held: if
-    /// the lease is renewed at the same generation the mark releases it, and
-    /// if the shard goes, releasing it drops it.
+    /// back (`redirect_for`). A shard this broker learns has a newer leader
+    /// ([`ShardFence::depose`]) ends its readers too.
     ///
-    /// A shard whose sessions need no lease ([`ShardFence::sessions_lease_free`])
-    /// is left serving at the lapse. Its readers end instead when a follower
-    /// says the control plane assigned a newer generation, or this broker took
-    /// one itself ([`ShardFence::depose`]), or when no
-    /// majority has confirmed it for a lease duration
-    /// ([`ShardFence::unheard`]). The rounds that check run only while the
-    /// lease is lapsed; while it holds, a new assignment reaches this broker
-    /// the usual way. Silence alone names no newer leader, and the shard's
-    /// `Quorum` writes go on wherever a majority answers, so rounds go on for
-    /// a shard ended for silence, lease or no lease, and the first one
-    /// confirmed admits its readers again.
-    ///
-    /// `rounds` is the round those checks confirm by, when the fleet has
-    /// one. The shards in `memory` never go on without the lease: their
-    /// readers end at every lapse.
-    ///
-    /// [`ShardFence::sessions_lease_free`]: fence::ShardFence::sessions_lease_free
     /// [`ShardFence::depose`]: fence::ShardFence::depose
     pub(crate) async fn watch_leadership(
         self,
         fence: Arc<fence::ShardFence>,
-        rounds: Option<Rounds>,
         lifecycle: Arc<tokio::sync::Mutex<ShardLifecycle>>,
         memory: Option<Arc<crate::shards::memory::MemoryShards>>,
         shutdown: tokio_util::sync::CancellationToken,
@@ -1169,13 +1144,7 @@ impl ShardReaders {
         let Some(lease) = fence.lease().cloned() else {
             return;
         };
-        // Lease-free shards kept serving past the lapse, and when a majority
-        // last confirmed each.
-        let mut unleased: HashMap<ShardKey, (u64, tokio::time::Instant)> = HashMap::default();
-        // Shards ended for silence, and the generation, until heard again.
-        let mut unheard: HashMap<ShardKey, u64> = HashMap::default();
         loop {
-            let probe = (lease.usable() / 4).max(std::time::Duration::from_millis(100));
             tokio::select! {
                 _ = shutdown.cancelled() => return,
                 _ = lease.lapsed() => {
@@ -1190,98 +1159,18 @@ impl ShardReaders {
                         led.extend(memory.servable());
                     }
                     led.sort();
-                    let now = tokio::time::Instant::now();
                     for (key, generation) in led {
-                        if fence.sessions_lease_free(&key, generation) {
-                            unleased.entry(key).or_insert((generation, now));
-                        } else {
-                            self.end(&key, Some(no_owner(generation)), false).await;
-                        }
+                        self.end(&key, Some(no_owner(generation)), false).await;
                     }
                 }
                 _ = fence.deposed() => {
                     for (key, generation) in fence.take_deposals() {
-                        unleased.remove(&key);
                         let current = lifecycle.lock().await.generation(&key);
                         if current == Some(generation) {
                             self.end(&key, Some(no_owner(generation)), false).await;
                         }
                     }
                 }
-                _ = tokio::time::sleep(probe), if !unleased.is_empty() || !unheard.is_empty() => {
-                    unheard.retain(|key, generation| {
-                        let tracked = fence.is_open_at(key, *generation)
-                            && !fence.names_newer_leader(key, *generation);
-                        // Untracked, no round would ever hear it again.
-                        if !tracked {
-                            fence.heard(key, *generation);
-                        }
-                        tracked
-                    });
-                    // A renewed lease alone does not clear silence: the
-                    // routes it serves on may predate a promotion made while
-                    // it was cut off. Only a round says no one replaced it.
-                    if lease.is_valid_now() {
-                        unleased.clear();
-                    }
-                    let check = rounds.as_ref().and_then(|rounds| rounds());
-                    self.probe(&fence, check, &mut unleased, &mut unheard, lease.usable())
-                        .await;
-                }
-            }
-        }
-    }
-
-    /// One round for each lease-free shard kept past the lapse, and for each
-    /// one ended for silence. A shard no majority has confirmed for `silence`
-    /// is marked [`fence::ShardFence::unheard`], which ends its readers on the
-    /// next turn of [`Self::watch_leadership`]; one confirmed again is heard
-    /// and serves its readers again.
-    async fn probe(
-        &self,
-        fence: &fence::ShardFence,
-        check: Option<Arc<dyn felix_replication::quorum::LeadershipCheck>>,
-        unleased: &mut HashMap<ShardKey, (u64, tokio::time::Instant)>,
-        unheard: &mut HashMap<ShardKey, u64>,
-        silence: std::time::Duration,
-    ) {
-        let check = check.as_ref();
-        let mut probed: Vec<(ShardKey, u64)> = unleased
-            .iter()
-            .map(|(key, (generation, _))| (key.clone(), *generation))
-            .chain(
-                unheard
-                    .iter()
-                    .map(|(key, generation)| (key.clone(), *generation)),
-            )
-            .collect();
-        probed.sort();
-        let rounds = probed.into_iter().map(|(key, generation)| async move {
-            let confirmed = match check {
-                Some(check) => check.confirm(&key, generation).await.is_ok(),
-                None => false,
-            };
-            (key, generation, confirmed)
-        });
-        let now = tokio::time::Instant::now();
-        for (key, generation, confirmed) in futures::future::join_all(rounds).await {
-            if unheard.get(&key) == Some(&generation) {
-                if confirmed {
-                    unheard.remove(&key);
-                    fence.heard(&key, generation);
-                    unleased.insert(key, (generation, now));
-                }
-                continue;
-            }
-            let Some((_, heard)) = unleased.get_mut(&key) else {
-                continue;
-            };
-            if confirmed {
-                *heard = now;
-            } else if now.saturating_duration_since(*heard) >= silence {
-                unleased.remove(&key);
-                fence.unheard(&key, generation);
-                unheard.insert(key, generation);
             }
         }
     }
@@ -1473,9 +1362,6 @@ pub struct DurableShardStore {
     /// This broker's node id, when it keeps ballots: leading a generation is
     /// accepting it from itself.
     ballot: Option<String>,
-    /// Set when this process started after a crash that may have cost it
-    /// records it acknowledged.
-    unclean: Option<std::sync::Arc<felix_replication::unclean::UncleanStart>>,
     /// The lifecycle's write fence, which keeps what probes of given-up
     /// shards found.
     fence: Option<std::sync::Arc<fence::ShardFence>>,
@@ -1503,7 +1389,6 @@ impl DurableShardStore {
             readers: None,
             generation_starts: None,
             ballot: None,
-            unclean: None,
             fence: None,
         }
     }
@@ -1512,15 +1397,6 @@ impl DurableShardStore {
     /// follower is ahead of can be led again. See `felix_replication::reclaim`.
     pub fn with_fence(mut self, fence: std::sync::Arc<fence::ShardFence>) -> Self {
         self.fence = Some(fence);
-        self
-    }
-
-    /// Lead no shard from a copy this broker led before an unclean start.
-    pub fn with_unclean_start(
-        mut self,
-        unclean: std::sync::Arc<felix_replication::unclean::UncleanStart>,
-    ) -> Self {
-        self.unclean = Some(unclean);
         self
     }
 
@@ -1741,10 +1617,7 @@ impl ShardStore for DurableShardStore {
 
     /// A copy given up after a crash is not led again, after any restart,
     /// until a newer leader has shipped to it or a probe found no follower
-    /// ahead of it. On an unclean start a copy that may be short of what this
-    /// broker acknowledged is given up here, before the open writes anything:
-    /// the copy it led, and one it followed at an older generation that no
-    /// leader has shipped to since. Leading from either would count it.
+    /// ahead of it.
     async fn may_lead(
         &self,
         key: &ShardKey,
@@ -1758,9 +1631,6 @@ impl ShardStore for DurableShardStore {
             self.own_log(key, incarnation).await?
         };
         let Some(log) = log else {
-            if let Some(unclean) = &self.unclean {
-                unclean.lead(key, generation);
-            }
             return Ok(());
         };
         // Reclaimed: a probe of every follower since the give-up found none
@@ -1778,22 +1648,6 @@ impl ShardStore for DurableShardStore {
         if replicated && log.gave_up() && !reclaimed {
             return Err(GaveUp { generation }.into());
         }
-        let Some(unclean) = &self.unclean else {
-            return Ok(());
-        };
-        if replicated && !reclaimed && unclean.unvouched(key, &log, generation) {
-            log.give_up_generation()
-                .await
-                .map_err(|err| anyhow::Error::new(err).context("give up the generation it led"))?;
-            tracing::warn!(
-                stream = %key.stream,
-                shard = key.shard,
-                generation,
-                "not leading the shard from a copy that may have lost records in this broker's crash",
-            );
-            return Err(GaveUp { generation }.into());
-        }
-        unclean.lead(key, generation);
         Ok(())
     }
 
@@ -2399,9 +2253,7 @@ pub async fn write_generation_start(
         .tail_offset()
         .await
         .map_err(|err| anyhow::Error::new(err).context("read shard tail"))?;
-    let started = felix_replication::quorum::generation_start(log, generation)
-        .await
-        .is_some();
+    let started = generation_start(log, generation).await.is_some();
     match log.generations().last() {
         Some(epoch) if epoch.generation == generation && epoch.start_offset == tail => {}
         // A new stint at a generation this broker led before: it was elected
@@ -2451,6 +2303,28 @@ pub async fn write_generation_start(
     }
     .map_err(|err| anyhow::Error::new(err).context("append the generation-start record"))?;
     Ok(())
+}
+
+/// Where `log`'s generation-start record for `generation` sits, if the log
+/// begins that generation with one.
+async fn generation_start(log: &felix_broker::StreamLog, generation: u64) -> Option<u64> {
+    let start = log
+        .generations()
+        .iter()
+        .rev()
+        .find(|epoch| epoch.generation == generation)?
+        .start_offset;
+    let first = log
+        .read_replicated_from(start, 1)
+        .await
+        .ok()?
+        .into_iter()
+        .next()?;
+    // A switch seal's record carries the base after the generation.
+    (first.offset == start
+        && first.mark.is_generation_start()
+        && first.payload.get(..8) == Some(&generation.to_be_bytes()[..]))
+    .then_some(start)
 }
 
 /// Write the generation-start record for a leadership that begins without

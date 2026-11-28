@@ -216,8 +216,8 @@ impl Running {
         // Closing the tracker is what lets `wait()` resolve; without it the wait would
         // hang until the deadline even with no connections left. The publish
         // executors and their completions are tracked here too, so this also waits
-        // for publishes acknowledged on enqueue to be written before replication
-        // is told to catch up and storage is flushed.
+        // for publishes acknowledged on enqueue to be written before storage
+        // is flushed.
         connections.close();
         budget.drain("quic_connections", connections.wait()).await;
 
@@ -238,30 +238,7 @@ impl Running {
             }
         }
 
-        // Nothing is written here any more. Every shard led here goes onto a
-        // follower before shipping stops, and shipping stops before the pool
-        // closes: a record only this broker holds, or a report made after it
-        // can no longer ship, leaves the control plane no follower it may
-        // promote, and the shard never fails over. See docs/replication-design.md.
-        let mut shard_tasks = shard_tasks;
-        if let Some(replication) = shard_tasks
-            .as_mut()
-            .and_then(|tasks| tasks.replication.take())
-        {
-            // Half of what is left at most: a follower that is down may not
-            // come back in time, and deregistering still needs some.
-            let bound = budget.remaining() / 2;
-            if tokio::time::timeout(bound, replication.caught_up())
-                .await
-                .is_err()
-            {
-                tracing::warn!(
-                    "stopping while a shard led here is on no follower in full; \
-                     the control plane cannot promote one until this broker returns",
-                );
-            }
-            budget.drain("replication", replication.stop()).await;
-        }
+        // Nothing is written here any more.
         if let Some(pool) = &peers {
             pool.shutdown().await;
         }

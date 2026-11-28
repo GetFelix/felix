@@ -23,7 +23,6 @@ use felix_wire::internal::{AckMode, ForwardProducer, ShardRef};
 use tempfile::TempDir;
 
 use super::*;
-use felix_replication::quorum::QuorumMarks;
 
 mod client_certs;
 
@@ -209,37 +208,30 @@ async fn broker_with(consistency: ConsistencyLevel) -> (Arc<Broker>, TempDir) {
     (Arc::new(broker), dir)
 }
 
-fn handler(
-    broker: Arc<Broker>,
-    marks: Option<Arc<QuorumMarks>>,
-    timeout: Duration,
-) -> ForwardingHandler {
-    handler_with(broker, marks, timeout, Credentials::new().auth)
+fn handler(broker: Arc<Broker>, timeout: Duration) -> ForwardingHandler {
+    handler_with(broker, timeout, Credentials::new().auth)
 }
 
 fn handler_with(
     broker: Arc<Broker>,
-    marks: Option<Arc<QuorumMarks>>,
     timeout: Duration,
     auth: Arc<BrokerAuth>,
 ) -> ForwardingHandler {
-    handler_routed(broker, marks, timeout, auth, router())
+    handler_routed(broker, timeout, auth, router())
 }
 
 fn handler_routed(
     broker: Arc<Broker>,
-    marks: Option<Arc<QuorumMarks>>,
     timeout: Duration,
     auth: Arc<BrokerAuth>,
     router: Arc<ShardRouter>,
 ) -> ForwardingHandler {
-    handler_on(broker, marks, timeout, auth, router, |_| {})
+    handler_on(broker, timeout, auth, router, |_| {})
 }
 
 /// [`handler_routed`], with `engine` given its last pieces by `wire`.
 fn handler_on(
     broker: Arc<Broker>,
-    marks: Option<Arc<QuorumMarks>>,
     timeout: Duration,
     auth: Arc<BrokerAuth>,
     router: Arc<ShardRouter>,
@@ -278,7 +270,7 @@ fn handler_on(
         ingress.fence().open(key, *generation);
     }
     ingress.publish_servable(servable);
-    let engine = crate::shards::routing::StreamEngine::new(marks, Some(ingress));
+    let engine = crate::shards::routing::StreamEngine::new(Some(ingress));
     wire(&engine);
     ForwardingHandler::new(
         broker,
@@ -350,7 +342,7 @@ fn unauthorized_publish(answer: InternalMessage) -> String {
 #[tokio::test]
 async fn a_forward_without_a_credential_is_refused_and_writes_nothing() {
     let (broker, _dir) = broker_with(ConsistencyLevel::Leader).await;
-    let handler = handler(Arc::clone(&broker), None, Duration::from_secs(1));
+    let handler = handler(Arc::clone(&broker), Duration::from_secs(1));
 
     let detail = unauthorized_publish(handler.apply(forwarded_with(String::new())).await);
     assert!(detail.contains("no credential"), "{detail}");
@@ -368,7 +360,7 @@ async fn a_forward_without_a_credential_is_refused_and_writes_nothing() {
 async fn a_forward_with_headers_is_stored_with_them() {
     let (broker, _dir) = broker_with(ConsistencyLevel::Leader).await;
     broker.record_headers_when(|| true);
-    let handler = handler(Arc::clone(&broker), None, Duration::from_secs(1));
+    let handler = handler(Arc::clone(&broker), Duration::from_secs(1));
     let blocks = vec![Some(Bytes::from_static(b"trace")), None];
     let mut publish = forwarded();
     publish.payloads = vec![Bytes::from_static(b"a"), Bytes::from_static(b"b")];
@@ -416,16 +408,6 @@ fn over_the_wire(publish: ForwardPublish) -> ForwardPublish {
     }
 }
 
-fn shard_key() -> crate::shards::ShardKey {
-    crate::shards::ShardKey {
-        tenant_id: TENANT.to_string(),
-        namespace: NAMESPACE.to_string(),
-        stream: STREAM.to_string(),
-        shard: 0,
-        kind: crate::shards::ShardKind::Stream,
-    }
-}
-
 async fn next_offset(broker: &Broker) -> u64 {
     broker
         .cursor_tail(TENANT, NAMESPACE, STREAM, 0)
@@ -441,7 +423,7 @@ async fn next_offset(broker: &Broker) -> u64 {
 async fn a_sequenced_forward_sent_twice_is_written_once() {
     let (broker, _dir) = broker_with(ConsistencyLevel::Leader).await;
     broker.record_headers_when(|| true);
-    let handler = handler(Arc::clone(&broker), None, Duration::from_secs(1));
+    let handler = handler(Arc::clone(&broker), Duration::from_secs(1));
 
     let first = handler.apply(sequenced(b"reading")).await;
     let again = handler.apply(sequenced(b"reading")).await;
@@ -465,7 +447,7 @@ async fn a_sequenced_forward_sent_twice_is_written_once() {
 #[tokio::test]
 async fn a_sequenced_forward_without_a_block_is_written_once() {
     let (broker, _dir) = broker_with(ConsistencyLevel::Leader).await;
-    let handler = handler(Arc::clone(&broker), None, Duration::from_secs(1));
+    let handler = handler(Arc::clone(&broker), Duration::from_secs(1));
     let plain = || {
         over_the_wire(ForwardPublish {
             headers: Some(vec![None]),
@@ -493,7 +475,7 @@ async fn a_sequenced_forward_without_a_block_is_written_once() {
 #[tokio::test]
 async fn a_hybrid_owner_refuses_records_that_each_take_a_sequence() {
     let (broker, _dir) = broker_with(ConsistencyLevel::Leader).await;
-    let handler = handler(Arc::clone(&broker), None, Duration::from_secs(1));
+    let handler = handler(Arc::clone(&broker), Duration::from_secs(1));
     let mut publish = sequenced(b"one");
     publish.payloads.push(Bytes::from_static(b"two"));
     publish.headers = None;
@@ -519,7 +501,7 @@ async fn a_hybrid_owner_refuses_records_that_each_take_a_sequence() {
 async fn a_sequence_reused_for_another_batch_is_refused() {
     let (broker, _dir) = broker_with(ConsistencyLevel::Leader).await;
     broker.record_headers_when(|| true);
-    let handler = handler(Arc::clone(&broker), None, Duration::from_secs(1));
+    let handler = handler(Arc::clone(&broker), Duration::from_secs(1));
 
     let first = handler.apply(sequenced(b"reading")).await;
     assert!(
@@ -535,45 +517,12 @@ async fn a_sequence_reused_for_another_batch_is_refused() {
     assert_eq!(next_offset(&broker).await, 1);
 }
 
-/// **A re-sent batch on a `Quorum` stream waits for the majority like the
-/// first send did.** The first send's answer is exactly what may have been
-/// lost before a majority held it, so finding the batch in the log is not
-/// enough to acknowledge it.
-#[tokio::test]
-async fn a_resent_quorum_batch_waits_for_the_majority_again() {
-    let (broker, _dir) = broker_with(ConsistencyLevel::Quorum).await;
-    broker.record_headers_when(|| true);
-    let marks = Arc::new(QuorumMarks::new());
-    marks.publish(&shard_key(), GENERATION, 0);
-    let handler = handler(
-        Arc::clone(&broker),
-        Some(Arc::clone(&marks)),
-        Duration::from_millis(300),
-    );
-
-    for send in ["first", "re-send"] {
-        let answer = handler.apply(sequenced(b"reading")).await;
-        assert!(
-            matches!(&answer, InternalMessage::ForwardPublishError(err) if err.code == ErrorCode::StorageFailed),
-            "the {send} was acknowledged without a majority: {answer:?}"
-        );
-    }
-
-    marks.publish(&shard_key(), GENERATION, 1_000);
-    let answer = handler.apply(sequenced(b"reading")).await;
-    assert!(
-        matches!(&answer, InternalMessage::ForwardPublishOk(ok) if ok.offsets() == Some((0, 0))),
-        "{answer:?}"
-    );
-    assert_eq!(next_offset(&broker).await, 1);
-}
-
 /// An owner that does not accept headers refuses a forward that has them, and
 /// writes nothing, rather than store the records without.
 #[tokio::test]
 async fn a_forward_with_headers_is_refused_while_the_owner_does_not_accept_them() {
     let (broker, _dir) = broker_with(ConsistencyLevel::Leader).await;
-    let handler = handler(Arc::clone(&broker), None, Duration::from_secs(1));
+    let handler = handler(Arc::clone(&broker), Duration::from_secs(1));
     let mut publish = forwarded();
     publish.headers = Some(vec![Some(Bytes::from_static(b"trace"))]);
 
@@ -597,7 +546,6 @@ async fn a_forward_whose_credential_cannot_publish_is_refused() {
     let credentials = Credentials::new();
     let handler = handler_with(
         broker,
-        None,
         Duration::from_secs(1),
         Arc::clone(&credentials.auth),
     );
@@ -636,7 +584,6 @@ async fn a_forwarded_cache_op_is_checked_against_its_own_action() {
     let credentials = Credentials::new();
     let handler = handler_with(
         broker,
-        None,
         Duration::from_secs(1),
         Arc::clone(&credentials.auth),
     );
@@ -685,7 +632,6 @@ async fn a_forwarded_cache_op_is_checked_against_its_key() {
     let credentials = Credentials::new();
     let handler = handler_with(
         broker,
-        None,
         Duration::from_secs(1),
         Arc::clone(&credentials.auth),
     );
@@ -751,7 +697,7 @@ async fn a_forwarded_lease_claim_is_minted_by_the_owner() {
             .clone()
             .with_lease_tokens(Some(Arc::new(lease))),
     );
-    let handler = handler_with(broker, None, Duration::from_secs(1), auth);
+    let handler = handler_with(broker, Duration::from_secs(1), auth);
     let write = format!("cache.write:cache:{TENANT}/{NAMESPACE}/{CACHE}");
     let template = format!("stream.publish:stream:{TENANT}/{NAMESPACE}/wl.{{{CACHE}}}.out");
     let claim = |credential: String, condition| ForwardCacheOp {
@@ -819,7 +765,6 @@ async fn a_forwarded_cache_op_the_store_refused_is_an_error() {
     let credentials = Credentials::new();
     let handler = handler_with(
         Arc::new(broker),
-        None,
         Duration::from_secs(1),
         Arc::clone(&credentials.auth),
     );
@@ -842,146 +787,12 @@ async fn a_forwarded_cache_op_the_store_refused_is_an_error() {
     }
 }
 
-/// **A forwarded publish to a `Quorum` stream is not acknowledged until a
-/// majority holds it.** Answering on local durability made the guarantee depend
-/// on which broker the client happened to reach.
-#[tokio::test]
-async fn a_forwarded_quorum_publish_waits_for_the_majority() {
-    let (broker, _dir) = broker_with(ConsistencyLevel::Quorum).await;
-    let marks = Arc::new(QuorumMarks::new());
-    // A mark that never reaches the record: no follower ever stores it.
-    marks.publish(
-        &crate::shards::ShardKey {
-            tenant_id: TENANT.to_string(),
-            namespace: NAMESPACE.to_string(),
-            stream: STREAM.to_string(),
-            shard: 0,
-            kind: crate::shards::ShardKind::Stream,
-        },
-        GENERATION,
-        0,
-    );
-    let handler = handler(broker, Some(marks), Duration::from_millis(300));
-
-    let answer = handler.apply(forwarded()).await;
-
-    match answer {
-        InternalMessage::ForwardPublishError(err) => {
-            assert_eq!(err.code, ErrorCode::StorageFailed);
-        }
-        other => panic!(
-            "a forwarded quorum publish was acknowledged without a majority: {:?}",
-            other.kind()
-        ),
-    }
-}
-
-/// And it *is* acknowledged once the majority holds it.
-#[tokio::test]
-async fn a_forwarded_quorum_publish_is_acknowledged_once_the_majority_holds_it() {
-    let (broker, _dir) = broker_with(ConsistencyLevel::Quorum).await;
-    let marks = Arc::new(QuorumMarks::new());
-    marks.publish(
-        &crate::shards::ShardKey {
-            tenant_id: TENANT.to_string(),
-            namespace: NAMESPACE.to_string(),
-            stream: STREAM.to_string(),
-            shard: 0,
-            kind: crate::shards::ShardKind::Stream,
-        },
-        GENERATION,
-        // Past the record this publish writes.
-        1_000,
-    );
-    let handler = handler(broker, Some(marks), Duration::from_secs(5));
-
-    let answer = handler.apply(forwarded()).await;
-
-    assert!(
-        matches!(answer, InternalMessage::ForwardPublishOk(_)),
-        "expected an acknowledgement, got {:?}",
-        answer.kind(),
-    );
-}
-
-/// The lease is checked again when a `Quorum` ack is released. A broker whose
-/// lease lapsed while it waited may already have been replaced, so it answers
-/// "unknown" even once the mark passes the record.
-#[tokio::test]
-async fn a_quorum_ack_is_withheld_when_the_lease_lapses_while_it_waits() {
-    let err = lease_lapses_while_waiting(forwarded()).await;
-    assert_eq!(err.code, ErrorCode::StorageFailed);
-}
-
-/// A sequenced forward is told the leadership moved, which its sender reads
-/// as an unknown outcome and sends again to whoever leads now.
-#[tokio::test]
-async fn a_sequenced_forward_deposed_while_it_waits_is_told_so() {
-    let err = lease_lapses_while_waiting(sequenced(b"reading")).await;
-    assert_eq!(err.code, ErrorCode::LeadershipLost);
-}
-
-async fn lease_lapses_while_waiting(publish: ForwardPublish) -> ForwardPublishError {
-    let (broker, _dir) = broker_with(ConsistencyLevel::Quorum).await;
-    broker.record_headers_when(|| true);
-    let shard = crate::shards::ShardKey {
-        tenant_id: TENANT.to_string(),
-        namespace: NAMESPACE.to_string(),
-        stream: STREAM.to_string(),
-        shard: 0,
-        kind: crate::shards::ShardKind::Stream,
-    };
-    let marks = Arc::new(QuorumMarks::new());
-    marks.publish(&shard, GENERATION, 0);
-    let handler = Arc::new(handler(
-        Arc::clone(&broker),
-        Some(Arc::clone(&marks)),
-        Duration::from_secs(5),
-    ));
-    let lease = Arc::new(crate::cluster::lease::LeaseState::new(Duration::from_secs(
-        3600,
-    )));
-    lease.renew();
-    handler.ingress.fence().bind_lease(Arc::clone(&lease));
-
-    let waiting = tokio::spawn({
-        let handler = Arc::clone(&handler);
-        async move { handler.apply(publish).await }
-    });
-    for _ in 0..200 {
-        if broker
-            .cursor_tail(TENANT, NAMESPACE, STREAM, 0)
-            .await
-            .expect("tail")
-            .next_seq()
-            > 0
-        {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(5)).await;
-    }
-    lease.surrender();
-    marks.publish(&shard, GENERATION, 1_000);
-
-    match waiting.await.expect("task") {
-        InternalMessage::ForwardPublishError(err) => {
-            assert!(err.detail.contains("lease"), "{}", err.detail);
-            err
-        }
-        other => panic!(
-            "a quorum ack went out after the lease lapsed: {:?}",
-            other.kind()
-        ),
-    }
-}
-
 /// A `Leader` stream is unaffected: local durability is the guarantee it offers,
 /// so a forwarded publish is acknowledged without waiting for anyone.
 #[tokio::test]
 async fn a_forwarded_leader_publish_does_not_wait() {
     let (broker, _dir) = broker_with(ConsistencyLevel::Leader).await;
-    let marks = Arc::new(QuorumMarks::new());
-    let handler = handler(broker, Some(marks), Duration::from_millis(300));
+    let handler = handler(broker, Duration::from_millis(300));
 
     let answer = handler.apply(forwarded()).await;
 
@@ -996,7 +807,7 @@ async fn a_forwarded_leader_publish_does_not_wait() {
 #[tokio::test]
 async fn a_forwarded_publish_is_answered_with_its_offsets() {
     let (broker, _dir) = broker_with(ConsistencyLevel::Leader).await;
-    let handler = handler(broker, None, Duration::from_millis(300));
+    let handler = handler(broker, Duration::from_millis(300));
 
     for expected in [(0, 0), (1, 1)] {
         match handler.apply(forwarded()).await {
@@ -1030,7 +841,7 @@ async fn a_forwarded_publish_to_a_stream_without_a_log_has_no_offsets() {
         )
         .await
         .expect("stream");
-    let handler = handler(Arc::new(broker), None, Duration::from_millis(300));
+    let handler = handler(Arc::new(broker), Duration::from_millis(300));
 
     match handler.apply(forwarded()).await {
         InternalMessage::ForwardPublishOk(ok) => {
@@ -1054,10 +865,9 @@ mod fence {
     fn owner(leader: &Leader, credentials: &Credentials) -> ForwardingHandler {
         ForwardingHandler::new(
             Arc::clone(&leader.broker),
-            Arc::new(crate::shards::routing::StreamEngine::new(
-                None,
-                Some(Arc::clone(&leader.ingress)),
-            )),
+            Arc::new(crate::shards::routing::StreamEngine::new(Some(Arc::clone(
+                &leader.ingress,
+            )))),
             Arc::clone(&leader.router),
             "10.0.0.1:7001".to_string(),
             Duration::from_secs(1),
@@ -1336,7 +1146,6 @@ async fn a_forwarded_conditional_put_answers_with_its_outcome() {
     let credentials = Credentials::new();
     let handler = handler_with(
         broker,
-        None,
         Duration::from_secs(1),
         Arc::clone(&credentials.auth),
     );
@@ -1375,7 +1184,6 @@ async fn a_forward_for_another_incarnation_is_refused_and_writes_nothing() {
     let credentials = Credentials::new();
     let handler = handler_routed(
         Arc::clone(&broker),
-        None,
         Duration::from_secs(1),
         Arc::clone(&credentials.auth),
         router_at(5),
@@ -1427,213 +1235,6 @@ async fn a_forward_for_another_incarnation_is_refused_and_writes_nothing() {
     assert_eq!(tail().await, 2);
 }
 
-/// The forwarded wait lasts the handler's timeout when the mark is below the
-/// batch, and ends at once when the mark passes it. A handler built without
-/// marks would answer both at once.
-#[tokio::test]
-async fn a_forwarded_quorum_publish_waits_its_timeout_then_is_released_by_the_mark() {
-    let (broker, _dir) = broker_with(ConsistencyLevel::Quorum).await;
-    let marks = Arc::new(QuorumMarks::new());
-    let key = crate::shards::ShardKey {
-        tenant_id: TENANT.to_string(),
-        namespace: NAMESPACE.to_string(),
-        stream: STREAM.to_string(),
-        shard: 0,
-        kind: crate::shards::ShardKind::Stream,
-    };
-    marks.publish(&key, GENERATION, 0);
-    let timeout = Duration::from_millis(300);
-    let handler = handler(broker, Some(Arc::clone(&marks)), timeout);
-
-    let started = std::time::Instant::now();
-    let answer = handler.apply(forwarded()).await;
-    let waited = started.elapsed();
-    assert!(
-        matches!(answer, InternalMessage::ForwardPublishError(_)),
-        "{:?}",
-        answer.kind()
-    );
-    assert!(waited >= timeout, "ended early after {waited:?}");
-    assert!(waited < timeout * 6, "ended late after {waited:?}");
-
-    marks.publish(&key, GENERATION, 1_000);
-    let started = std::time::Instant::now();
-    let answer = handler.apply(forwarded()).await;
-    assert!(
-        matches!(answer, InternalMessage::ForwardPublishOk(_)),
-        "{:?}",
-        answer.kind()
-    );
-    assert!(started.elapsed() < timeout, "waited though the mark passed");
-}
-
-/// A forwarded cache or counter op makes the same quorum waits as a local
-/// one, on the marks and timeout the owner holds. Without marks each of these
-/// would be answered at once.
-mod quorum_waits {
-    use super::*;
-    use crate::test_support::leader::{self, GENERATION, Leader, NAMESPACE, QUORUM_CACHE, TENANT};
-
-    const TIMEOUT: Duration = Duration::from_millis(300);
-
-    fn owner(
-        leader: &Leader,
-        credentials: &Credentials,
-        marks: &Arc<QuorumMarks>,
-    ) -> ForwardingHandler {
-        ForwardingHandler::new(
-            Arc::clone(&leader.broker),
-            Arc::new(crate::shards::routing::StreamEngine::new(
-                Some(Arc::clone(marks)),
-                Some(Arc::clone(&leader.ingress)),
-            )),
-            Arc::clone(&leader.router),
-            "10.0.0.1:7001".to_string(),
-            TIMEOUT,
-            Arc::clone(&credentials.auth),
-        )
-    }
-
-    fn op(credentials: &Credentials, op: CacheOpKind, value: Bytes) -> ForwardCacheOp {
-        ForwardCacheOp {
-            correlation_id: 2,
-            shard: ShardRef {
-                tenant_id: TENANT.to_string(),
-                namespace: NAMESPACE.to_string(),
-                stream: QUORUM_CACHE.to_string(),
-                shard: 0,
-                generation: GENERATION,
-                incarnation: None,
-            },
-            op,
-            key: "session:abc".to_string(),
-            value,
-            ttl_ms: 0,
-            credential: credentials.token(&[
-                &format!("cache.write:cache:{TENANT}/{NAMESPACE}/{QUORUM_CACHE}"),
-                &format!("cache.read:cache:{TENANT}/{NAMESPACE}/{QUORUM_CACHE}"),
-            ]),
-            condition: None,
-        }
-    }
-
-    fn ops(credentials: &Credentials) -> Vec<(&'static str, ForwardCacheOp)> {
-        let add = felix_storage::counter_log::encode_sum(2);
-        vec![
-            (
-                "put",
-                op(credentials, CacheOpKind::Put, Bytes::from_static(b"v")),
-            ),
-            ("delete", op(credentials, CacheOpKind::Delete, Bytes::new())),
-            ("get", op(credentials, CacheOpKind::Get, Bytes::new())),
-            ("counter add", op(credentials, CacheOpKind::CounterAdd, add)),
-            (
-                "counter get",
-                op(credentials, CacheOpKind::CounterGet, Bytes::new()),
-            ),
-        ]
-    }
-
-    #[tokio::test]
-    async fn a_forwarded_quorum_cache_op_waits_its_timeout_then_is_released_by_the_mark() {
-        let leader = Leader::start().await;
-        let _lease = leader.hold_lease();
-        let credentials = Credentials::new();
-        let marks = Arc::new(QuorumMarks::new());
-        let handler = owner(&leader, &credentials, &marks);
-
-        // The bound is generous on purpose: a loaded runner can stall the
-        // storage write for seconds, but a wait that re-arms its deadline
-        // would still print the configured timeout and must not pass.
-        let loose = (TIMEOUT * 100).min(Duration::from_secs(30));
-        for (what, forwarded) in ops(&credentials) {
-            let started = std::time::Instant::now();
-            let answer = handler.apply_cache_op(forwarded).await;
-            let waited = started.elapsed();
-            assert!(waited < loose, "{what} waited {waited:?}, past {loose:?}");
-            let InternalMessage::ForwardCacheError(error) = &answer else {
-                panic!("{what}: {:?}", answer.kind());
-            };
-            assert!(
-                error.detail.contains(&format!("within {TIMEOUT:?}")),
-                "{what} did not time out its quorum wait: {}",
-                error.detail
-            );
-            assert!(waited >= TIMEOUT, "{what} ended early after {waited:?}");
-        }
-
-        // Nothing publishes past this mark, so an op still waiting on it
-        // could only time out: an Ok is the release.
-        let cache = leader::quorum_cache_key();
-        marks.publish(&cache, GENERATION, 1 << 20);
-        marks.counters().publish(&cache, GENERATION, 1 << 20);
-        // Together and within the loose bound: a mark seen only by the 50 ms
-        // recheck, or a re-armed deadline, would blow it.
-        let released = std::time::Instant::now();
-        for (what, forwarded) in ops(&credentials) {
-            let answer = handler.apply_cache_op(forwarded).await;
-            assert!(
-                matches!(answer, InternalMessage::ForwardCacheOk(_)),
-                "{what}: {:?}",
-                answer.kind()
-            );
-        }
-        let released_in = released.elapsed();
-        assert!(
-            released_in < loose,
-            "the released ops took {released_in:?}, past {loose:?}"
-        );
-    }
-
-    /// Where the fleet reads by round, a read does not need the lease before
-    /// its value; the round confirms leadership after it.
-    #[tokio::test]
-    async fn a_forwarded_read_by_round_is_not_refused_for_a_lapsed_lease() {
-        use felix_common::fleet::{FleetGate, GENERATION_START, LEASE_FREE_READS, MAJORITY_ACK};
-        struct Confirms;
-        #[async_trait::async_trait]
-        impl felix_replication::quorum::LeadershipCheck for Confirms {
-            async fn confirm(
-                &self,
-                _key: &crate::shards::ShardKey,
-                _generation: u64,
-            ) -> Result<(), felix_replication::quorum::QuorumError> {
-                Ok(())
-            }
-        }
-
-        let leader = Leader::start().await;
-        let lease = leader.hold_lease();
-        let credentials = Credentials::new();
-        let names = [
-            GENERATION_START.name(),
-            MAJORITY_ACK.name(),
-            LEASE_FREE_READS.name(),
-        ];
-        let fleet = Arc::new(FleetGate::new(names));
-        let marks = Arc::new(QuorumMarks::with_fleet(Arc::clone(&fleet)));
-        marks.set_read_check(Arc::new(Confirms), false);
-        fleet.observe(names);
-        let cache = leader::quorum_cache_key();
-        marks.publish(&cache, GENERATION, 1 << 20);
-        marks.counters().publish(&cache, GENERATION, 1 << 20);
-        let handler = owner(&leader, &credentials, &marks);
-
-        lease.surrender();
-        for (what, forwarded) in ops(&credentials)
-            .into_iter()
-            .filter(|(what, _)| what.ends_with("get"))
-        {
-            let answer = handler.apply_cache_op(forwarded).await;
-            assert!(
-                matches!(answer, InternalMessage::ForwardCacheOk(_)),
-                "{what}: {:?}",
-                answer.kind()
-            );
-        }
-    }
-}
-
 #[cfg(feature = "raft")]
 mod on_raft {
     use super::*;
@@ -1656,7 +1257,7 @@ mod on_raft {
         fixture::take_formed(&shards, assigned).await;
         fixture::until("the term is served", || shards.leading(&sessions).is_some()).await;
         let (router, ingress) = fixture::routes(&shards);
-        let engine = Arc::new(StreamEngine::new(None, Some(ingress)));
+        let engine = Arc::new(StreamEngine::new(Some(ingress)));
         engine.set_raft(Arc::clone(&shards));
         let credentials = Credentials::new();
         let handler = ForwardingHandler::new(
@@ -1808,7 +1409,7 @@ mod on_raft {
         .await;
         let leader = &members[leader.expect("a leader")];
         let (router, ingress) = fixture::routes(&leader.shards);
-        let engine = Arc::new(StreamEngine::new(None, Some(ingress)));
+        let engine = Arc::new(StreamEngine::new(Some(ingress)));
         engine.set_raft(Arc::clone(&leader.shards));
         let credentials = Credentials::new();
         let handler = ForwardingHandler::new(
@@ -1866,7 +1467,7 @@ mod on_raft {
         ));
         let ingress = Arc::new(IngressRouter::new(Arc::clone(&router), Arc::default()));
         ingress.set_engine_shards(Arc::clone(&shards) as Arc<dyn EngineShards>);
-        let engine = Arc::new(StreamEngine::new(None, Some(ingress)));
+        let engine = Arc::new(StreamEngine::new(Some(ingress)));
         engine.set_raft(Arc::clone(&shards));
         let handler = ForwardingHandler::new(
             Arc::clone(&broker),
@@ -2043,7 +1644,7 @@ mod on_raft {
             fixture::take_formed(&shards, assigned).await;
             fixture::until("the term is served", || shards.leading(&orders).is_some()).await;
             let (router, ingress) = fixture::routes(&shards);
-            let engine = Arc::new(StreamEngine::new(None, Some(ingress)));
+            let engine = Arc::new(StreamEngine::new(Some(ingress)));
             engine.set_raft(Arc::clone(&shards));
             let handler = ForwardingHandler::new(
                 Arc::clone(&broker),
@@ -2293,7 +1894,7 @@ mod on_raft {
             acknowledged: true,
         };
         let (_, ingress) = fixture::routes(&follower.shards);
-        let engine = Arc::new(StreamEngine::new(None, Some(ingress)));
+        let engine = Arc::new(StreamEngine::new(Some(ingress)));
         engine.set_raft(Arc::clone(&follower.shards));
         let writes = BrokerWrites::new(
             Arc::clone(&follower.broker),
@@ -2322,7 +1923,7 @@ mod on_raft {
             .iter()
             .map(|member| {
                 let (router, ingress) = fixture::routes(&member.shards);
-                let engine = Arc::new(StreamEngine::new(None, Some(ingress)));
+                let engine = Arc::new(StreamEngine::new(Some(ingress)));
                 engine.set_raft(Arc::clone(&member.shards));
                 let handler = ForwardingHandler::new(
                     Arc::clone(&member.broker),
@@ -2418,7 +2019,7 @@ mod on_raft {
                 .iter()
                 .map(|member| {
                     let (router, ingress) = fixture::routes(&member.shards);
-                    let engine = Arc::new(StreamEngine::new(None, Some(ingress)));
+                    let engine = Arc::new(StreamEngine::new(Some(ingress)));
                     engine.set_raft(Arc::clone(&member.shards));
                     let handler = ForwardingHandler::new(
                         Arc::clone(&member.broker),
@@ -2455,7 +2056,7 @@ mod on_raft {
         };
         let writes = |handlers: &Arc<Handlers>| {
             let (_, ingress) = fixture::routes(&follower.shards);
-            let engine = Arc::new(StreamEngine::new(None, Some(ingress)));
+            let engine = Arc::new(StreamEngine::new(Some(ingress)));
             engine.set_raft(Arc::clone(&follower.shards));
             BrokerWrites::new(
                 Arc::clone(&follower.broker),
@@ -2527,7 +2128,6 @@ async fn a_forwarded_cache_op_with_no_raft_member_open_is_not_ready() {
     let credentials = Credentials::new();
     let handler = handler_on(
         Arc::clone(&broker),
-        None,
         Duration::from_secs(1),
         Arc::clone(&credentials.auth),
         router(),

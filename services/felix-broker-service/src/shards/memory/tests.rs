@@ -2,7 +2,6 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use felix_common::random::HashMap;
-use felix_replication::driver::WriteFence;
 use felix_router::{RegionRouter, ShardRouter};
 use felix_storage::log::{FsyncMode, LogConfig};
 use tokio_util::sync::CancellationToken;
@@ -251,7 +250,6 @@ async fn a_lapse_ends_its_readers() {
     let shutdown = CancellationToken::new();
     tokio::spawn(ShardReaders::new(Arc::clone(&broker)).watch_leadership(
         Arc::clone(&fence),
-        None,
         Arc::new(tokio::sync::Mutex::new(ShardLifecycle::new(LOCAL))),
         Some(Arc::clone(&memory)),
         shutdown.clone(),
@@ -380,36 +378,6 @@ async fn serves_only_a_registered_in_memory_incarnation() {
     );
 }
 
-/// **The hybrid never sees a shard this module takes**: replication passes
-/// skip it, a cache shard is left alone, and a shard no longer assigned is
-/// walked again.
-#[tokio::test]
-async fn replication_skips_what_it_takes() {
-    let root = tempfile::tempdir().expect("tempdir");
-    let broker = broker(root.path()).await;
-    let fence = Arc::new(ShardFence::default());
-    let memory = memory(&broker, &fence);
-    let cache = ShardKey {
-        kind: ShardKind::Cache,
-        ..key(0)
-    };
-    let mut fed = assignments(&[assigned(LOCAL, 5)]);
-    fed.insert(
-        cache.clone(),
-        ShardAssignment {
-            key: cache.clone(),
-            ..assigned(LOCAL, 5)
-        },
-    );
-    memory.take(&mut fed);
-    assert_eq!(fed.keys().collect::<Vec<_>>(), vec![&cache]);
-    assert!(WriteFence::withheld(fence.as_ref(), &key(0), 5));
-    assert!(!WriteFence::withheld(fence.as_ref(), &cache, 5));
-
-    memory.take(&mut HashMap::default());
-    assert!(!WriteFence::withheld(fence.as_ref(), &key(0), 5));
-}
-
 /// **Through the routing feed, an in-memory shard on a Raft broker serves at
 /// once and the hybrid lifecycle never holds it**, though that lifecycle
 /// fences every promotion.
@@ -444,8 +412,6 @@ async fn the_feed_serves_it_without_the_lifecycle() {
             assignments_changed: Arc::default(),
             routes_changed: Arc::default(),
             joint_fence: None,
-            prefetch: None,
-            elections: None,
             nodes: HashMap::default(),
             engine_shards: None,
             memory: Some(Arc::clone(&memory)),
@@ -467,7 +433,6 @@ async fn the_feed_serves_it_without_the_lifecycle() {
         "the hybrid lifecycle opened an in-memory shard",
     );
     assert!(fence.awaiting_promotion(&key(0)).is_none());
-    assert!(WriteFence::withheld(fence.as_ref(), &key(0), 5));
     assert_eq!(
         paths_naming_stream(root.path()),
         Vec::<std::path::PathBuf>::new()

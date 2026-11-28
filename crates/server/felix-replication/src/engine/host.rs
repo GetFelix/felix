@@ -1,5 +1,6 @@
 //! What the engine asks of the broker: its write fence.
 
+#[cfg(feature = "raft")]
 use std::sync::Arc;
 
 use crate::ShardKey;
@@ -22,6 +23,7 @@ pub trait WriteFence: Send + Sync {
     fn deposed(&self, _key: &ShardKey, _generation: u64) {}
 }
 
+#[cfg(feature = "raft")]
 /// What any engine needs from the broker about a shard.
 pub(crate) trait EngineHost: Send + Sync {
     /// This broker leads `key` at `generation` and may take writes.
@@ -30,17 +32,20 @@ pub(crate) trait EngineHost: Send + Sync {
     fn deposed(&self, key: &ShardKey, generation: u64);
 }
 
+#[cfg(feature = "raft")]
 /// The broker's write fence, as the engine's host.
 pub(crate) struct Host<F: ?Sized> {
     fence: Arc<F>,
 }
 
+#[cfg(feature = "raft")]
 impl<F: ?Sized> Host<F> {
     pub(crate) fn new(fence: Arc<F>) -> Self {
         Self { fence }
     }
 }
 
+#[cfg(feature = "raft")]
 impl<F: WriteFence + ?Sized> EngineHost for Host<F> {
     fn opened(&self, key: &ShardKey, generation: u64) {
         self.fence.opened(key, generation);
