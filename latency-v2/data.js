@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795819773019,
+  "lastUpdate": 1795824579253,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -94512,6 +94512,72 @@ window.BENCHMARK_DATA = {
             "range": "707.41",
             "unit": "us",
             "extra": "trials: 5\nmedian: 530.00\nmean: 1009.00\nstdev: 707.41\ncv: 70.11%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "e9c8edccc9bfee4417d7b11b419d674ca8ab2179",
+          "message": "fix(replication): release brokers no longer carry peer-partition injection (#3386) (#3390)\n\nPeer-partition injection (`peer/partition.rs`, FELIX_PEER_PARTITION_FILE)\nis now compiled only under `any(debug_assertions, test, feature =\n\"fault-injection\")`, like the storage and clock faults. felix-replication\nand felix-broker-service gain a `fault-injection` feature, and the\nregistry lists the variable only in those builds, so a release broker\nwarns that it ignores it.\n\nEvery harness broker build in CI and Taskfile passes\n`--features fault-injection`, and the broker-service self dev-dependency\nenables it for `cargo test`. The harness refuses to write a partition\nfor a broker binary without the partition code, so a partition test\ncannot pass against a broker that severed nothing.\n\n`task check:no-fault-injection` (run in CI's checks job) builds the\nbroker without debug assertions or features and fails if it contains\nthe variable name or the partition refusal; the release archives run\nthe same check on the shipped binary.\n\nSpec-Unaffected: build gating of a test-only fault hook; no protocol or replication behaviour changes in builds that have it",
+          "timestamp": "2026-11-28T00:01:46Z",
+          "tree_id": "3c1d6cf72bb4376afa401cedb78947db6c8d8c4c",
+          "url": "https://github.com/GetFelix/felix/commit/e9c8edccc9bfee4417d7b11b419d674ca8ab2179"
+        },
+        "date": 1795824564283,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 97,
+            "range": "0.55",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 97.00\nmean: 96.60\nstdev: 0.55\ncv: 0.57%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 130,
+            "range": "0.55",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 130.00\nmean: 129.60\nstdev: 0.55\ncv: 0.42%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 175,
+            "range": "8.79",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 175.00\nmean: 171.60\nstdev: 8.79\ncv: 5.12%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 135,
+            "range": "0.89",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 135.00\nmean: 134.60\nstdev: 0.89\ncv: 0.66%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 263,
+            "range": "9.63",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 263.00\nmean: 263.60\nstdev: 9.63\ncv: 3.65%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 354,
+            "range": "246.64",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 354.00\nmean: 460.80\nstdev: 246.64\ncv: 53.52%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
