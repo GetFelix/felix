@@ -169,7 +169,7 @@
 (*                         the blank copy form from index 0, and "open"    *)
 (*                         lets a copy behind the abandoned epoch open.    *)
 (*                                                                         *)
-(* Two more are set by override in a cfg, so the other cfgs stay as they   *)
+(* Three more are set by override in a cfg, so the other cfgs stay as they *)
 (* are:                                                                    *)
 (*                                                                         *)
 (*   Campaigns      -- FALSE, or CampaignsOn: a voter can stand for        *)
@@ -178,8 +178,14 @@
 (*   LoneVoteCounts -- FALSE, or LoneVoteCountsOn: removes a rule. Every   *)
 (*                     vote read counts toward T, not only one a majority  *)
 (*                     of some voter set reached (#3351).                  *)
+(*   EarlierBound   -- FALSE, or EarlierBoundOn: an epoch's first index is *)
+(*                     at or above every earlier epoch's, as the code      *)
+(*                     holds it (raft_copy/vouch.rs, plan_reform_as; the   *)
+(*                     control plane's start_reformed_epoch). Without it a *)
+(*                     copy rotated below an earlier base starts the group *)
+(*                     by itself under an index that epoch served (#3410). *)
 (*                                                                         *)
-(* Three constants are not knobs:                                          *)
+(* Three constants are not knobs:                                        *)
 (*                                                                         *)
 (*   WaitPlaced -- TRUE: the command lists the placed brokers. FALSE: it   *)
 (*                 lists the voters in the control plane's own record of   *)
@@ -857,8 +863,17 @@ Gap(e) == [e |-> e, t |-> 0, k |-> "gap", v |-> 0]
 PadTo(base, n, e) ==
     IF n <= Len(base) THEN base ELSE base \o [j \in 1..(n - Len(base)) |-> Gap(e)]
 
+EarlierBound == FALSE
+EarlierBoundOn == TRUE
+
+\* With EarlierBound, the padded base is at least as long as every earlier
+\* epoch's, so the epoch starts at or above every earlier first index.
+EarlierIndex ==
+    LET ends == {Len(f.base) : f \in forms} \cup {0}
+    IN IF EarlierBound THEN CHOOSE n \in ends : \A m \in ends : m <= n ELSE 0
+
 \* Offsets up to the floor are not given out again.
-Pad(base, e) == IF Floor = "none" THEN base ELSE PadTo(base, cpFloor.i, e)
+Pad(base, e) == PadTo(base, Max(IF Floor = "none" THEN 0 ELSE cpFloor.i, EarlierIndex), e)
 
 \* why and held are for the checks only: which rules of the vouch decided
 \* something, and the acknowledged records KeptLossBound says must survive.
@@ -1015,8 +1030,8 @@ ReformKept(p, src) ==
         V(c) == IF one /\ Alone = "whole" THEN Min(Cap(c.e, e), Len(c.log)) ELSE VouchK(c, e, T, mk)
         base == SubSeq(src.log, 1, V(src))
         voters == {<<b, cid[b]>> : b \in {x \in S : \E c \in Copies(x) : IsPrefix(base, c.log)}}
-        top == Max(Len(base), Max(IF Floor = "none" THEN 0 ELSE cpFloor.i,
-                                   MaxOf({c.res : c \in R})))
+        top == Max(Max(Len(base), EarlierIndex),
+                   Max(IF Floor = "none" THEN 0 ELSE cpFloor.i, MaxOf({c.res : c \in R})))
         \* Unmarked, and no vote a majority reached is above every entry read.
         tEntry == ~mk /\ Top(e, R, FALSE) = MaxKey({LastKey(c.log) : c \in R})
         held == IF tEntry \/ one
