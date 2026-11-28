@@ -225,10 +225,11 @@ class Workflow(unittest.TestCase):
             self.assertEqual(order.split()[1], "head", order)
         self.assertEqual({o.split()[0] for o in orders}, {"baseline", "baseline_aa"})
 
-    def test_each_side_names_its_own_engine(self):
+    def test_each_side_runs_its_own_cluster_harness(self):
         text = (pathlib.Path(__file__).parents[2] / ".github/workflows/gate-perf.yml").read_text()
-        self.assertIn("if [ \"$dir\" = /tmp/felix-gate/head ]; then side_engine=raft; else side_engine=hybrid; fi", text)
-        self.assertIn("ENGINE=$side_engine scripts/ci/gate-perf-cell.sh", text)
+        self.assertIn('"$CARGO_TARGET_DIR_BASELINE/release/felix-cluster"', text)
+        self.assertNotIn('for side in baseline head; do\n            dir=/tmp/felix-gate/$side', text)
+        self.assertIn("side_engine=raft; else side_engine=;", text)
 
     def test_a_non_pass_verdict_fails_the_part(self):
         text = (pathlib.Path(__file__).parents[2] / ".github/workflows/gate-perf.yml").read_text()

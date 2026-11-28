@@ -105,20 +105,25 @@ jobs:
       - name: Build both sides
         run: |
           set -euo pipefail
+          # The baseline starts its own brokers with its own harness: head's
+          # waits for Raft leaders a hybrid broker never opens. Releases before
+          # `up` took --stream and --replication-factor get them from a patch.
+          if ! grep -q -- '--replication-factor' /tmp/felix-gate-baseline/crates/testing/felix-cluster/src/bin/felix-cluster/lifecycle.rs; then
+            git -C /tmp/felix-gate-baseline apply "$GITHUB_WORKSPACE/scripts/ci/gate-baseline-up-flags.patch"
+          fi
           (cd /tmp/felix-gate-baseline && CARGO_TARGET_DIR="$CARGO_TARGET_DIR_BASELINE" \
-            cargo build --locked --release -p felix-broker-service --bin felix-broker)
+            cargo build --locked --release -p felix-broker-service --bin felix-broker \
+            -p felix-cluster --bin felix-cluster)
           CARGO_TARGET_DIR="$CARGO_TARGET_DIR_HEAD" cargo build --locked --release \
             -p felix-broker-service --bin felix-broker \
             -p felix-cluster --bin felix-cluster \
             -p felix-loadgen --bin felix-loadgen
-          # Head's harness and load generator drive both brokers; the cluster
-          # starts the felix-broker that sits beside it.
-          for side in baseline head; do
-            dir=/tmp/felix-gate/$side
-            mkdir -p "$dir"
-            cp "$CARGO_TARGET_DIR_HEAD/release/felix-cluster" "$CARGO_TARGET_DIR_HEAD/release/felix-loadgen" "$dir/"
-          done
-          cp "$CARGO_TARGET_DIR_BASELINE/release/felix-broker" /tmp/felix-gate/baseline/
+          # Head's load generator drives both brokers; each side's cluster
+          # harness starts the felix-broker that sits beside it.
+          mkdir -p /tmp/felix-gate/baseline /tmp/felix-gate/head
+          cp "$CARGO_TARGET_DIR_HEAD/release/felix-cluster" "$CARGO_TARGET_DIR_HEAD/release/felix-loadgen" /tmp/felix-gate/head/
+          cp "$CARGO_TARGET_DIR_HEAD/release/felix-loadgen" /tmp/felix-gate/baseline/
+          cp "$CARGO_TARGET_DIR_BASELINE/release/felix-cluster" "$CARGO_TARGET_DIR_BASELINE/release/felix-broker" /tmp/felix-gate/baseline/
           cp "$CARGO_TARGET_DIR_HEAD/release/felix-broker" /tmp/felix-gate/head/
 
       - name: Run the cells, alternating sides
@@ -145,11 +150,9 @@ jobs:
                 IFS=: read -r name rf payload batch <<<"$cell"
                 for side in $sides; do
                   dir=/tmp/felix-gate/${side%_aa}
-                  # The harness is head's for both sides, so each broker is told
-                  # its own engine: head's is Raft, and the baseline release
-                  # runs the hybrid, which opens no Raft member for the
-                  # harness's start-up hand-over wait to find.
-                  if [ "$dir" = /tmp/felix-gate/head ]; then side_engine=raft; else side_engine=hybrid; fi
+                  # Head's brokers run Raft. The baseline's own harness starts
+                  # its brokers on whatever engine that release has.
+                  if [ "$dir" = /tmp/felix-gate/head ]; then side_engine=raft; else side_engine=; fi
                   ENGINE=$side_engine scripts/ci/gate-perf-cell.sh "$dir" "$side" "$name" "$rf" "$payload" "$batch" \
                     "$SECONDS_PER_TRIAL" "$round" "$results" \
                     || echo "::warning::$side $name round $round failed"
