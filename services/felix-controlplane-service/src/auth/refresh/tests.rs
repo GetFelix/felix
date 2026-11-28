@@ -177,7 +177,7 @@ fn issuer(url: &str) -> crate::auth::idp_registry::IdpIssuerConfig {
 }
 
 /// A refresh honours only groups from issuers the tenant still trusts, and
-/// never a bare name unless the legacy switch says so.
+/// never a bare name.
 #[test]
 fn a_refresh_honours_only_groups_from_trusted_issuers() {
     let recorded = vec![
@@ -189,17 +189,7 @@ fn a_refresh_honours_only_groups_from_trusted_issuers() {
     ];
     let issuers = [issuer("https://corp.example")];
     assert_eq!(
-        refreshable_groups(&recorded, &issuers, false),
+        refreshable_groups(&recorded, &issuers),
         vec!["https://corp.example#ops".to_string()]
-    );
-    assert_eq!(
-        refreshable_groups(&recorded, &issuers, true),
-        vec![
-            "https://corp.example#ops".to_string(),
-            "ops".to_string(),
-            "https://removed.example#ops".to_string(),
-            "https://corp.example.evil#ops".to_string(),
-            "ops".to_string(),
-        ]
     );
 }

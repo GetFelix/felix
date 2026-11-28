@@ -20,20 +20,9 @@ pub(crate) async fn run_explicit_shard(
     println!("Running explicit shard checks...");
     let (mut send, mut recv) = connection.open_bi().await?;
     let mut scratch = quic::FrameScratch::new();
-    let (features, features_hi) = felix_wire::offer_features(
-        felix_wire::FEATURE_ERROR_CODES,
-        felix_wire::FEATURE_EXPLICIT_SHARD,
-    );
     quic::write_message(
         &mut send,
-        Message::Auth {
-            tenant_id: auth.tenant_id.clone(),
-            token: auth.token.clone(),
-            client_flags: Some(felix_wire::KNOWN_FLAGS),
-            client_features: Some(features),
-            client_features_hi: features_hi,
-            client_flags_ext: None,
-        },
+        felix_wire::baseline_auth(auth.tenant_id.clone(), auth.token.clone()),
     )
     .await?;
     // explicit_shard.negotiated

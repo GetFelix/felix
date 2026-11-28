@@ -26,9 +26,6 @@ use crate::store::{ConfirmedAssignment, StoreError};
 /// connection.
 pub(crate) const MAX_CHANGES_WAIT_MS: u64 = 25_000;
 
-/// How often a waiting changes request re-reads the store.
-const CHANGES_RECHECK: Duration = Duration::from_millis(50);
-
 #[utoipa::path(
     get,
     path = "/v1/shard-assignments",
@@ -320,7 +317,7 @@ pub(crate) async fn shard_assignment_changes(
         .map(|ms| Instant::now() + Duration::from_millis(ms.min(MAX_CHANGES_WAIT_MS)));
     // Subscribed before the first read, so a write landing between that read
     // and the wait still wakes it.
-    let mut written = state.placement_wakes.watch_assignments();
+    let mut written = state.store.watch_shard_assignment_changes().await;
     loop {
         let before = incarnation_before(&state).await?;
         let changes = state
@@ -332,13 +329,16 @@ pub(crate) async fn shard_assignment_changes(
         let now = Instant::now();
         match deadline {
             Some(deadline) if nothing_new && now < deadline => {
-                // Nothing is held while waiting: each re-check takes a store
-                // connection only for its own read. The re-check is how a
-                // write by another instance is seen; this instance's own
-                // writes wake the wait directly.
+                // Nothing is held while waiting. Every write to the store,
+                // a Raft apply included, wakes the wait.
                 tokio::select! {
-                    _ = written.changed() => {}
-                    _ = tokio::time::sleep(CHANGES_RECHECK.min(deadline - now)) => {}
+                    woken = written.changed() => {
+                        if woken.is_err() {
+                            // Nothing can wake it any more.
+                            tokio::time::sleep_until(deadline).await;
+                        }
+                    }
+                    _ = tokio::time::sleep_until(deadline) => {}
                     _ = state.placement_wakes.closing().cancelled() => {
                         return Ok(Json(ShardAssignmentChangesResponse {
                             items: changes_with_routing(&state, changes.items, before).await?,

@@ -342,7 +342,7 @@ fn group_claims_are_scoped_by_issuer() {
     assert_ne!(corp, other);
 
     let mut groupings = Vec::new();
-    add_group_claim_groupings(&mut groupings, "p1", &with_legacy_names(&[other], false));
+    add_group_claim_groupings(&mut groupings, "p1", &[other]);
     assert_eq!(
         groupings,
         vec![GroupingRule {
@@ -351,15 +351,6 @@ fn group_claims_are_scoped_by_issuer() {
         }]
     );
     assert!(!groupings.iter().any(|g| g.role == "group:ops"));
-}
-
-#[test]
-fn the_legacy_switch_also_links_the_bare_name() {
-    let names = with_legacy_names(&[scoped_group("https://corp.example", "ops")], true);
-    assert_eq!(
-        names,
-        vec!["https://corp.example#ops".to_string(), "ops".to_string()]
-    );
 }
 
 #[test]

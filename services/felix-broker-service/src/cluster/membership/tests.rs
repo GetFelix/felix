@@ -41,9 +41,6 @@ struct Calls {
     /// to register again, as one from above a restored record is.
     registered_at_millis: Option<u64>,
     ahead_of_record: BTreeSet<u64>,
-    /// Answer registrations as a control plane that predates brokers without
-    /// durable storage: no `storage_placement`.
-    predates_storage_placement: bool,
 }
 
 type Shared = Arc<Mutex<Calls>>;
@@ -59,7 +56,7 @@ fn stub_control_plane(state: Shared) -> axum::Router {
             "/v1/nodes",
             post(
                 |State(state): State<Shared>, Json(body): Json<serde_json::Value>| async move {
-                    let (incarnation, fleet, interval, at, storage_placement) = {
+                    let (incarnation, fleet, interval, at) = {
                         let mut calls = state.lock().expect("lock");
                         calls.registrations.push(body);
                         (
@@ -67,7 +64,6 @@ fn stub_control_plane(state: Shared) -> axum::Router {
                             calls.fleet_features.clone(),
                             calls.heartbeat_interval_ms.unwrap_or(20),
                             calls.registered_at_millis,
-                            !calls.predates_storage_placement,
                         )
                     };
                     let mut status = json!({ "incarnation": incarnation, "lifecycle": "live" });
@@ -79,7 +75,6 @@ fn stub_control_plane(state: Shared) -> axum::Router {
                         "heartbeat_interval_ms": interval,
                         "expiry_timeout_ms": 60,
                         "fleet_features": fleet,
-                        "storage_placement": storage_placement,
                     }))
                 },
             ),
@@ -320,10 +315,9 @@ async fn registration_sends_the_internal_role_label() {
     let _ = handle.await;
 }
 
-/// A broker without durable storage says so with a label, and refuses a
-/// control plane that would not keep durable shards off it.
+/// A broker without durable storage says so with a label.
 #[tokio::test]
-async fn a_diskless_broker_registers_its_label_and_refuses_an_older_control_plane() {
+async fn a_diskless_broker_registers_its_label() {
     let calls: Shared = Arc::default();
     let (base_url, stop, handle) = serve(Arc::clone(&calls)).await;
     let client = build_test_client().expect("client");
@@ -338,17 +332,6 @@ async fn a_diskless_broker_registers_its_label_and_refuses_an_older_control_plan
         .expect("register");
     let sent = calls.lock().expect("lock").registrations.clone();
     assert_eq!(sent[0]["labels"]["felix.dev/node-storage"], "none");
-
-    calls.lock().expect("lock").predates_storage_placement = true;
-    let refused = register(&link(&client, &base_url), &diskless, &credential, None).await;
-    assert!(
-        matches!(&refused, Err(MembershipError::Rejected(why)) if why.contains("FELIX_DURABLE_STORAGE_DIR")),
-        "{refused:?}"
-    );
-    // A broker with storage has nothing to fear from it.
-    register(&link(&client, &base_url), &config(), &credential, None)
-        .await
-        .expect("register");
 
     let _ = stop.send(());
     let _ = handle.await;

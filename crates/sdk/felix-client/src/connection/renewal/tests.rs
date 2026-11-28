@@ -104,7 +104,7 @@ async fn serve(mut send: quinn::SendStream, mut recv: quinn::RecvStream, seen: S
     else {
         return Ok(());
     };
-    write_message(&mut send, Message::Ok).await?;
+    write_message(&mut send, felix_wire::baseline_auth_ok()).await?;
     while let Some(message) = read_message_with_limit(&mut recv, &mut scratch, MAX_FRAME).await? {
         let (kind, answer) = match message {
             Message::Publish { .. } => ("publish", None),

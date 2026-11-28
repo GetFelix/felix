@@ -328,3 +328,65 @@ async fn a_late_first_answer_leaves_time_for_the_trip_back() {
     assert_eq!(named(&answers[0]), Some(0));
     assert!(matches!(&answers[1], Err(Refused::Slow(_))));
 }
+
+/// A broker whose members answer as `answer_each` hands them out, group
+/// `slow` 300 ms after the rest, as a member stuck behind its core's queue
+/// does under load (#3032).
+struct LateMember {
+    slow: u32,
+}
+
+impl LateMember {
+    async fn handle(slow: u32, beat: RaftRequest) -> Answer {
+        let n = beat.group.shard.shard;
+        let after = if n == slow { 300 } else { 5 };
+        tokio::time::sleep(Duration::from_millis(after)).await;
+        answer_for(n)
+    }
+}
+
+#[async_trait]
+impl RaftTransport for LateMember {
+    async fn send(&self, request: RaftRequest) -> Answer {
+        Self::handle(self.slow, request).await
+    }
+
+    async fn send_beats(&self, beats: Vec<RaftRequest>, wait: Duration) -> Vec<Answer> {
+        let slow = self.slow;
+        answer_each(beats, wait, Duration::ZERO, |beat| Self::handle(slow, beat)).await
+    }
+}
+
+/// A heartbeat a read-index round waits on gets its member's answer however
+/// late it comes. Batched with others, a member that answers more than the
+/// straggler wait after the first is refused as slow, the leader counts no
+/// answer, and the round waits out its whole lease (#3032).
+#[tokio::test(start_paused = true)]
+async fn a_heartbeat_a_read_waits_on_is_not_cut_short_by_the_others() {
+    let wait = Duration::from_millis(50);
+    let beats = Beats::wrap(Arc::new(LateMember { slow: 0 }), WINDOW, wait);
+    let mut read = beat(0, "b");
+    read.beat.alone = true;
+    let sent = std::iter::once(read)
+        .chain((1..4).map(|n| beat(n, "b")))
+        .map(|request| beats.send(request));
+    let answers = futures::future::join_all(sent).await;
+    for (n, answer) in answers.iter().enumerate() {
+        assert_eq!(named(answer), Some(n as u64), "{:?}", answer.as_ref().err());
+    }
+}
+
+/// The same heartbeat without a read waiting goes in the batch, and is
+/// refused as slow: what the read's heartbeat is kept out of.
+#[tokio::test(start_paused = true)]
+async fn a_late_member_in_a_batch_is_refused_as_slow() {
+    let wait = Duration::from_millis(50);
+    let beats = Beats::wrap(Arc::new(LateMember { slow: 0 }), WINDOW, wait);
+    let sent = (0..4).map(|n| beats.send(beat(n, "b")));
+    let answers = futures::future::join_all(sent).await;
+    assert!(
+        matches!(&answers[0], Err(Refused::Slow(_))),
+        "{:?}",
+        named(&answers[0])
+    );
+}

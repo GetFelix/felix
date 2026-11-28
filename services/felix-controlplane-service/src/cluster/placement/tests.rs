@@ -23,6 +23,7 @@ mod raft_dead_voter;
 mod raft_drain;
 mod raft_elected;
 mod raft_leaders;
+mod raft_seat_rules;
 mod raft_short_placement;
 mod raft_top_up;
 mod raft_vouched_write;

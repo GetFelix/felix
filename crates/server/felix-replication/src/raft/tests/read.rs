@@ -31,6 +31,134 @@ async fn reads_that_arrive_together_share_read_index_rounds() {
     led.cluster.stop().await;
 }
 
+/// While a read waits on a round, the leader's heartbeats go on their own,
+/// so no other group's answer cuts them short (#3032). With none waiting
+/// they go in batches again.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn heartbeats_go_alone_only_while_a_read_waits() {
+    let mut led = led().await;
+    let alone = || led.cluster.net.alone_beats.load(Relaxed);
+    let quiet = alone();
+    tokio::time::sleep(timers().heartbeat * 5).await;
+    assert_eq!(alone(), quiet, "heartbeats went alone with no read waiting");
+
+    led.cut_followers();
+    let key = shard(0);
+    let read = led.engine.confirm_read(&key, led.term);
+    let waited = async {
+        tokio::time::sleep(timers().heartbeat * 3).await;
+        alone()
+    };
+    let (_, during) = tokio::join!(read, waited);
+    led.heal();
+    assert!(
+        during > quiet,
+        "no heartbeat went alone while the read waited"
+    );
+
+    let after = alone();
+    tokio::time::sleep(timers().heartbeat * 5).await;
+    assert_eq!(alone(), after, "heartbeats stayed alone after the read");
+    led.cluster.stop().await;
+}
+
+/// A read stops counting as waiting however it ends: refused, or dropped by
+/// its caller mid-round (a client timeout, a closed connection). A count left
+/// behind would keep the group's heartbeats out of batches for good.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_read_stops_waiting_when_refused_or_dropped() {
+    let mut led = led().await;
+    let member = led
+        .cluster
+        .runtime(&led.leader.broker)
+        .group(&shard(0))
+        .expect("group");
+    let key = shard(0);
+    led.cut_followers();
+
+    // Dropped by its caller while the round is out.
+    let read = led.engine.confirm_read(&key, led.term);
+    let dropped = tokio::time::timeout(timers().heartbeat * 2, read).await;
+    assert!(
+        dropped.is_err(),
+        "the read finished with its followers cut off"
+    );
+    assert!(
+        !member.reads_waiting(),
+        "a dropped read still counts as waiting"
+    );
+
+    // Refused: no majority answers within its bound.
+    let refused = led.engine.confirm_read(&key, led.term).await;
+    assert!(refused.is_err(), "{refused:?}");
+    assert!(
+        !member.reads_waiting(),
+        "a refused read still counts as waiting"
+    );
+
+    led.heal();
+    led.cluster.stop().await;
+}
+
+/// Cut the leader off from its followers, which cannot stand either, so
+/// each round finds no majority and nobody else takes the shard.
+fn isolate_leader(led: &Led) {
+    led.cluster
+        .net
+        .unheard_candidates
+        .lock()
+        .extend(led.followers());
+    led.cut_followers();
+}
+
+/// A round that found no majority does not end a read that still has time:
+/// it asks a fresh round, and one answered by a majority confirms it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_read_asks_again_after_a_round_without_a_majority() {
+    let mut led = led().await;
+    let member = led
+        .cluster
+        .runtime(&led.leader.broker)
+        .group(&shard(0))
+        .expect("group");
+    let key = shard(0);
+    let before = member.read_rounds_asked();
+    isolate_leader(&led);
+    let read = led.engine.confirm_read(&key, led.term);
+    let heal = async {
+        // Past the first round, which waits one lease, and short of the
+        // read's own bound.
+        tokio::time::sleep(timers().lease + timers().heartbeat).await;
+        led.heal();
+    };
+    let (confirmed, ()) = tokio::join!(read, heal);
+    led.cluster.net.unheard_candidates.lock().clear();
+    assert_eq!(confirmed, Ok(()));
+    let asked = member.read_rounds_asked() - before;
+    assert!(asked >= 2, "{asked} rounds: the first did not fail");
+    led.cluster.stop().await;
+}
+
+/// With no majority in any round, the read fails at its bound, not at the
+/// end of the first round.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_read_with_no_majority_fails_at_its_bound() {
+    let mut led = led().await;
+    let key = shard(0);
+    isolate_leader(&led);
+    let started = Instant::now();
+    let refused = led.engine.confirm_read(&key, led.term).await;
+    let waited = started.elapsed();
+    led.heal();
+    led.cluster.net.unheard_candidates.lock().clear();
+    assert!(refused.is_err(), "{refused:?}");
+    assert!(
+        waited >= timers().election_max,
+        "refused after {waited:?}, before the bound"
+    );
+    led.cluster.stop().await;
+}
+
 /// 1 KiB records, written while one follower was cut off.
 const CATCH_UP_RECORD: usize = 1024;
 

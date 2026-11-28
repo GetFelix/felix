@@ -85,9 +85,8 @@ admin's client token against the API. So the API refuses `felix-broker` tokens,
 and a caller asks exchange or refresh for `"audience": "felix-controlplane"`
 when it wants to call the API.
 
-`FELIX_CONTROLPLANE_ACCEPT_BROKER_AUDIENCE=true` makes the API accept
-broker-audience tokens as well, for the length of a migration (see
-[Upgrading](#upgrading-to-scoped-groups-and-audiences)).
+There is no switch to accept broker-audience tokens as well (see
+[Scoped groups and audiences](#scoped-groups-and-audiences)).
 
 ## Principal Normalization
 
@@ -809,12 +808,10 @@ sequenceDiagram
     G->>B: Auth with the delegated token over the gateway's certificate
 ```
 
-A subject token without `may_act` is refused too, unless the control plane
-runs with `FELIX_CONTROLPLANE_DELEGATE_UNBOUND_TOKENS=true`. That switch lets
-any holder of `token.delegate` delegate any `may_act`-less broker token of the
-tenant it has, which is how delegation behaved before `may_act`; turn it on
-only while gateways move to `actor_token`, and off again after. A token whose
-`may_act` names another actor is refused either way.
+A subject token without `may_act` is refused too, as is one whose `may_act`
+names another actor. `FELIX_CONTROLPLANE_DELEGATE_UNBOUND_TOKENS`, which let a
+`may_act`-less token through, is retired with the 0.8 baseline and changes
+nothing.
 
 Under the Raft store the actor is kept with the refresh token as a metadata
 version 6 field. Until every control-plane member reports that version, an
@@ -847,8 +844,8 @@ Content-Type: application/json
   any revocation of the caller, and current RBAC must still grant the caller
   `token.delegate`. The caller's IdP groups are not known here, so a grant
   to an IdP group counts for a caller whose token carries the permission when
-  the group's issuer is one the tenant trusts (a bare legacy group name only
-  while `FELIX_CONTROLPLANE_LEGACY_UNSCOPED_GROUPS` is on). Removing such a
+  the group's issuer is one the tenant trusts (a bare group name never
+  counts). Removing such a
   grant, or the issuer, revokes the whole tenant, which the revocation check
   catches. A caller refused for either reason gets `403` with code
   `actor_refused`; mint a new `felix-controlplane` token and try again.
@@ -1598,33 +1595,15 @@ and `rbac.assignment.manage` over every policy of the role for a grouping (a
 role with no policies needs tenant scope). A removed grant stops working at
 the holder's next refresh, since refresh re-evaluates RBAC.
 
-## Upgrading to scoped groups and audiences
+## Scoped groups and audiences
 
-Two changes need operator action.
-
-**Group names.** Groupings written against bare IdP group names
-(`group:ops`) stop matching, because exchange now produces
-`group:<issuer>#ops`. For each such grouping, add the scoped form for every
-issuer that should carry the group, then remove the bare one:
-
-```
-POST   /v1/tenants/t1/rbac/groupings  {"user": "group:https://login.example.com#ops", "role": "role:operator"}
-DELETE /v1/tenants/t1/rbac/groupings  {"user": "group:ops", "role": "role:operator"}
-```
-
-`FELIX_CONTROLPLANE_LEGACY_UNSCOPED_GROUPS=true` links the bare names as well
-while this is under way. It keeps the hole scoping closes open, so turn it off
-once the groupings are moved. Refresh tokens issued before the upgrade record
-bare names and lose their group-derived grants at their next refresh unless the
-switch is on; their holders re-exchange.
-
-**Audiences.** Every caller of the API needs a `felix-controlplane` token:
-exchange with `"audience": "felix-controlplane"`. That includes each broker's
-node credential (`FELIX_NODE_TOKEN` / `FELIX_NODE_TOKEN_FILE`); an
-upgraded broker's refresh loop asks for the right audience itself, but the
-first token has to be minted with it. To upgrade without an outage, set
-`FELIX_CONTROLPLANE_ACCEPT_BROKER_AUDIENCE=true` on the control plane, upgrade,
-re-provision credentials, then remove it.
+Groupings name IdP groups by their scoped form, `group:<issuer>#<name>`, and
+every caller of the API, each broker's node credential included
+(`FELIX_NODE_TOKEN` / `FELIX_NODE_TOKEN_FILE`), needs a `felix-controlplane`
+token. A bare `group:ops` grouping matches no one. The switches that bridged a
+migration to both (`FELIX_CONTROLPLANE_LEGACY_UNSCOPED_GROUPS`,
+`FELIX_CONTROLPLANE_ACCEPT_BROKER_AUDIENCE`) are retired with the 0.8 baseline:
+set, each is reported at start and changes nothing.
 
 Rule removal and key rotation add Raft commands. On the Raft backend, those
 routes answer 409 until every control-plane member runs a build that has

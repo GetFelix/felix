@@ -5,23 +5,26 @@ use std::time::{Duration, Instant};
 use anyhow::{Result, anyhow};
 
 use super::Cluster;
+use felix_wire::RetryClass;
+
 use crate::client;
 
-/// How long a new leader gets to commit its first mark before a poll counts as refused.
-const SETTLING_BUDGET: Duration = Duration::from_secs(30);
+/// How long a refused group call is sent again before the refusal is returned.
+const RETRY_BUDGET: Duration = Duration::from_secs(30);
 
-/// A leader that has not committed a mark for its new generation refuses group reads
-/// until it has one. Clients retry that refusal; so does a test that polls right after
-/// a failover. Any other error is returned at once.
-async fn retry_settling<T, F, Fut>(mut call: F) -> Result<T>
+/// A new leader refuses group calls until it has committed in its term: a read until it
+/// has a mark, a write while its engine has not settled a batch. Clients send those
+/// again, so a test that calls right after a move or failover does too. Any other error
+/// is returned at once, and so is the last refusal once the budget is spent.
+async fn retry_refused<T, F, Fut>(mut call: F) -> Result<T>
 where
     F: FnMut() -> Fut,
     Fut: Future<Output = Result<T>>,
 {
-    let deadline = Instant::now() + crate::wait::budget(SETTLING_BUDGET);
+    let deadline = Instant::now() + crate::wait::budget(RETRY_BUDGET);
     loop {
         match call().await {
-            Err(err) if is_settling(&err) && Instant::now() < deadline => {
+            Err(err) if is_retryable(&err) && Instant::now() < deadline => {
                 tokio::time::sleep(Duration::from_millis(100)).await;
             }
             other => return other,
@@ -29,8 +32,13 @@ where
     }
 }
 
-fn is_settling(err: &anyhow::Error) -> bool {
-    format!("{err:#}").contains("no committed mark")
+/// Only the classes that promise nothing was applied and that waiting can clear.
+/// `Redirect` says to ask another broker, and these helpers are pinned to one, so tests
+/// that probe a non-owner see that refusal at once. `OutcomeUnknown` and an error with
+/// no broker code (a lost connection) may have been applied, so they stay final.
+fn is_retryable(err: &anyhow::Error) -> bool {
+    err.downcast_ref::<felix_client::BrokerError>()
+        .is_some_and(|broker| matches!(broker.retry, RetryClass::Retry | RetryClass::RetryAfter))
 }
 
 impl Cluster {
@@ -53,7 +61,7 @@ impl Cluster {
             .ok_or_else(|| anyhow!("unknown node {node_id}"))?;
         let client =
             client::connect(node.client_addr, &self.tenant_id, &self.client_token()).await?;
-        let records = retry_settling(|| {
+        let records = retry_refused(|| {
             client.group_poll(
                 &self.tenant_id,
                 &self.namespace,
@@ -87,7 +95,7 @@ impl Cluster {
             .ok_or_else(|| anyhow!("unknown node {node_id}"))?;
         let client =
             client::connect(node.client_addr, &self.tenant_id, &self.client_token()).await?;
-        retry_settling(|| {
+        retry_refused(|| {
             client.group_poll(
                 &self.tenant_id,
                 &self.namespace,
@@ -122,7 +130,7 @@ impl Cluster {
             consumer: consumer.to_owned(),
             reclaim,
         };
-        retry_settling(|| {
+        retry_refused(|| {
             client.group_poll_as(
                 &self.tenant_id,
                 &self.namespace,
@@ -152,7 +160,7 @@ impl Cluster {
             .ok_or_else(|| anyhow!("unknown node {node_id}"))?;
         let client =
             client::connect(node.client_addr, &self.tenant_id, &self.client_token()).await?;
-        retry_settling(|| {
+        retry_refused(|| {
             client.group_extend(
                 &self.tenant_id,
                 &self.namespace,
@@ -180,8 +188,8 @@ impl Cluster {
             .ok_or_else(|| anyhow!("unknown node {node_id}"))?;
         let client =
             client::connect(node.client_addr, &self.tenant_id, &self.client_token()).await?;
-        client
-            .group_ack(
+        retry_refused(|| {
+            client.group_ack(
                 &self.tenant_id,
                 &self.namespace,
                 stream,
@@ -189,7 +197,8 @@ impl Cluster {
                 group,
                 offset,
             )
-            .await
+        })
+        .await
     }
 
     /// Hand one record back through a named broker, for immediate redelivery.
@@ -206,8 +215,8 @@ impl Cluster {
             .ok_or_else(|| anyhow!("unknown node {node_id}"))?;
         let client =
             client::connect(node.client_addr, &self.tenant_id, &self.client_token()).await?;
-        client
-            .group_nack(
+        retry_refused(|| {
+            client.group_nack(
                 &self.tenant_id,
                 &self.namespace,
                 stream,
@@ -215,7 +224,8 @@ impl Cluster {
                 group,
                 record,
             )
-            .await
+        })
+        .await
     }
 
     /// The offsets a group gave up on, through a named broker.
@@ -231,9 +241,10 @@ impl Cluster {
             .ok_or_else(|| anyhow!("unknown node {node_id}"))?;
         let client =
             client::connect(node.client_addr, &self.tenant_id, &self.client_token()).await?;
-        client
-            .group_dead_letters(&self.tenant_id, &self.namespace, stream, shard, group)
-            .await
+        retry_refused(|| {
+            client.group_dead_letters(&self.tenant_id, &self.namespace, stream, shard, group)
+        })
+        .await
     }
 
     /// Put one dead letter back in the queue, through a named broker.
@@ -254,8 +265,8 @@ impl Cluster {
             &self.group_operator_token(),
         )
         .await?;
-        client
-            .group_redrive(
+        retry_refused(|| {
+            client.group_redrive(
                 &self.tenant_id,
                 &self.namespace,
                 stream,
@@ -263,7 +274,8 @@ impl Cluster {
                 group,
                 offset,
             )
-            .await
+        })
+        .await
     }
 }
 

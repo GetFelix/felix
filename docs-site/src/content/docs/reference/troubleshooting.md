@@ -160,21 +160,18 @@ which metadata group it is. The first message means the node token lacks
 older release: upgrade every control-plane member before the brokers. The
 broker keeps retrying either way and starts once the control plane answers.
 
-### This broker runs another shard engine
+### FELIX_SHARD_ENGINE=hybrid is refused
 
 ```
-ERROR this broker runs shard engine hybrid but the cluster was formed with raft; leave FELIX_SHARD_ENGINE unset and give the broker what Raft needs: FELIX_NODE_ID, FELIX_INTERNAL_BIND and FELIX_DURABLE_STORAGE_DIR
+FELIX_SHARD_ENGINE=hybrid is refused
 ```
 
-The control plane records the cluster's shard engine when the cluster forms,
-and a broker whose engine differs refuses to start. A new cluster is formed
-for Raft, so this usually means the broker has `FELIX_SHARD_ENGINE=hybrid` set:
-remove it, and give the broker the settings the message names.
-
-The other direction, a Raft broker and a cluster formed with
-`FELIX_SHARD_ENGINE=hybrid`, cannot be fixed on the broker: the hybrid engine
-is deprecated and no Raft broker joins such a cluster. Form a new cluster, on
-empty data directories, with `FELIX_SHARD_ENGINE` unset everywhere.
+Raft is the only shard engine. A broker or control plane started with
+`FELIX_SHARD_ENGINE=hybrid` stops at start. Remove the variable, or set it to
+`raft`; any other set value is logged as retired and ignored. A cluster
+whose control plane recorded `hybrid` when it formed cannot be migrated: form a
+new cluster on empty data directories. See
+[Retired variables](/reference/environment-variables/#retired-variables).
 
 ### This broker cannot run Raft
 

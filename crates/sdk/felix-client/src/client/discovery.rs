@@ -173,12 +173,6 @@ impl Connection {
         namespace: &str,
         stream: &str,
     ) -> Result<Option<felix_wire::AckDurability>> {
-        if !felix_wire::supports_feature(
-            self.server_features_hi,
-            felix_wire::FEATURE_ACK_DURABILITY,
-        ) {
-            return Ok(None);
-        }
         let view = self.stream_view(tenant_id, namespace, stream).await?;
         Ok(view.ack_durability)
     }

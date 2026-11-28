@@ -104,6 +104,9 @@ jobs:
             -p felix-broker-service --bin felix-broker \
             -p felix-controlplane-service --bin felix-controlplane
 
+      - name: The broker carries no fault injection
+        run: scripts/check_no_fault_injection.sh target/release/felix-broker
+
       - name: Package release archive
         run: |
           set -euxo pipefail

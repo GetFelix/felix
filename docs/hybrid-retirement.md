@@ -3,8 +3,8 @@
 This page is the design for track 6 of the one-engine plan (issue #2167):
 delete the bespoke shard replication protocol, which the other pages call
 "the hybrid", so that 0.8 has one engine (a Raft group per shard, through
-openraft) and one model set (`FelixRaft`). Raft is already the default
-engine on main; the deletion is not built yet.
+openraft) and one model set (`FelixRaft`). Raft is the only engine at run
+time on main (PR 3); the code deletion is not built yet.
 
 Read [`per-shard-raft.md`](per-shard-raft.md) first. It defines the Raft
 engine and the pull requests of track 4 that this page orders itself
@@ -18,10 +18,10 @@ Line counts and paths are as of the commit that added this page.
 - There is no upgrade from 0.7 to 0.8. A 0.8 cluster starts fresh, so no
   build has to switch a running hybrid shard to Raft, and nothing has to
   ship both engines.
-- Raft is the default shard engine on main. `FELIX_SHARD_ENGINE` unset
-  means Raft. The hybrid is frozen: no fixes, no perf work. It stays
-  selectable (`FELIX_SHARD_ENGINE=hybrid`, deprecated) only so its tests
-  keep running until it is deleted.
+- Raft is the only shard engine at run time on main. `FELIX_SHARD_ENGINE` is
+  retired, and a broker or control plane asked for `hybrid` refuses to
+  start. The hybrid's code is still compiled, frozen, and reached only by
+  the simulator's hybrid clusters, until PR 4 deletes it.
 - Then the hybrid is deleted, in the pull requests below, in dependency
   order. 0.8.0 contains no hybrid code.
 - Deleting is about 21,000 lines of non-test replication code, 2,000 lines
@@ -229,7 +229,7 @@ shards in `.github/workflows/ci.yml`, and the 36 Rust files that cite a
 
 | What | Where | Fate |
 | --- | --- | --- |
-| Modes `off`, `clocks`, `placement`, `power-loss` | `crates/testing/felix-sim`, `.github/workflows/dst-nightly.yml` | Kept, on Raft clusters. `sleep` is added by #2239 |
+| Modes `off`, `clocks`, `placement`, `power-loss` | `crates/testing/felix-sim`, `.github/workflows/dst-nightly.yml` | Not kept as such: they simulated the hybrid's cluster. The `raft-*` group modes (`raft-clocks`, `raft-power-loss` and the rest) cover clock skew and power loss per group. Placement faults are covered by the history faults `MoveShard`, `Drain` and `InterruptedMove` on Raft. A whole-cluster Raft simulation mode is the gap (#3394). `sleep` is added by #2239 |
 | Checkers | `crates/testing/felix-sim/src/check.rs` and `check/` | See "Coverage hand-off" |
 | Pinned seeds named after the driver, fences, promotion or seats | `crates/testing/felix-sim/tests/seeds.rs` | Replayed on Raft. A seed stays if it still runs a distinct schedule, renamed for what it checks |
 | History modes `lease` and `lease-free` | `crates/testing/felix-cluster/src/history/campaign.rs`, `.github/workflows/history.yml` | Both removed. There is one mode |
@@ -258,9 +258,6 @@ A Raft broker serves one on a path of its own, `shards::memory` (#3065):
 | Reports | None. The control plane places an in-memory shard without reading a report | None |
 | Brokers without a disk | A broker with a node id and no durable storage starts on the Raft engine, runs no group and registers `felix.dev/node-storage=none` (#3067). The control plane places only in-memory stream shards on it, at metadata level 54 and above. It serves those through `shards::memory`, routes a cache's shard to its group like any broker outside it, and never registers a durable stream | None |
 | Control plane | Its own step, `cluster/placement/in_memory.rs` (#3066): one owner from `choose` and no followers, kept while it is live, placed again in the same pass when it is down, gone, draining, internal or outside the stream's region. An operator move is one write. No replica report is read. Every owner change is a new assignment at the next generation | No |
-
-A hybrid broker (`FELIX_SHARD_ENGINE=hybrid`) still serves in-memory shards
-through the hybrid lifecycle until it is deleted.
 
 The design, in three issues that block the deletion:
 
@@ -305,8 +302,8 @@ flowchart LR
 
 | Phase | What main has | What CI runs |
 | --- | --- | --- |
-| 1. Raft by default (now) | Both engines. A control plane with no `FELIX_SHARD_ENGINE` forms the cluster for Raft. A broker with no `FELIX_SHARD_ENGINE` and a node id (`FELIX_NODE_ID`) runs Raft, and refuses to start, naming what is missing, without the internal listener or the `raft` build feature; without durable storage it runs no group and holds only in-memory stream shards (#3067). A standalone broker, with no node id, runs each durable stream and cache shard as a Raft group of one, with no peer, internal listener or control-plane placement (decided in #2986); it refuses `FELIX_SHARD_ENGINE=raft` without durable storage, and without durable storage it runs in memory as before. Every registering broker is compared with the engine the control plane recorded. `FELIX_SHARD_ENGINE=hybrid` still works and logs a deprecation warning. `compose.yaml` runs its broker this way on images built from main, and `felix-cluster up` starts its brokers and control plane on Raft (#2985) | Raft cluster jobs gate. The hybrid cluster jobs run beside them and only report |
-| 2. Hybrid deleted | Raft only, one pull request at a time (see "Pull request split"). A broker with a node id runs Raft as in phase 1. A standalone broker runs its durable shards as single-voter Raft groups, as in phase 1, so nothing about it changes when the hybrid goes | Raft only. Each pull request removes the hybrid tests for the code it removes |
+| 1. Raft by default (done) | Both engines. A control plane with no `FELIX_SHARD_ENGINE` forms the cluster for Raft. A broker with no `FELIX_SHARD_ENGINE` and a node id (`FELIX_NODE_ID`) runs Raft, and refuses to start, naming what is missing, without the internal listener or the `raft` build feature; without durable storage it runs no group and holds only in-memory stream shards (#3067). A standalone broker, with no node id, runs each durable stream and cache shard as a Raft group of one, with no peer, internal listener or control-plane placement (decided in #2986); it refuses `FELIX_SHARD_ENGINE=raft` without durable storage, and without durable storage it runs in memory as before. Every registering broker is compared with the engine the control plane recorded. `FELIX_SHARD_ENGINE=hybrid` still works and logs a deprecation warning. `compose.yaml` runs its broker this way on images built from main, and `felix-cluster up` starts its brokers and control plane on Raft (#2985) | Raft cluster jobs gate. The hybrid cluster jobs run beside them and only report |
+| 2. Hybrid deleted (now, from PR 3) | Raft only, one pull request at a time (see "Pull request split"). PR 3 leaves Raft the only engine at run time: `FELIX_SHARD_ENGINE=hybrid` is refused by brokers and control planes, the other hybrid variables are reported as retired and ignored, and no broker starts the hybrid's driver, suspicion heartbeat, election driver or promotion fence. A broker with a node id runs Raft as in phase 1. A standalone broker runs its durable shards as single-voter Raft groups, as in phase 1, so nothing about it changes when the hybrid goes | Raft only: the cluster jobs `Cluster tests (routing, failures, history, rest)` and `Cluster tests (Raft shards)`, the history campaign in its one mode, and the nightly simulator sweep in the `raft-*` modes. The hybrid cluster jobs, the history modes `lease` and `lease-free`, the hybrid nightly simulator modes and `perf-raft-rf3.yml` are gone. Until PR 4 deletes the code, the per-PR simulator jobs (`Simulator determinism` and the seed batch) still run the simulator's hybrid clusters, which test code no broker reaches. Each later pull request removes the hybrid tests for the code it removes |
 
 The order, decided with Raft as the default:
 
@@ -361,7 +358,7 @@ live in the Raft groups simulation, `felix-sim/src/raft.rs`, run by
 | `record-generations-agree` | Kept above the base: copies agree on the term of every entry. Below the base the generation is not compared, by design | Landed: `Sim::check_terms_agree` after the final reads, below each member's read bound |
 | `generation-burn` (warning) | Kept as a term-burn warning. It catches election storms, which sleep makes more likely | Landed: `RaftOutcome::warnings`, from the lowest and highest term the watch saw per shard |
 | `torn-tail-repaired` | Unchanged | Landed: `Sim::check_power_cut` in the power modes (#2989). `raft_seed_1233_with_power_loss` tears and repairs tails |
-| New with #2239 | `SleepersWake`, `AsleepIsLevel`, `IdleGroupsSleep` | Blocked on #2239, which adds sleep. `AsleepIsLevel` is modelled (`FelixRaftSleep.cfg`) |
+| New with #2239 | `SleepersWake`, `AsleepIsLevel`, `IdleGroupsSleep` | Not a hybrid check: new Raft behaviour that #2239 (v0.9.0) adds with sleep, so it blocks no deletion. `AsleepIsLevel` is modelled (`FelixRaftSleep.cfg`) |
 
 ### History checker
 
@@ -387,7 +384,8 @@ The Raft cluster tests are in `felix-cluster/tests/raft_shards.rs`.
 | `routing/generation_start.rs` | Ported: the blank entry of a term takes no offset a consumer sees | Landed: the simulator's subscribers read from offset 0 through every term, and a delivery at a blank's offset is a finding (`raft/deliveries.rs`). In process, `a_term_blank_on_an_idle_shard_ends_no_records`. The file's own tests are about moves and skip on Raft until #2235 |
 | `failures/lease_free_reads.rs`, `failures/lease_free_sessions.rs` | Ported: a `Quorum` read or a group commit on a deposed leader is refused | Landed: both files run on Raft. `a_cut_off_leader_cannot_serve_a_quorum_read_once_a_new_leader_took_writes` and `a_deposed_coordinator_refuses_a_group_ack` partition the old leader from its peers, not from the client, and assert the refusal |
 | `scale/lease_starvation.rs` | Retired. No lease is renewed through the control plane. Starved timers are covered by the groups-per-broker gate | Retired |
-| `failures/followers_word.rs`, `failures/learners.rs` | Ported to learners and membership (#2235) | Blocked on #2235. The wiped-copy case of `learners.rs` runs on Raft (above); `followers_word.rs` skips on Raft |
+| `failures/followers_word.rs` | Retired. Placement moving a leader on its followers' word is hybrid; a Raft group elects its own leader | Retired: it skips on Raft (`skip_on_raft_retire_with_hybrid`), and `one_leader_throughout` in `failover.rs` checks the election |
+| `failures/learners.rs` | Ported to learners and membership (#2235) | Landed: the wiped-copy case runs on Raft (above), and #2235 is closed |
 
 ### TLA+ invariants
 
@@ -467,9 +465,9 @@ mark and the control-plane log latch.
 
 A cluster formed on main before the default flipped recorded `hybrid` as
 its engine and keeps it: the control plane records the engine once, when
-its metadata group forms. Its brokers refuse to start on Raft until they
-are given `FELIX_SHARD_ENGINE=hybrid`. Such a cluster is a test cluster;
-start it again on empty directories to move it to Raft.
+its metadata group forms. Its control plane logs an error at start, and no
+broker of this build joins it. Such a cluster is a test cluster; start it
+again on empty directories to move it to Raft.
 
 ## The bug map
 
@@ -488,7 +486,7 @@ is closed or kept.
 | #2135 staged move sticks when the successor's storage id rotates | Resolved by #2235 and #2250: a rotated copy is a new member, swapped in by the membership loop |
 | #2133 interim routing publish copies the map under the lifecycle lock | Resolved in PR 5, which rewrites how the lifecycle publishes routes |
 | #2131 sim: assert a restarted broker reopens its torn segment | Added with the `power-loss` mode on Raft (#2250) |
-| #2067 moves never complete under placement faults (seed 3) | Re-tested by #2235, `placement` mode |
+| #2067 moves never complete under placement faults (seed 3) | The `placement` mode is gone. Raft moves are exercised by the history faults `MoveShard`, `Drain` and `InterruptedMove`; a whole-cluster Raft simulation mode is #3394 |
 | #2066 placement abandon refused on a held shard | Retires with the hybrid: no shard switches, so abandon is no longer the way out. Under Raft, #2250 restates the rule against re-forming |
 | #1998 fsync error must poison the log | Own storage fix, before #2233. A group stops on a storage error, so the error must be sticky |
 | #1931 crash between purge and snapshot install | Track 2 (#2221, pull request #2255) |
@@ -535,7 +533,7 @@ Each is safe to merge alone. All are tracked under #2167.
 | --- | --- | --- | --- |
 | 1 (#2257) | The default. A new cluster starts on Raft, the release build includes the engine, `FELIX_SHARD_ENGINE=hybrid` is deprecated | None | Both engines stay under CI. The hybrid tests pin the hybrid |
 | 2 (#2258) | Coverage hand-off. The Raft checks in the tables above that track 4 did not already land, and the `opened` checker | 1 | Tests only |
-| 3 (#2259) | One engine at run time. `FELIX_SHARD_ENGINE` and the hybrid environment variables are retired, the hybrid wiring in the broker is cut, hybrid CI jobs and history modes are dropped | 1, 2, the gates under "Ordering", Gaps 1 and 2 | No format changes |
+| 3 (#2259, done) | One engine at run time. `FELIX_SHARD_ENGINE` and the hybrid environment variables are retired, the hybrid wiring in the broker is cut, hybrid CI jobs and history modes are dropped | 1, 2, the gates under "Ordering", Gaps 1 and 2 | No format changes |
 | 4 (#2260) | Delete the hybrid in `felix-replication` and the broker service, with its metrics and tests | 3 | Deletes only code nothing runs |
 | 5 (#2261) | The engine trait, the write fence and the shard lifecycle in their final shape | 4 | A refactor with no behaviour change. Simulator seeds and the history run pass unchanged |
 | 6 (#2262) | Control plane: no assigned leader, no generation bump, no reports, adoption, suspicion or seat fences, for durable shards. Routes removed | 3, #3066 | Removes code a Raft cluster never reaches once in-memory shards are placed on their own (#3066) |

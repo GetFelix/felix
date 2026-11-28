@@ -1,10 +1,9 @@
-//! A broker that answers `auth` and advertises no features at all.
+//! A broker that answers `auth` and advertises none of the 0.8 baseline.
 //!
-//! A real broker advertises `FEATURE_ATOMIC_COMMIT` whether or not its fleet
-//! has finalized the feature, so no real broker lets a client prove it holds
-//! back `commit`, `state_get`, `trim_before` and shard-named publishes from a broker that did
-//! not advertise them. This one does, and counts the ones it was sent so a
-//! suite can check none arrived.
+//! A 0.8 client refuses an `auth_ok` that lacks the broker baseline, so a
+//! client suite can use this to prove the client refuses a broker from before
+//! the baseline and sends it nothing. It counts the commits, state reads, trims
+//! and shard-named publishes it was sent so a suite can check none arrived.
 
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -39,7 +38,7 @@ impl BareBroker {
         let cert = rcgen::generate_simple_self_signed(vec!["localhost".to_string()])
             .context("certificate for the bare broker")?;
         let builder = tls_builder()?.with_no_client_auth();
-        Self::serve(cert, builder)
+        Self::serve(cert, builder, below_baseline_auth_ok())
     }
 
     /// A broker that refuses a client without a certificate from a CA of its
@@ -77,6 +76,7 @@ impl BareBroker {
         let broker = Self::serve(
             server_cert,
             tls_builder()?.with_client_cert_verifier(verifier),
+            felix_wire::baseline_auth_ok(),
         )?;
         Ok((
             broker,
@@ -90,6 +90,7 @@ impl BareBroker {
     fn serve(
         cert: rcgen::CertifiedKey<rcgen::KeyPair>,
         builder: rustls::ConfigBuilder<rustls::ServerConfig, rustls::server::WantsServerCert>,
+        auth_ok: Message,
     ) -> Result<Self> {
         let cert_pem = cert.cert.pem();
         let key = rustls::pki_types::PrivatePkcs8KeyDer::from(cert.signing_key.serialize_der());
@@ -114,12 +115,18 @@ impl BareBroker {
         let task = tokio::spawn(async move {
             while let Some(incoming) = server.accept_incoming().await {
                 let counted = Arc::clone(&counted);
+                let auth_ok = auth_ok.clone();
                 tokio::spawn(async move {
                     let Ok(connection) = incoming.accept().await else {
                         return;
                     };
                     while let Ok((send, recv)) = connection.accept_bi().await {
-                        tokio::spawn(serve_stream(send, recv, Arc::clone(&counted)));
+                        tokio::spawn(serve_stream(
+                            send,
+                            recv,
+                            Arc::clone(&counted),
+                            auth_ok.clone(),
+                        ));
                     }
                 });
             }
@@ -130,6 +137,18 @@ impl BareBroker {
             requests,
             task,
         })
+    }
+}
+
+/// An `auth_ok` that advertises nothing, as a broker from before the baseline.
+fn below_baseline_auth_ok() -> Message {
+    Message::AuthOk {
+        server_flags: felix_wire::ORIGINAL_V1_FLAGS,
+        server_features: None,
+        server_features_hi: None,
+        server_flags_ext: None,
+        listener_ports: None,
+        publish_window: None,
     }
 }
 
@@ -151,6 +170,7 @@ async fn serve_stream(
     mut send: SendStream,
     mut recv: RecvStream,
     requests: Arc<AtomicUsize>,
+    auth_ok: Message,
 ) -> Result<()> {
     while let Some(frame) = read_frame(&mut recv).await? {
         // A frame with flags this reads as a different layout is not a
@@ -160,15 +180,7 @@ async fn serve_stream(
         };
         match message {
             Message::Auth { .. } => {
-                let answer = Message::AuthOk {
-                    server_flags: felix_wire::ORIGINAL_V1_FLAGS,
-                    server_features: None,
-                    server_features_hi: None,
-                    server_flags_ext: None,
-                    listener_ports: None,
-                    publish_window: None,
-                };
-                let frame = answer.encode().context("encode auth_ok")?;
+                let frame = auth_ok.encode().context("encode auth_ok")?;
                 send.write_all(&frame.encode()).await?;
             }
             Message::Commit { .. }

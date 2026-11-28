@@ -69,6 +69,7 @@ fn every_code_from_the_entry_broker() {
         (ErrorCode::StaleWidth, BACKOFF),
         (ErrorCode::FeatureNotEnabled, Next::Fail),
         (ErrorCode::StreamHasCommits, Next::Fail),
+        (ErrorCode::BelowBaseline, Next::Fail),
     ];
     assert_eq!(table.len(), ErrorCode::ALL.len(), "a code is missing");
     for (code, expected) in table {

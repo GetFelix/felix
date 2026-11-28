@@ -194,21 +194,11 @@ async fn a_fenced_pass_does_not_vouch() {
         let stale = stale.with_plan(vec![write_ahead], vouched.clone());
         // Another instance writes first, moving the placement token on.
         let other = plan().await;
-        let other = super::super::reconciler::apply_pass(
-            &store,
-            &other,
-            &mut Default::default(),
-            &Default::default(),
-        )
-        .await;
+        let other =
+            super::super::reconciler::apply_pass(&store, &other, &mut Default::default()).await;
         assert!(other.placed > 0, "{other:?}");
-        let outcome = super::super::reconciler::apply_pass(
-            &store,
-            &stale,
-            &mut Default::default(),
-            &Default::default(),
-        )
-        .await;
+        let outcome =
+            super::super::reconciler::apply_pass(&store, &stale, &mut Default::default()).await;
         assert!(outcome.fenced, "{outcome:?}");
         assert!(
             !stored(&store, &shard)
@@ -218,13 +208,8 @@ async fn a_fenced_pass_does_not_vouch() {
         );
 
         let current = plan().await.with_plan(Vec::new(), vouched);
-        let outcome = super::super::reconciler::apply_pass(
-            &store,
-            &current,
-            &mut Default::default(),
-            &Default::default(),
-        )
-        .await;
+        let outcome =
+            super::super::reconciler::apply_pass(&store, &current, &mut Default::default()).await;
         assert!(!outcome.fenced, "{outcome:?}");
         assert_eq!(
             stored(&store, &shard).await.raft_copy_ids.get("broker-z"),

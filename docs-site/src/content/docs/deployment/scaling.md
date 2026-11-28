@@ -77,8 +77,7 @@ broker that has not seen the log would serve it empty. It is **moved**:
 
 1. **Stage.** The destination joins the shard's replica set and the leader
    ships it the log.
-2. **Fence.** Once the destination is within
-   `FELIX_SHARD_MOVE_FENCE_MAX_LAG_RECORDS` of the leader, the leader is told
+2. **Fence.** Once the destination is close behind the leader, the leader is told
    to stop serving the shard. It lets what it already accepted land, ships the
    last records, and reports that its log has stopped growing.
 3. **Cut over.** The destination is named leader at a new generation and
@@ -271,7 +270,7 @@ Metrics on the control plane:
 | `felix_shard_move_steps_total{step}` | steps written: `stage`, `fence`, `cut_over`, `abandon`, `timed_out`, `stalled`, `reseat`, `restore`, `seat`, `stuck` |
 | `felix_shards_under_replicated` | shards with fewer copies on serving brokers than their replication factor |
 | `felix_shard_replicas_missing` | the copies those shards are missing between them |
-| `felix_shard_moves_timed_out_total` | fenced moves given up at `FELIX_SHARD_FENCE_TIMEOUT_MS`, moves and follower replacements given up at `FELIX_SHARD_MOVE_TIMEOUT_MS`, pending replica sets dropped at `FELIX_SHARD_PENDING_SET_TIMEOUT_MS`, and restores dropped at `FELIX_SHARD_RESTORE_STALL_MS` |
+| `felix_shard_moves_timed_out_total` | moves and follower replacements given up at `FELIX_SHARD_MOVE_TIMEOUT_MS`, and restores dropped at `FELIX_SHARD_RESTORE_STALL_MS` |
 | `felix_shard_moves_waiting` | moves that could not advance in the last pass, including balance moves held while the cluster recovers |
 | `felix_shard_assignment_write_conflicts_total` | steps not written because another control-plane instance changed the shard after this pass read it |
 | `felix_placement_writes_fenced_total` | passes and operator requests stopped because another placement write landed after they read the store, which is how the move limits hold across control-plane instances |
@@ -363,18 +362,15 @@ fence and its tests are in `services/felix-broker-service/src/shards/lifecycle/f
 
 ## Tuning
 
+The fence timeout, fence lag, election hold, pending-set timeout and stuck-leader settings of the hybrid are retired; see [Retired variables](/reference/environment-variables/#retired-variables).
+
 | Setting | Default | Effect |
 | --- | --- | --- |
-| `FELIX_SHARD_MOVES_MAX_CONCURRENT` | `1` | Copies in flight across the cluster: moves, followers being replaced on a draining broker, and restores. Each is a full copy of a shard's log; raise it to drain a broker with many shards faster, at the cost of that much more replication traffic at once. A restore that tops up a shard whose leader holds at most `FELIX_SHARD_MOVE_FENCE_MAX_LAG_RECORDS` records does not count. `0` holds every move. |
+| `FELIX_SHARD_MOVES_MAX_CONCURRENT` | `1` | Copies in flight across the cluster: moves, followers being replaced on a draining broker, and restores. Each is a full copy of a shard's log; raise it to drain a broker with many shards faster, at the cost of that much more replication traffic at once. `0` holds every move. |
 | `FELIX_SHARD_MOVES_MAX_PER_NODE` | unset | Copies in flight into or out of any one broker. Raise the cluster-wide limit and set this to keep any one broker's disk and network from carrying all of them. |
-| `FELIX_SHARD_MOVE_FENCE_MAX_LAG_RECORDS` | `1000` | How far behind the leader a destination may be when the leader is fenced. A busy shard's destination is almost never exactly level, so a move waits for this instead; the leader then stops and the rest is copied before the cut-over. Larger shortens the wait to fence and lengthens the switch-over by the time it takes to copy that many records. |
-| `FELIX_SHARD_MOVE_TIMEOUT_MS` | `1800000` | How long a move may copy before its fence (or a replacement before it has caught up) before it is given up and its slot goes to the next move. Keep it well above the time the largest shard takes to copy. `0` never gives up. A fenced move is not held to it; see `FELIX_SHARD_FENCE_TIMEOUT_MS`. |
-| `FELIX_SHARD_FENCE_TIMEOUT_MS` | `120000` | How long a fenced leader may go without reporting drained before the move is given up and the leader serves the shard again at a new generation, holding every write it accepted. Draining takes milliseconds once the destination is level, so a fence this old is stuck, and its shard takes no writes until it ends. The shard's next move then waits this long, doubling with each give-up in a row up to an hour. `0` waits forever. |
-| `FELIX_SHARD_ELECTION_HOLD_MS` | `10000` | Under `replica_election`, how long placement must have seen a follower suspect a shard's leader before it promotes on the followers' word, so it does not race the replicas' own election. Keep it at twice `FELIX_LEADER_SUSPECT_AFTER_MS`. `0` does not wait. |
-| `FELIX_SHARD_PENDING_SET_TIMEOUT_MS` | `600000` | Under `replica_election`, how long a cut-over's new replica set may wait for the leader to report it on both sets before the change is dropped and the old set stays, at a new generation. `0` waits forever. |
+| `FELIX_SHARD_MOVE_TIMEOUT_MS` | `1800000` | How long a move may copy before its fence (or a replacement before it has caught up) before it is given up and its slot goes to the next move. Keep it well above the time the largest shard takes to copy. `0` never gives up. |
 | `FELIX_SHARD_RESTORE_AFTER_MS` | `300000` | How long a follower's broker may be down or gone before placement copies the shard to another broker. Set it above your longest broker restart, or a rolling restart copies every shard once per broker. `0` never replaces a lost follower; a replica set short of its factor is still topped up. Also how long a down or departed broker holds balancing (five minutes when `0`). |
 | `FELIX_PLACEMENT_SETTLE_MS` | `10000` | How long after a cluster's first broker registered a new shard waits for as many live brokers as its replication factor before it is placed on fewer. Placement runs when a broker registers, so the shards go out as soon as enough brokers are live. Only a cluster younger than this waits. `0` places new shards on whatever is live. |
-| `FELIX_SHARD_STUCK_LEADER_MS` | `70000` | How long a `Quorum` shard's leader may show no progress at its generation on a live broker before placement names it again one generation up, on the same set. Idle and slow shards count as progressing. Never under two report TTLs; at most four renames per shard an hour. `0` never renames. |
 | `FELIX_SHARD_RESTORE_STALL_MS` | `120000` | How long a restore's new copy may go without its reported position moving (for a cache, in either its own log or its counter log) before the restore is dropped and its slot goes to the next short shard. Without it, one restore that cannot finish holds every other one back for the move timeout. `0` waits for the move timeout. |
 | `FELIX_SHARD_MOVE_BYTES_PER_SEC` (broker) | `0` | Bytes per second a broker ships to move destinations, across every shard it leads. Applied only to a destination the quorum does not need (one still copying is left out of it), so `Quorum` publishes never wait on it, and not to the remainder after the fence. `0` is unlimited. |
 | `FELIX_SHARD_RECONCILE_INTERVAL_MS` | `5000` | How often placement runs on its own. A report a move is waiting for (the successor caught up, the leader drained) runs a pass straight away when the control-plane instance that receives it is the one running placement. |

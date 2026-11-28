@@ -79,3 +79,79 @@ fn every_name_looks_like_one() {
         );
     }
 }
+
+/// A retired name is neither known nor unknown: it is reported as retired,
+/// so an operator learns it does nothing instead of being told of a typo.
+#[test]
+fn a_retired_name_is_reported_as_retired() {
+    let mut sorted = RETIRED_VARS.to_vec();
+    sorted.sort();
+    assert_eq!(sorted, RETIRED_VARS, "the retired list is not sorted");
+    for name in RETIRED_VARS {
+        assert!(
+            !KNOWN_VARS.contains(name),
+            "{name} is both known and retired"
+        );
+    }
+    // Set by no other test in this crate, and read only through the registry.
+    unsafe {
+        std::env::set_var("FELIX_SHARD_SUSPECT_AFTER_MS", "500");
+    }
+    let warnings = unrecognised_warnings();
+    unsafe {
+        std::env::remove_var("FELIX_SHARD_SUSPECT_AFTER_MS");
+    }
+    assert!(
+        warnings.contains(
+            &"FELIX_SHARD_SUSPECT_AFTER_MS is retired with the hybrid shard engine and has no \
+              effect; unset it"
+                .to_string()
+        ),
+        "{warnings:?}"
+    );
+    assert!(
+        !unrecognised()
+            .iter()
+            .any(|(name, _)| name == "FELIX_SHARD_SUSPECT_AFTER_MS")
+    );
+}
+
+/// A switch retired with the 0.8 baseline is reported the same way, naming
+/// what retired it.
+#[test]
+fn a_baseline_switch_is_reported_as_retired() {
+    let mut sorted = RETIRED_AT_BASELINE.to_vec();
+    sorted.sort();
+    assert_eq!(
+        sorted, RETIRED_AT_BASELINE,
+        "the retired list is not sorted"
+    );
+    for name in RETIRED_AT_BASELINE {
+        assert!(
+            !KNOWN_VARS.contains(name) && !RETIRED_VARS.contains(name),
+            "{name} is listed twice"
+        );
+    }
+    // Set by no other test in this crate, and read only through the registry.
+    unsafe {
+        std::env::set_var("FELIX_CONTROLPLANE_LEGACY_UNSCOPED_GROUPS", "true");
+    }
+    let warnings = unrecognised_warnings();
+    let unknown = unrecognised();
+    unsafe {
+        std::env::remove_var("FELIX_CONTROLPLANE_LEGACY_UNSCOPED_GROUPS");
+    }
+    assert!(
+        warnings.contains(
+            &"FELIX_CONTROLPLANE_LEGACY_UNSCOPED_GROUPS is retired with the 0.8 API baseline \
+              and has no effect; unset it"
+                .to_string()
+        ),
+        "{warnings:?}"
+    );
+    assert!(
+        !unknown
+            .iter()
+            .any(|(name, _)| name == "FELIX_CONTROLPLANE_LEGACY_UNSCOPED_GROUPS")
+    );
+}

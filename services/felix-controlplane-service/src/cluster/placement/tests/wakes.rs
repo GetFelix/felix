@@ -47,7 +47,7 @@ async fn a_requested_pass_runs_without_waiting_for_the_interval() {
         .expect("fenced move");
 
     let wakes = Arc::new(PlacementWakes::default());
-    let written = wakes.watch_assignments();
+    let written = store.watch_shard_assignment_changes().await;
     let shutdown = tokio_util::sync::CancellationToken::new();
     let task = spawn_reconciler(
         Arc::clone(&store) as _,
@@ -117,7 +117,7 @@ async fn a_requested_pass_runs_without_waiting_for_the_interval() {
     assert_eq!(cut_over.state, ShardState::Assigning);
     assert!(
         written.has_changed().expect("sender alive"),
-        "the write wakes this instance's long-polls",
+        "the write wakes the long-polls",
     );
 
     shutdown.cancel();

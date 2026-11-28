@@ -56,11 +56,9 @@ so "hold it" means flushed to disk; the broker's own default is `periodic`,
 which acknowledges before the flush. Set `FELIX_DURABLE_FSYNC_MODE=periodic`
 before `./run.sh up` to try that.
 
-Two settings are demo tuning, not defaults, and the numbers depend on them:
-the control plane declares a broker dead after 3 s instead of about 20 s, and
-brokers elect among themselves (`FELIX_INTERNAL_ELECTION`), which is off by
-default. [Failover without the control plane](../../docs-site/src/content/docs/deployment/failover-without-control-plane.md)
-says what that costs and what it needs.
+One setting is demo tuning, not a default, and the numbers depend on it: the
+control plane declares a broker dead after 3 s instead of about 20 s. Each
+shard is a Raft group, so its members elect a new leader themselves.
 
 ## What the checker checks
 

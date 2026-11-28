@@ -545,25 +545,14 @@ than be discovered during it:
 
 ## Running the Raft RF 3 comparison in Actions
 
-`perf-raft-rf3.yml` runs the hybrid and the Raft engine side by side on one runner, three
-brokers, one RF 3 Quorum stream, the same `felix-cluster` harness and `felix-loadgen` load as
-the RF 3 cells of `gate-perf.yml`. It exists so a branch can be measured against main without
-the GCP boxes ([#2646](https://github.com/GetFelix/felix/issues/2646)); the box matrix in
-[`perf-raft-parity.md`](perf-raft-parity.md) stays the source of the parity verdict.
-
-```bash
-gh workflow run perf-raft-rf3.yml -R GetFelix/felix --ref main
-gh workflow run perf-raft-rf3.yml -R GetFelix/felix --ref main -f ref=my-branch -f rounds=6
-```
-
-`ref` picks the commit to build; run it once for main and once for the branch and compare the
-two summaries. One binary serves both engines (`FELIX_SHARD_ENGINE`), and every trial checks
-the shard directories: a Raft trial fails unless they carry the Raft engine marker, and a
-hybrid trial fails if they do. The cells are fsync `on_commit` and `periodic`, each at batch 64
-(`msg/s`, acknowledged) and batch 1 (p50 and p99 per ack). Rounds alternate the engines and
-flip which goes first. The summary lists the medians per engine, then the engine A/B bounds as
-information. It is not a required check and does not block a PR: a shared runner is too noisy
-for that.
+`perf-raft-pr.yml` compares a branch with main on the Raft engine: three brokers on one
+runner, one RF 3 Quorum stream, the same `felix-cluster` harness and `felix-loadgen` load as
+the RF 3 cells of `gate-perf.yml`. It exists so a branch can be measured without the boxes
+([#2646](https://github.com/GetFelix/felix/issues/2646)); the box matrix in
+[`perf-raft-parity.md`](perf-raft-parity.md) stays the source of the parity verdict, against
+the v0.7.2 release binary. The workflow that ran the hybrid and Raft side by side went with the
+hybrid. It is not a required check and does not block a PR: a shared runner is too noisy for
+that.
 
 ## Methodology notes
 

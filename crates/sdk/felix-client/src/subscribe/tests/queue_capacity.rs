@@ -36,9 +36,13 @@ async fn subscribe_against(
                 let _ = read_message(&mut recv, &mut scratch).await?;
                 let answer = match features {
                     Some(features) => Message::AuthOk {
-                        server_flags: felix_wire::ORIGINAL_V1_FLAGS,
-                        server_features: Some(features),
-                        server_features_hi: None,
+                        server_flags: felix_wire::BROKER_BASELINE_FLAGS,
+                        server_features: Some(
+                            features
+                                | felix_wire::BROKER_BASELINE_FEATURES
+                                | felix_wire::FEATURE_EXTENDED,
+                        ),
+                        server_features_hi: Some(felix_wire::BROKER_BASELINE_FEATURES_HI),
                         server_flags_ext: None,
                         listener_ports: None,
                         publish_window: None,
@@ -89,19 +93,5 @@ async fn a_broker_that_advertises_the_bit_is_asked_and_its_grant_reported() -> R
         subscribe_against(Some(felix_wire::FEATURE_SUBSCRIBE_QUEUE), Some(4096)).await?;
     assert_eq!(sent, Some(4096));
     assert_eq!(granted, Some(2048));
-    Ok(())
-}
-
-/// An older broker would ignore the field and give the stream's default, so
-/// it is not sent, and the subscribe is the frame it always was.
-#[tokio::test]
-#[serial_test::serial]
-async fn a_broker_without_the_bit_is_not_asked() -> Result<()> {
-    let _env = set_client_env();
-    for features in [None, Some(felix_wire::FEATURE_SUBSCRIPTION_LAGGED)] {
-        let (sent, granted) = subscribe_against(features, Some(4096)).await?;
-        assert_eq!(sent, None);
-        assert_eq!(granted, None);
-    }
     Ok(())
 }

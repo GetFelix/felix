@@ -182,15 +182,15 @@ pub(crate) fn unrecorded_message(current: &str) -> String {
     )
 }
 
-/// The refusal for a broker whose engine is not the cluster's. It names
-/// what to fix rather than the deprecated hybrid setting.
+/// The refusal for a broker whose engine is not the cluster's, naming what
+/// to fix.
 pub(crate) fn engine_message(own: &str, cluster: &str) -> String {
     let fix = if cluster == "raft" {
-        "leave FELIX_SHARD_ENGINE unset and give the broker what Raft needs: FELIX_NODE_ID, \
-         FELIX_INTERNAL_BIND and FELIX_DURABLE_STORAGE_DIR"
+        "give the broker what Raft needs: FELIX_NODE_ID, FELIX_INTERNAL_BIND and \
+         FELIX_DURABLE_STORAGE_DIR"
     } else {
-        "the hybrid engine is deprecated and a Raft broker cannot join this cluster; form a new \
-         cluster on Raft (docs/hybrid-retirement.md)"
+        "the hybrid engine was removed and no broker of this build joins a cluster formed for \
+         it; start every control-plane member and broker again on an empty data directory"
     };
     format!("this broker runs shard engine {own} but the cluster was formed with {cluster}; {fix}")
 }

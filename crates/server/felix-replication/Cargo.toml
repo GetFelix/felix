@@ -23,6 +23,10 @@ fuzzing = ["raft"]
 # Test-only entry points, such as opening a Raft member with no copy
 # checks. Not an API.
 testing = ["raft", "felix-broker/test-support"]
+# Peer-partition injection (`peer/partition.rs`, `FELIX_PEER_PARTITION_FILE`)
+# in an optimised build. Debug and test builds have it regardless; a release
+# broker without it has no partition code and ignores the variable.
+fault-injection = ["felix-common/fault-injection", "felix-storage/fault-injection"]
 
 [dependencies]
 ahash = { workspace = true }

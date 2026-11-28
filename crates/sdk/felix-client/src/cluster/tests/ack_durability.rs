@@ -35,19 +35,3 @@ async fn the_client_reports_what_the_broker_says() -> Result<()> {
     );
     Ok(())
 }
-
-/// A broker that predates the field is not saying "no guarantee", and the
-/// client must not send the question it cannot decode an answer to.
-#[tokio::test]
-#[serial_test::serial]
-async fn a_broker_that_does_not_say_gives_none_without_asking() -> Result<()> {
-    let (broker, cluster) = client_of(None).await?;
-    assert_eq!(
-        cluster
-            .stream_ack_durability("t1", "default", "orders")
-            .await?,
-        None
-    );
-    assert_eq!(broker.width_asks(), 0);
-    Ok(())
-}
