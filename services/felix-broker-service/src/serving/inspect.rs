@@ -1,17 +1,14 @@
 //! `shard_inspect`: this broker's own view of one shard, for an operator.
 //!
-//! Read-only and bounded: the answer is one shard, its replica set and the
-//! fence, all read from snapshots the lifecycle and the replication driver
-//! publish. Nothing here takes the lifecycle's lock, waits on a driver pass, or
-//! opens a log that is not open already.
+//! Read-only and bounded: the answer is one shard and its replica set, read
+//! from snapshots the lifecycle and the shard's Raft group publish. Nothing
+//! here takes the lifecycle's lock or opens a log that is not open already.
 
 use std::time::Duration;
 
 use felix_broker::Broker;
-use felix_replication::status::ShardStatus;
 use felix_wire::{
-    InspectedAssignment, InspectedFence, InspectedLease, InspectedRaft, InspectedReplica,
-    ShardInspection,
+    InspectedAssignment, InspectedLease, InspectedRaft, InspectedReplica, ShardInspection,
 };
 
 use crate::serving::quic::handlers::publish::PublishContext;
@@ -29,15 +26,12 @@ pub(crate) struct Observed {
     pub(crate) shards: u32,
     pub(crate) route: Option<felix_router::Route>,
     pub(crate) phase: Option<PhaseRecord>,
-    pub(crate) status: Option<ShardStatus>,
     pub(crate) lease: Option<Lease>,
     /// Writes at the held generation get in without the lease.
     pub(crate) lease_free: bool,
     pub(crate) tail: Option<u64>,
     pub(crate) committed: Option<u64>,
     pub(crate) accepted_generation: Option<u64>,
-    /// How long until the next fence attempt, read off the board's deadline.
-    pub(crate) fence_retry_in: Option<Duration>,
     pub(crate) raft: Option<InspectedRaft>,
     /// A Raft leader's account of the other members, from its group.
     pub(crate) raft_replicas: Option<Vec<InspectedReplica>>,
@@ -84,22 +78,10 @@ pub(crate) async fn inspect(
             observed.shards = u32::from(exists);
         }
     }
-    observed.status = publish_ctx
-        .shard_status
-        .as_ref()
-        .and_then(|board| board.get(key));
-    observed.fence_retry_in = observed
-        .status
-        .as_ref()
-        .and_then(|status| status.fence.as_ref()?.retry_at)
-        .map(|at| at.saturating_duration_since(tokio::time::Instant::now()));
     observed.lease = publish_ctx.lease.as_ref().map(|lease| Lease {
         valid: lease.is_valid_now(),
         remaining: lease.remaining(),
     });
-    if let (Some(marks), Some(route)) = (publish_ctx.engine.marks(), &observed.route) {
-        observed.committed = marks.offset(key, route.generation);
-    }
     observed.raft = publish_ctx.engine.raft_view(key);
     observed.raft_replicas = publish_ctx.engine.raft_replicas(key);
     // Only a log this broker has open: opening one would create it. A Raft
@@ -132,17 +114,14 @@ pub(crate) fn build(observed: Observed) -> ShardInspection {
         shards,
         route,
         phase,
-        status,
         lease,
         lease_free,
         tail,
         committed,
         accepted_generation,
-        fence_retry_in,
         raft,
         raft_replicas,
     } = observed;
-    let tail = tail.or(status.as_ref().and_then(|status| status.tail));
     let lease_view = lease.map(|lease| InspectedLease {
         held: lease.valid,
         remaining_ms: u64::try_from(lease.remaining.as_millis()).unwrap_or(u64::MAX),
@@ -203,21 +182,6 @@ pub(crate) fn build(observed: Observed) -> ShardInspection {
     let fencing = phase
         .as_ref()
         .is_some_and(|phase| phase.phase == Phase::Fencing);
-    // The board's fence is for the generation it was recorded at; one from an
-    // earlier promotion says nothing about this one.
-    let board_fence = status.as_ref().and_then(|status| {
-        let current = route
-            .as_ref()
-            .is_some_and(|route| route.generation == status.generation);
-        status.fence.as_ref().filter(|_| current && fencing)
-    });
-    let fence = board_fence.map(|fence| InspectedFence {
-        took: fence.took.clone(),
-        pending: fence.pending.clone(),
-        attempts: fence.attempts,
-        retry_in_ms: fence_retry_in.map(|wait| u64::try_from(wait.as_millis()).unwrap_or(u64::MAX)),
-    });
-
     let (reason, detail) = if role != "leader" {
         let detail = match (&raft, &route) {
             (Some(raft), _) => match &raft.leader {
@@ -235,21 +199,12 @@ pub(crate) fn build(observed: Observed) -> ShardInspection {
         // The group has no fence or lease of this module's kind to wait out.
         (None, None)
     } else {
-        not_serving(
-            phase.as_ref(),
-            route.as_ref(),
-            lease,
-            lease_free,
-            board_fence.map(|fence| (fence.took.len(), others.len(), fence.why.as_deref())),
-        )
+        not_serving(phase.as_ref(), route.as_ref(), lease, lease_free, None)
     };
 
     let replicas = if role != "leader" {
         Vec::new()
     } else if fencing {
-        let took = board_fence
-            .map(|fence| fence.took.as_slice())
-            .unwrap_or(&[]);
         others
             .iter()
             .map(|node| InspectedReplica {
@@ -257,38 +212,14 @@ pub(crate) fn build(observed: Observed) -> ShardInspection {
                 role: replica_role(route.as_ref(), node).to_string(),
                 next_offset: None,
                 lag: None,
-                fence: board_fence.map(|_| took.contains(node)),
+                fence: None,
                 state: "fencing".to_string(),
                 halted: None,
             })
             .collect()
-    } else if raft.is_some() {
-        // A Raft group has no replication board; its leader's metrics say.
-        raft_replicas.unwrap_or_default()
     } else {
-        status
-            .as_ref()
-            .map(|status| {
-                status
-                    .followers
-                    .iter()
-                    .map(|follower| InspectedReplica {
-                        node_id: follower.node_id.clone(),
-                        role: if follower.learner {
-                            "learner"
-                        } else {
-                            "follower"
-                        }
-                        .to_string(),
-                        next_offset: Some(follower.next_offset),
-                        lag: follower.lag,
-                        fence: None,
-                        state: follower.state.to_string(),
-                        halted: follower.halted.map(str::to_string),
-                    })
-                    .collect()
-            })
-            .unwrap_or_default()
+        // A Raft group's leader has its account of the other members.
+        raft_replicas.unwrap_or_default()
     };
 
     ShardInspection {
@@ -307,7 +238,7 @@ pub(crate) fn build(observed: Observed) -> ShardInspection {
         detail,
         generation: phase.as_ref().map(|phase| phase.generation),
         assignment,
-        fence,
+        fence: None,
         lease: lease_view,
         tail,
         committed: committed.filter(|_| role == "leader"),

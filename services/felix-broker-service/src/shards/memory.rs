@@ -68,7 +68,6 @@ impl MemoryShards {
     /// Take every stream shard out of `assignments`. Called with what the
     /// Raft engine left, which is only shards of streams registered in
     /// memory, so no durable shard reaches the hybrid lifecycle either.
-    /// The hybrid's replication passes skip what is taken here.
     pub(crate) fn take(
         &self,
         assignments: &mut HashMap<ShardKey, ShardAssignment>,

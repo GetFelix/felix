@@ -197,7 +197,7 @@ the machine still up, keeps the id. On macOS it does not.
 | | `Leader` (default) | `Quorum` |
 | --- | --- | --- |
 | Acknowledged once | The leader has it | A majority of the shard's replicas, the leader included, has it |
-| Leader dies | A follower is promoted only if the leader's last replica report showed it caught up, and what the leader acknowledged after that report is lost (`felix_broker_replication_lag_records` is the window). With no follower reported caught up, the shard is unavailable until the old leader returns with its disk. | A follower holding every acknowledged record is promoted. |
+| Leader dies | A follower is promoted only if the leader's last replica report showed it caught up, and what the leader acknowledged after that report is lost. With no follower reported caught up, the shard is unavailable until the old leader returns with its disk. | A follower holding every acknowledged record is promoted. |
 | Cost | Lowest latency | A replication round trip per commit. A wait past `FELIX_PUBLISH_QUORUM_TIMEOUT_MS` (5 s) is refused. |
 | Failure shows up as | Failover time, and records lost past the leader's last report | Publish time |
 

@@ -56,7 +56,6 @@ pub(crate) fn build_tracked_publish_context(
         peers,
         lease,
         client_endpoints,
-        shard_status,
     } = cluster;
     let ingress = engine.serving().cloned();
     let quorum_timeout = std::time::Duration::from_millis(config.publish_quorum_timeout_ms.max(1));
@@ -123,7 +122,6 @@ pub(crate) fn build_tracked_publish_context(
         lease_headroom: lease_headroom(config),
         client_endpoints,
         engine,
-        shard_status,
         quorum_timeout,
         scheduler,
         wait_timeout: Duration::from_millis(config.publish_queue_wait_timeout_ms),

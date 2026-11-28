@@ -1,15 +1,12 @@
-//! The write path in a cluster: the quorum wait on the owner, the refusals
-//! when nobody here may write, and forwarding to the owner, against an owner
-//! that answers from a script.
+//! The write path in a cluster: the refusals when nobody here may write, and
+//! forwarding to the owner, against an owner that answers from a script.
 
 use felix_common::random::HashMap;
 use std::collections::VecDeque;
 use std::net::SocketAddr;
 use std::sync::Mutex;
 
-use felix_broker::ConsistencyLevel;
 use felix_replication::peer::pool::PeerError;
-use felix_replication::quorum::QuorumMarks;
 use felix_router::{NodeRef, RegionRouter, ShardRouter};
 use felix_wire::internal::{
     ForwardPublish, ForwardPublishError, ForwardPublishOk, InternalMessage, Kind,
@@ -170,10 +167,9 @@ async fn forwarding(
     broker.record_headers_when(|| true);
     let writes = BrokerWrites::new(
         Arc::clone(&broker),
-        Arc::new(crate::shards::routing::StreamEngine::new(
-            Some(Arc::new(QuorumMarks::new())),
-            Some(ingress(OWNER)),
-        )),
+        Arc::new(crate::shards::routing::StreamEngine::new(Some(ingress(
+            OWNER,
+        )))),
         Duration::from_secs(1),
     )
     .with_forwarding(Arc::clone(owner), budget);
@@ -330,10 +326,9 @@ async fn a_batch_that_cannot_be_forwarded_is_refused_as_not_owner() {
     broker.record_headers_when(|| true);
     let alone = BrokerWrites::new(
         broker,
-        Arc::new(crate::shards::routing::StreamEngine::new(
-            None,
-            Some(ingress(OWNER)),
-        )),
+        Arc::new(crate::shards::routing::StreamEngine::new(Some(ingress(
+            OWNER,
+        )))),
         Duration::from_secs(1),
     );
     assert_eq!(
@@ -381,37 +376,6 @@ async fn a_lasting_refusal_is_answered_at_once_on_a_broker_that_runs_raft() {
     EngineShards::shutdown(&*shards).await;
 }
 
-/// **On the owner, a `Quorum` stream's batch is not acknowledged before a
-/// majority holds it.** The record is durable here, but until the mark passes
-/// it the client is not told; once it does, the same batch is answered.
-#[tokio::test]
-async fn a_quorum_batch_waits_for_the_majority_on_the_owner() {
-    let dir = tempfile::tempdir().expect("tempdir");
-    let broker = broker_with(true, ConsistencyLevel::Quorum, dir.path()).await;
-    broker.record_headers_when(|| true);
-    let marks = Arc::new(QuorumMarks::new());
-    marks.publish(&shard(), GENERATION, 0);
-    let writes = BrokerWrites::new(
-        Arc::clone(&broker),
-        Arc::new(crate::shards::routing::StreamEngine::new(
-            Some(Arc::clone(&marks)),
-            Some(ingress(LOCAL)),
-        )),
-        Duration::from_millis(200),
-    );
-
-    let result = writes.write(batch(0, 41, &["plant/a"])).await;
-    assert_eq!(result, Err(WriteError::OutcomeUnknown("quorum_timeout")));
-    assert_eq!(stored(&broker).await.len(), 1, "durable here all the same");
-
-    marks.publish(&shard(), GENERATION, 1_000);
-    writes
-        .write(batch(0, 41, &["plant/a"]))
-        .await
-        .expect("acknowledged once a majority holds it");
-    assert_eq!(stored(&broker).await.len(), 1);
-}
-
 /// A shard this broker is named for but has not opened is not written here.
 #[tokio::test]
 async fn a_shard_not_open_here_is_refused_as_not_owner() {
@@ -422,10 +386,7 @@ async fn a_shard_not_open_here_is_refused_as_not_owner() {
     ingress.publish_servable(HashMap::default());
     let writes = BrokerWrites::new(
         Arc::clone(&broker),
-        Arc::new(crate::shards::routing::StreamEngine::new(
-            None,
-            Some(ingress),
-        )),
+        Arc::new(crate::shards::routing::StreamEngine::new(Some(ingress))),
         Duration::from_secs(1),
     );
 
@@ -450,92 +411,4 @@ async fn a_forward_whose_owner_was_deposed_is_sent_again() {
     let sent = owner.sent();
     assert_eq!(sent.len(), 2);
     assert_eq!(sent[0].1, sent[1].1);
-}
-
-/// **This broker deposed while it waited for the majority sends the batch
-/// again to the new owner**, under the same sequence, instead of closing the
-/// device's connection.
-#[tokio::test]
-async fn a_local_write_whose_leadership_moved_is_sent_to_the_new_owner() {
-    let dir = tempfile::tempdir().expect("tempdir");
-    let broker = broker_with(true, ConsistencyLevel::Quorum, dir.path()).await;
-    broker.record_headers_when(|| true);
-    let marks = Arc::new(QuorumMarks::new());
-    marks.publish(&shard(), GENERATION, 0);
-    let ingress = ingress(LOCAL);
-    let owner = ScriptedOwner::new([ok()]);
-    let writes = BrokerWrites::new(
-        Arc::clone(&broker),
-        Arc::new(crate::shards::routing::StreamEngine::new(
-            Some(Arc::clone(&marks)),
-            Some(Arc::clone(&ingress)),
-        )),
-        Duration::from_secs(1),
-    )
-    .with_forwarding(Arc::clone(&owner), Duration::from_secs(3));
-
-    // Moved once the batch is in the log here, so its quorum wait is what
-    // learns of it.
-    let moved = tokio::spawn({
-        let broker = Arc::clone(&broker);
-        async move {
-            while stored(&broker).await.is_empty() {
-                tokio::time::sleep(Duration::from_millis(5)).await;
-            }
-            show(&ingress, OWNER, GENERATION + 1);
-            // What the lifecycle does once this broker stops leading it.
-            marks.forget(&shard());
-        }
-    });
-    let written = writes.write(batch(0, 41, &["plant/a"])).await;
-    moved.abort();
-    written.expect("answered by the new owner");
-
-    assert_eq!(stored(&broker).await.len(), 1, "written here first");
-    let sent = owner.sent();
-    assert_eq!(sent.len(), 1);
-    assert_eq!(
-        sent[0].1.producer,
-        Some(ForwardProducer {
-            producer_id: 41,
-            sequence: 0,
-            per_record: false,
-        })
-    );
-}
-
-/// The write waits the configured time while the mark is below the batch and
-/// is released at once when the mark passes it. Built without marks it would
-/// answer both at once.
-#[tokio::test]
-async fn a_quorum_batch_waits_its_timeout_then_is_released_by_the_mark() {
-    let dir = tempfile::tempdir().expect("tempdir");
-    let broker = broker_with(true, ConsistencyLevel::Quorum, dir.path()).await;
-    broker.record_headers_when(|| true);
-    let marks = Arc::new(QuorumMarks::new());
-    marks.publish(&shard(), GENERATION, 0);
-    let timeout = Duration::from_millis(300);
-    let writes = BrokerWrites::new(
-        Arc::clone(&broker),
-        Arc::new(crate::shards::routing::StreamEngine::new(
-            Some(Arc::clone(&marks)),
-            Some(ingress(LOCAL)),
-        )),
-        timeout,
-    );
-
-    let started = std::time::Instant::now();
-    let result = writes.write(batch(0, 41, &["plant/a"])).await;
-    let waited = started.elapsed();
-    assert_eq!(result, Err(WriteError::OutcomeUnknown("quorum_timeout")));
-    assert!(waited >= timeout, "ended early after {waited:?}");
-    assert!(waited < timeout * 6, "ended late after {waited:?}");
-
-    marks.publish(&shard(), GENERATION, 1_000);
-    let started = std::time::Instant::now();
-    writes
-        .write(batch(0, 41, &["plant/a"]))
-        .await
-        .expect("released by the mark");
-    assert!(started.elapsed() < timeout, "waited though the mark passed");
 }

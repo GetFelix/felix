@@ -7,8 +7,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, OnceLock, Weak};
 
 use felix_replication::ShardKey;
-use felix_replication::driver::WriteFence;
-use felix_replication::quorum::ShardServing;
+use felix_replication::engine::WriteFence;
 use parking_lot::Mutex;
 
 use super::{Sim, key, list, name};
@@ -124,22 +123,6 @@ impl WriteFence for Reporter {
         self.opens.opens.lock().push(open);
         self.opens.held_when_opened(open);
     }
-}
-
-impl ShardServing for Reporter {
-    fn replicated(&self, _key: &ShardKey) -> bool {
-        true
-    }
-
-    fn generation(&self, _key: &ShardKey) -> Option<u64> {
-        None
-    }
-
-    fn lease_valid(&self) -> bool {
-        true
-    }
-
-    fn record_ack_refusal(&self) {}
 }
 
 /// What the run saw besides the opens.

@@ -136,10 +136,9 @@ impl TwoShards {
             tokio_util::task::TaskTracker::new(),
             felix_broker_service::serving::quic::ClusterContext {
                 engine: std::sync::Arc::new(
-                    felix_broker_service::shards::routing::StreamEngine::new(
-                        None,
-                        Some(leading_both_shards()),
-                    ),
+                    felix_broker_service::shards::routing::StreamEngine::new(Some(
+                        leading_both_shards(),
+                    )),
                 ),
                 ..Default::default()
             },

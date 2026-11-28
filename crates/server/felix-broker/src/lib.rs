@@ -87,6 +87,7 @@ pub use queue::{
     ClaimHolder, ClaimState, Claimed, Claims, ConsumerGroups, CreatedBy, CreationToken,
     DeadLetters, Folded, FreshGroups, GroupConsensus, GroupConsumer, GroupEntry, GroupKey, GroupOp,
     GroupReader, GroupSnapshot, GroupState, GroupTable, Proposed, RaftGroups, Seek, ShardGroups,
+    TableRefused,
 };
 
 // Durability.

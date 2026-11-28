@@ -162,16 +162,15 @@ green does not count.
 Replay a simulator seed. A failing seed prints this command with its modes:
 
 ```bash
-FELIX_SIM_SEED=<n> task sim:replay
-FELIX_SIM_SEED=<n> FELIX_SIM_PLACEMENT=1 task sim:replay    # placement faults
-FELIX_SIM_SEED=<n> FELIX_SIM_POWER_LOSS=1 task sim:replay   # power cuts
-FELIX_SIM_SEED=<n> FELIX_SIM_CLOCKS=bounded task sim:replay # clock skew
+FELIX_SIM_SEED=<n> task sim:raft-replay
+FELIX_SIM_SEED=<n> FELIX_SIM_POWER_LOSS=1 task sim:raft-replay   # power cuts
+FELIX_SIM_SEED=<n> FELIX_SIM_CLOCKS=bounded task sim:raft-replay # clock skew
 ```
 
 Run a batch, or start the full sweep in Actions:
 
 ```bash
-FELIX_SIM_SEEDS=20 FELIX_SIM_SEED_START=1 cargo test -p felix-sim --test seeds -- --ignored --exact seeds
+FELIX_SIM_SEEDS=20 FELIX_SIM_SEED_START=1 cargo test -p felix-sim --test raft_seeds -- --ignored --exact raft_seeds
 gh workflow run dst-nightly.yml -R GetFelix/felix -f seeds=2000 -f modes=all
 ```
 

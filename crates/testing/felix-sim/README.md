@@ -29,7 +29,7 @@ Clock skew is a separate schedule, off by default. With
 lease clock (0.8x to 1.2x true speed) and wall clock (within 1 second), and the
 nemesis steps or re-skews one every few seconds. `unbounded` goes past those
 bounds (0.25x to 4x, 30 seconds) to show what breaks there. Skew needs the
-`tokio_unstable` build, so use it through `task sim:replay`. See "Clock skew"
+`tokio_unstable` build, so use it through `task sim:raft-replay`. See "Clock skew"
 in `docs/simulation.md`.
 
 With placement faults on (`FELIX_SIM_PLACEMENT=1`, or
@@ -123,10 +123,10 @@ has the details.
 
 ## Running it
 
-Run one seed, with the broker log:
+Run one seed, with the log:
 
 ```bash
-FELIX_SIM_SEED=<n> RUST_LOG=info task sim:replay
+FELIX_SIM_SEED=<n> RUST_LOG=info task sim:raft-replay
 ```
 
 Run a batch of seeds. `FELIX_SIM_SEEDS` is how many (default 4) and
@@ -134,41 +134,35 @@ Run a batch of seeds. `FELIX_SIM_SEEDS` is how many (default 4) and
 
 ```bash
 FELIX_SIM_SEED_START=100 FELIX_SIM_SEEDS=10 \
-  cargo test -p felix-sim --test seeds -- --ignored --exact seeds --nocapture
+  cargo test -p felix-sim --test raft_seeds -- --ignored --exact raft_seeds --nocapture
 ```
 
-Run one seed with skewed clocks:
+Run one seed with skewed timers:
 
 ```bash
-FELIX_SIM_SEED=<n> FELIX_SIM_CLOCKS=bounded task sim:replay
+FELIX_SIM_SEED=<n> FELIX_SIM_CLOCKS=bounded task sim:raft-replay
 ```
 
-Add `FELIX_SIM_PLACEMENT=1` to any of these commands to turn placement faults on,
-and `FELIX_SIM_POWER_LOSS=1` to cut the power in place of kills
-(`FELIX_SIM_POWER_LOSS=relaxed` on brokers that do not sync). `FELIX_SIM_MAJORITY_CUT=1`
-cuts several brokers at once and `FELIX_SIM_WIPE=1` wipes shard and data
-directories; `docs/simulation.md` says what each may lose.
-A failing seed prints the command that replays it. `FELIX_SIM_HISTORY=<file>`
-writes the run's history to a file so two runs can be diffed.
+Add `FELIX_SIM_POWER_LOSS=1` to any of these commands to cut the power on a
+member (`FELIX_SIM_POWER_LOSS=relaxed` on members that acknowledge before they
+sync). `FELIX_SIM_MAJORITY_CUT=1` cuts several members at once, and
+`FELIX_SIM_WIPE=1` and `FELIX_SIM_RESTORE=1` wipe a shard directory or data
+root, or put back an older copy; `docs/simulation.md` says what each may lose.
+A failing seed prints the command that replays it.
 
-`seeds` is `#[ignore]`, so `cargo test --workspace` skips it. It runs in the
-non-blocking `sim-seeds` job in CI, which does not gate merges while its known
-liveness stalls are open. That job builds with `--cfg tokio_unstable` and runs
-seeds 1 and 2 without clock skew and seeds 3 and 4 with `bounded` skew. One seed takes a few seconds in a debug build and the
-default batch of four takes a few minutes, so run batches one at a time on a
-busy machine.
+`raft_seeds` is `#[ignore]`, so `cargo test --workspace` skips it. The
+`sim-seeds` job in CI runs batches of it, with and without `bounded` clock
+skew, built with `--cfg tokio_unstable`. A seed takes a few seconds in a
+release build and longer in a debug one, so run batches one at a time on a busy
+machine.
 
 A replay repeats the same faults at the same virtual times and the same client
-operations. Run through `task sim:replay`, which builds with
+operations. Run through `task sim:raft-replay`, which builds with
 `RUSTFLAGS="--cfg tokio_unstable"` so tokio seeds `select!`, it is the same
-run, event for event:
-
-```bash
-FELIX_SIM_SEED=<n> FELIX_SIM_HISTORY=run1.txt task sim:replay
-```
-
-A plain `cargo test` replay leaves `select!` unseeded, so the interleaving
-under the faults can differ and a timing-sensitive failure may take a few
-replays to show again. It refuses `FELIX_SIM_HISTORY` for that reason.
-`task sim:determinism` checks that replay is exact, in one process and across
-two, and CI runs it on every pull request. `docs/simulation.md` has the details.
+run, event for event. A plain `cargo test` replay leaves `select!` unseeded, so
+the interleaving under the faults can differ and a timing-sensitive failure may
+take a few replays to show again.
+`task sim:determinism` checks that replay is exact: each seed twice in one
+process, comparing the traces event by event, then one seed in two separate
+processes, comparing the trace hash each prints. CI runs it on every pull
+request. `docs/simulation.md` has the details.

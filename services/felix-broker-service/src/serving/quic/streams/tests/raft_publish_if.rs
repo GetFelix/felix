@@ -86,7 +86,7 @@ async fn a_publish_if_to_a_raft_shard_is_written_only_at_its_offset() -> Result<
     let assigned = fixture::assigned(orders.clone(), fixture::INCARNATION);
     fixture::take_formed(&shards, assigned).await;
     fixture::until("the term is served", || shards.leading(&orders).is_some()).await;
-    let engine = Arc::new(StreamEngine::new(None, Some(fixture::ingress(&shards))));
+    let engine = Arc::new(StreamEngine::new(Some(fixture::ingress(&shards))));
     engine.set_raft(Arc::clone(&shards));
     let config = BrokerConfig::default();
     let cluster = ClusterContext {
@@ -175,7 +175,7 @@ async fn a_publish_if_batch_to_a_raft_shard_is_written_or_refused_whole() -> Res
     let assigned = fixture::assigned(orders.clone(), fixture::INCARNATION);
     fixture::take_formed(&shards, assigned).await;
     fixture::until("the term is served", || shards.leading(&orders).is_some()).await;
-    let engine = Arc::new(StreamEngine::new(None, Some(fixture::ingress(&shards))));
+    let engine = Arc::new(StreamEngine::new(Some(fixture::ingress(&shards))));
     engine.set_raft(Arc::clone(&shards));
     let config = BrokerConfig::default();
     let cluster = ClusterContext {
@@ -265,7 +265,7 @@ async fn a_trim_before_to_a_raft_shard_is_answered_as_on_the_hybrid() -> Result<
     let assigned = fixture::assigned(orders.clone(), fixture::INCARNATION);
     fixture::take_formed(&shards, assigned).await;
     fixture::until("the term is served", || shards.leading(&orders).is_some()).await;
-    let engine = Arc::new(StreamEngine::new(None, Some(fixture::ingress(&shards))));
+    let engine = Arc::new(StreamEngine::new(Some(fixture::ingress(&shards))));
     engine.set_raft(Arc::clone(&shards));
     let config = BrokerConfig::default();
     let cluster = ClusterContext {
@@ -395,13 +395,8 @@ async fn a_commit_to_a_raft_shard_is_answered_as_on_the_hybrid() -> Result<()> {
         RAFT_ATOMIC_COMMIT.name(),
     ]));
     gate.observe([ATOMIC_COMMIT.name()]);
-    let marks = Arc::new(felix_replication::quorum::QuorumMarks::with_fleet(
-        Arc::clone(&gate),
-    ));
-    let engine = Arc::new(StreamEngine::new(
-        Some(marks),
-        Some(fixture::ingress(&shards)),
-    ));
+    let engine =
+        Arc::new(StreamEngine::new(Some(fixture::ingress(&shards))).with_fleet(Arc::clone(&gate)));
     engine.set_raft(Arc::clone(&shards));
     let config = BrokerConfig::default();
     let cluster = ClusterContext {
@@ -491,11 +486,8 @@ async fn a_state_read_on_raft_waits_for_the_view_to_reach_the_read_index() -> Re
         RAFT_ATOMIC_COMMIT.name(),
     ]));
     gate.observe([ATOMIC_COMMIT.name(), RAFT_ATOMIC_COMMIT.name()]);
-    let marks = Arc::new(felix_replication::quorum::QuorumMarks::with_fleet(gate));
-    let engine = Arc::new(StreamEngine::new(
-        Some(marks),
-        Some(fixture::ingress(&shards)),
-    ));
+    let engine =
+        Arc::new(StreamEngine::new(Some(fixture::ingress(&shards))).with_fleet(Arc::clone(&gate)));
     engine.set_raft(Arc::clone(&shards));
     let config = BrokerConfig {
         publish_quorum_timeout_ms: 300,

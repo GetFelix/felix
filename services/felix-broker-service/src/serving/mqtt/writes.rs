@@ -27,7 +27,6 @@ use felix_broker::{Attribution, Broker, BrokerError, PublishOutcome, SequenceReu
 use felix_mqtt::{Refusal, Unwritten, WriteBatch, WriteError, Writes};
 use felix_replication::engine::{CommitError, Engine};
 use felix_replication::peer::{PeerPool, PeerRequester};
-use felix_replication::quorum::QuorumError;
 use felix_wire::internal::{AckMode, ErrorCode, ForwardProducer, PeerCapabilities};
 
 use crate::cluster::client_endpoints::ClientEndpoints;
@@ -460,8 +459,8 @@ impl<P: PeerRequester + Send + Sync + 'static> BrokerWrites<P> {
                 .await_commit(handle, shard, &outcome, generation, wait)
                 .await;
             if let Err(err) = quorum {
-                return match err.downcast_ref::<QuorumError>() {
-                    Some(QuorumError::TimedOut { .. }) => Sent::Unknown("quorum_timeout"),
+                return match err.downcast_ref::<CommitError>() {
+                    Some(CommitError::TimedOut { .. }) => Sent::Unknown("quorum_timeout"),
                     // Whoever leads now holds the batch or does not; sent
                     // again, it is answered from the log either way.
                     _ => Sent::Unanswered("leadership_lost"),

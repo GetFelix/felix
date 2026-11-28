@@ -178,8 +178,8 @@ and counts in `felix_shard_move_steps_total{step="stuck"}`.
 
 Metrics:
 
-- `felix_broker_promotions_opened_total{path="fenced"}` goes up on the broker
-  that won, as for any failover.
+- In 0.7.0, `felix_broker_promotions_opened_total{path="fenced"}` went up on
+  the broker that won, as for any failover.
 - `felix_broker_fleet_feature_enabled{feature="replica_election"}` is 1 on a
   broker that has the feature on. It stands for election only if
   `FELIX_LEADER_SUSPECT_AFTER_MS` is not `0` as well.
@@ -326,19 +326,20 @@ vote for it.
 
 ## How it is checked
 
-The election is modelled in TLA+ ([`docs/formal/`](https://github.com/GetFelix/felix/blob/main/docs/formal/README.md)), and each rule above has a
-test. Some of them:
+The election was modelled in TLA+ and each rule above had a test. They went
+with the hybrid's code and are in the
+[v0.7.0 source](https://github.com/GetFelix/felix/tree/v0.7.0). Some of them:
 
-> `a_granted_pre_vote_puts_the_ballot_on_disk_then_records_the_standing`,
-> `a_refused_pre_vote_writes_nothing`,
-> `the_leader_refuses_a_pre_vote_against_itself`,
-> `a_pending_set_change_is_not_stood_on`,
-> `a_set_the_control_plane_does_not_record_is_not_stood_on`,
-> `a_candidate_does_not_stand_past_the_adoption_window`,
-> `a_cut_off_leader_takes_the_elected_leaders_fence`,
-> `an_elected_leaders_report_is_adopted_once_replica_election_is_finalized`,
-> `joint_fence_is_refused_while_a_serving_broker_lacks_election`,
-> `replica_election_is_refused_until_joint_fence_and_the_rest_are_finalized`.
+- `a_granted_pre_vote_puts_the_ballot_on_disk_then_records_the_standing`
+- `a_refused_pre_vote_writes_nothing`
+- `the_leader_refuses_a_pre_vote_against_itself`
+- `a_pending_set_change_is_not_stood_on`
+- `a_set_the_control_plane_does_not_record_is_not_stood_on`
+- `a_candidate_does_not_stand_past_the_adoption_window`
+- `a_cut_off_leader_takes_the_elected_leaders_fence`
+- `an_elected_leaders_report_is_adopted_once_replica_election_is_finalized`
+- `joint_fence_is_refused_while_a_serving_broker_lacks_election`
+- `replica_election_is_refused_until_joint_fence_and_the_rest_are_finalized`
 
 The full design, with every rule and its reason, is in [the replication
-design notes](https://github.com/GetFelix/felix/blob/main/docs/replication-design.md#electing-without-the-control-plane).
+design notes](https://github.com/GetFelix/felix/blob/v0.7.0/docs/replication-design.md#electing-without-the-control-plane).

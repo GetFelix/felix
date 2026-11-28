@@ -210,32 +210,22 @@ without peer mTLS) and `the peer's certificate does not parse`.
 
 ### Replication has stopped for a replica
 
-`felix_broker_replication_halted` counts the replicas a leader has stopped
-shipping to. Which ones, and why, is on the leader's metrics port:
+Raft reports a stopped copy on the broker that holds it:
+`felix_broker_raft_shards_stopped_on_storage_error` counts copies a storage
+error such as a failed fsync stopped, and the `FelixRaftShardStopped` alert
+fires when it stays above zero. The broker reopens the copy under a new copy id
+once the disk takes writes, and the count clears when the copy hears a leader.
+To see which shard and why, run `felixctl inspect shard` against that broker:
+the role is `none`, and the detail names the term and the error.
 
-```bash
-curl -s http://broker-1:8080/replication/halted
-```
+On the leader, `felixctl inspect shard` lists every other member as `shipping`
+or `stalled`. A member behind the leader's trimmed log is sent a snapshot, so it
+is not a halt and needs no rebuild.
 
-Each entry names the shard, the follower's node, the generation, how far the
-follower got, a `reason` and a `remedy`:
-
-| `reason` | Meaning |
-| --- | --- |
-| `diverged` | The follower holds different bytes at an offset the leader also holds. Its copy has to be rebuilt. |
-| `needs_bootstrap` | The follower needs records retention has already removed from the leader, and holds records of its own. Its copy has to be rebuilt. |
-| `fenced` | The follower knows a newer generation, so this broker no longer leads. It clears when the assignment feed catches up. If it persists, this broker is cut off from the control plane. |
-
-The leader rebuilds `diverged` and `needs_bootstrap` followers itself, as many
-at once as `FELIX_REPLICATION_REBUILD_MAX_CONCURRENT` allows (default `1`;
-`0` leaves them all to an operator). The entry clears once the rebuild is done.
-
-The control plane sees the same halts through the leader's replica reports:
-`felixctl placement replication` lists them in `HALTED`, and
-`felix_shard_replicas_halted` counts them. Placement never moves a shard onto a
-halted copy, and replaces a copy that stays halted for
-`FELIX_SHARD_RESTORE_AFTER_MS`. A move to one by hand is refused with
-`destination_halted`.
+A value that stays above zero is a copy that cannot catch up. With one replica,
+or when every copy stopped, the shard needs a re-form. Check the disk either
+way. `felix_shard_replicas_halted` and `GET /replication/halted` are not fed on
+Raft and stay zero and empty.
 
 ### `shard_unavailable`
 

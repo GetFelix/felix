@@ -129,9 +129,11 @@ nobody else gets it while the claim stands, and a member that reconnects with
 `reclaim` takes it back from the new leader. The new leader cannot tell how much
 of a claim's time had passed, so it gives each one its full visibility (or
 extension) again from when it takes over: a claim lapses later than the old
-leader would have let it, never sooner. Acknowledgements ahead of the group's
-position and plain nacks are not written, so a new leader holds those records
-as claimed until they lapse and then delivers them again. Those rebuilt claims
+leader would have let it, never sooner. Every acknowledgement is written too,
+including one ahead of the group's position, and answered only once it is in
+the log, so a record whose ack was answered is never delivered again, whoever
+leads. Plain nacks are not written, so a new leader holds those records as
+claimed until they lapse and then delivers them again. Those rebuilt claims
 do not count against `FELIX_GROUP_MAX_IN_FLIGHT`, so the new leader keeps
 handing out new records meanwhile.
 

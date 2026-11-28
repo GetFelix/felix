@@ -119,7 +119,6 @@ the port behind a network policy):
 - `/live`: always `ok` while the process runs
 - `/ready`: `ok`, or 503 `draining` once shutdown starts
 - `/metrics`: Prometheus metrics
-- `/replication/halted`: replicas that stopped replicating, as JSON
 - `/backup/offsets`: the committed offset of every log, for backups
 
 ## Control Plane Configuration

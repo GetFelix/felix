@@ -473,7 +473,7 @@ async fn an_unreadable_or_lost_answer_to_a_cache_write_is_not_retryable() {
 async fn a_forwarded_cache_write_too_large_is_answered_as_a_direct_one() {
     use crate::serving::quic::client_error::ClientError;
     use felix_wire::internal::ForwardCacheError;
-    let too_large = felix_replication::quorum::QuorumError::TooLarge { bytes: 2, max: 1 };
+    let too_large = felix_replication::engine::CommitError::TooLarge { bytes: 2, max: 1 };
     let direct = ClientError::from_anyhow(&too_large.into());
     for request in cache_writes() {
         let owner =

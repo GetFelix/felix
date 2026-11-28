@@ -14,8 +14,8 @@ use super::group::Group;
 use super::propose::{self, AckAt, Batch, Heard, Unacknowledged};
 use super::runtime::GroupRuntime;
 use crate::ShardKey;
+use crate::engine::Unreadable;
 use crate::engine::{CommitError, Written};
-use crate::quorum::Unreadable;
 
 mod cache;
 

@@ -224,8 +224,6 @@ case "$cmd" in
       compose logs --no-log-prefix "$b" 2>/dev/null | sed 's/\x1b\[[0-9;]*m//g' \
         | grep -E 'standing for election|majority took the fence|shard now serving' \
         | cut -c1-240 || true
-      compose exec -T "$b" wget -qO- http://127.0.0.1:8080/metrics 2>/dev/null \
-        | grep -E '^felix_broker_promotions_opened_total' || true
     done
     ;;
   receipt)

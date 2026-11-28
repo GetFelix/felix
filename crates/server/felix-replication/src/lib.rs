@@ -1,100 +1,20 @@
-//! Broker-to-broker replication. The default engine is a Raft group per shard
-//! (`raft`, built with the `raft` feature, which the broker service enables
-//! by default); its messages travel over the broker-internal transport in
-//! [`peer`].
-//!
-//! The rest of the crate is the older hybrid protocol, which is deprecated and
-//! frozen. It is selected only with `FELIX_SHARD_ENGINE=hybrid` and is being
-//! deleted (`docs/hybrid-retirement.md`). In it the leader ships committed
-//! records to the followers of every shard it leads ([`driver`],
-//! [`ship_once`]) and a follower stores them ([`replica`]). Transport and
-//! operator listings ([`peer`], [`halted`], [`status`]) outlive it.
-//!
-//! The broker service wires this in. What the hybrid needs from it -- the
-//! serving state a quorum wait reads ([`quorum::ShardServing`]), the write
-//! fence a drain waits behind ([`driver::WriteFence`]) and the token a report
-//! carries ([`reporter::Credential`]) -- comes in through small traits, so
+//! Broker-to-broker replication: a Raft group per shard (`raft`, built with
+//! the `raft` feature, which the broker service enables by default), whose
+//! messages travel over the broker-internal transport in [`peer`]. The
+//! engine seam the broker writes and reads through is [`engine`]; the broker
+//! service hands in its write fence through [`engine::WriteFence`], so
 //! nothing here depends on the service.
-//!
-//! # Hybrid: one cursor per follower
-//!
-//! A follower is a position in this shard's log, nothing more. The leader keeps
-//! the next offset it believes each follower wants, reads that range from its
-//! own log, and ships it. The follower's answer is what moves the cursor —
-//! never the send itself, because a batch that was sent is not a batch that was
-//! stored.
-//!
-//! That is why the cursor can go *backwards*. A follower that has lost records,
-//! or that was rebuilt, answers `LogGap` naming the offset it actually wants,
-//! and the leader resumes there. Resume needs no separate negotiation and no
-//! state on disk: the follower is the authority on its own position, and it
-//! says so in every refusal.
-//!
-//! # Hybrid: what stops, and what retries
-//!
-//! `LogConflict` and `FencedEpoch` stop this shard's replication to that
-//! follower. Neither converges by trying again: the first means the two logs
-//! disagree about bytes already stored, and the second means this broker is no
-//! longer the leader, so it has no business shipping anything. After a
-//! `LogConflict` the leader asks the follower to rebuild, which drops what it
-//! holds past its commit offset, when it is not backing off from a refused
-//! rebuild, its own base is not above the commit offset, and a rebuild slot is
-//! free. Everything else is transient and retried.
-//!
-//! # Hybrid: what bounds it
-//!
-//! One batch in flight per follower, and each batch is bounded by
-//! `max_batch_bytes` read from the log. So the memory a lagging follower costs
-//! the leader is one batch, not the distance it is behind — and a follower that
-//! stops answering stops consuming anything at all, because the next read does
-//! not start until the last answer arrives.
 
 pub mod peer;
 
-pub mod confirmed;
 pub mod controlplane_link;
-pub mod driver;
-pub mod election;
 pub mod engine;
-mod follower;
 pub mod halted;
-mod incarnation;
-pub(crate) mod leadership;
-pub(crate) mod metrics;
-pub mod promotion;
-pub mod quorum;
 #[cfg(feature = "raft")]
 pub mod raft;
-mod rebuild;
-pub(crate) mod reclaim;
-pub(crate) mod replica;
-mod replica_set;
-pub mod reporter;
-#[cfg(feature = "raft")]
-pub mod seal;
 mod shard;
-mod ship;
-pub mod status;
-pub mod suspicion;
-mod throttle;
-pub mod unclean;
 
-#[cfg(test)]
-pub(crate) use follower::RebuildBackoff;
-pub(crate) use follower::{FollowerCursor, Halt, caught_up, lag_records};
-#[cfg(test)]
-pub(crate) use quorum::quorum_offset;
-pub(crate) use quorum::{majority_of, quorum_offset_without};
-pub use rebuild::{RebuildPolicy, Rebuilds};
-pub use replica::ReplicaHandler;
 pub use shard::{ShardKey, ShardKind};
-pub(crate) use ship::{Progress, ship_once};
-#[cfg(test)]
-pub(crate) use ship::{read_answer, ship_once_with};
-pub use throttle::MoveThrottle;
-
-#[cfg(test)]
-mod tests;
 
 // Tests here open many logs at once; they get the open-file limit a broker
 // runs with instead of the shell's.
