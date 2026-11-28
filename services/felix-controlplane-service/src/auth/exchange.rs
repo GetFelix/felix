@@ -270,11 +270,7 @@ pub(crate) async fn mint_for_assertion(
         .list_rbac_groupings(&tenant_id)
         .await
         .map_err(|err| api_internal("failed to load groupings", &err))?;
-    add_group_claim_groupings(
-        &mut groupings,
-        principal_id,
-        &with_legacy_names(groups, legacy_unscoped_groups()),
-    );
+    add_group_claim_groupings(&mut groupings, principal_id, groups);
 
     let enforcer = build_enforcer(&policies, &groupings, &tenant_id)
         .await
@@ -641,17 +637,6 @@ pub(crate) fn filter_permissions(
     kept
 }
 
-/// Set to `true` to also link each IdP group under its bare, unscoped name
-/// (`group:{name}`), for the migration from before groups were scoped. It
-/// reopens the hole scoping closes, so turn it off once groupings are moved.
-pub const LEGACY_UNSCOPED_GROUPS_ENV: &str = "FELIX_CONTROLPLANE_LEGACY_UNSCOPED_GROUPS";
-
-pub(crate) fn legacy_unscoped_groups() -> bool {
-    std::env::var(LEGACY_UNSCOPED_GROUPS_ENV)
-        .map(|value| matches!(value.trim(), "1" | "true" | "TRUE" | "yes"))
-        .unwrap_or(false)
-}
-
 /// An IdP group's name as RBAC sees it: `{issuer}#{group}`, so the RBAC
 /// subject is `group:{issuer}#{group}`.
 ///
@@ -662,19 +647,6 @@ pub(crate) fn legacy_unscoped_groups() -> bool {
 /// split is unambiguous.
 pub(crate) fn scoped_group(issuer: &str, group: &str) -> String {
     format!("{issuer}#{group}")
-}
-
-/// `scoped` plus, when `legacy` is set, each one's bare name.
-pub(crate) fn with_legacy_names(scoped: &[String], legacy: bool) -> Vec<String> {
-    let mut names = scoped.to_vec();
-    if legacy {
-        names.extend(
-            scoped
-                .iter()
-                .filter_map(|group| group.split_once('#').map(|(_, name)| name.to_string())),
-        );
-    }
-    names
 }
 
 // Group claims from the IdP become ephemeral Casbin groupings for this

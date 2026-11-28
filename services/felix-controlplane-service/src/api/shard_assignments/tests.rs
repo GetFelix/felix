@@ -57,38 +57,42 @@ impl Fixture {
 
     async fn assign(&self, leader: &str) {
         self.store
-            .put_shard_assignment(ShardAssignment {
-                key: shard_zero(),
-                leader: leader.to_string(),
-                replicas: vec![],
-                generation: 0,
-                state: ShardState::Assigning,
-                successor: None,
-                joining: None,
-                move_started_at_millis: None,
-                move_reason: None,
-                incarnation: 0,
-                fence_storage_ids: Default::default(),
-                member_storage_ids: Default::default(),
-                learners: Default::default(),
-                pending_set: None,
-                previous_generation: None,
-                readmitted: Default::default(),
-                placed: None,
-                switch: None,
-                raft_copy_ids: Default::default(),
-                raft_target_counter: 0,
-                raft_target: None,
-                raft_floor: None,
-                raft_formed: None,
-                raft_voters: None,
-                raft_seed: None,
-                raft_bases: None,
-                raft_leader: None,
-                raft_ordered: None,
-            })
+            .put_shard_assignment(assignment(leader))
             .await
             .expect("assign");
+    }
+}
+
+fn assignment(leader: &str) -> ShardAssignment {
+    ShardAssignment {
+        key: shard_zero(),
+        leader: leader.to_string(),
+        replicas: vec![],
+        generation: 0,
+        state: ShardState::Assigning,
+        successor: None,
+        joining: None,
+        move_started_at_millis: None,
+        move_reason: None,
+        incarnation: 0,
+        fence_storage_ids: Default::default(),
+        member_storage_ids: Default::default(),
+        learners: Default::default(),
+        pending_set: None,
+        previous_generation: None,
+        readmitted: Default::default(),
+        placed: None,
+        switch: None,
+        raft_copy_ids: Default::default(),
+        raft_target_counter: 0,
+        raft_target: None,
+        raft_floor: None,
+        raft_formed: None,
+        raft_voters: None,
+        raft_seed: None,
+        raft_bases: None,
+        raft_leader: None,
+        raft_ordered: None,
     }
 }
 
@@ -155,30 +159,11 @@ async fn a_page_with_news_is_not_held() {
     }
 }
 
-/// A write by another instance is seen at the next re-check of the store.
-#[tokio::test]
-async fn a_write_ends_the_wait_promptly() {
-    let fx = fixture().await;
-    let since = fx.next_seq().await;
-
-    let started = std::time::Instant::now();
-    let (body, ()) = tokio::join!(fx.changes(format!("since={since}&wait_ms=20000")), async {
-        tokio::time::sleep(Duration::from_millis(200)).await;
-        fx.assign("broker-x").await;
-    });
-    let waited = started.elapsed();
-
-    assert_eq!(body["items"][0]["seq"], since);
-    assert_eq!(body["items"][0]["assignment"]["leader"], "broker-x");
-    // The write lands at 200 ms and the store is re-read every 50.
-    assert!(waited < Duration::from_millis(1000), "waited {waited:?}");
-}
-
-/// This instance's own writes wake the wait directly, without waiting for
-/// the next re-check. Paused time makes that exact: the re-check is 50 ms
-/// out, and nothing advances the clock while the request has work to do.
+/// A write to the store wakes the wait at once, whoever made it: a Raft
+/// member applies another member's write the same way. Paused time makes
+/// that exact, since nothing advances the clock while the request has work.
 #[tokio::test(start_paused = true)]
-async fn an_own_write_wakes_the_wait_before_the_recheck() {
+async fn a_store_write_wakes_the_wait_at_once() {
     let fx = fixture().await;
     let since = fx.next_seq().await;
 
@@ -187,10 +172,35 @@ async fn an_own_write_wakes_the_wait_before_the_recheck() {
         // The request has read the store and is waiting.
         tokio::time::sleep(Duration::from_millis(10)).await;
         fx.assign("broker-x").await;
-        fx.state.placement_wakes.assignment_written();
     });
 
+    assert_eq!(body["items"][0]["seq"], since);
     assert_eq!(body["items"][0]["assignment"]["leader"], "broker-x");
+    assert_eq!(started.elapsed(), Duration::from_millis(10));
+}
+
+/// Installing a snapshot replaces the change log, and wakes the wait too.
+#[tokio::test(start_paused = true)]
+async fn an_import_wakes_the_wait() {
+    let fx = fixture().await;
+    let since = fx.next_seq().await;
+    let (other, _keys) = one_shard_cluster().await;
+    other
+        .put_shard_assignment(assignment("broker-x"))
+        .await
+        .expect("assign");
+    let exported = other.export_state().await;
+
+    let started = tokio::time::Instant::now();
+    let (body, ()) = tokio::join!(fx.changes(format!("since={since}&wait_ms=20000")), async {
+        tokio::time::sleep(Duration::from_millis(10)).await;
+        fx.store.import_state(exported).await.expect("import");
+    });
+
+    assert_eq!(
+        body["items"][0]["assignment"]["leader"], "broker-x",
+        "{body}"
+    );
     assert_eq!(started.elapsed(), Duration::from_millis(10));
 }
 

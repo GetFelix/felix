@@ -75,7 +75,6 @@ async fn a_pass_planned_before_an_operators_move_starts_nothing_beside_it() {
         &store,
         &pass,
         &mut super::super::metrics::MoveClock::default(),
-        &PlacementWakes::default(),
     )
     .await;
     assert!(applied.fenced, "{applied:?}");
@@ -115,7 +114,6 @@ async fn an_ex_holders_pass_is_fenced_after_a_takeover() {
         &store,
         &pass,
         &mut super::super::metrics::MoveClock::default(),
-        &PlacementWakes::default(),
     )
     .await;
     assert!(applied.fenced, "{applied:?}");

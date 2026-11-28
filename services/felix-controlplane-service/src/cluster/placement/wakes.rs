@@ -1,8 +1,8 @@
-//! Waking the placement loop and assignment long-polls on this instance
-//! instead of leaving them to their timers.
+//! Waking the placement loop on this instance instead of leaving it to its
+//! timer, and ending assignment long-polls on a drain.
 use std::collections::{BTreeMap, HashMap};
 
-use tokio::sync::{Notify, watch};
+use tokio::sync::Notify;
 use tokio_util::sync::CancellationToken;
 
 use crate::model::{RaftFloorReport, ShardKey};
@@ -13,12 +13,11 @@ const MAX_VOTERS_SEEN: usize = 1 << 16;
 
 /// Wakes shared by this instance's API handlers and its placement loop.
 ///
-/// Both are hints, never the only path: a long-poll still re-checks the store,
-/// which is how it sees another instance's writes, and the reconciler's timer
-/// still runs. A missed wake costs latency, never a change.
+/// A pass request is a hint, never the only path: the reconciler's timer
+/// still runs, so a missed wake costs latency, never a change. Long-polls are
+/// woken by the store itself (`watch_shard_assignment_changes`).
 #[derive(Debug)]
 pub struct PlacementWakes {
-    written: watch::Sender<u64>,
     pass: Notify,
     closing: CancellationToken,
     fence_max_lag_records: u64,
@@ -50,7 +49,6 @@ impl PlacementWakes {
     /// destination close enough to fence exactly when placement will.
     pub(crate) fn new(closing: CancellationToken, fence_max_lag_records: u64) -> Self {
         Self {
-            written: watch::Sender::new(0),
             pass: Notify::new(),
             closing,
             fence_max_lag_records,
@@ -61,17 +59,6 @@ impl PlacementWakes {
     /// How far behind a move's destination may be to be fenced.
     pub(crate) fn fence_max_lag_records(&self) -> u64 {
         self.fence_max_lag_records
-    }
-
-    /// This instance wrote a shard assignment.
-    pub(crate) fn assignment_written(&self) {
-        self.written
-            .send_modify(|count| *count = count.wrapping_add(1));
-    }
-
-    /// Resolves on each [`Self::assignment_written`] after this call.
-    pub(crate) fn watch_assignments(&self) -> watch::Receiver<u64> {
-        self.written.subscribe()
     }
 
     /// Ask the placement loop for a pass now.

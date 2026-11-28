@@ -316,13 +316,8 @@ async fn a_dead_destination_unfences_through_the_store() {
     )
     .await
     .expect("plan");
-    let outcome = super::super::reconciler::apply_pass(
-        &store,
-        &planned,
-        &mut Default::default(),
-        &Default::default(),
-    )
-    .await;
+    let outcome =
+        super::super::reconciler::apply_pass(&store, &planned, &mut Default::default()).await;
     assert_eq!(outcome.moved, 1, "{outcome:?}");
 
     let after = store

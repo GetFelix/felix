@@ -77,17 +77,16 @@ async fn a_pending_timeout_after_an_adoption_issues_above_it() {
     };
     let mut progress = CopyProgress::default();
     let liveness = Default::default();
-    let wakes = PlacementWakes::default();
     let mut clock = MoveClock::default();
     let first = plan_pass(&store, &liveness, policy.clone(), &mut progress)
         .await
         .expect("read");
-    apply_pass(&store, &first, &mut clock, &wakes).await;
+    apply_pass(&store, &first, &mut clock).await;
     tokio::time::sleep(std::time::Duration::from_millis(20)).await;
     let second = plan_pass(&store, &liveness, policy, &mut progress)
         .await
         .expect("read");
-    apply_pass(&store, &second, &mut clock, &wakes).await;
+    apply_pass(&store, &second, &mut clock).await;
     let dropped = store
         .get_shard_assignment(&shard_zero())
         .await
@@ -145,13 +144,7 @@ async fn a_planner_on_an_older_read_loses_to_adoption() {
     };
     assert_eq!(adopted.leader, "broker-c");
     assert_eq!(adopted.successor, None, "the move planned around a ends");
-    apply_pass(
-        &store,
-        &planned,
-        &mut MoveClock::default(),
-        &PlacementWakes::default(),
-    )
-    .await;
+    apply_pass(&store, &planned, &mut MoveClock::default()).await;
     assert_eq!(
         store
             .get_shard_assignment(&shard_zero())

@@ -86,9 +86,9 @@ The broader production checklist (sizing, durability, limits) is
 - [ ] **Narrow tokens.** Ask token exchange for the actions and resources the
       client needs (`requested`, `resources`, or `permissions` pairs); it can
       only narrow what RBAC grants.
-- [ ] **Separate audiences.** Give API callers `felix-controlplane` tokens and
-      leave `FELIX_CONTROLPLANE_ACCEPT_BROKER_AUDIENCE` unset, so a broker cannot
-      replay a client's token against the API.
+- [ ] **Separate audiences.** Give API callers `felix-controlplane` tokens.
+      The API refuses broker-audience ones, so a broker cannot replay a
+      client's token against it.
 - [ ] **Pinned identity providers.** Register each tenant's issuers with
       explicit audiences, and narrow
       `FELIX_CONTROLPLANE_OIDC_ALLOWED_ALGORITHMS` to what your provider signs

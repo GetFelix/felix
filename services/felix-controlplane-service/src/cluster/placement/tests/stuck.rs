@@ -706,13 +706,7 @@ async fn a_never_opened_leader_is_renamed_through_the_store_and_serves() {
             super::super::reconciler::plan_pass(&store, &liveness, policy.clone(), progress)
                 .await
                 .expect("plan");
-        super::super::reconciler::apply_pass(
-            &store,
-            &planned,
-            &mut Default::default(),
-            &Default::default(),
-        )
-        .await
+        super::super::reconciler::apply_pass(&store, &planned, &mut Default::default()).await
     };
     let mut progress = CopyProgress::default();
     record(&audit).await;
@@ -773,13 +767,8 @@ async fn a_never_opened_leader_is_renamed_through_the_store_and_serves() {
         })
         .await
         .expect("elected");
-    let outcome = super::super::reconciler::apply_pass(
-        &store,
-        &planned,
-        &mut Default::default(),
-        &Default::default(),
-    )
-    .await;
+    let outcome =
+        super::super::reconciler::apply_pass(&store, &planned, &mut Default::default()).await;
     assert_eq!(outcome.moved, 0, "{outcome:?}");
     let after = store.get_shard_assignment(&orders.key).await.expect("get");
     assert_eq!(after, elected, "the rename planned before it is refused");

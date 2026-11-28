@@ -115,3 +115,43 @@ fn a_retired_name_is_reported_as_retired() {
             .any(|(name, _)| name == "FELIX_SHARD_SUSPECT_AFTER_MS")
     );
 }
+
+/// A switch retired with the 0.8 baseline is reported the same way, naming
+/// what retired it.
+#[test]
+fn a_baseline_switch_is_reported_as_retired() {
+    let mut sorted = RETIRED_AT_BASELINE.to_vec();
+    sorted.sort();
+    assert_eq!(
+        sorted, RETIRED_AT_BASELINE,
+        "the retired list is not sorted"
+    );
+    for name in RETIRED_AT_BASELINE {
+        assert!(
+            !KNOWN_VARS.contains(name) && !RETIRED_VARS.contains(name),
+            "{name} is listed twice"
+        );
+    }
+    // Set by no other test in this crate, and read only through the registry.
+    unsafe {
+        std::env::set_var("FELIX_CONTROLPLANE_LEGACY_UNSCOPED_GROUPS", "true");
+    }
+    let warnings = unrecognised_warnings();
+    let unknown = unrecognised();
+    unsafe {
+        std::env::remove_var("FELIX_CONTROLPLANE_LEGACY_UNSCOPED_GROUPS");
+    }
+    assert!(
+        warnings.contains(
+            &"FELIX_CONTROLPLANE_LEGACY_UNSCOPED_GROUPS is retired with the 0.8 API baseline \
+              and has no effect; unset it"
+                .to_string()
+        ),
+        "{warnings:?}"
+    );
+    assert!(
+        !unknown
+            .iter()
+            .any(|(name, _)| name == "FELIX_CONTROLPLANE_LEGACY_UNSCOPED_GROUPS")
+    );
+}

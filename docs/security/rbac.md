@@ -58,9 +58,7 @@ tokens. A user chain bound to it stops refreshing once current RBAC no longer
 grants it `token.delegate`.
 So a gateway can delegate the
 tokens minted for it, and not a token taken from a browser, a log or another
-gateway. `FELIX_CONTROLPLANE_DELEGATE_UNBOUND_TOKENS=true` lifts that for
-tokens with no `may_act`, which lets every holder of `token.delegate` delegate
-any such token of the tenant it gets hold of. See
+gateway. A token with no `may_act` is refused. See
 [Delegated tokens](../auth.md#delegated-tokens).
 
 It also lets the holder exchange for a connection-only broker token: its own
@@ -368,7 +366,7 @@ members, so keep their clocks in sync.
   claim the operators' groups. The prefix is always added, so a claim value
   that itself starts with `group:` cannot stand in for the bare group of the
   same name. Migrating bare `group:<name>` groupings is covered in
-  [auth.md](../auth.md#upgrading-to-scoped-groups-and-audiences).
+  [auth.md](../auth.md#scoped-groups-and-audiences).
 - A token exchange can narrow what these rules grant but never add to it.
   Its `permissions` pairs use the same `action:object` grammar as a rule, and
   each is cut down to the grants with exactly its action. See

@@ -408,7 +408,6 @@ impl SimControlPlane {
                 inner.store.as_ref(),
                 &inner.config.liveness,
                 inner.config.moves.clone(),
-                &inner.wakes,
                 &mut placement.memory,
             )
             .await,
