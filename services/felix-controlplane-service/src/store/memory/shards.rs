@@ -1,8 +1,8 @@
 //! Shard assignments, and what leaders report about their replicas.
 use super::InMemoryStore;
 use crate::model::{
-    CacheKey, ElectedLeader, ReplicaReport, ShardAssignment, ShardAssignmentChange,
-    ShardAssignmentChangeOp, ShardKey, ShardKind, StreamKey,
+    CacheKey, ReplicaReport, ShardAssignment, ShardAssignmentChange, ShardAssignmentChangeOp,
+    ShardKey, ShardKind, StreamKey,
 };
 use crate::store::{
     AssignmentWrite, ChangeSet, PlacementLease, ReportWrite, Snapshot, StoreError, StoreResult,
@@ -100,70 +100,6 @@ pub(super) async fn put_shard_assignment_if(
         at_least,
         record_previous,
         start_placed,
-        hold,
-        SwitchWrite::Drop,
-    )
-    .await
-}
-
-/// [`crate::store::ControlPlaneStore::adopt_elected_leader`]. Deterministic,
-/// as a Raft apply must be: the decision is made from the assignment this
-/// store holds, and the write is conditional on it. `elected_set` applies
-/// [`ShardAssignment::adopting_elected_set`] instead of
-/// [`ShardAssignment::adopting`].
-pub(super) async fn adopt_elected_leader(
-    store: &InMemoryStore,
-    key: &ShardKey,
-    expected_generation: u64,
-    elected: &ElectedLeader,
-    elected_set: bool,
-    own_leader_set: bool,
-    hold: SetHold,
-) -> StoreResult<AssignmentWrite> {
-    let current = get_shard_assignment(store, key).await?;
-    if current.generation != expected_generation {
-        return Ok(AssignmentWrite::Stale {
-            current: Some(current.generation),
-        });
-    }
-    // Sealed copies refuse hybrid ballots, so no election stands behind
-    // this one; the write below would refuse it too.
-    if current.switched() {
-        return Err(StoreError::Conflict(
-            crate::model::SealOrderError::Switched.to_string(),
-        ));
-    }
-    let adopted = if elected_set {
-        let nodes = store.nodes.read().await;
-        let known = |node: &str| nodes.records.contains_key(node);
-        if own_leader_set {
-            current.adopting_elected_set(elected, &known)
-        } else {
-            current.adopting_elected_set_keeping_own_leader(elected, &known)
-        }
-    } else {
-        current.adopting(elected)
-    };
-    let Some(adopted) = adopted else {
-        return Ok(AssignmentWrite::Stale {
-            current: Some(current.generation),
-        });
-    };
-    // Measured on the elected generation: a reissue names the elected
-    // leader one past it.
-    crate::model::check_elected_generation(current.generation, elected.generation)
-        .map_err(StoreError::Conflict)?;
-    let generation = adopted.generation;
-    write_shard_assignment(
-        store,
-        adopted,
-        Some(Some(expected_generation)),
-        None,
-        false,
-        Some(generation),
-        0,
-        false,
-        false,
         hold,
         SwitchWrite::Drop,
     )

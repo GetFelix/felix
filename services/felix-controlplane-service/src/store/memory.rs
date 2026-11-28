@@ -129,7 +129,6 @@ pub struct InMemoryStore {
     replica_reports: Arc<RwLock<HashMap<ShardKey, ReplicaReport>>>,
     /// What each broker last said about the leaders it cannot reach. As
     /// transient as the reports, and not exported for the same reason.
-    suspicions: Arc<RwLock<HashMap<String, crate::model::NodeSuspicion>>>,
     /// Bounded change log for tenant changes.
     ///
     /// `next_seq` is per-entity-type (not a global sequence across all entities).
@@ -279,32 +278,6 @@ impl InMemoryStore {
         decide: Decide,
     ) -> StoreResult<()> {
         namespaces::delete_namespace(self, key, cleanup, decide).await
-    }
-
-    /// [`ControlPlaneStore::adopt_elected_leader`] in the form a Raft entry
-    /// names: with `elected_set` false, as members below the level that
-    /// knows it apply it, and with `own_leader_set` false, as members below
-    /// the level that names this set's own leader on the set it was elected
-    /// on apply it (only its generation is taken).
-    pub(crate) async fn apply_adopt_elected_leader(
-        &self,
-        key: &ShardKey,
-        expected_generation: u64,
-        elected: &crate::model::ElectedLeader,
-        elected_set: bool,
-        own_leader_set: bool,
-        hold: SetHold,
-    ) -> StoreResult<crate::store::AssignmentWrite> {
-        shards::adopt_elected_leader(
-            self,
-            key,
-            expected_generation,
-            elected,
-            elected_set,
-            own_leader_set,
-            hold,
-        )
-        .await
     }
 
     /// [`ControlPlaneStore::create_stream`], with incarnations decided by `decide`.
@@ -481,7 +454,6 @@ impl InMemoryStore {
                 written: Arc::new(tokio::sync::watch::Sender::new(0)),
             })),
             replica_reports: Arc::new(RwLock::new(HashMap::default())),
-            suspicions: Arc::new(RwLock::new(HashMap::default())),
             tenant_changes: Arc::new(RwLock::new(ChangeLog::new(capacity))),
             namespace_changes: Arc::new(RwLock::new(ChangeLog::new(capacity))),
             stream_changes: Arc::new(RwLock::new(ChangeLog::new(capacity))),
@@ -865,37 +837,6 @@ impl ControlPlaneStore for InMemoryStore {
         .await
     }
 
-    async fn adopt_elected_leader(
-        &self,
-        key: &ShardKey,
-        expected_generation: u64,
-        elected: crate::model::ElectedLeader,
-    ) -> StoreResult<crate::store::AssignmentWrite> {
-        let own_leader_set = {
-            #[cfg(test)]
-            {
-                !self
-                    .faults
-                    .keep_own_leader
-                    .load(std::sync::atomic::Ordering::Relaxed)
-            }
-            #[cfg(not(test))]
-            {
-                true
-            }
-        };
-        shards::adopt_elected_leader(
-            self,
-            key,
-            expected_generation,
-            &elected,
-            true,
-            own_leader_set,
-            SetHold::ALL,
-        )
-        .await
-    }
-
     async fn seal_shard(
         &self,
         key: &ShardKey,
@@ -973,13 +914,6 @@ impl ControlPlaneStore for InMemoryStore {
         shards::get_shard_assignment(self, key).await
     }
 
-    async fn confirmed_shard_assignment(
-        &self,
-        key: &ShardKey,
-    ) -> StoreResult<super::ConfirmedAssignment> {
-        super::ConfirmedAssignment::from_read(shards::get_shard_assignment(self, key).await)
-    }
-
     async fn confirmed_shard_assignment_head(&self) -> StoreResult<Option<u64>> {
         Ok(Some(self.shards.read().await.changes.next_seq))
     }
@@ -1045,18 +979,6 @@ impl ControlPlaneStore for InMemoryStore {
 
     async fn get_replica_report(&self, key: &ShardKey) -> StoreResult<Option<ReplicaReport>> {
         Ok(self.replica_reports.read().await.get(key).cloned())
-    }
-
-    async fn record_suspicion(&self, suspicion: crate::model::NodeSuspicion) -> StoreResult<()> {
-        self.suspicions
-            .write()
-            .await
-            .insert(suspicion.node_id.clone(), suspicion);
-        Ok(())
-    }
-
-    async fn list_suspicions(&self) -> StoreResult<Vec<crate::model::NodeSuspicion>> {
-        Ok(self.suspicions.read().await.values().cloned().collect())
     }
 
     async fn root_sequence(
@@ -1670,10 +1592,6 @@ pub(crate) struct Faults {
     pub(crate) shard_reads: std::sync::atomic::AtomicU32,
     /// Counts reads of revocation cutoffs, not a failure.
     pub(crate) cutoff_reads: std::sync::atomic::AtomicU32,
-    /// Adopts elected leaders as members below the own-leader-set level
-    /// do: an own leader elected on another set has only its generation
-    /// taken.
-    pub(crate) keep_own_leader: std::sync::atomic::AtomicBool,
     /// Once set, the next shard write says it has read its stream or cache,
     /// then waits to be resumed (or 300 ms) before it writes.
     pub(crate) shard_write_pause: std::sync::Mutex<Option<ShardWritePause>>,

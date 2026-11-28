@@ -1226,15 +1226,6 @@ impl ControlPlaneStore for FailingStore {
         Err(StoreError::Unexpected(anyhow::anyhow!("fail")))
     }
 
-    async fn adopt_elected_leader(
-        &self,
-        _key: &ShardKey,
-        _expected_generation: u64,
-        _elected: felix_controlplane_service::model::ElectedLeader,
-    ) -> StoreResult<felix_controlplane_service::store::AssignmentWrite> {
-        Err(StoreError::Unexpected(anyhow::anyhow!("fail")))
-    }
-
     async fn seal_shard(
         &self,
         _key: &ShardKey,
@@ -1262,13 +1253,6 @@ impl ControlPlaneStore for FailingStore {
     }
 
     async fn get_shard_assignment(&self, _key: &ShardKey) -> StoreResult<ShardAssignment> {
-        Err(StoreError::Unexpected(anyhow::anyhow!("fail")))
-    }
-
-    async fn confirmed_shard_assignment(
-        &self,
-        _key: &ShardKey,
-    ) -> StoreResult<felix_controlplane_service::store::ConfirmedAssignment> {
         Err(StoreError::Unexpected(anyhow::anyhow!("fail")))
     }
 
@@ -1309,19 +1293,6 @@ impl ControlPlaneStore for FailingStore {
     }
 
     async fn list_replica_reports(&self) -> StoreResult<Vec<ReplicaReport>> {
-        Err(StoreError::Unexpected(anyhow::anyhow!("fail")))
-    }
-
-    async fn record_suspicion(
-        &self,
-        _suspicion: felix_controlplane_service::model::NodeSuspicion,
-    ) -> StoreResult<()> {
-        Err(StoreError::Unexpected(anyhow::anyhow!("fail")))
-    }
-
-    async fn list_suspicions(
-        &self,
-    ) -> StoreResult<Vec<felix_controlplane_service::model::NodeSuspicion>> {
         Err(StoreError::Unexpected(anyhow::anyhow!("fail")))
     }
 

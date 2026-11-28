@@ -665,20 +665,6 @@ fn commands() -> Vec<MetaCommand> {
             hold_unformed: true,
             keep_counter: true,
         },
-        MetaCommand::AdoptElectedLeader {
-            key: shard_key(),
-            expected_generation: 1,
-            elected: crate::model::ElectedLeader {
-                leader: s("b"),
-                generation: 2,
-                replicas: vec![s("c")],
-                set_generation: 1,
-            },
-            elected_set: true,
-            own_leader_set: true,
-            hold_unformed: true,
-            keep_counter: true,
-        },
         MetaCommand::TakePlacementLease { holder: s("h") },
         MetaCommand::DeleteShardAssignment { key: shard_key() },
         MetaCommand::RecordReplicaReport {
@@ -975,7 +961,6 @@ fn op_of(command: &MetaCommand) -> &'static str {
         MetaCommand::PutShardAssignment { .. } => "put_shard_assignment",
         MetaCommand::PutShardAssignmentIf { .. } => "put_shard_assignment_if",
         MetaCommand::PutShardAssignmentFenced { .. } => "put_shard_assignment_fenced",
-        MetaCommand::AdoptElectedLeader { .. } => "adopt_elected_leader",
         MetaCommand::TakePlacementLease { .. } => "take_placement_lease",
         MetaCommand::DeleteShardAssignment { .. } => "delete_shard_assignment",
         MetaCommand::RecordReplicaReport { .. } => "record_replica_report",
@@ -1131,6 +1116,29 @@ fn a_command_needs_the_level_of_its_newest_field() {
             .max()
             .unwrap_or(0);
         assert_eq!(command.version(), newest, "{op}: {}", value);
+    }
+}
+
+/// No live command serializes under a reserved op.
+#[test]
+fn no_command_uses_a_reserved_op() {
+    for command in commands() {
+        let op = op_of(&command);
+        assert!(
+            !crate::store::raft::command::RESERVED_OPS.contains(&op),
+            "{op} is reserved"
+        );
+        let value = serde_json::to_value(&command).expect("serializes");
+        assert_eq!(value["op"], op, "the sample's op is its serialized one");
+    }
+    let table = parse(TABLE);
+    for op in crate::store::raft::command::RESERVED_OPS {
+        assert!(
+            !table
+                .keys()
+                .any(|path| path == op || path.starts_with(&format!("{op}."))),
+            "{op} is reserved but fields.txt lists it"
+        );
     }
 }
 

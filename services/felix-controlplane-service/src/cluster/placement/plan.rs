@@ -386,7 +386,6 @@ fn plan_once(
     let unpaced_max = policy.fence_max_lag_records;
     let (replica_election, fenced_caches) = (policy.replica_election, policy.fenced_caches);
     let joint_fence = policy.joint_fence;
-    let election_hold = policy.election_hold_millis;
     let departed = policy.departed.clone();
     let raft_streams = policy.raft_streams;
     let mut moves = Moves::counting(existing, policy, &|assignment| {
@@ -553,20 +552,9 @@ fn plan_once(
             continue;
         }
 
-        // A majority of the set says the leader is gone, though the control
-        // plane still hears from it. Only where a promoted leader fences a
-        // majority before it serves and the old one serves nothing on its
-        // lease alone, so the old one is kept out without waiting for it.
         // The shards whose replicas elect (replication-design.md, "Which
-        // shards") hold this back for 2×S, so it does not race an election.
+        // shards").
         let elects = replica_election && fenced && (key.kind == ShardKind::Stream || fenced_caches);
-        let hold = election_hold.filter(|_| elects);
-        let deposed = current.get(&key).is_some_and(|existing| {
-            fenced
-                && is_live(&existing.leader)
-                && deposed_by_followers(&key, existing, &is_live, caught_up, hold)
-                && promote(&key, existing, &eligible, caught_up).is_some()
-        });
 
         // The leader came back on a data directory that is not the one its
         // last report counted: a crash that may have cost it records it
@@ -590,7 +578,6 @@ fn plan_once(
         if let Some(existing) = current.get(&key)
             && is_serving(&existing.leader)
             && (durable || is_live(&existing.leader))
-            && !deposed
             && !replaced
         {
             if let Some(decision) = readmit(existing, joint_fence, &is_live, caught_up, &mut moves)
@@ -1025,53 +1012,6 @@ pub fn assignment_for(key: &ShardKey, leader: &str, replicas: Vec<String>) -> Sh
         raft_leader: None,
         raft_ordered: None,
     }
-}
-
-/// Whether enough of `existing`'s followers say they cannot reach its leader
-/// to replace it while it still heartbeats.
-///
-/// Enough is a majority of the whole set, the leader counted in the set but
-/// not among those saying so. A leader that a majority cannot reach cannot
-/// get a write acknowledged anyway, and those followers are a majority that
-/// can answer the next leader's fence. Not while a move or a replacement is
-/// under way: those change the set, and finish or end through their own
-/// steps.
-///
-/// With `hold`, a follower counts only once this instance has seen it
-/// suspect the leader for that long: under `replica_election` the replicas
-/// elect first, and this is the fallback.
-fn deposed_by_followers(
-    key: &ShardKey,
-    existing: &ShardAssignment,
-    is_live: &dyn Fn(&str) -> bool,
-    caught_up: &dyn CaughtUp,
-    hold: Option<u64>,
-) -> bool {
-    if existing.successor.is_some()
-        || existing.joining.is_some()
-        || existing.state == ShardState::Draining
-    {
-        return false;
-    }
-    let saying = existing
-        .replicas
-        .iter()
-        .filter(|follower| is_live(follower))
-        .filter(|follower| caught_up.suspects(key, existing.generation, follower, &existing.leader))
-        .filter(|follower| {
-            hold.is_none_or(|hold| {
-                match (
-                    caught_up.suspected_since_millis(follower, &existing.leader),
-                    caught_up.as_of_millis(),
-                ) {
-                    (Some(since), Some(now)) => now.saturating_sub(since) >= hold,
-                    _ => false,
-                }
-            })
-        })
-        .count();
-    // A majority of the set, the leader in it.
-    saying * 2 > existing.replicas.len() + 1
 }
 
 /// The followers of a fenced shard promoted to `promoted`: the previous set,

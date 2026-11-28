@@ -2,20 +2,6 @@
 //!
 //! Defines shared payload shapes for the control-plane REST API and OpenAPI
 //! schema generation.
-// A leader's account of which replicas hold a shard's log.
-//
-// The shapes a broker sends live in felix-common, so a field renamed here and
-// not there cannot be a silent mismatch — both sides compile against one
-// definition. Re-exported rather than mirrored, for the same reason.
-//
-// A report is sent by the shard's *leader*, because it is the only party that
-// knows both ends of the comparison: its own tail, and how far each follower
-// has acknowledged. A follower knows where it is, not whether that is caught up.
-pub use felix_common::membership::{
-    ReplicaOffset, ReplicaStatusRequest, ReplicaStatusResponse, ReportOutcome, ShardReplicaStatus,
-    ShardReportOutcome,
-};
-
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
@@ -348,10 +334,6 @@ pub struct NodeHeartbeatRequest {
     /// Carried so a heartbeat that was delayed past a restart is rejected
     /// rather than counted for the process that replaced it.
     pub incarnation: u64,
-    /// Leaders of shards this broker follows that have stopped answering its
-    /// pings. Absent from a broker that suspects nobody, or predates it.
-    #[serde(default, skip_serializing_if = "std::collections::BTreeSet::is_empty")]
-    pub suspects: std::collections::BTreeSet<String>,
     /// Asks for `assignment_seq` in the answer. Absent from a broker that
     /// does not need it, or predates it.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
@@ -682,14 +664,6 @@ pub struct ShardAssignmentSnapshotResponse {
     pub next_seq: u64,
 }
 
-/// One shard's assignment, read no earlier than every write acknowledged
-/// before the request.
-#[derive(Debug, Serialize, Deserialize, ToSchema)]
-pub struct ConfirmedShardAssignmentResponse {
-    /// Absent when the shard has no assignment.
-    pub assignment: Option<RoutedShardAssignment>,
-}
-
 /// A seal leader's report of its shard's seal.
 #[derive(Debug, Serialize, Deserialize, ToSchema)]
 pub struct SealReportRequest {
@@ -768,18 +742,6 @@ pub struct SealGiveUpResponse {
     /// This request gave the seal up. False when none stood at that
     /// generation.
     pub given_up: bool,
-}
-
-/// Several shards to read as `GET /v1/shard-assignments/confirmed` reads one.
-#[derive(Debug, Serialize, Deserialize, ToSchema)]
-pub struct ConfirmedShardAssignmentsRequest {
-    pub keys: Vec<crate::model::ShardKey>,
-}
-
-/// One answer per requested shard, in the request's order.
-#[derive(Debug, Serialize, Deserialize, ToSchema)]
-pub struct ConfirmedShardAssignmentsResponse {
-    pub items: Vec<ConfirmedShardAssignmentResponse>,
 }
 
 #[derive(Debug, Serialize, Deserialize, ToSchema)]

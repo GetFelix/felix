@@ -70,7 +70,6 @@ async fn satisfies_the_node_store_contract() {
     crate::store::contract::nodes::run_node_contract(store.clone()).await;
     crate::store::contract::nodes::run_node_concurrency_contract(store.clone()).await;
     crate::store::contract::nodes::run_fleet_contract(store.clone()).await;
-    crate::store::contract::suspicions::run_suspicion_contract(store.clone()).await;
     crate::store::contract::root_sequences::run_root_sequence_contract(store).await;
 }
 
@@ -2498,234 +2497,6 @@ async fn pending_sets_wait_for_every_member() {
     );
 }
 
-/// **Below level 26 every member applies the older adoption.** A leader
-/// elected on another set has only its generation taken while a member is at
-/// 25, so a member that does not know the newer form never applies an entry
-/// differently from the rest. Once every member is at 26 the leader is named
-/// on the set it was elected on, the control plane's set pending from it.
-#[tokio::test]
-async fn an_adoption_on_another_set_waits_for_every_member() {
-    use crate::model::{ElectedLeader, ShardAssignment, ShardKey, ShardKind, ShardState};
-    let dir = tempfile::tempdir().expect("tempdir");
-    let (store, version) = store_with_member_at(dir.path(), 25).await;
-    store
-        .create_stream(routed_stream("orders", Default::default()))
-        .await
-        .expect("stream");
-    for (node_id, port) in [("broker-x", 7121), ("broker-y", 7122), ("broker-z", 7123)] {
-        store
-            .register_node(crate::store::contract::nodes::node(node_id, port))
-            .await
-            .expect("register");
-    }
-    let key = ShardKey {
-        tenant_id: "t1".to_string(),
-        namespace: "ns".to_string(),
-        stream: "orders".to_string(),
-        shard: 0,
-        kind: ShardKind::Stream,
-    };
-    let assigned = store
-        .put_shard_assignment(ShardAssignment {
-            key: key.clone(),
-            leader: "broker-x".to_string(),
-            replicas: vec!["broker-y".to_string(), "broker-z".to_string()],
-            generation: 0,
-            state: ShardState::Assigning,
-            successor: None,
-            joining: None,
-            move_started_at_millis: None,
-            move_reason: None,
-            incarnation: 0,
-            fence_storage_ids: Default::default(),
-            member_storage_ids: Default::default(),
-            learners: Default::default(),
-            pending_set: None,
-            previous_generation: None,
-            readmitted: Default::default(),
-            placed: None,
-            switch: None,
-            raft_copy_ids: Default::default(),
-            raft_target_counter: 0,
-            raft_target: None,
-            raft_floor: None,
-            raft_formed: None,
-            raft_voters: None,
-            raft_seed: None,
-            raft_bases: None,
-            raft_leader: None,
-            raft_ordered: None,
-        })
-        .await
-        .expect("assign");
-    // y elected on {x, y}, one past whatever the shard is at.
-    let adopt = |current: u64| {
-        store.adopt_elected_leader(
-            &key,
-            current,
-            ElectedLeader {
-                leader: "broker-y".to_string(),
-                generation: current + 1,
-                replicas: vec!["broker-x".to_string()],
-                set_generation: assigned.generation,
-            },
-        )
-    };
-    let recorded = match adopt(assigned.generation).await {
-        Ok(crate::store::AssignmentWrite::Written(written)) => written,
-        other => panic!("not recorded: {other:?}"),
-    };
-    assert_eq!(
-        recorded,
-        ShardAssignment {
-            generation: assigned.generation + 1,
-            ..assigned.clone()
-        },
-        "a member at 25 would have applied the older form"
-    );
-
-    version.store(
-        crate::store::raft::command::METADATA_VERSION,
-        std::sync::atomic::Ordering::SeqCst,
-    );
-    let deadline = std::time::Instant::now() + Duration::from_secs(10);
-    let named = loop {
-        let current = store.get_shard_assignment(&key).await.expect("get");
-        match adopt(current.generation).await {
-            Ok(crate::store::AssignmentWrite::Written(written)) if written.leader == "broker-y" => {
-                break written;
-            }
-            other => assert!(
-                std::time::Instant::now() < deadline,
-                "still the older form after every member reported the level: {other:?}"
-            ),
-        }
-        tokio::time::sleep(Duration::from_millis(100)).await;
-    };
-    assert_eq!(named.replicas, vec!["broker-x"]);
-    let pending = named.pending_set.expect("the recorded set is pending");
-    assert_eq!(pending.generation, named.generation);
-    assert_eq!(pending.replicas, vec!["broker-x", "broker-z"]);
-}
-
-/// **Below level 27 the shard's own leader elected on another set has only
-/// its generation taken.** A member at 26 applies that form, so every member
-/// does while one is in the group. Once every member is at 27 the leader is
-/// named one past it, leaving the set it opened on for the recorded one
-/// (#1929).
-#[tokio::test]
-async fn its_own_leader_on_another_set_waits_for_every_member() {
-    use crate::model::{ElectedLeader, ShardAssignment, ShardKey, ShardKind, ShardState};
-    let dir = tempfile::tempdir().expect("tempdir");
-    let (store, version) = store_with_member_at(dir.path(), 26).await;
-    store
-        .create_stream(routed_stream("orders", Default::default()))
-        .await
-        .expect("stream");
-    for (node_id, port) in [
-        ("broker-w", 7120),
-        ("broker-x", 7121),
-        ("broker-y", 7122),
-        ("broker-z", 7123),
-    ] {
-        store
-            .register_node(crate::store::contract::nodes::node(node_id, port))
-            .await
-            .expect("register");
-    }
-    let key = ShardKey {
-        tenant_id: "t1".to_string(),
-        namespace: "ns".to_string(),
-        stream: "orders".to_string(),
-        shard: 0,
-        kind: ShardKind::Stream,
-    };
-    let assigned = store
-        .put_shard_assignment(ShardAssignment {
-            key: key.clone(),
-            leader: "broker-x".to_string(),
-            replicas: vec!["broker-y".to_string(), "broker-z".to_string()],
-            generation: 0,
-            state: ShardState::Assigning,
-            successor: None,
-            joining: None,
-            move_started_at_millis: None,
-            move_reason: None,
-            incarnation: 0,
-            fence_storage_ids: Default::default(),
-            member_storage_ids: Default::default(),
-            learners: Default::default(),
-            pending_set: None,
-            previous_generation: None,
-            readmitted: Default::default(),
-            placed: None,
-            switch: None,
-            raft_copy_ids: Default::default(),
-            raft_target_counter: 0,
-            raft_target: None,
-            raft_floor: None,
-            raft_formed: None,
-            raft_voters: None,
-            raft_seed: None,
-            raft_bases: None,
-            raft_leader: None,
-            raft_ordered: None,
-        })
-        .await
-        .expect("assign");
-    // x elected on {w, x, y}, one past whatever the shard is at.
-    let adopt = |current: u64| {
-        store.adopt_elected_leader(
-            &key,
-            current,
-            ElectedLeader {
-                leader: "broker-x".to_string(),
-                generation: current + 1,
-                replicas: vec!["broker-w".to_string(), "broker-y".to_string()],
-                set_generation: assigned.generation,
-            },
-        )
-    };
-    let recorded = match adopt(assigned.generation).await {
-        Ok(crate::store::AssignmentWrite::Written(written)) => written,
-        other => panic!("not recorded: {other:?}"),
-    };
-    assert_eq!(
-        recorded,
-        ShardAssignment {
-            generation: assigned.generation + 1,
-            ..assigned.clone()
-        },
-        "a member at 26 would have applied the older form"
-    );
-
-    version.store(
-        crate::store::raft::command::METADATA_VERSION,
-        std::sync::atomic::Ordering::SeqCst,
-    );
-    let deadline = std::time::Instant::now() + Duration::from_secs(10);
-    let named = loop {
-        let current = store.get_shard_assignment(&key).await.expect("get");
-        match adopt(current.generation).await {
-            Ok(crate::store::AssignmentWrite::Written(written))
-                if written.pending_set.is_some() =>
-            {
-                break written;
-            }
-            other => assert!(
-                std::time::Instant::now() < deadline,
-                "still the older form after every member reported the level: {other:?}"
-            ),
-        }
-        tokio::time::sleep(Duration::from_millis(100)).await;
-    };
-    assert_eq!(named.leader, "broker-x");
-    assert_eq!(named.replicas, vec!["broker-w", "broker-y"]);
-    let pending = named.pending_set.expect("the recorded set is pending");
-    assert_eq!(pending.generation, named.generation);
-    assert_eq!(pending.replicas, vec!["broker-y", "broker-z"]);
-}
-
 /// A member before level 20 would drop the identities a report inherits from
 /// its leader's promotion, and name a member by none where the rest name it
 /// by them. Until every member has the level they are dropped, which names
@@ -3488,14 +3259,13 @@ async fn revocation_cutoffs_are_read_on_the_leader() {
     );
 }
 
-/// A confirmed shard assignment, and the feed's head, are read on the
-/// leader, so a member that has not applied the latest assignment still
-/// answers with it, and a shard with none answers unassigned. The lagging
-/// member is a second store over the same group whose own state is empty.
+/// The shard-assignment feed's head is read on the leader, so a member that
+/// has not applied the latest assignment still answers with its seq. The
+/// lagging member is a second store over the same group whose own state is
+/// empty.
 #[tokio::test]
-async fn confirmed_shard_assignments_are_read_on_the_leader() {
+async fn confirmed_assignment_head_is_read_on_the_leader() {
     use crate::model::{ShardKind, ShardState};
-    use crate::store::ConfirmedAssignment;
     let dir = tempfile::tempdir().expect("tempdir");
     let leader = single_node_store(dir.path()).await;
     leader
@@ -3530,7 +3300,7 @@ async fn confirmed_shard_assignments_are_read_on_the_leader() {
         shard: 0,
         kind: ShardKind::Stream,
     };
-    let assigned = leader
+    leader
         .put_shard_assignment(ShardAssignment {
             key: key.clone(),
             leader: "broker-b".to_string(),
@@ -3574,35 +3344,8 @@ async fn confirmed_shard_assignments_are_read_on_the_leader() {
         behind.get_shard_assignment(&key).await,
         Err(StoreError::NotFound(_))
     ));
-    assert_eq!(
-        behind.confirmed_shard_assignment(&key).await.expect("read"),
-        ConfirmedAssignment::Assigned(assigned.clone())
-    );
-    let unplaced = ShardKey {
-        shard: 1,
-        ..key.clone()
-    };
-    assert_eq!(
-        behind
-            .confirmed_shard_assignment(&unplaced)
-            .await
-            .expect("read"),
-        ConfirmedAssignment::Unassigned
-    );
-    // Several at once, in order, after one read on the leader.
-    assert_eq!(
-        behind
-            .confirmed_shard_assignments(&[unplaced, key])
-            .await
-            .expect("read"),
-        [
-            ConfirmedAssignment::Unassigned,
-            ConfirmedAssignment::Assigned(assigned)
-        ]
-    );
-
-    // The feed's head too: a broker marked down serves again only on routes
-    // that reach it, so a lagging member's head would bring back #1955.
+    // A broker marked down serves again only on routes that reach it, so a
+    // lagging member's head would bring back #1955.
     let head = leader
         .local()
         .expect("caught up")
@@ -4427,112 +4170,6 @@ async fn a_mount_waits_for_every_member() {
         .expect_err("overlap");
     assert!(crate::model::mount::refusal(&err).is_some(), "{err:?}");
     assert!(store.get_stream(&key("returns")).await.is_err());
-}
-
-/// An adoption writes a generation the store did not pick, which a member
-/// before level 21 cannot apply. So while one is in the group the adoption
-/// is refused before it reaches the log, and every member keeps the
-/// generation and leader it had: the elected leader's report is then judged
-/// as any other from a broker the control plane did not name. Once every
-/// member has the level it goes through, at the elected generation.
-#[tokio::test]
-async fn adoption_waits_for_every_member() {
-    use crate::model::{ElectedLeader, ShardAssignment, ShardKey, ShardKind, ShardState};
-    let dir = tempfile::tempdir().expect("tempdir");
-    let (store, version) = store_with_member_at(dir.path(), 20).await;
-    let applied = || store.handle.status().last_applied_index;
-    store
-        .create_stream(routed_stream("orders", Default::default()))
-        .await
-        .expect("stream");
-    for (node_id, port) in [("broker-x", 7111), ("broker-y", 7112), ("broker-z", 7113)] {
-        store
-            .register_node(crate::store::contract::nodes::node(node_id, port))
-            .await
-            .expect("register");
-    }
-    let key = ShardKey {
-        tenant_id: "t1".to_string(),
-        namespace: "ns".to_string(),
-        stream: "orders".to_string(),
-        shard: 0,
-        kind: ShardKind::Stream,
-    };
-    let assigned = store
-        .put_shard_assignment(ShardAssignment {
-            key: key.clone(),
-            leader: "broker-x".to_string(),
-            replicas: vec!["broker-y".to_string(), "broker-z".to_string()],
-            generation: 0,
-            state: ShardState::Assigning,
-            successor: None,
-            joining: None,
-            move_started_at_millis: None,
-            move_reason: None,
-            incarnation: 0,
-            fence_storage_ids: Default::default(),
-            member_storage_ids: Default::default(),
-            learners: Default::default(),
-            pending_set: None,
-            previous_generation: None,
-            readmitted: Default::default(),
-            placed: None,
-            switch: None,
-            raft_copy_ids: Default::default(),
-            raft_target_counter: 0,
-            raft_target: None,
-            raft_floor: None,
-            raft_formed: None,
-            raft_voters: None,
-            raft_seed: None,
-            raft_bases: None,
-            raft_leader: None,
-            raft_ordered: None,
-        })
-        .await
-        .expect("assign");
-    let elected = ElectedLeader {
-        leader: "broker-y".to_string(),
-        generation: assigned.generation + 3,
-        replicas: vec!["broker-x".to_string(), "broker-z".to_string()],
-        set_generation: assigned.generation,
-    };
-    let adopt = || store.adopt_elected_leader(&key, assigned.generation, elected.clone());
-
-    let before = applied();
-    let refused = adopt().await;
-    assert!(
-        matches!(&refused, Err(StoreError::Conflict(message)) if message.contains("metadata version 21")),
-        "an adoption was proposed past a member that would refuse it: {refused:?}"
-    );
-    assert_eq!(applied(), before, "a refused entry reached the log");
-    assert_eq!(
-        store.get_shard_assignment(&key).await.expect("get"),
-        assigned,
-        "the generation or leader changed below level 21"
-    );
-
-    version.store(
-        crate::store::raft::command::METADATA_VERSION,
-        std::sync::atomic::Ordering::SeqCst,
-    );
-    let deadline = std::time::Instant::now() + Duration::from_secs(10);
-    let adopted = loop {
-        match adopt().await {
-            Ok(crate::store::AssignmentWrite::Written(written)) => break written,
-            other => assert!(
-                std::time::Instant::now() < deadline,
-                "still refused after every member reported the level: {other:?}"
-            ),
-        }
-        tokio::time::sleep(Duration::from_millis(100)).await;
-    };
-    assert_eq!(adopted.leader, "broker-y");
-    assert_eq!(adopted.generation, elected.generation);
-    assert_eq!(
-        store.get_shard_assignment(&key).await.expect("get"),
-        adopted
-    );
 }
 
 async fn recorded(store: &RaftStore) -> crate::store::identity::ClusterIdentity {

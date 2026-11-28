@@ -52,13 +52,6 @@ pub(crate) enum LeaderRequest {
         node_id: String,
         incarnation: u64,
     },
-    /// The leaders a broker cannot reach. A leader that predates it fails
-    /// to read the request, and the suspicion is dropped.
-    Suspicion {
-        node_id: String,
-        incarnation: u64,
-        suspects: std::collections::BTreeSet<String>,
-    },
     ExpireStaleNodes {
         expiry_before_millis: u64,
     },
@@ -85,17 +78,6 @@ pub(crate) enum LeaderRequest {
     PeekRefreshToken {
         tenant_id: String,
         token_id: String,
-    },
-    /// A shard's assignment as the leader holds it, for a broker that must
-    /// not answer from a view that lags. A leader that predates it fails to
-    /// read it, and the asker answers that no confirmed read is served.
-    ShardAssignment {
-        key: crate::model::ShardKey,
-    },
-    /// Several shards' assignments after one read-index. A leader that
-    /// predates it fails to read it, and the asker reads each shard alone.
-    ShardAssignments {
-        keys: Vec<crate::model::ShardKey>,
     },
     /// The shard-assignment feed's `next_seq` as the leader holds it, for a
     /// broker that must not take a lagging member's feed as current. A leader
@@ -136,8 +118,6 @@ struct View {
     /// `since` on the wall clock, which is what listings carry.
     since_millis: u64,
     beats: HashMap<String, Beat>,
-    /// What each broker last said about the leaders it cannot reach.
-    suspicions: HashMap<String, crate::model::NodeSuspicion>,
     /// Nodes (re)registered during this term, and when: a later start for
     /// their silence than `since`.
     registered: HashMap<String, Instant>,
@@ -217,19 +197,6 @@ impl SoftState {
         node
     }
 
-    /// What brokers said this term about the leaders they cannot reach.
-    /// Empty on a follower: placement runs on the leader.
-    pub(crate) fn suspicions(&self) -> Vec<crate::model::NodeSuspicion> {
-        let Ok(term) = self.leading_term() else {
-            return Vec::new();
-        };
-        let view = self.view.lock().expect("soft state lock");
-        view.as_ref()
-            .filter(|view| view.term == term)
-            .map(|view| view.suspicions.values().cloned().collect())
-            .unwrap_or_default()
-    }
-
     async fn dispatch(&self, request: LeaderRequest) -> Result<MetaResult, NotLeader> {
         let term = self.leading_term()?;
         // Every answer below reads the applied state, so none is given
@@ -276,23 +243,6 @@ impl SoftState {
                 node_id,
                 incarnation,
             } => self.heartbeat(term, &node_id, incarnation).await,
-            LeaderRequest::Suspicion {
-                node_id,
-                incarnation,
-                suspects,
-            } => {
-                let mut guard = self.view_in(term)?;
-                view_for(&mut guard, term).suspicions.insert(
-                    node_id.clone(),
-                    crate::model::NodeSuspicion {
-                        node_id,
-                        incarnation,
-                        suspects,
-                        reported_at_millis: crate::clock::now_millis(),
-                    },
-                );
-                Ok(Ok(MetaResponse::Unit))
-            }
             LeaderRequest::ExpireStaleNodes {
                 expiry_before_millis,
             } => self.expire(term, expiry_before_millis).await,
@@ -360,29 +310,6 @@ impl SoftState {
                 Ok(reply
                     .map(|reply| MetaResponse::Reform { reply })
                     .map_err(Into::into))
-            }
-            LeaderRequest::ShardAssignment { key } => {
-                self.confirm_read().await?;
-                Ok(self
-                    .machine
-                    .store()
-                    .get_shard_assignment(&key)
-                    .await
-                    .map(|assignment| MetaResponse::Assignment { assignment })
-                    .map_err(Into::into))
-            }
-            LeaderRequest::ShardAssignments { keys } => {
-                self.confirm_read().await?;
-                let store = self.machine.store();
-                let mut assignments = Vec::with_capacity(keys.len());
-                for key in &keys {
-                    match store.get_shard_assignment(key).await {
-                        Ok(assignment) => assignments.push(Some(assignment)),
-                        Err(crate::store::StoreError::NotFound(_)) => assignments.push(None),
-                        Err(err) => return Ok(Err(err.into())),
-                    }
-                }
-                Ok(Ok(MetaResponse::Assignments { assignments }))
             }
             LeaderRequest::ProposalLevel => {
                 let (_, level) = self
@@ -783,7 +710,6 @@ fn view_for(slot: &mut Option<View>, term: u64) -> &mut View {
             since: now,
             since_millis: crate::clock::now_millis(),
             beats: HashMap::default(),
-            suspicions: HashMap::default(),
             registered: HashMap::default(),
             lease: None,
             last_checkpoint: now,

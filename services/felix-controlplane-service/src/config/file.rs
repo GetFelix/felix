@@ -38,7 +38,9 @@ pub(super) struct ControlPlaneConfigOverride {
     shard_move_timeout_ms: Option<u64>,
     shard_fence_timeout_ms: Option<u64>,
     shard_pending_set_timeout_ms: Option<u64>,
-    shard_election_hold_ms: Option<u64>,
+    /// Retired with the hybrid: read so an old file still loads, and
+    /// reported at start.
+    shard_election_hold_ms: Option<serde::de::IgnoredAny>,
     shard_restore_after_ms: Option<u64>,
     shard_restore_stall_ms: Option<u64>,
     shard_stuck_leader_ms: Option<u64>,
@@ -81,6 +83,12 @@ impl ControlPlaneConfig {
     pub(super) fn apply(&mut self, override_cfg: ControlPlaneConfigOverride) -> Result<()> {
         let config = self;
 
+        if override_cfg.shard_election_hold_ms.is_some() {
+            tracing::warn!(
+                key = "shard_election_hold_ms",
+                "config key is retired with the hybrid and has no effect"
+            );
+        }
         if let Some(value) = override_cfg.bind_addr {
             config.bind_addr = value.parse().with_context(|| "parse bind_addr")?;
         }
@@ -133,9 +141,6 @@ impl ControlPlaneConfig {
         }
         if let Some(value) = override_cfg.shard_pending_set_timeout_ms {
             config.shard_moves.pending_set_timeout_millis = (value > 0).then_some(value);
-        }
-        if let Some(value) = override_cfg.shard_election_hold_ms {
-            config.shard_moves.election_hold_millis = (value > 0).then_some(value);
         }
         if let Some(value) = override_cfg.shard_restore_after_ms {
             config.shard_moves.restore_after_millis = (value > 0).then_some(value);

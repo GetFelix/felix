@@ -5,7 +5,6 @@
 //! deployed system does not have. Each backend's tests call the `run_*`
 //! entry points with a store of its own.
 pub(crate) mod abandon_epochs;
-mod adoption;
 pub(crate) mod cache_incarnations;
 pub(crate) mod change_feeds;
 pub(crate) mod declared_dead;
@@ -26,5 +25,4 @@ pub(crate) mod revocations;
 pub(crate) mod root_sequences;
 pub(crate) mod shards;
 pub(crate) mod signing_keys;
-pub(crate) mod suspicions;
 pub(crate) mod switch;

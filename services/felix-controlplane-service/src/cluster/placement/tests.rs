@@ -1,7 +1,6 @@
 //! Placement tests, by theme. The helpers here build the catalogs and
 //! clusters every theme plans over.
 mod abandon;
-mod adoption;
 mod balance;
 mod caches;
 mod copy_pins;
@@ -38,7 +37,6 @@ mod restore;
 mod stalled;
 mod startup;
 mod stuck;
-mod suspicion;
 mod wakes;
 mod zones;
 

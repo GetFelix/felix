@@ -258,7 +258,6 @@ pub(crate) async fn run_shard_contract(store: Arc<dyn ControlPlaneStore>) {
     pausing_moves_is_persisted(store).await;
     replica_reports::readmitted_copies_are_recorded_from_a_set_naming_them(store).await;
     every_broker_placed_in_the_epoch_stays_on_the_record(store).await;
-    super::adoption::run(store).await;
     // Last: its writes would push other cases' changes out of the feed.
     super::switch::run_switch_contract(store).await;
 }

@@ -337,7 +337,6 @@ Shard placement and moves, run by the instance holding the placement lease.
 | `felix_shard_move_duration_seconds` | histogram | - | Seconds from the first step of a move to its cut-over. |
 | `felix_shard_move_fence_seconds` | histogram | - | Seconds from the fence to the cut-over: the window in which the shard is not served. |
 | `felix_shard_reconcile_failures_total` | counter | - | Passes that could not read the catalog at all. |
-| `felix_replica_status_rejected_total` | counter | `reason` | Replica status reports from brokers that were rejected. |
 
 ## Control plane: nodes and catalog
 

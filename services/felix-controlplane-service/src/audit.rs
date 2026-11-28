@@ -279,13 +279,11 @@ struct Listener {
 /// a refusal is still recorded.
 const TELEMETRY_ROUTES: &[&str] = &[
     "/v1/nodes/{node_id}/heartbeat",
-    "/v1/nodes/{node_id}/replica-status",
     "/v1/nodes/{node_id}/raft-copy-id",
     "/v1/nodes/{node_id}/raft-floors",
     "/v1/nodes/{node_id}/seal-report",
     "/v1/nodes/{node_id}/seal-give-up",
     "/v1/nodes/{node_id}/reform/reports",
-    "/v1/shard-assignments/confirmed",
 ];
 
 /// Record the request once it is answered, or as unfinished if it is dropped

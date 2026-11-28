@@ -394,28 +394,6 @@ pub trait ControlPlaneStore: Send + Sync {
         fence: u64,
         at_least: u64,
     ) -> StoreResult<AssignmentWrite>;
-    /// Adopt a leader that elected itself, if the shard is still at
-    /// `expected_generation`: [`ShardAssignment::adopting_elected_set`],
-    /// written at the generation it gives (the elected one, or the one after
-    /// for a leader elected on another set within this one) rather than the
-    /// next, so every later write issues above it. Not fenced by the
-    /// placement token: it starts no move, and any placement write planned
-    /// from an older read is stale.
-    ///
-    /// [`AssignmentWrite::Stale`] when the shard has moved on, or when the
-    /// elected generation is not above `expected_generation`. A write whose
-    /// leader is not `elected.leader` recorded the generation only.
-    ///
-    /// Under Raft it needs metadata level 21 on every member, and is
-    /// refused below it. Below level 26 it applies
-    /// [`ShardAssignment::adopting`], which takes only the generation of a
-    /// leader elected on another set.
-    async fn adopt_elected_leader(
-        &self,
-        key: &ShardKey,
-        expected_generation: u64,
-        elected: crate::model::ElectedLeader,
-    ) -> StoreResult<AssignmentWrite>;
     /// Order the seal that starts a stream shard's switch to Raft, if the
     /// shard is still at `expected_generation`: its leader and set are
     /// named again at the next generation with a seal order
@@ -468,22 +446,6 @@ pub trait ControlPlaneStore: Send + Sync {
         sealer: &str,
     ) -> StoreResult<AssignmentWrite>;
     async fn get_shard_assignment(&self, key: &ShardKey) -> StoreResult<ShardAssignment>;
-    /// The assignment for `key`, read no earlier than every write
-    /// acknowledged before the call. [`Self::get_shard_assignment`] on a
-    /// Raft member answers from what that member has applied, which can lag.
-    async fn confirmed_shard_assignment(&self, key: &ShardKey) -> StoreResult<ConfirmedAssignment>;
-    /// [`Self::confirmed_shard_assignment`] for every key, in order, all
-    /// read no earlier than every write acknowledged before the call.
-    async fn confirmed_shard_assignments(
-        &self,
-        keys: &[ShardKey],
-    ) -> StoreResult<Vec<ConfirmedAssignment>> {
-        let mut confirmed = Vec::with_capacity(keys.len());
-        for key in keys {
-            confirmed.push(self.confirmed_shard_assignment(key).await?);
-        }
-        Ok(confirmed)
-    }
     /// The shard-assignment feed's `next_seq`, read no earlier than every
     /// write acknowledged before the call, so every change committed by then
     /// has a lower seq. `None` from a Raft leader that predates the read.
@@ -583,15 +545,6 @@ pub trait ControlPlaneStore: Send + Sync {
             .into_iter()
             .find(|report| report.key == *key))
     }
-
-    /// Keep what a broker's heartbeat said about the leaders it cannot reach,
-    /// replacing what it said before. Stamp it with
-    /// [`ControlPlaneStore::now_millis`], which placement judges it against.
-    /// Under Raft it is the leader's soft state, as heartbeats are, and a
-    /// leader that predates it drops it.
-    async fn record_suspicion(&self, suspicion: crate::model::NodeSuspicion) -> StoreResult<()>;
-    /// Every suspicion held, fresh or not; the reader judges freshness.
-    async fn list_suspicions(&self) -> StoreResult<Vec<crate::model::NodeSuspicion>>;
 
     /// The highest root sequence `node_id`'s heartbeats carried, under the
     /// storage id they carried it for. `None` when none is held, which the
@@ -1345,28 +1298,6 @@ impl From<serde_json::Error> for StoreError {
 }
 
 pub type StoreResult<T> = Result<T, StoreError>;
-
-/// What [`ControlPlaneStore::confirmed_shard_assignment`] found.
-#[allow(clippy::large_enum_variant)]
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ConfirmedAssignment {
-    Assigned(ShardAssignment),
-    Unassigned,
-    /// No confirmed read could be made: a Raft leader that predates the
-    /// request, mid-way through a rolling upgrade.
-    NotServed,
-}
-
-impl ConfirmedAssignment {
-    /// From a read of a store every instance writes to, which is current.
-    pub(crate) fn from_read(read: StoreResult<ShardAssignment>) -> StoreResult<Self> {
-        match read {
-            Ok(assignment) => Ok(Self::Assigned(assignment)),
-            Err(StoreError::NotFound(_)) => Ok(Self::Unassigned),
-            Err(err) => Err(err),
-        }
-    }
-}
 
 /// What [`ControlPlaneStore::put_shard_assignment_if`] did.
 // One per write, so the size of the written variant costs nothing worth a box

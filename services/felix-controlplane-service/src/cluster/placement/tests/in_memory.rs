@@ -20,8 +20,8 @@ fn policies() -> [MovePolicy; 2] {
     ]
 }
 
-/// Reports that would steer every hybrid step: each copy caught up, the
-/// leader suspected, a member ready to re-admit, and a clock. The in-memory
+/// Reports that would steer every hybrid step: each copy caught up, a
+/// member ready to re-admit, and a clock. The in-memory
 /// step must decide exactly as it does with none.
 struct Misleading;
 
@@ -31,9 +31,6 @@ impl CaughtUp for Misleading {
     }
     fn reported_by(&self, _key: &ShardKey) -> Option<&str> {
         Some("broker-c")
-    }
-    fn suspects(&self, _key: &ShardKey, _generation: u64, _follower: &str, _leader: &str) -> bool {
-        true
     }
     fn readmittable(&self, _key: &ShardKey, _generation: u64, _leader: &str) -> Option<String> {
         Some("broker-c".to_string())
@@ -101,7 +98,7 @@ fn a_new_in_memory_shard_gets_one_owner_and_no_followers() {
 }
 
 /// **A live owner keeps its shard**, and no report moves it: not a
-/// caught-up follower, not suspicion from one, not a re-admission.
+/// caught-up follower, not a re-admission.
 #[test]
 fn a_live_owner_keeps_its_shard_whatever_the_reports_say() {
     let streams = vec![in_memory("ticks", 1, 3)];

@@ -204,10 +204,6 @@ pub fn build_router(state: AppState) -> Router {
             axum::routing::post(api::nodes::reports::report_health),
         )
         .route(
-            "/v1/nodes/{node_id}/replica-status",
-            axum::routing::post(api::nodes::reports::report_replica_status),
-        )
-        .route(
             "/v1/nodes/{node_id}/raft-copy-id",
             axum::routing::post(api::nodes::reports::report_raft_copy_id),
         )
@@ -242,11 +238,6 @@ pub fn build_router(state: AppState) -> Router {
         .route(
             "/v1/shard-assignments/snapshot",
             axum::routing::get(api::shard_assignments::shard_assignment_snapshot),
-        )
-        .route(
-            "/v1/shard-assignments/confirmed",
-            axum::routing::get(api::shard_assignments::confirmed_shard_assignment)
-                .post(api::shard_assignments::confirmed_shard_assignments),
         )
         .route(
             "/v1/shard-assignments/changes",

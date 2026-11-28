@@ -186,23 +186,6 @@ pub trait CaughtUp {
             .filter(|halt| halt.generation == generation)
     }
 
-    /// Whether `follower` said, recently enough to act on, that it cannot
-    /// reach `leader`, the leader of `key` at `generation`. Only for a shard
-    /// whose deposed leader is kept out without the lease: the fleet must
-    /// have enabled what that takes, and `leader` must have reported at
-    /// `generation` that it serves nothing on its lease. For any other the
-    /// followers' word decides nothing, and this is `false`.
-    fn suspects(&self, _key: &ShardKey, _generation: u64, _follower: &str, _leader: &str) -> bool {
-        false
-    }
-
-    /// Since when, on the reports' clock, this instance has seen `follower`
-    /// suspect `leader` without a break. `None` when it has not watched it,
-    /// and then a held suspicion promotes nobody.
-    fn suspected_since_millis(&self, _follower: &str, _leader: &str) -> Option<u64> {
-        None
-    }
-
     /// [`Self::halted`], where the halt still speaks for a member of the set
     /// at `generation`: reported at it, or carried into it from one of the
     /// generations just before and not yet contradicted.

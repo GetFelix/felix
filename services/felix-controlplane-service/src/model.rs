@@ -24,7 +24,7 @@ pub use namespace::{Namespace, NamespaceChange, NamespaceChangeOp, NamespaceKey}
 pub(crate) use node::validate_storage_id;
 pub use node::{
     DeclaredDead, Node, NodeCapacity, NodeChange, NodeChangeOp, NodeLifecycle, NodePatchRequest,
-    NodeSpec, NodeStatus, NodeSuspicion, NodeValidationError, PlacementAck, RootSequence,
+    NodeSpec, NodeStatus, NodeValidationError, PlacementAck, RootSequence,
 };
 pub use shard::AbandonEpochStart;
 pub(crate) use shard::AbandonError;
@@ -33,12 +33,12 @@ pub(crate) use shard::{
     generation_at_least, previous_generation,
 };
 pub use shard::{
-    ElectedLeader, HaltedCopy, MoveReason, PendingSet, PlacedInEpoch, RaftBases, RaftEpochBase,
-    RaftFloor, RaftFloorError, RaftFloorReport, RaftFormed, RaftLeader, RaftLogId, RaftOrdered,
-    RaftSeed, RaftTarget, RaftTargetError, RaftVoters, Readmitted, ReformEpochStart,
-    ReformRecordError, ReplicaReport, SealOrderError, SealReport, SealReportError, SealedSideLog,
-    ShardAssignment, ShardAssignmentChange, ShardAssignmentChangeOp, ShardKey, ShardKind,
-    ShardState, ShardSwitch, ShardValidationError,
+    HaltedCopy, MoveReason, PendingSet, PlacedInEpoch, RaftBases, RaftEpochBase, RaftFloor,
+    RaftFloorError, RaftFloorReport, RaftFormed, RaftLeader, RaftLogId, RaftOrdered, RaftSeed,
+    RaftTarget, RaftTargetError, RaftVoters, Readmitted, ReformEpochStart, ReformRecordError,
+    ReplicaReport, SealOrderError, SealReport, SealReportError, SealedSideLog, ShardAssignment,
+    ShardAssignmentChange, ShardAssignmentChangeOp, ShardKey, ShardKind, ShardState, ShardSwitch,
+    ShardValidationError,
 };
 pub(crate) use stream::default_replication_factor;
 pub(crate) use stream::deleted_stream_payload;

@@ -286,15 +286,9 @@ impl PlacementRead {
         // within the same plan, and the same clock the reports and heartbeats
         // were stamped with.
         let reports = store.list_replica_reports().await?;
-        let suspicions = store.list_suspicions().await?;
         let enabled = store.enabled_fleet_features().await?;
         let now_millis = store.now_millis().await?;
-        let incarnations = nodes
-            .iter()
-            .map(|node| (node.node_id.clone(), node.status.incarnation))
-            .collect();
         let positions = ReplicaPositions::new(reports, liveness, now_millis)
-            .with_suspicions(suspicions, incarnations, liveness, &enabled)
             .with_nodes(&nodes, &existing)
             .with_joint_fence(enabled.contains(felix_common::fleet::JOINT_FENCE.name()));
         let (nodes, departed) = fence_departed(nodes, liveness, now_millis);
@@ -396,8 +390,6 @@ pub(super) async fn plan_pass(
     read.positions.set_opened(opened);
     let pending = progress.observe_pending(&read.existing, &read.positions);
     read.positions.set_pending(pending);
-    let suspected = progress.observe_suspicions(&read.positions);
-    read.positions.set_suspected_since(suspected);
     read.positions
         .set_give_ups(progress.give_ups(&read.existing));
     // Below two report TTLs a leader that reports late but on time by the

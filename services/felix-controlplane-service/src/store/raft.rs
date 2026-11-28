@@ -108,16 +108,6 @@ const MOUNT_LEVEL: u16 = 24;
 /// its generation was promised to another node (#1730).
 const REFUSED_LEVEL: u16 = 25;
 
-/// The metadata level whose members name a leader elected on another set on
-/// that set when they adopt it, instead of taking only its generation
-/// (#1009).
-const ELECTED_SET_LEVEL: u16 = 26;
-
-/// The metadata level whose members also name the shard's own leader on the
-/// other set it was elected on, instead of taking only its generation
-/// (#1929).
-const OWN_LEADER_SET_LEVEL: u16 = 27;
-
 /// The metadata level whose members store the ballot a leader's refusal
 /// carries and name it past that ballot (#1951).
 const REFUSED_BALLOT_LEVEL: u16 = 28;
@@ -1334,41 +1324,6 @@ impl ControlPlaneStore for RaftStore {
         }
     }
 
-    async fn adopt_elected_leader(
-        &self,
-        key: &ShardKey,
-        expected_generation: u64,
-        elected: crate::model::ElectedLeader,
-    ) -> StoreResult<AssignmentWrite> {
-        // Refused below level 21, before it reaches the log: the generation
-        // stays the one every member holds, and the election is not adopted.
-        // Below 26 every member applies the older form, which takes only the
-        // generation of a leader elected on another set, and below 27 it
-        // still does for the shard's own leader.
-        let level = self.group_level().await?;
-        match self
-            .propose_at(
-                level,
-                MetaCommand::AdoptElectedLeader {
-                    key: key.clone(),
-                    expected_generation,
-                    elected,
-                    elected_set: level >= ELECTED_SET_LEVEL,
-                    own_leader_set: level >= OWN_LEADER_SET_LEVEL,
-                    hold_unformed: level >= FIRST_FORM_LEVEL,
-                    keep_counter: level >= TARGET_COUNTER_LEVEL,
-                },
-            )
-            .await?
-        {
-            MetaResponse::Assignment { assignment } => Ok(AssignmentWrite::Written(assignment)),
-            MetaResponse::StaleAssignment { current_generation } => Ok(AssignmentWrite::Stale {
-                current: current_generation,
-            }),
-            _ => Err(unexpected_shape("assignment")),
-        }
-    }
-
     async fn seal_shard(
         &self,
         key: &ShardKey,
@@ -1507,56 +1462,6 @@ impl ControlPlaneStore for RaftStore {
 
     async fn get_shard_assignment(&self, key: &ShardKey) -> StoreResult<ShardAssignment> {
         self.local()?.get_shard_assignment(key).await
-    }
-
-    /// Read on the leader after a read-index. Never from local state: the
-    /// caller asked for a confirmed read because this member's may lag.
-    async fn confirmed_shard_assignment(
-        &self,
-        key: &ShardKey,
-    ) -> StoreResult<crate::store::ConfirmedAssignment> {
-        let asked = self
-            .ask_leader(LeaderRequest::ShardAssignment { key: key.clone() })
-            .await;
-        match asked {
-            Ok(Some(MetaResponse::Assignment { assignment })) => {
-                Ok(crate::store::ConfirmedAssignment::Assigned(assignment))
-            }
-            Ok(Some(_)) => Err(unexpected_shape("assignment")),
-            Ok(None) => Ok(crate::store::ConfirmedAssignment::NotServed),
-            Err(err) => crate::store::ConfirmedAssignment::from_read(Err(err)),
-        }
-    }
-
-    async fn confirmed_shard_assignments(
-        &self,
-        keys: &[ShardKey],
-    ) -> StoreResult<Vec<crate::store::ConfirmedAssignment>> {
-        let asked = self
-            .ask_leader(LeaderRequest::ShardAssignments {
-                keys: keys.to_vec(),
-            })
-            .await?;
-        match asked {
-            Some(MetaResponse::Assignments { assignments }) if assignments.len() == keys.len() => {
-                Ok(assignments
-                    .into_iter()
-                    .map(|assignment| match assignment {
-                        Some(assignment) => crate::store::ConfirmedAssignment::Assigned(assignment),
-                        None => crate::store::ConfirmedAssignment::Unassigned,
-                    })
-                    .collect())
-            }
-            Some(_) => Err(unexpected_shape("assignments")),
-            // A leader that predates the batch: one read each.
-            None => {
-                let mut confirmed = Vec::with_capacity(keys.len());
-                for key in keys {
-                    confirmed.push(self.confirmed_shard_assignment(key).await?);
-                }
-                Ok(confirmed)
-            }
-        }
     }
 
     async fn confirmed_shard_assignment_head(&self) -> StoreResult<Option<u64>> {
@@ -1765,21 +1670,6 @@ impl ControlPlaneStore for RaftStore {
 
     async fn get_replica_report(&self, key: &ShardKey) -> StoreResult<Option<ReplicaReport>> {
         self.local()?.get_replica_report(key).await
-    }
-
-    async fn record_suspicion(&self, suspicion: crate::model::NodeSuspicion) -> StoreResult<()> {
-        // `None` is a leader without soft state, which keeps none.
-        self.ask_leader(LeaderRequest::Suspicion {
-            node_id: suspicion.node_id,
-            incarnation: suspicion.incarnation,
-            suspects: suspicion.suspects,
-        })
-        .await
-        .map(|_| ())
-    }
-
-    async fn list_suspicions(&self) -> StoreResult<Vec<crate::model::NodeSuspicion>> {
-        Ok(self.soft.suspicions())
     }
 
     async fn group_identity(&self) -> StoreResult<crate::store::identity::GroupIdentity> {
