@@ -759,8 +759,7 @@ where
                         .with_generation_starts(shard_lifecycle::GenerationStarts {
                             broker: Arc::clone(broker),
                             fleet: Arc::clone(fleet),
-                        })
-                        .with_fence(Arc::clone(ingress.fence())),
+                        }),
                 ),
                 // Without durable storage there is no log to open, so taking a
                 // shard is bookkeeping only.

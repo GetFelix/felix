@@ -129,11 +129,10 @@ pub(crate) async fn resolve_route(
 
     // The admission fence. Cheap and possibly stale, so it only sheds early --
     // the authoritative check happens again before the record is committed. See
-    // `crate::cluster::lease`. After dispatch, because a shard whose followers
-    // decide its acknowledgements takes writes without the lease.
+    // `crate::cluster::lease`. After dispatch, because a shard a Raft member
+    // runs here takes writes without the lease.
     if let Some(lease) = lease
         && !lease.looks_valid()
-        && !fenced.as_ref().is_some_and(FenceGuard::lease_free)
         && !other_engine
     {
         crate::cluster::lease::metrics::record_refusal(

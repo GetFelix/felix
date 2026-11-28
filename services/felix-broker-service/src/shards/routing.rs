@@ -470,7 +470,7 @@ impl IngressRouter {
     ///
     /// A shard between its fence and its cut-over is held until the routes
     /// show where it went, then dispatched there; see [`hold`]. So is one this
-    /// broker has just taken and is still fencing. A local answer
+    /// broker has just taken and is still opening. A local answer
     /// comes with the write's place in the fence, entered here so a fence that
     /// closes before the write claims its offsets still counts it and the move
     /// waits for it.
@@ -580,19 +580,16 @@ impl IngressRouter {
         }
     }
 
-    /// Whether this broker has just taken `key` and is opening or fencing it,
-    /// which usually takes a round trip. `Active` too: the lifecycle settles
-    /// the fence a moment before the servable set that says so is published.
+    /// Whether this broker has just taken `key` and is opening it, which
+    /// usually takes a round trip. `Active` too: the lifecycle opens the shard
+    /// a moment before the servable set that says so is published.
     /// Not an open held for a retry (it keeps its error): that waits for
     /// descriptors to free up, which is no round trip, so it is refused now.
     fn taking_over(&self, key: &ShardKey) -> bool {
-        self.fence.awaiting_promotion(key).is_some()
-            || self.fence.phase_of(key).is_some_and(|record| {
-                matches!(
-                    record.phase,
-                    Phase::Opening | Phase::Fencing | Phase::Active
-                ) && !(record.phase == Phase::Opening && record.error.is_some())
-            })
+        self.fence.phase_of(key).is_some_and(|record| {
+            matches!(record.phase, Phase::Opening | Phase::Active)
+                && !(record.phase == Phase::Opening && record.error.is_some())
+        })
     }
 
     fn dispatch_in(&self, view: &View, key: &ShardKey) -> Dispatch {
