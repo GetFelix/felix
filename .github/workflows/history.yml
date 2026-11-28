@@ -95,7 +95,7 @@ jobs:
           slot: history
 
       - name: Build the broker the harness runs
-        run: cargo build --locked -p felix-broker-service --bin felix-broker
+        run: cargo build --locked -p felix-broker-service --bin felix-broker --features fault-injection
 
       - name: Choose a seed
         id: seed

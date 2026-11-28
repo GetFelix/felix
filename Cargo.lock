@@ -1076,6 +1076,7 @@ dependencies = [
  "felix-wire",
  "kafka-protocol",
  "libc",
+ "memchr",
  "quinn",
  "rcgen",
  "reqwest",

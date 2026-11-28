@@ -142,9 +142,9 @@ pub struct PeerTransportConfig {
     pub handshake_timeout: Duration,
     /// Test-only: a file naming peers this broker must not exchange with.
     ///
-    /// `None` in every deployment that does not set `FELIX_PEER_PARTITION_FILE`,
-    /// which is the only way to turn it on, and the check costs one `Option`
-    /// test when it is off.
+    /// Present only in debug builds and builds with the `fault-injection`
+    /// feature. There it is `None` unless `FELIX_PEER_PARTITION_FILE` is set,
+    /// which is the only way to turn it on.
     ///
     /// A partition is the one failure this harness cannot produce from the
     /// outside: killing, stopping and freezing a broker are all a signal away,
@@ -153,6 +153,7 @@ pub struct PeerTransportConfig {
     /// combination -- a leader that looks healthy to the control plane and
     /// cannot reach its followers -- is exactly where a replication design is
     /// most likely to be wrong, so it is worth a hook.
+    #[cfg(any(debug_assertions, test, feature = "fault-injection"))]
     pub partition_file: Option<std::path::PathBuf>,
     /// Whether this broker offers the promotion fence
     /// to its peers and answers it, and keeps ballots. On by default. Off, it
@@ -212,6 +213,7 @@ impl Default for PeerTransportConfig {
             reconnect_base: Duration::from_millis(DEFAULT_RECONNECT_BASE_MS),
             reconnect_max: Duration::from_millis(DEFAULT_RECONNECT_MAX_MS),
             handshake_timeout: Duration::from_millis(DEFAULT_HANDSHAKE_TIMEOUT_MS),
+            #[cfg(any(debug_assertions, test, feature = "fault-injection"))]
             partition_file: None,
             fence: true,
             election: false,
@@ -376,10 +378,13 @@ impl PeerTransportConfig {
         config.fence = true;
         config.election = false;
         config.unified_fence = true;
-        config.partition_file = std::env::var("FELIX_PEER_PARTITION_FILE")
-            .ok()
-            .filter(|value| !value.trim().is_empty())
-            .map(std::path::PathBuf::from);
+        #[cfg(any(debug_assertions, test, feature = "fault-injection"))]
+        {
+            config.partition_file = std::env::var("FELIX_PEER_PARTITION_FILE")
+                .ok()
+                .filter(|value| !value.trim().is_empty())
+                .map(std::path::PathBuf::from);
+        }
         if let Some(value) = env_usize("FELIX_INTERNAL_CONNS_PER_PEER").filter(|v| *v > 0) {
             config.conns_per_peer = value;
         }

@@ -193,6 +193,11 @@ jobs:
           FELIX_TEST_CLUSTER_LOG_DIR: ${{ runner.temp }}/cluster-logs
         run: |
           set -o pipefail
+          # These tests partition brokers. The head broker measured above has
+          # no fault hooks, so rebuild it with them; the harness refuses a
+          # partition against a broker without them.
+          CARGO_TARGET_DIR="$CARGO_TARGET_DIR_HEAD" \
+            cargo build --locked --release -p felix-broker-service --bin felix-broker --features fault-injection
           exe=$(cat /tmp/felix-gate/head.failures)
           # One test at a time: eleven clusters at once on a runner make the
           # timing windows of these tests miss for reasons that are not the engine.

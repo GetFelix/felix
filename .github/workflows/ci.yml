@@ -694,7 +694,7 @@ jobs:
         uses: swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
 
       - name: Build the broker with Raft shards
-        run: cargo build --locked -p felix-broker-service --bin felix-broker --features raft
+        run: cargo build --locked -p felix-broker-service --bin felix-broker --features raft,fault-injection
 
       - name: Test
         env:
@@ -754,6 +754,12 @@ jobs:
 
       - name: Lint
         run: task lint
+
+      # Peer-partition injection is for the cluster harness. A broker built
+      # without debug assertions or `fault-injection`, as a release is, must
+      # not read FELIX_PEER_PARTITION_FILE.
+      - name: A release broker carries no fault injection
+        run: task check:no-fault-injection
 
       - name: cargo-deny
         run: task deny
@@ -918,7 +924,7 @@ jobs:
       - name: Build the broker and cluster harness
         id: harness
         run: |
-          cargo build --locked -p felix-broker-service --bin felix-broker
+          cargo build --locked -p felix-broker-service --bin felix-broker --features fault-injection
           cargo build --locked -p felix-cluster --bin felix-cluster
 
       # Same installation the release job uses, so the two cannot drift.
@@ -1005,7 +1011,7 @@ jobs:
       # The suite starts these.
       - name: Build the broker and cluster harness
         run: |
-          cargo build --locked -p felix-broker-service --bin felix-broker
+          cargo build --locked -p felix-broker-service --bin felix-broker --features fault-injection
           cargo build --locked -p felix-cluster --bin felix-cluster
 
       # No napi CLI: `napi build` is mostly a rename of this cdylib, and the
@@ -1142,7 +1148,7 @@ jobs:
       - name: Build the broker and cluster harness
         if: matrix.os == 'ubuntu-latest'
         run: |
-          cargo build --locked -p felix-broker-service --bin felix-broker
+          cargo build --locked -p felix-broker-service --bin felix-broker --features fault-injection
           cargo build --locked -p felix-cluster --bin felix-cluster
 
       - name: Scenarios against the fixture

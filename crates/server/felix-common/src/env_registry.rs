@@ -231,6 +231,9 @@ pub const KNOWN_VARS: &[&str] = &[
     "FELIX_NODE_TOKEN_FILE",
     "FELIX_NODE_ZONE",
     "FELIX_OPERATOR_TOKEN_SHA256",
+    // Read only by fault-injection builds (felix-replication's
+    // `peer/partition.rs`), so a release broker warns that it ignores it.
+    #[cfg(any(debug_assertions, test, feature = "fault-injection"))]
     "FELIX_PEER_PARTITION_FILE",
     "FELIX_PLACEMENT_SETTLE_MS",
     "FELIX_PREAUTH_MAX_FRAME_BYTES",
