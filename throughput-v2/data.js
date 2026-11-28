@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795844230978,
+  "lastUpdate": 1795845626828,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -74984,6 +74984,58 @@ window.BENCHMARK_DATA = {
             "range": "6760.64",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 816145.99\nmean: 816371.76\nstdev: 6760.64\ncv: 0.83%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "32541b83d94eb04f2ef696c5d35aa770d9c004be",
+          "message": "fix(broker): a follower's jump keeps its skip count past a pass that delivers nothing (#3412) (#3416)\n\nAfter an unwatched jump, deliver_from_log counted the offsets below the\njump from the log and cleared the mark before reading. When the bound\ncovered only entries holding no record, such as a new term's blank, the\npass delivered nothing and the count was lost: the next batch counted\nfrom the jump point alone and under-reported skipped_before. The mark now\nclears only once a batch carries the count.\n\nSpec-Unaffected: broker-local skip accounting on a follower's log pass; no replication or commit rule changes",
+          "timestamp": "2026-11-28T05:53:50Z",
+          "tree_id": "5b3fa771ba560b6ce835fde4d0809cc2dfd3be62",
+          "url": "https://github.com/GetFelix/felix/commit/32541b83d94eb04f2ef696c5d35aa770d9c004be"
+        },
+        "date": 1795845626167,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 344129.92,
+            "range": "8973.00",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 344129.92\nmean: 344683.52\nstdev: 8973.00\ncv: 2.60%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 344129.92,
+            "range": "8973.00",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 344129.92\nmean: 344683.52\nstdev: 8973.00\ncv: 2.60%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 80003.36,
+            "range": "1588.30",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 80003.36\nmean: 79233.42\nstdev: 1588.30\ncv: 2.00%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 800033.63,
+            "range": "15883.01",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 800033.63\nmean: 792334.20\nstdev: 15883.01\ncv: 2.00%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
