@@ -964,7 +964,7 @@ weights=(
   "FelixRaftReformBatchAbandon 43"
   "FelixRaftEntriesSnapshotCrash 25"
   "FelixRaftRestoreRepeatedBatch 11"
-  "FelixRaftFourTerms 45"
+  "FelixRaftFourTerms 110"
   "FelixRaftTermsFull 59"
   "FelixRaftOffsetsFull 20"
   "FelixRaftSnapshotCrashes 21"

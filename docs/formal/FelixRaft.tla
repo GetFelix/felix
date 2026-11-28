@@ -420,7 +420,9 @@ Replicate(i, j) ==
     /\ LET p == MaxOf(Common(i, j))
            cut == p < LastIdx(j)
        IN /\ p < LastIdx(i)
-          /\ ~Batch \/ StampNotChecked \/ EOff(EntryAt(i, p + 1), p + 1) = NextAfter(j, p)
+          \* An IF, not a disjunction: TLC would take each true disjunct as its
+          \* own step and generate the same state twice.
+          /\ IF Batch /\ ~StampNotChecked THEN EOff(EntryAt(i, p + 1), p + 1) = NextAfter(j, p) ELSE TRUE
           /\ log' = [log EXCEPT ![j] = Append(SubSeq(@, 1, p - base[j].idx), EntryAt(i, p + 1))]
           /\ flushed' = [flushed EXCEPT ![j] = IF AckBeforeFlush THEN p + 1 ELSE Min(@, p)]
           /\ synced' = [synced EXCEPT ![j] = Min(@, p)]
