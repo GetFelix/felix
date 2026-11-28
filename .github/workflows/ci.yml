@@ -453,6 +453,8 @@ jobs:
     timeout-minutes: 35
     env:
       CARGO_TERM_COLOR: always
+      # Seeds the replay check runs twice each.
+      FELIX_SIM_SEEDS: "20"
     steps:
       - name: Checkout
         uses: actions/checkout@v7
