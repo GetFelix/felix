@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795870171115,
+  "lastUpdate": 1795873424943,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -75192,6 +75192,58 @@ window.BENCHMARK_DATA = {
             "range": "3921.96",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1229463.30\nmean: 1229037.52\nstdev: 3921.96\ncv: 0.32%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "f2b2f0e8ac35d6ed1d9c1d7643a447997188a76c",
+          "message": "refactor!: the engine trait, write fence and shard lifecycle lose the hybrid's state (#2261) (#3418)\n\n* refactor(replication): the engine trait drops the hybrid's cache, counter and read waits (#2261)\n\nEngine loses appended, committed_bound, cache_write_at, await_cache_quorum,\nawait_counter_quorum, read_skips_lease and await_readable, with CacheWrite\nand Access. StreamEngine, the only implementation, answered each cache and\ncounter wait with Ok, cache_write_at with None and read_skips_lease with\nfalse, so their call sites fold to what they already did: cache and counter\nwrites ack after the store, and every non-Raft cache read checks the lease.\nawait_readable had no caller.\n\ncommitted_bound keeps its answer for in-memory shards (refused once this\nbroker stops serving, or once the lease of a replicated shard lapses), so\nit moves to an inherent StreamEngine method, and CommittedReads moves to\nthe broker service beside it.\n\nSpec-Unaffected: removes trait methods whose only implementation was a constant; no modelled behaviour changes\n\n* refactor(broker): the write fence and shard lifecycle lose the hybrid's fencing state (#2261)\n\nThe lifecycle no longer has a Fencing phase, promotion fencing, joint\nfencing or the continuing-generation note: nothing outside tests turned\nfence_promotions on, so every open went straight to Active and wrote its\ngeneration start at open. Action::Open loses its fence flag and\nShardStore::open its begins_here, both constant.\n\nShardFence drops state the hybrid's driver set and reported and nothing\nreads now: promotions, gave-up and refused maps, reclaimable probes, the\nlease-free, sessions-free, passed and deposed generations, the deposal\nqueue, and opened_below. Their readers fold to the answer they always gave:\na write enters only with the lease, a read is refused once the lease\nlapses, a gave-up copy is not led again, and no deposal ends a reader.\nThe held-open report bound goes with the report it fed.\n\nThe fence keeps opening, closing, admission with the lease check,\nquiescing, phases for shard_inspect and in-memory shards. The phase gauge\nloses its always-zero fencing series.\n\nSpec-Unaffected: removes state no running path set; TLA FelixRaft does not model the hybrid fence\n\n* perf(broker): an interim routing publish filters the assignments instead of copying them (#2133)\n\nEarlyRoutes::opened runs under the lifecycle lock and cloned the whole\nassignment map on every interim publish to drop the new led shards still\nopening. The table is now built from a filtered iterator over the map, and\nthe new shards are a set rather than a list, so the publish copies no\nassignment. The routes it publishes are the same.\n\nSpec-Unaffected: same routes published, without the copy\n\n* docs: the engine trait, fence and lifecycle as PR 5 leaves them (#2261)\n\nper-shard-raft.md shows the trait as it is and says why each removed\nmethod was safe to drop. hybrid-retirement.md records what PR 5 removed\nand the #2133 and #1986 results. The fencing phase, reason and replica\nstate leave protocol.md, felixctl and the diagnosing page, since nothing\nproduces them. A FelixShard config's evidence named the deleted cache and\ncounter waits.\n\nSpec-Unaffected: docs and a cfg comment only\n\n* test(broker): the cache watch tests run their cache on a Raft group, as a durable broker does\n\nThe hybrid engine's removal (#3415) took the cache watch path that served a\ncache with a log but no Raft group. No broker runs that way any more: one\nwith durable storage always runs its caches on Raft. The cache_watch tests\nstill built that broker, so ten of them were refused with \"the Raft group\n... is not open on this broker yet\".\n\nThey now start the cache as a standalone broker does, a Raft group of one,\nthrough a new node::start_standalone_engine, and wait for the group to lead\nbefore testing. Two tests asserted hybrid-only behaviour and now assert the\nRaft answer: a resume below the shard's snapshot is resnapshotted, and a\nresume past the member's edge is refused as retryable after the wait.\n\nSpec-Unaffected: test harness and a test-facing constructor; no modelled behaviour changes\n\n* fix(broker): a cache watch from past a Raft leader's log gets the typed in-future error\n\nA resume past the member's applied edge waited for it to apply that far,\nthen refused retryably. That is right on a member that is behind, but a\nleader's log holds every committed entry, so an offset past its log's end\nwas given out by no member and never will be: the client was told to retry\nforever where 0.7 answered SubscribeCursorError InFuture. A leader now\nanswers that at once; a member that does not lead still waits.\n\nstart_standalone_engine is doc(hidden), for tests.\n\nSpec-Unaffected: cache watch resume answers are not modelled\n\n* fix(broker): a leader calls a cache resume in the future only once it confirms it leads\n\nA leader cut off by a partition still believes it leads, while another\nmember may have been elected and committed past its log. Its log's end\nbounds every offset given out only once a read-index round confirms its\nterm, so the in-future answer now waits for that round, within the quorum\ntimeout. A leader that cannot confirm falls through to the wait and the\nretryable refusal.\n\nSpec-Unaffected: cache watch resume answers are not modelled\n\n* refactor: delete code the hybrid's removal left without a caller (#2261)\n\nWith the hybrid and the simulator's hybrid client gone, these have no\ncaller outside their own tests:\n\n- serving::direct_cache (only the simulator's direct cache client used it)\n- the StreamLog wrappers for the hybrid's ballot and replica sets\n  (accept_set*, accept_generation_on_set, give_up_generation,\n  set_generation, replica_set, holds_records_of, member_is_*,\n  admit_member, label_generations*, record_generation_off_runtime,\n  stamps_generations); the DiskLog methods underneath stay\n- Broker::copy_on_disk, note_replicated_commit, shard_log_at,\n  appended_shards, mark_head_trimmed_for, mark_headers_stored_for\n- ConsumerGroups::adopt\n- ShardRouter::replica_role and ReplicaRole\n- ControlPlaneLink::confirmed_assignment(s), whose loss leaves\n  felix-replication without a felix-router dependency\n\nAdds unit tests for the felix-cluster helper that seeds an upgraded\nfleet's history, which only a cluster test exercised.\n\nSpec-Unaffected: deletes uncalled code and adds tests; no modelled behaviour changes",
+          "timestamp": "2026-11-28T05:38:12-08:00",
+          "tree_id": "accfe87468a2f807726945d6e58b93a871af0f0f",
+          "url": "https://github.com/GetFelix/felix/commit/f2b2f0e8ac35d6ed1d9c1d7643a447997188a76c"
+        },
+        "date": 1795873424428,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 536019.89,
+            "range": "38462.34",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 536019.89\nmean: 530912.41\nstdev: 38462.34\ncv: 7.24%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1018-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 536019.89,
+            "range": "38462.34",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 536019.89\nmean: 530912.41\nstdev: 38462.34\ncv: 7.24%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1018-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 124558.28,
+            "range": "1039.05",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 124558.28\nmean: 124435.73\nstdev: 1039.05\ncv: 0.84%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1018-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1245582.83,
+            "range": "10390.53",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1245582.83\nmean: 1244357.29\nstdev: 10390.53\ncv: 0.84%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1018-aws-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
