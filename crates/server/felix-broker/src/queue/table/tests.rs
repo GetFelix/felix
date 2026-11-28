@@ -448,34 +448,17 @@ fn a_stale_or_orphan_claim_changes_nothing() {
     );
 }
 
-/// A table written before claims were replicated still loads, with none.
+/// Versions 1 and 2 held no acks above the cursor and no release wrote
+/// them: they are refused, never loaded as a table without acks.
 #[test]
-fn a_table_without_claims_loads() {
-    let mut table = busy_table();
-    table
-        .groups
-        .values_mut()
-        .for_each(|state| state.claims.clear());
-    let mut bytes = Vec::new();
-    bytes.push(1);
-    let full = table.encode();
-    let mut rest = &full[1..];
-    // Rewrite each group without its (empty) claims count.
-    let mut body = Vec::new();
-    body.extend_from_slice(&rest[..20]);
-    rest = &rest[20..];
-    for _ in 0..table.groups.len() {
-        let name = u32::from_be_bytes(rest[..4].try_into().unwrap()) as usize;
-        let mut len = 4 + name + 17 + 8;
-        for _ in 0..2 {
-            let count = u32::from_be_bytes(rest[len..len + 4].try_into().unwrap()) as usize;
-            len += 4 + 8 * count;
-        }
-        body.extend_from_slice(&rest[..len]);
-        rest = &rest[len + 4..];
+fn tables_before_version_3_are_refused() {
+    let mut bytes = busy_table().encode().to_vec();
+    for version in [1, 2] {
+        bytes[0] = version;
+        let refused = GroupTable::decode(&bytes).expect_err("an old table loaded");
+        assert_eq!(refused, TableRefused::Version(version));
+        assert!(refused.to_string().contains(&format!("version {version}")));
     }
-    bytes.extend_from_slice(&body);
-    assert_eq!(GroupTable::decode(&bytes), Some(table));
 }
 
 /// A table folded from every kind of write.
@@ -489,6 +472,7 @@ fn busy_table() -> GroupTable {
     log.apply("a", GroupOp::Redrive { cre, offset: 3 });
     log.apply("a", GroupOp::Advance { cre, to: 7 });
     log.apply("a", claim(cre, Some("w"), &[(8, 1), (9, 2)]));
+    log.apply("a", GroupOp::Ack { cre, offset: 11 });
     log.apply("b", GroupOp::Advance { cre, to: 1 });
     log.apply("b", GroupOp::Delete);
     log.apply(
@@ -506,12 +490,13 @@ fn busy_table() -> GroupTable {
 #[test]
 fn a_table_round_trips() {
     let table = busy_table();
-    assert_eq!(GroupTable::decode(&table.encode()), Some(table.clone()));
+    assert_eq!(GroupTable::decode(&table.encode()), Ok(table.clone()));
     let empty = GroupTable::default();
-    assert_eq!(GroupTable::decode(&empty.encode()), Some(empty));
-    assert_eq!(table.last_delete(), 9);
-    assert_eq!(table.applied(), 10);
+    assert_eq!(GroupTable::decode(&empty.encode()), Ok(empty));
+    assert_eq!(table.last_delete(), 10);
+    assert_eq!(table.applied(), 11);
     assert_eq!(table.group("a").expect("a").claims.len(), 2);
+    assert_eq!(table.group("a").expect("a").acked.len(), 1);
 }
 
 /// Every prefix, a trailing byte, an unknown version or creation kind, and
@@ -520,22 +505,64 @@ fn a_table_round_trips() {
 fn a_damaged_table_is_refused() {
     let bytes = busy_table().encode();
     for len in 0..bytes.len() {
-        assert_eq!(GroupTable::decode(&bytes[..len]), None, "at {len}");
+        assert!(GroupTable::decode(&bytes[..len]).is_err(), "at {len}");
     }
     let mut long = bytes.to_vec();
     long.push(0);
-    assert_eq!(GroupTable::decode(&long), None);
+    assert!(GroupTable::decode(&long).is_err());
     let mut version = bytes.to_vec();
-    version[0] = 3;
-    assert_eq!(GroupTable::decode(&version), None);
+    version[0] = 4;
+    assert!(GroupTable::decode(&version).is_err());
     // Group "a": header 21, name 4 + 1, token 17 (kind last).
     let mut by = bytes.to_vec();
     by[21 + 5 + 16] = 2;
-    assert_eq!(GroupTable::decode(&by), None);
+    assert!(GroupTable::decode(&by).is_err());
     // Its dead letters 5 and 6, swapped.
     let dead = 21 + 5 + 17 + 8 + 4;
     let mut unordered = bytes.to_vec();
     unordered[dead + 7] = 6;
     unordered[dead + 15] = 5;
-    assert_eq!(GroupTable::decode(&unordered), None);
+    assert!(GroupTable::decode(&unordered).is_err());
+}
+
+/// **An ack above the cursor is part of the folded state** until the cursor
+/// passes it, and it ends the record's claim, so a new leader takes the
+/// record as settled. A seek voids it; a late one below the cursor and one
+/// from a gone incarnation change nothing.
+#[test]
+fn acks_above_the_cursor_fold_until_the_cursor_passes() {
+    let cre = hydrated(0);
+    let mut log = Log::new();
+    log.apply("g", GroupOp::Advance { cre, to: 0 });
+    log.apply("g", claim(cre, Some("a"), &[(0, 1), (1, 1), (2, 1)]));
+    log.apply("g", GroupOp::Ack { cre, offset: 2 });
+    log.apply("g", GroupOp::Ack { cre, offset: 1 });
+    let state = log.state("g").expect("group");
+    assert_eq!(state.acked, BTreeSet::from([1, 2]));
+    assert_eq!(state.claims.keys().copied().collect::<Vec<_>>(), [0]);
+    // A claim never stands on an acked record.
+    log.apply("g", claim(cre, None, &[(2, 2)]));
+    assert!(!log.state("g").expect("group").claims.contains_key(&2));
+
+    log.apply("g", GroupOp::Advance { cre, to: 2 });
+    assert_eq!(log.state("g").expect("group").acked, BTreeSet::from([2]));
+    log.apply("g", GroupOp::Ack { cre, offset: 1 });
+    assert_eq!(log.state("g").expect("group").acked, BTreeSet::from([2]));
+
+    log.apply(
+        "g",
+        GroupOp::Seek {
+            to: 0,
+            if_new: false,
+        },
+    );
+    assert!(log.state("g").expect("group").acked.is_empty());
+    // From before the seek: dropped.
+    assert_eq!(
+        log.apply("g", GroupOp::Ack { cre, offset: 4 }),
+        Folded::Dropped {
+            tracker_dropped: false
+        }
+    );
+    assert!(log.state("g").expect("group").acked.is_empty());
 }

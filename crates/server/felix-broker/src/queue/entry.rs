@@ -4,13 +4,13 @@
 //! ```text
 //! u8   version (1)
 //! u8   op: 0 advance, 1 dead letter, 2 redrive, 3 finish redrive,
-//!          4 discard, 5 seek, 6 delete, 7 claim
+//!          4 discard, 5 seek, 6 delete, 7 claim, 8 ack
 //! u32  group name length, then the name (UTF-8, never empty)
-//! creation token                                    (ops 0 to 4, 7)
+//! creation token                                    (ops 0 to 4, 7, 8)
 //!   u64  term
 //!   u64  index
 //!   u8   by: 0 hydrate, 1 seek
-//! u64  offset: the advance's or seek's target, or the record (ops 0 to 5)
+//! u64  offset: the advance's or seek's target, or the record (ops 0 to 5, 8)
 //! u8   flags: bit 0 if_new                          (op 5 only)
 //! claim                                             (op 7 only)
 //!   u64  visibility in milliseconds
@@ -28,6 +28,9 @@
 //! `docs/formal/FelixRaftGroups.tla` models the rules, except discard (a
 //! dead letter dropped), claims, and `if_new`, which the leader decides before it
 //! proposes and the fold does not read.
+//!
+//! Op 8 changes bytes on disk, so it lands before the format v9 freeze
+//! (`docs/raft-batch-entries-design.md`).
 
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 
@@ -42,6 +45,7 @@ const OP_DISCARD: u8 = 4;
 const OP_SEEK: u8 = 5;
 const OP_DELETE: u8 = 6;
 const OP_CLAIM: u8 = 7;
+const OP_ACK: u8 = 8;
 const BY_HYDRATE: u8 = 0;
 const BY_SEEK: u8 = 1;
 const IF_NEW: u8 = 1;
@@ -78,6 +82,10 @@ pub enum GroupOp {
     /// attempt count, for `visibility_ms` from when a leader learns of it.
     /// Replaces any claim the table holds on those records.
     Claim { cre: CreationToken, claims: Claims },
+    /// `offset` was acknowledged above a record that is not, so no advance
+    /// covers it yet. The table keeps it settled until the cursor passes it,
+    /// and a new leader does not hand it out again.
+    Ack { cre: CreationToken, offset: u64 },
 }
 
 /// What one [`GroupOp::Claim`] holds.
@@ -126,7 +134,8 @@ impl GroupOp {
             | Self::Redrive { cre, .. }
             | Self::FinishRedrive { cre, .. }
             | Self::Discard { cre, .. }
-            | Self::Claim { cre, .. } => Some(cre),
+            | Self::Claim { cre, .. }
+            | Self::Ack { cre, .. } => Some(cre),
             Self::Seek { .. } | Self::Delete => None,
         }
     }
@@ -141,6 +150,7 @@ impl GroupOp {
             Self::Seek { .. } => OP_SEEK,
             Self::Delete => OP_DELETE,
             Self::Claim { .. } => OP_CLAIM,
+            Self::Ack { .. } => OP_ACK,
         }
     }
 
@@ -150,7 +160,8 @@ impl GroupOp {
             Self::DeadLetter { offset, .. }
             | Self::Redrive { offset, .. }
             | Self::FinishRedrive { offset, .. }
-            | Self::Discard { offset, .. } => Some(offset),
+            | Self::Discard { offset, .. }
+            | Self::Ack { offset, .. } => Some(offset),
             Self::Delete | Self::Claim { .. } => None,
         }
     }
@@ -254,7 +265,7 @@ impl GroupEntry {
                     },
                 }
             }
-            OP_ADVANCE | OP_DEAD_LETTER | OP_REDRIVE | OP_FINISH_REDRIVE | OP_DISCARD => {
+            OP_ADVANCE | OP_DEAD_LETTER | OP_REDRIVE | OP_FINISH_REDRIVE | OP_DISCARD | OP_ACK => {
                 let cre = take_creation(&mut buf)?;
                 let offset = take_u64(&mut buf)?;
                 match code {
@@ -262,6 +273,7 @@ impl GroupEntry {
                     OP_DEAD_LETTER => GroupOp::DeadLetter { cre, offset },
                     OP_REDRIVE => GroupOp::Redrive { cre, offset },
                     OP_FINISH_REDRIVE => GroupOp::FinishRedrive { cre, offset },
+                    OP_ACK => GroupOp::Ack { cre, offset },
                     _ => GroupOp::Discard { cre, offset },
                 }
             }
