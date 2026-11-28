@@ -120,7 +120,7 @@ fn a_follower_stopped_before_it_learns_a_commit_is_credited_with_it() {
     felix_common::jitter::sim::seed(seed);
     let runtime = builder.build().expect("build the simulation runtime");
     runtime.block_on(async {
-        crate::clock::install(crate::clock::Clocks::default());
+        crate::clock::install();
         let config = RaftSimConfig {
             disks: Disks::Wipe,
             ..RaftSimConfig::default()

@@ -1,10 +1,9 @@
 //! Groups of the per-shard Raft engine on virtual time.
 //!
-//! No broker service routes a shard to Raft yet, so [`crate::run`] cannot
-//! put one under test. This runs the engine as the service will hold it:
-//! per member a `GroupRuntime`, a `RaftEngine` and a broker core whose
-//! stream is bounded by the engine, with one in-memory log per shard and
-//! simulated links in between.
+//! This runs the engine as the broker service holds it, without the
+//! service around it: per member a `GroupRuntime`, a `RaftEngine` and a
+//! broker core whose stream is bounded by the engine, with one in-memory log
+//! per shard and simulated links in between.
 //!
 //! The brokers are fixed. In the disk modes ([`Disks`]) a member is stopped,
 //! has a directory wiped or put back, and starts again through the restore
@@ -50,7 +49,7 @@ use tokio_util::sync::CancellationToken;
 use self::net::{Links, Wire};
 use self::opens::Opens;
 use self::terms::Span;
-use crate::client::decode;
+use crate::payload::decode;
 use crate::run::Deadline;
 
 const TENANT: &str = "t";
@@ -162,7 +161,7 @@ const MARK_TRAIL: Duration = Duration::from_secs(7);
 const HEAL_WAIT: Duration = Duration::from_secs(20);
 /// How long a power cut waits for an append to land in before it goes
 /// without one.
-const APPEND_WITHIN: Duration = crate::cluster::power::APPEND_WITHIN;
+const APPEND_WITHIN: Duration = crate::power::APPEND_WITHIN;
 
 impl Default for RaftSimConfig {
     fn default() -> Self {
@@ -581,7 +580,7 @@ async fn open_member(opening: Opening<'_>) -> anyhow::Result<(Member, Vec<Option
         .map_err(|err| anyhow::anyhow!("timers: {err:?}"))?;
     // Before the first open: a group opened earlier reports to nobody.
     let reporter = opens.reporter(member);
-    runtime.report_to(reporter.clone(), reporter);
+    runtime.report_to(reporter);
     let engine = RaftEngine::new(runtime.clone());
     let broker = Broker::new(EphemeralCache::new().into());
     broker.set_read_bounds(Arc::new(RaftReads::new(engine.clone())));
@@ -2191,7 +2190,7 @@ impl Sim {
         // the whole records of the append, leaves recovery nothing to repair.
         cut.torn = cut.torn.filter(|(segment, from)| {
             let len = sim_fs::file_len(root, segment).ok().flatten();
-            crate::cluster::power::needs_repair(len, *from)
+            crate::power::needs_repair(len, *from)
         });
         let mut power = self.power.lock();
         power.cuts += 1;
@@ -2681,7 +2680,7 @@ async fn run(seed: u64, config: RaftSimConfig) -> RaftOutcome {
     );
     // With the clock installed, storage's blocking work runs as tasks here
     // rather than on real threads, whose timing differs from run to run.
-    crate::clock::install(crate::clock::Clocks::default());
+    crate::clock::install();
     let mut rng = Rng::new(seed);
     let sim = match Sim::start(&config, &mut rng).await {
         Ok(sim) => sim,
