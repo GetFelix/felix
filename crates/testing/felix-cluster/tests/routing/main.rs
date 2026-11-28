@@ -12,6 +12,7 @@ mod explicit_shard;
 mod forwarded_quorum;
 mod generation_start;
 mod in_memory;
+mod internal;
 mod jump_hash;
 mod kafka_leaders;
 mod moved_readers;

@@ -567,6 +567,10 @@
      "path": "crates/server/felix-replication"
     },
     {
+     "name": "felix-router",
+     "path": "crates/server/felix-router"
+    },
+    {
      "name": "felix-storage",
      "path": "crates/server/felix-storage"
     }
