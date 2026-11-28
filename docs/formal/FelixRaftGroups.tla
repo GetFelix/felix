@@ -339,7 +339,8 @@ HandOut(o) ==
 \* and that the table's cursor has not passed proposes `ack(o)` of its own.
 \* The tracker's position is not enough: a rebuilt tracker settles a dead
 \* letter above the cursor with no advance, and its redrive is then below
-\* the tracker only.
+\* the tracker only. The cursor is read with the leader's own entries
+\* applied, as the code waits for them before any operation.
 Ack(o) ==
     LET t == Lead
         t1 == [t EXCEPT !.out = @ \ {o}, !.owed = @ \ {o}]
@@ -347,7 +348,7 @@ Ack(o) ==
         fin == IF o \in t.owed
                THEN {[kind |-> "finish", o |-> o, hyd |-> t.hyd, cre |-> t.cre]}
                ELSE {}
-        ahead == IF DurableAckAhead /\ s.adv = {} /\ o >= Fold(log).cursor
+        ahead == IF DurableAckAhead /\ s.adv = {} /\ o >= Fold(Full).cursor
                  THEN {[kind |-> "ack", o |-> o, hyd |-> t.hyd, cre |-> t.cre]}
                  ELSE {}
         es == s.adv \cup fin \cup ahead
