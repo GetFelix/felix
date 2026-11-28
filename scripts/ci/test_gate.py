@@ -225,6 +225,25 @@ class Workflow(unittest.TestCase):
             self.assertEqual(order.split()[1], "head", order)
         self.assertEqual({o.split()[0] for o in orders}, {"baseline", "baseline_aa"})
 
+    def test_each_side_runs_its_own_cluster_harness(self):
+        text = (pathlib.Path(__file__).parents[2] / ".github/workflows/gate-perf.yml").read_text()
+        self.assertIn('"$CARGO_TARGET_DIR_BASELINE/release/felix-cluster"', text)
+        self.assertIn('"$CARGO_TARGET_DIR_BASELINE/release/felix-loadgen"', text)
+        self.assertNotIn('cp "$CARGO_TARGET_DIR_HEAD/release/felix-loadgen" /tmp/felix-gate/baseline/', text)
+        self.assertIn("0.8 wire baseline", text)
+        self.assertNotIn('for side in baseline head; do\n            dir=/tmp/felix-gate/$side', text)
+        self.assertIn("side_engine=raft; else side_engine=;", text)
+
+    def test_both_sides_get_the_same_fsync_policy_and_logs_are_kept(self):
+        root = pathlib.Path(__file__).parents[2]
+        text = (root / ".github/workflows/gate-perf.yml").read_text()
+        self.assertIn("FELIX_DURABLE_FSYNC_MODE: periodic", text)
+        self.assertIn('FELIX_DURABLE_FSYNC_INTERVAL_MS: "250"', text)
+        self.assertIn("name: gate-perf-cluster-logs", text)
+        cell = (root / "scripts/ci/gate-perf-cell.sh").read_text()
+        self.assertIn("default:0) ;;", cell)  # a baseline with no engine must show no raft marker
+        self.assertNotIn('if [ -n "$engine" ]; then\n  markers', cell)
+
     def test_a_non_pass_verdict_fails_the_part(self):
         text = (pathlib.Path(__file__).parents[2] / ".github/workflows/gate-perf.yml").read_text()
         self.assertIn('if .status == "pass" then "pass" else "fail" end', text)
