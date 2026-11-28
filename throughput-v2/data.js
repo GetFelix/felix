@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795833661656,
+  "lastUpdate": 1795834002599,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -74776,6 +74776,58 @@ window.BENCHMARK_DATA = {
             "range": "49635.85",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1476395.21\nmean: 1452006.85\nstdev: 49635.85\ncv: 3.42%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "e1dbbbb03971f5140b371528e3dcd6660aa760db",
+          "message": "test(raft): a timed-out hand-off and a drained seed lose no acknowledged write (#3330) (#3405)\n\n* test(cluster): Raft tests for kills before a move's change commits, a timed-out handoff, and a drained seed (#3330)\n\n- raft_shards/moves.rs: a leader move whose old leader and destination are\n  killed while the grown four-voter membership is written on the old leader\n  but uncommitted (a follower with slow flushes holds the commit open). Any\n  survivor that leads holds every acknowledged record; after both restart\n  the move finishes and every voter holds the log. A seat move changes one\n  voter at a time, and openraft 0.10 writes no joint entry for that, so\n  this uncommitted window is the nearest a move gets to a joint change.\n- routing/shutdown_handoff.rs: the Raft half of\n  a_handoff_that_times_out_loses_no_acknowledged_record (16 Quorum shards,\n  RF 3, on_commit, 1.5 s handoff): every shard is served again and each\n  shard's whole replay holds every acked record once, nothing twice.\n- routing/shutdown_handoff.rs: readers seeded only with a broker that is\n  drained out of a Raft group (one subscribed before, one connected after)\n  read every acked record once and in order, and keep following after the\n  drained broker stops.\n\nSpec-Unaffected: tests only; no broker behaviour changes\n\n* test(cluster): a Raft seat move changes one voter at a time, with no joint entry (#3402)\n\nSpec-Unaffected: test doc comments only\n\n* test(cluster): the Raft handoff-timeout test runs no placement during the handoff, so it always gives up (#3330)\n\nOn Raft a placement pass renames leaders at once, so a few passes handed\nevery shard off inside 1.5 s and the give-up path never ran. With no pass\nthe handoff times out with every shard it led, and the test now asserts\nall of them are still led at exit.\n\nSpec-Unaffected: test only\n\n* test(cluster): drop the Raft kill-before-commit move test (#3330)\n\nIt could not hold the uncommitted window: with one voter cut off and the\nother flushing in 5 s the group storms on vote saves (#2317) and the grown\nset commits first. The scenario needs a hook that withholds the\nmembership entry and is tracked on its own.\n\nSpec-Unaffected: test only",
+          "timestamp": "2026-11-27T18:36:01-08:00",
+          "tree_id": "aa037a9496df02fdf8f5ffda4d3dec471da179d1",
+          "url": "https://github.com/GetFelix/felix/commit/e1dbbbb03971f5140b371528e3dcd6660aa760db"
+        },
+        "date": 1795834001610,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 568409.8,
+            "range": "35135.12",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 568409.80\nmean: 549139.28\nstdev: 35135.12\ncv: 6.40%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 568409.8,
+            "range": "35135.12",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 568409.80\nmean: 549139.28\nstdev: 35135.12\ncv: 6.40%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 119837.38,
+            "range": "2742.27",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 119837.38\nmean: 118128.92\nstdev: 2742.27\ncv: 2.32%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1198373.76,
+            "range": "27422.74",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1198373.76\nmean: 1181289.21\nstdev: 27422.74\ncv: 2.32%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
