@@ -813,66 +813,6 @@ fn fence_for(stream: &str, number: u32) -> InternalMessage {
     })
 }
 
-/// **A read round's fence and a ping do not wait behind promotion fences**
-/// (#1796). Both share the control stream with the fences a new leader sends
-/// for every shard it is promoted on, and a follower slow to take those must
-/// still confirm a read and answer a ping at once, or a long enough queue
-/// reads as a dead leader.
-#[tokio::test(flavor = "multi_thread")]
-async fn a_read_round_fence_and_a_ping_do_not_wait_behind_promotion_fences() {
-    let config = PeerTransportConfig {
-        request_timeout: Duration::from_secs(10),
-        ..config()
-    };
-    let handler = Arc::new(SlowPromotions {
-        release: tokio::sync::Semaphore::new(0),
-    });
-    let listener = Listener::start_on(PEER, Arc::clone(&handler) as _, config.clone()).await;
-    let pool = pool(config);
-    pool.capabilities(PEER, listener.addr)
-        .await
-        .expect("handshake");
-
-    // Hundreds, as a burst of shard creates sends.
-    let mut promotions = Vec::new();
-    for shard in 0..300 {
-        let pool = Arc::clone(&pool);
-        let addr = listener.addr;
-        promotions.push(tokio::spawn(async move {
-            pool.request(PEER, addr, fence_for(PROMOTING, shard)).await
-        }));
-    }
-    tokio::time::sleep(Duration::from_millis(200)).await;
-
-    // Without the fix this waits out the 10 s request timeout; 2 s leaves a
-    // loaded runner room.
-    let bound = Duration::from_secs(2);
-    let read_round = tokio::time::timeout(bound, pool.request(PEER, listener.addr, fence()))
-        .await
-        .expect("the read round's fence waited behind promotion fences")
-        .expect("fence");
-    assert!(
-        matches!(read_round, InternalMessage::FenceOk(_)),
-        "{read_round:?}"
-    );
-    assert_eq!(
-        crate::suspicion::ping(&pool, PEER, listener.addr, bound).await,
-        crate::suspicion::Answer::Pong,
-        "the ping waited behind promotion fences"
-    );
-
-    // Each held fence still gets its own answer once it finishes.
-    handler.release.add_permits(promotions.len());
-    for (shard, promotion) in promotions.into_iter().enumerate() {
-        match promotion.await.expect("join") {
-            Ok(InternalMessage::FenceOk(ok)) => assert_eq!(ok.log_end, shard as u64),
-            other => panic!("promotion fence {shard}: {other:?}"),
-        }
-    }
-    pool.shutdown().await;
-    listener.stop().await;
-}
-
 /// **Past its limit a stream's control request is refused, and the stream
 /// reads on** (#1796). The listener holds at most
 /// [`server::MAX_CONTROLS_PER_STREAM`] fences, fetches and pre-votes per
@@ -982,70 +922,6 @@ async fn a_control_request_past_the_limit_is_refused_and_the_stream_reads_on() {
     );
 
     connection.close(0u32.into(), b"done");
-    listener.stop().await;
-}
-
-/// **A current broker answers a ping; one that predates pings is not
-/// pinged.** The older broker is not counted as silent either, which would
-/// let a rolling upgrade read as a dead leader.
-#[tokio::test]
-async fn a_ping_is_answered_and_an_older_broker_is_not_pinged() {
-    let (listener, _) = listener_noting(false).await;
-    let current = pool(config());
-    let within = Duration::from_secs(2);
-    assert_eq!(
-        crate::suspicion::ping(&current, PEER, listener.addr, within).await,
-        crate::suspicion::Answer::Pong
-    );
-    current.shutdown().await;
-    listener.stop().await;
-
-    let old = OldBroker::start(PEER).await;
-    let pool = pool(config());
-    let refused = old.refused.load(Ordering::SeqCst);
-    assert_eq!(
-        crate::suspicion::ping(&pool, PEER, old.addr, within).await,
-        crate::suspicion::Answer::Unsupported
-    );
-    assert_eq!(
-        old.refused.load(Ordering::SeqCst),
-        refused + 1,
-        "only the capable Hello should have reached the older broker"
-    );
-    pool.shutdown().await;
-    old.stop();
-}
-
-/// **A broker that cannot serve clients yet is silent to a pinger.** Its
-/// followers keep suspecting it, so they stand for the shards it leads
-/// instead of leaving them with a leader nobody can reach. Once it serves,
-/// the same connection answers.
-#[tokio::test]
-async fn a_broker_not_yet_serving_does_not_answer_a_ping() {
-    let serving = CancellationToken::new();
-    let server = Listener::bind_with_retry(PEER, Arc::new(CountingHandler::default()), &config())
-        .await
-        .with_serving(serving.clone());
-    let addr = server.local_addr().expect("addr");
-    let shutdown = CancellationToken::new();
-    let listener = Listener {
-        addr,
-        shutdown: shutdown.clone(),
-        task: tokio::spawn(server.serve(shutdown)),
-    };
-    let pool = pool(config());
-    let within = Duration::from_secs(2);
-    assert_eq!(
-        crate::suspicion::ping(&pool, PEER, listener.addr, within).await,
-        crate::suspicion::Answer::Silent
-    );
-
-    serving.cancel();
-    assert_eq!(
-        crate::suspicion::ping(&pool, PEER, listener.addr, within).await,
-        crate::suspicion::Answer::Pong
-    );
-    pool.shutdown().await;
     listener.stop().await;
 }
 

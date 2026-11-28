@@ -18,8 +18,6 @@
 use parking_lot::Mutex;
 use serde::Serialize;
 
-use super::Halt;
-
 /// One replica this broker has stopped shipping to.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct HaltedReplica {
@@ -42,39 +40,6 @@ pub struct HaltedReplica {
     /// What to do about it, in a sentence. The reason alone does not say
     /// whether the follower's data is wrong or merely incomplete.
     pub remedy: &'static str,
-}
-
-/// Why replication stopped, as a stable string and a remedy.
-///
-/// Stable because an operator's dashboard or runbook keys off it; the enum's
-/// `Display` is prose and may be reworded.
-pub(crate) fn describe(halt: Halt) -> (&'static str, &'static str) {
-    match halt {
-        Halt::Diverged => (
-            "diverged",
-            "the follower holds different bytes at an offset this leader also \
-             holds, and no generation history bounds the disagreement. Its copy \
-             of this shard has to be discarded and rebuilt; the leader does that \
-             itself when FELIX_REPLICATION_REBUILD_MAX_CONCURRENT allows, and \
-             this entry clears once it has.",
-        ),
-        Halt::Fenced => (
-            "fenced",
-            "the follower knows a newer generation than this broker is shipping \
-             at, so this broker is no longer the leader. Resolves itself once \
-             the assignment feed catches up; persistent means this broker is \
-             partitioned from the control plane.",
-        ),
-        Halt::NeedsBootstrap => (
-            "needs_bootstrap",
-            "the follower wants records retention has already removed from this \
-             leader, so shipping cannot reach it, and it holds records of its \
-             own so it refused a log placed at the surviving base. Its copy of \
-             this shard has to be discarded and rebuilt; the leader does that \
-             itself when FELIX_REPLICATION_REBUILD_MAX_CONCURRENT allows, and \
-             this entry clears once it has.",
-        ),
-    }
 }
 
 /// The halted replicas as of the last replication pass.

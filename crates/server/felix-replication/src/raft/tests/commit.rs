@@ -11,8 +11,8 @@ use tokio_util::sync::CancellationToken;
 use super::super::commit::{Commits, Holds, TermAt};
 use super::super::propose::{Leading, Lost};
 use super::*;
+use crate::engine::Unreadable;
 use crate::engine::{CommitError, EngineHost, Written};
-use crate::quorum::Unreadable;
 
 /// What a runtime told its host, in order.
 #[derive(Default)]
@@ -25,18 +25,6 @@ impl Told {
 }
 
 impl EngineHost for Told {
-    fn generation(&self, _key: &ShardKey) -> Option<u64> {
-        None
-    }
-
-    fn replicated(&self, _key: &ShardKey) -> bool {
-        true
-    }
-
-    fn quiesced(&self, _key: &ShardKey) -> bool {
-        true
-    }
-
     fn opened(&self, _key: &ShardKey, generation: u64) {
         self.0.lock().push(("opened", generation));
     }

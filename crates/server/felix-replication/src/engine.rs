@@ -1,30 +1,83 @@
 //! The replication engine as the broker sees it: what a write waits on before
-//! it is acknowledged, and how far a reader may see.
-//!
-//! Callers move behind [`Engine`] one path at a time, with the protocol in
-//! [`crate::quorum`] as its implementation ([`Hybrid`]). See
-//! `docs/replication-engine.md`.
+//! it is acknowledged, and how far a reader may see. The Raft engine
+//! (`crate::raft`) implements it. See `docs/replication-engine.md`.
 
 use std::future::Future;
-use std::sync::{Arc, OnceLock};
+use std::sync::Arc;
 use std::time::Duration;
 
 mod host;
-mod start;
 
 #[cfg(feature = "raft")]
 pub(crate) use host::EngineHost;
+#[cfg(feature = "raft")]
 pub(crate) use host::Host;
-pub use start::{StartDeps, Started, elections, replica_handler};
+pub use host::WriteFence;
 
 use crate::ShardKey;
-use crate::peer::PeerRequester;
-use crate::quorum::{Access, CacheWrite, QuorumError, QuorumMarks, ShardServing, Unreadable};
-use crate::replica::ReplicaHandler;
-use felix_wire::internal::{ErrorCode, ForwardPublishError, InternalMessage, PeerCapabilities};
+use felix_wire::internal::{InternalMessage, PeerCapabilities};
 
-/// Why the engine cannot say a write is committed.
-pub use crate::quorum::QuorumError as CommitError;
+/// Why the engine cannot say a write is committed. Unless the variant says
+/// otherwise the leader may have written it, so the client is told the
+/// outcome is unknown rather than that the write failed.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum CommitError {
+    /// No majority within the budget. This broker may not have written it.
+    #[error("the {what} did not reach a majority within {timeout:?}")]
+    TimedOut {
+        what: &'static str,
+        timeout: Duration,
+    },
+    /// This broker stopped leading the shard before a majority held the write.
+    #[error("{detail} before the {what} could reach a quorum")]
+    LeadershipLost {
+        what: &'static str,
+        detail: &'static str,
+    },
+    /// The Raft engine refused the write before it appended any of it: its
+    /// lease had lapsed, or it no longer led the term the write was admitted
+    /// at. Nothing was written, so the write can be sent again.
+    #[error("the {what} was refused: {detail}")]
+    NotAppended {
+        what: &'static str,
+        detail: &'static str,
+    },
+    /// A conditional publish on a Raft shard did not land at its expected
+    /// offset. Unlike the others this outcome is known: the committed entry
+    /// there is a blank, and `tail` is the shard's next offset after it.
+    #[error("the shard's next offset was not the expected one; it is now {tail}")]
+    OffsetMismatch { tail: u64 },
+    /// A record larger than a Raft shard's appends can carry, refused before
+    /// anything was proposed. Sending it again cannot succeed.
+    #[error(
+        "a record of {bytes} bytes is larger than a Raft shard takes ({max}); nothing was written"
+    )]
+    TooLarge { bytes: usize, max: usize },
+}
+
+/// Why [`Engine::read_bound`] has no bound for a `Quorum` shard.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Unreadable {
+    /// This broker does not serve the shard.
+    NotServed,
+    /// This broker serves the shard but has no committed position for it yet.
+    Settling,
+}
+
+/// Whether a cache access is a write or a read.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Access {
+    Write,
+    Read,
+}
+
+/// Where a cache write landed: the generation it was taken at and the cache
+/// log's tail before it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CacheWrite {
+    pub generation: u64,
+    pub from: u64,
+}
 
 /// Where a write landed: the offset one past its last record, and the
 /// generation it was written at.
@@ -100,7 +153,7 @@ pub trait Engine: Send + Sync {
     /// How far the broker core's readers of stream `shard` (subscribe fanout,
     /// cursor replay) may see. Unlike [`Engine::read_bound`] it also refuses
     /// a broker whose lease no longer lets it serve the shard. Asked only for
-    /// `Quorum` streams. See [`crate::quorum::committed_bound`].
+    /// `Quorum` streams.
     fn committed_bound(&self, shard: &ShardKey) -> felix_broker::ReadBound;
 
     /// `end`, a bound of `shard`, less the offsets just below it that hold
@@ -110,7 +163,7 @@ pub trait Engine: Send + Sync {
     }
 
     /// Confirm, after a read of `shard`'s state took its value, that this
-    /// broker still leads `shard`. See [`crate::quorum::confirm_state_read`].
+    /// broker still leads `shard`.
     fn confirm_read(&self, shard: &ShardKey) -> impl Future<Output = anyhow::Result<()>> + Send;
 
     /// Where a cache write landed, for [`Engine::await_cache_quorum`]. Call it
@@ -123,7 +176,7 @@ pub trait Engine: Send + Sync {
     ) -> impl Future<Output = Option<CacheWrite>> + Send;
 
     /// Wait until a cache write at `written` (or, for a read, the value just
-    /// taken) is held by a quorum. See [`crate::quorum::await_cache_quorum`].
+    /// taken) is held by a quorum.
     fn await_cache_quorum(
         &self,
         broker: &felix_broker::Broker,
@@ -154,14 +207,14 @@ pub trait Engine: Send + Sync {
     ) -> impl Future<Output = bool> + Send;
 
     /// Wait until the records of `key` up to `end` are safe to show a reader
-    /// at `consistency`. See [`crate::quorum::await_readable`].
+    /// at `consistency`.
     fn await_readable(
         &self,
         consistency: Option<felix_broker::ConsistencyLevel>,
         key: &ShardKey,
         end: u64,
         timeout: Duration,
-    ) -> impl Future<Output = Result<(), QuorumError>> + Send;
+    ) -> impl Future<Output = Result<(), CommitError>> + Send;
 
     /// The control plane placed `shard` on `placement`. Safe to repeat.
     fn placement_changed(&self, shard: &ShardKey, placement: &Placement);
@@ -176,342 +229,6 @@ pub trait Engine: Send + Sync {
         caller: PeerCapabilities,
         request: InternalMessage,
     ) -> impl Future<Output = InternalMessage> + Send;
-}
-
-/// [`Hybrid::set_replica`] was called a second time.
-#[derive(Debug, PartialEq, Eq)]
-pub struct ReplicaAlreadySet;
-
-impl std::fmt::Display for ReplicaAlreadySet {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("the replica handler is already set")
-    }
-}
-
-impl std::error::Error for ReplicaAlreadySet {}
-
-/// Felix's own replication protocol: the quorum marks the driver publishes,
-/// read against how this broker serves each shard.
-pub struct Hybrid<S: ?Sized> {
-    marks: Option<Arc<QuorumMarks>>,
-    serving: Option<Arc<S>>,
-    replica: OnceLock<ReplicaHandler>,
-    driver: OnceLock<DriverWakes>,
-}
-
-/// What wakes the driver for a pass.
-struct DriverWakes {
-    /// Holds the shards that took an append.
-    broker: Arc<felix_broker::Broker>,
-    routes_changed: Arc<tokio::sync::Notify>,
-}
-
-impl<S: ?Sized> Hybrid<S> {
-    /// `None` for either outside a cluster, where nothing is replicated.
-    pub fn new(marks: Option<Arc<QuorumMarks>>, serving: Option<Arc<S>>) -> Self {
-        Self {
-            marks,
-            serving,
-            replica: OnceLock::new(),
-            driver: OnceLock::new(),
-        }
-    }
-
-    /// Wake the driver that ships `broker`'s logs, and that `routes_changed`
-    /// already wakes, on [`Engine::appended`] and
-    /// [`Engine::placement_changed`]. Until this is called, and on a broker
-    /// that runs no driver, those two do nothing. Only the first call counts.
-    pub fn wake_driver(
-        &self,
-        broker: Arc<felix_broker::Broker>,
-        routes_changed: Arc<tokio::sync::Notify>,
-    ) {
-        let _ = self.driver.set(DriverWakes {
-            broker,
-            routes_changed,
-        });
-    }
-
-    /// Answer peers' replication requests with `replica` ([`Engine::handle`]).
-    ///
-    /// The replica needs the broker, which exists only after other users of
-    /// the engine are built, so it is set once, later. A second call is an
-    /// error and leaves the first replica in place.
-    pub fn set_replica(&self, replica: ReplicaHandler) -> Result<(), ReplicaAlreadySet> {
-        self.replica.set(replica).map_err(|_| ReplicaAlreadySet)
-    }
-
-    /// The shard routing the engine reads leadership from, when there is one.
-    pub fn serving(&self) -> Option<&Arc<S>> {
-        self.serving.as_ref()
-    }
-
-    /// Starts a copy's confirmed read early. See
-    /// [`ReplicaHandler::confirmed_prefetch`].
-    pub fn confirmed_prefetch(&self) -> Option<crate::confirmed::Prefetch> {
-        self.replica.get()?.confirmed_prefetch()
-    }
-
-    /// The quorum marks, for the waits that are not behind [`Engine`] yet.
-    pub fn marks(&self) -> Option<&QuorumMarks> {
-        self.marks.as_deref()
-    }
-}
-
-impl<S: ?Sized> Default for Hybrid<S> {
-    /// For tests only: an engine with no marks and no router, so a `Quorum`
-    /// wait has nothing to wait on and returns at once. Production code builds
-    /// it with [`Hybrid::new`].
-    fn default() -> Self {
-        Self::new(None, None)
-    }
-}
-
-impl<S: ShardServing + ?Sized> Engine for Hybrid<S> {
-    /// The driver ships from its own cursors up to the log's tail, so the
-    /// position is not used: the shard is marked for a pass, as the broker
-    /// core marks it when a publish becomes durable.
-    fn appended(&self, shard: &ShardKey, _written: Written) {
-        if let Some(driver) = self.driver.get() {
-            crate::quorum::wake_pass(&driver.broker, shard);
-        }
-    }
-
-    async fn await_commit(
-        &self,
-        handle: &felix_broker::StreamHandle,
-        shard: Option<&ShardKey>,
-        outcome: &felix_broker::PublishOutcome,
-        generation: u64,
-        timeout: Duration,
-    ) -> anyhow::Result<()> {
-        crate::quorum::await_quorum(
-            handle,
-            shard,
-            outcome,
-            generation,
-            self.marks.as_deref(),
-            self.serving.as_deref(),
-            timeout,
-        )
-        .await
-    }
-
-    /// Always admitted. The hybrid checks the lease only when the write enters
-    /// the write fence, so a lease that lapses between entry and ack is still
-    /// acknowledged. Raft must check here instead; don't copy this.
-    fn admit_local_ack(&self, _shard: &ShardKey, _generation: u64) -> Result<(), CommitError> {
-        Ok(())
-    }
-
-    fn read_bound(
-        &self,
-        consistency: Option<felix_broker::ConsistencyLevel>,
-        shard: &ShardKey,
-    ) -> Result<Option<u64>, Unreadable> {
-        crate::quorum::read_bound(
-            consistency,
-            shard,
-            self.marks.as_deref(),
-            self.serving.as_deref(),
-        )
-    }
-
-    fn committed_bound(&self, shard: &ShardKey) -> felix_broker::ReadBound {
-        match (self.marks.as_deref(), self.serving.as_deref()) {
-            (Some(marks), Some(serving)) => crate::quorum::committed_bound(shard, marks, serving),
-            _ => felix_broker::ReadBound::Unbounded,
-        }
-    }
-
-    async fn confirm_read(&self, shard: &ShardKey) -> anyhow::Result<()> {
-        crate::quorum::confirm_state_read(shard, self.marks.as_deref(), self.serving.as_deref())
-            .await
-    }
-
-    async fn cache_write_at(
-        &self,
-        broker: &felix_broker::Broker,
-        shard: &ShardKey,
-        generation: u64,
-    ) -> Option<CacheWrite> {
-        crate::quorum::cache_write_at(
-            broker,
-            shard,
-            generation,
-            self.marks.as_deref(),
-            self.serving.as_deref(),
-        )
-        .await
-    }
-
-    async fn await_cache_quorum(
-        &self,
-        broker: &felix_broker::Broker,
-        shard: &ShardKey,
-        timeout: Duration,
-        access: Access,
-        written: Option<CacheWrite>,
-    ) -> anyhow::Result<()> {
-        crate::quorum::await_cache_quorum(
-            broker,
-            shard,
-            self.marks.as_deref(),
-            self.serving.as_deref(),
-            timeout,
-            access,
-            written,
-        )
-        .await
-    }
-
-    async fn await_counter_quorum(
-        &self,
-        broker: &felix_broker::Broker,
-        shard: &ShardKey,
-        timeout: Duration,
-        end: Option<u64>,
-        generation: u64,
-        what: &'static str,
-    ) -> anyhow::Result<()> {
-        crate::quorum::await_counter_quorum(
-            broker,
-            shard,
-            self.marks.as_deref(),
-            self.serving.as_deref(),
-            timeout,
-            end,
-            generation,
-            what,
-        )
-        .await
-    }
-
-    async fn read_skips_lease(&self, broker: &felix_broker::Broker, shard: &ShardKey) -> bool {
-        crate::quorum::read_skips_lease(
-            broker,
-            shard,
-            self.marks.as_deref(),
-            self.serving.as_deref(),
-        )
-        .await
-    }
-
-    async fn await_readable(
-        &self,
-        consistency: Option<felix_broker::ConsistencyLevel>,
-        key: &ShardKey,
-        end: u64,
-        timeout: Duration,
-    ) -> Result<(), QuorumError> {
-        crate::quorum::await_readable(
-            consistency,
-            key,
-            self.marks.as_deref(),
-            self.serving.as_deref(),
-            end,
-            timeout,
-        )
-        .await
-    }
-
-    /// The driver reads the set from the routing table on its next pass, so
-    /// this only asks for that pass, as the routing feed does.
-    fn placement_changed(&self, _shard: &ShardKey, _placement: &Placement) {
-        if let Some(driver) = self.driver.get() {
-            driver.routes_changed.notify_one();
-        }
-    }
-
-    async fn handle(
-        &self,
-        from: Option<&str>,
-        caller: PeerCapabilities,
-        request: InternalMessage,
-    ) -> InternalMessage {
-        use felix_broker::LogKind;
-        let Some(replica) = self.replica.get() else {
-            return InternalMessage::ForwardPublishError(ForwardPublishError {
-                correlation_id: request.correlation_id(),
-                code: ErrorCode::Unavailable,
-                detail: "replica handler not configured".to_string(),
-            });
-        };
-        match request {
-            InternalMessage::ReplicateRecords(batch)
-            | InternalMessage::ReplicateMarkedRecords(batch) => {
-                replica.apply(from, batch, LogKind::Stream).await
-            }
-            InternalMessage::ReplicateCacheRecords(batch) => {
-                replica.apply(from, batch, LogKind::Cache).await
-            }
-            InternalMessage::ReplicateGroupRecords(batch) => {
-                replica.apply(from, batch, LogKind::GroupCursors).await
-            }
-            InternalMessage::ReplicateDeadLetterRecords(batch) => {
-                replica.apply(from, batch, LogKind::GroupDeadLetters).await
-            }
-            InternalMessage::ReplicateCounterRecords(batch) => {
-                replica.apply(from, batch, LogKind::Counters).await
-            }
-            InternalMessage::ReplicateBootstrap(request) => {
-                replica.bootstrap(from, request, LogKind::Stream).await
-            }
-            InternalMessage::ReplicateCacheBootstrap(request) => {
-                replica.bootstrap(from, request, LogKind::Cache).await
-            }
-            InternalMessage::ReplicateGroupBootstrap(request) => {
-                replica
-                    .bootstrap(from, request, LogKind::GroupCursors)
-                    .await
-            }
-            InternalMessage::ReplicateDeadLetterBootstrap(request) => {
-                replica
-                    .bootstrap(from, request, LogKind::GroupDeadLetters)
-                    .await
-            }
-            InternalMessage::ReplicateCounterBootstrap(request) => {
-                replica.bootstrap(from, request, LogKind::Counters).await
-            }
-            InternalMessage::ReplicateRebuild(request) => replica.rebuild(from, request).await,
-            InternalMessage::Fence(request) => replica.fence_from(from, caller, request).await,
-            InternalMessage::ReplicateFetch(request) => replica.fetch(from, request).await,
-            InternalMessage::PreVote(request) => replica.pre_vote(request).await,
-            InternalMessage::SealFence(request) => replica.seal_fence(from, request).await,
-            InternalMessage::SealAck(request) => replica.seal_ack(from, request).await,
-            // Only a stream shard's batches are taken from a named copy;
-            // anything else inside is refused.
-            InternalMessage::FromCopy(stamped) => {
-                let copy = Some(felix_storage::StorageId::from_bytes(stamped.copy));
-                match *stamped.message {
-                    InternalMessage::ReplicateRecords(batch)
-                    | InternalMessage::ReplicateMarkedRecords(batch) => {
-                        replica.apply_from(from, copy, batch, LogKind::Stream).await
-                    }
-                    InternalMessage::ReplicateGroupRecords(batch) => {
-                        replica
-                            .apply_from(from, copy, batch, LogKind::GroupCursors)
-                            .await
-                    }
-                    InternalMessage::ReplicateDeadLetterRecords(batch) => {
-                        replica
-                            .apply_from(from, copy, batch, LogKind::GroupDeadLetters)
-                            .await
-                    }
-                    other => not_replication(&other),
-                }
-            }
-            other => not_replication(&other),
-        }
-    }
-}
-
-fn not_replication(request: &InternalMessage) -> InternalMessage {
-    InternalMessage::ForwardPublishError(ForwardPublishError {
-        correlation_id: request.correlation_id(),
-        code: ErrorCode::Malformed,
-        detail: format!("{:?} is not a replication request", request.kind()),
-    })
 }
 
 /// [`Engine::committed_bound`] as the broker core asks for it
@@ -567,29 +284,6 @@ impl<E: Engine> felix_broker::ReadBounds for CommittedReads<E> {
         };
         self.engine.records_end(&key, end)
     }
-}
-
-/// Let `Quorum` reads on `marks` confirm leadership by a round of fences sent
-/// through `requester`, each round waiting up to `round_timeout` for a
-/// majority, unless `by_lease` keeps them on the lease. Only the first call
-/// counts. See [`crate::leadership::ReadIndex`].
-pub fn bind_read_rounds<R: PeerRequester + Send + Sync + 'static>(
-    marks: &QuorumMarks,
-    requester: R,
-    broker: Arc<felix_broker::Broker>,
-    router: Arc<felix_router::ShardRouter>,
-    round_timeout: Duration,
-    by_lease: bool,
-) {
-    marks.set_read_check(
-        Arc::new(crate::leadership::ReadIndex::new(
-            requester,
-            broker,
-            router,
-            round_timeout,
-        )),
-        by_lease,
-    );
 }
 
 #[cfg(test)]
