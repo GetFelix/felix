@@ -3,9 +3,9 @@ name: Gate - no-regression report
 # The whole no-regression gate for one engine (docs/replication-engine.md, "The
 # no-regression gate"): the history and simulator sweeps, the performance A/B,
 # failover and control plane down, and groups per broker, then one markdown
-# report. Run it with `engine: hybrid` for today's numbers and with `engine:
-# raft` once the Raft engine exists; the second run reads as "not available"
-# until then. "How to run the gate" in the same doc says how to read the report.
+# report. The hybrid was removed, so `raft` is the only engine; parts not
+# built for it yet read as "not available". "How to run the gate" in the same
+# doc says how to read the report.
 
 on:
   workflow_dispatch:
@@ -13,8 +13,8 @@ on:
       engine:
         description: "Replication engine under test"
         type: choice
-        options: [hybrid, raft]
-        default: hybrid
+        options: [raft]
+        default: raft
       baseline_ref:
         description: "Baseline tag or commit for the perf and failover A/B"
         type: string

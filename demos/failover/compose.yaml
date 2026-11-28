@@ -46,9 +46,6 @@ x-broker-env: &broker-env
   # The default is `periodic`, which acknowledges before the disk. This is the
   # stricter setting, so an acknowledged write has been flushed on a majority.
   FELIX_DURABLE_FSYNC_MODE: ${FELIX_DURABLE_FSYNC_MODE:-on_commit}
-  # Replicas may elect a new leader among themselves. Off by default; see
-  # docs/deployment/failover-without-control-plane.
-  FELIX_INTERNAL_ELECTION: "true"
   # Only the brokers can reach the internal port on this network.
   FELIX_INTERNAL_ALLOW_UNAUTHENTICATED: "true"
   FELIX_CONTROLPLANE_SYNC_INTERVAL_MS: "500"

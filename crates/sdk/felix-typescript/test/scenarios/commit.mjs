@@ -48,7 +48,7 @@ export default function register(ctx) {
       assert.equal(record.event.offset, receipt.offset);
     }));
 
-  it("a broker that advertised no commits is sent none", () =>
+  it("a broker below the baseline is refused and sent no commits", () =>
     scenario("commit.negotiated", async () => {
       const { fixture, felix } = ctx;
       if (!fixture.no_commit_addrs?.length || !fixture.control_url) {
@@ -58,25 +58,11 @@ export default function register(ctx) {
         );
         return;
       }
-      const stream = fixture.durable_stream;
-      const key = unique("negotiated");
-      const bare = await connect(fixture, { addrs: fixture.no_commit_addrs });
-      try {
-        // The plain base class: a typed refusal (wrong shard, event count)
-        // would mean the call reached the broker.
-        await assert.rejects(
-          bare.commit(fixture.tenant_id, fixture.namespace, Buffer.from(key), [
-            felix.CommitOp.publish(stream, "x"),
-          ]),
-          (err) => err.constructor === felix.CommitError,
-        );
-        await assert.rejects(
-          bare.stateGet(fixture.tenant_id, fixture.namespace, stream, Buffer.from(key), key),
-          (err) => err.constructor === felix.CommitError,
-        );
-      } finally {
-        bare.close();
-      }
+      // The client refuses the broker's auth_ok for lacking the baseline.
+      await assert.rejects(
+        connect(fixture, { addrs: fixture.no_commit_addrs }),
+        (err) => err instanceof felix.FelixError,
+      );
       const sent = await fetch(`${fixture.control_url}/no-commit/requests`);
       assert.equal(Number(await sent.text()), 0, "the broker was sent a commit or state read");
     }));

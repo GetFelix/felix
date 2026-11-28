@@ -8,11 +8,11 @@
 # the cluster finds next to its own executable. Both sides run the same
 # harness and load generator, so only the broker differs.
 #
-# Optional environment, for the Raft against hybrid comparison
-# (.github/workflows/perf-raft-rf3.yml):
-#   ENGINE=raft|hybrid     sets FELIX_SHARD_ENGINE for the brokers, then checks the shard
-#                          directories: Raft leaves an engine marker, the hybrid leaves none.
-#                          A cell that ran the other engine fails instead of reporting.
+# Optional environment:
+#   ENGINE=raft            sets FELIX_SHARD_ENGINE for the brokers, then checks the shard
+#                          directories carry the Raft engine marker. A cell that ran without
+#                          it fails instead of reporting. A build before the hybrid's removal
+#                          also takes ENGINE=hybrid.
 #   FELIX_DURABLE_FSYNC_MODE is passed through to the brokers as it is.
 #   FANOUT_TOTAL=N         runs felix-loadgen's pubsub scenario instead of ingest: one
 #                          publisher sends N records unacked in <batch>-record batches to

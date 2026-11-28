@@ -273,9 +273,9 @@ check_installed() {
 
 cmd_smoke() {
   check_installed
-  log "smoke: one round, single-node and RF 3 cells, hybrid then raft, 15 s each"
+  log "smoke: one round, single-node and RF 3 cells, raft only, 15 s each"
   CELLS="${CELLS:-single-oncommit-lat rf3-oncommit-lat rf3-oncommit-tput}" ROUNDS=${ROUNDS:-1} \
-    SECS=${SECS:-15} LAT_SECS=${LAT_SECS:-15} BOXES="1 2 3" OUT="${OUT:-$STATE/runs/$(date -u +%Y%m%dT%H%M%SZ)-smoke}" \
+    SIDES=${SIDES:-raft} SECS=${SECS:-15} LAT_SECS=${LAT_SECS:-15} BOXES="1 2 3" OUT="${OUT:-$STATE/runs/$(date -u +%Y%m%dT%H%M%SZ)-smoke}" \
     "$here/run.sh"
 }
 
@@ -285,11 +285,10 @@ cmd_run() {
   if [ $((ROUNDS % 6)) -ne 0 ]; then
     log "ROUNDS=$ROUNDS is not a multiple of 6: generator placement will not be balanced (summarize.py says so in the report)"
   fi
-  [ -z "${BASELINE_REF:-}" ] || SIDES="${SIDES:-hybrid raft baseline}"
-  log "running the matrix: ROUNDS=$ROUNDS SIDES=${SIDES:-hybrid raft}; keep this machine awake and on the network"
+  log "running the matrix: ROUNDS=$ROUNDS SIDES=${SIDES:-raft baseline}; keep this machine awake and on the network"
   local pre=()
   command -v caffeinate >/dev/null && pre=(caffeinate -i)
-  SIDES="${SIDES:-hybrid raft}" BOXES="1 2 3" ${pre[@]+"${pre[@]}"} "$here/run.sh"
+  SIDES="${SIDES:-raft baseline}" BOXES="1 2 3" ${pre[@]+"${pre[@]}"} "$here/run.sh"
 }
 
 # ---------------------------------------------------------------- fetch-results

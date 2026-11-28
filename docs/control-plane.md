@@ -133,7 +133,7 @@ Raft leader that predates the field leaves it out.
 
 A broker that cannot reach the leader of a shard it follows also sends
 `"suspects": ["broker-2"]`, the leaders that have not answered its pings for
-`FELIX_LEADER_SUSPECT_AFTER_MS`. The control plane keeps the list as soft
+the hybrid's suspicion timeout (`FELIX_LEADER_SUSPECT_AFTER_MS`, retired; no broker sends suspicion now). The control plane keeps the list as soft
 state for two heartbeat intervals and asks for a placement pass; a broker
 suspecting nobody leaves the field out. Placement promotes on it only for a
 durable `Quorum` stream once `generation_start`, `majority_ack` and
@@ -322,7 +322,7 @@ assignment is the shard's first, and it can tell that only from an
 incarnation above 0. Without the incarnations, no stream or quorum cache
 created after the finalize would open
 (`joint_fence_is_refused_until_incarnations_are_finalized`). A broker reports
-both only with `FELIX_INTERNAL_ELECTION=true`, which is off by default, so a
+both only with `FELIX_INTERNAL_ELECTION=true`, which is retired and ignored, so a
 fleet that has not turned it on everywhere has a finalize of either refused
 (`the_election_features_cannot_be_finalized_yet`), and a new cluster does not
 start with them. A broker that offers the `ELECTION`
@@ -413,8 +413,8 @@ if it shuts down first, the features are the operator's.
 
 A broker configured out of a feature does not report it, so the feature
 stays off: `FELIX_QUORUM_READS=lease` keeps `lease_free_reads` off, and
-`FELIX_INTERNAL_FENCE=false` keeps `majority_ack`, `lease_free_reads` and
-`fenced_caches` off. The first broker's configuration wins: a later broker
+`FELIX_INTERNAL_FENCE=false` once did the same for `majority_ack`, `lease_free_reads` and
+`fenced_caches`; it is retired and ignored. The first broker's configuration wins: a later broker
 that lacks a feature it finalized is refused, and the refusal names the
 setting to unset. `docs-site/src/content/docs/deployment/upgrades.md` has
 what the operator sees and how to recover.
@@ -653,7 +653,7 @@ hold:
 5. The view's fleet had finalized `replica_election`.
 6. This build reports every feature the view's fleet finalized. That is the
    check the control plane makes when a broker registers: a build rolled back,
-   or started with `FELIX_INTERNAL_ELECTION` off, would be refused.
+   would be refused.
 7. A start that asked the control plane checked the directory against it:
    the directory records the control plane's metadata group
    (`controlplane_group`), or, for a backend with no group such as the
@@ -675,10 +675,8 @@ up, so it never counts as down.
 Peers learn a broker's address only from the control plane, so a broker
 started this way votes only if it comes back at its registered address.
 
-Under `FELIX_SHARD_ENGINE=raft` a broker started this way opens its Raft
-members, and votes, before the control plane answers only with
-`FELIX_UNIFIED_FENCE=0`. They do not lead until the broker has registered.
-With the unified fence, the default, they wait for the control plane. See
+A broker started this way waits for the control plane before it opens its Raft
+members or votes. (`FELIX_UNIFIED_FENCE=0` once let them open early; it is retired and ignored.) See
 `docs/per-shard-raft.md`, "Voting before the restore check", for what the
 run witness proves and what it does not.
 
@@ -1120,7 +1118,7 @@ falls further behind than that has to take a new snapshot.
 ### Cluster identity
 
 A Raft group records its identity once, when it forms: a random `group_id`
-and the `shard_engine` (`raft`, the default, or the deprecated `hybrid`) from `FELIX_SHARD_ENGINE` on the
+and the `shard_engine` (always `raft`; `FELIX_SHARD_ENGINE` is retired) of the
 instance that proposes it. The first record applied wins, and nothing changes
 it afterwards, so racing proposers on a new group are settled by log order. A
 background task on each instance proposes it while the group has none, and
@@ -1148,8 +1146,8 @@ group, so it reports the configured engine and leaves `group_id` out, as do
 its snapshots and pages, which keeps their bytes what an older broker
 expects.
 
-If an instance's `FELIX_SHARD_ENGINE` differs from the record, it logs a
-warning and keeps running. The record wins.
+A record that names `hybrid`, from an older control plane, is not served: the
+hybrid is retired and there is no migration.
 
 The identity is part of the Raft snapshot. An `ImportState` (a restore from
 an export) adopts the export's identity, `adopts_existing` included, since it
@@ -1378,7 +1376,7 @@ checks the first four itself.
    so the check, not the order brokers and control planes are upgraded in,
    keeps a mixed fleet safe.
 2. Every serving broker reports `joint_fence` and `peer_election`. A broker
-   reports them only with `FELIX_INTERNAL_ELECTION=true`, off by default.
+   reported them only with `FELIX_INTERNAL_ELECTION=true`, which is retired.
 3. `generation_start`, `stream_incarnations` and `cache_incarnations` are
    finalized. A cluster created on 0.7 has all three; an upgraded one
    finalizes the incarnations first, or no stream or quorum cache created
@@ -1858,15 +1856,12 @@ does not run placement (a Raft follower) waits for the leader's next tick.
 | `node_liveness.shard_reconcile_interval_ms` | `FELIX_SHARD_RECONCILE_INTERVAL_MS` | 5000 |
 | `max_concurrent_shard_moves` | `FELIX_SHARD_MOVES_MAX_CONCURRENT` | 1 |
 | `max_shard_moves_per_node` | `FELIX_SHARD_MOVES_MAX_PER_NODE` | unset (no per-node limit) |
-| `shard_move_fence_max_lag_records` | `FELIX_SHARD_MOVE_FENCE_MAX_LAG_RECORDS` | 1000 |
 | `shard_move_timeout_ms` | `FELIX_SHARD_MOVE_TIMEOUT_MS` | 1800000 (30 min); `0` never gives up |
-| `shard_fence_timeout_ms` | `FELIX_SHARD_FENCE_TIMEOUT_MS` | 120000 (2 min); `0` waits for a fenced leader forever |
-| `shard_pending_set_timeout_ms` | `FELIX_SHARD_PENDING_SET_TIMEOUT_MS` | 600000 (10 min); `0` waits for a pending replica set forever |
-| `shard_election_hold_ms` | `FELIX_SHARD_ELECTION_HOLD_MS` | 10000 (10 s); `0` promotes on the followers' word without waiting under `replica_election` |
 | `shard_restore_after_ms` | `FELIX_SHARD_RESTORE_AFTER_MS` | 300000 (5 min); `0` never replaces a lost follower |
 | `shard_restore_stall_ms` | `FELIX_SHARD_RESTORE_STALL_MS` | 120000 (2 min); `0` waits for the move timeout |
-| `shard_stuck_leader_ms` | `FELIX_SHARD_STUCK_LEADER_MS` | 70000 (70 s), never under two report TTLs; `0` never renames a stuck leader |
 | `placement_settle_ms` | `FELIX_PLACEMENT_SETTLE_MS` | 10000 (10 s); `0` places new shards on whatever is live |
+
+`shard_move_fence_max_lag_records`, `shard_fence_timeout_ms`, `shard_pending_set_timeout_ms`, `shard_election_hold_ms` and `shard_stuck_leader_ms` (the `FELIX_SHARD_*` variables of the same names) are retired and ignored; the passages below that name them describe the hybrid. See [Retired variables](../docs-site/src/content/docs/reference/environment-variables.md#retired-variables).
 
 #### Moving a shard
 
@@ -2351,8 +2346,7 @@ Placement's promotion on the followers' word stays as the fallback. Under
 `replica_election`, on a shard whose replicas elect, a follower's suspicion
 counts only once the instance running placement has seen it held for
 `shard_election_hold_ms` (2×S at the brokers' default S of 5 s), so it does
-not race an election. Keep it at twice `FELIX_LEADER_SUSPECT_AFTER_MS` if
-that is changed. The clock is the instance's own and starts again when the
+not race an election. The clock is the instance's own and starts again when the
 lease changes hands. Promotion on a lapsed lease is unchanged.
 
 Under Raft adoption needs metadata level 21, like the pending set. Below it
@@ -2513,8 +2507,7 @@ a record the old leader acknowledged on its followers. And the successor
 must already be a member of the set: a copy staged on top of it never counted
 toward an acknowledgement. Otherwise failover passes the successor over, and
 if no other replica holds the log the shard stays unplaced (`placement plan`
-says no caught-up replica). A broker reports `fences_every_change` with the
-fence on; one started with `FELIX_INTERNAL_FENCE=false` does not. An in-memory stream has no log to hand
+says no caught-up replica). A broker reports `fences_every_change`. An in-memory stream has no log to hand
 off; see [In-memory shards](#in-memory-shards).
 
 A fenced leader that is live but never reports drained would hold its shard
@@ -3387,7 +3380,7 @@ be a member; it is legitimately 0 during a drain.
 | `node_liveness.expiry_timeout_ms` | `FELIX_NODE_EXPIRY_TIMEOUT_MS` | 15000 |
 | `node_liveness.regrant_margin_ms` | `FELIX_NODE_REGRANT_MARGIN_MS` | a quarter of `expiry_timeout_ms` |
 | `node_liveness.sweep_interval_ms` | `FELIX_NODE_EXPIRY_SWEEP_INTERVAL_MS` | 2000 |
-| `shard_engine` | `FELIX_SHARD_ENGINE` | `raft` |
+| `shard_engine` | `FELIX_SHARD_ENGINE` (retired; `hybrid` is refused) | `raft` |
 
 The timeout is three intervals: one lost heartbeat is a hiccup, three is a
 pattern. Startup fails if `expiry_timeout_ms` is not greater than
@@ -3448,9 +3441,8 @@ Four reasons it is the wrong trade for Felix today:
   last heartbeat with the defaults) and the next placement pass. That wait is
   what keeps two brokers from leading at once. SWIM's sub-second detection
   would accelerate a decision Felix deliberately does not take quickly. Where
-  the lease is not needed for safety, a lease-free `Quorum` stream already
-  fails over on its followers' word in about 5 s
-  (`FELIX_LEADER_SUSPECT_AFTER_MS`), with no gossip.
+  the lease is not needed for safety, the hybrid's lease-free `Quorum` stream
+  failed over on its followers' word in about 5 s, with no gossip.
 - **The scale that justifies SWIM is not this scale.** SWIM pays off in the
   hundreds-to-thousands of nodes, where heartbeat fan-in to a hub becomes the
   bottleneck. A Felix cluster is tens of brokers; the fan-in is one tiny

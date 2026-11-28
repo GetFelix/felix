@@ -88,14 +88,7 @@ async fn authenticate(harness: &Harness, connection: &QuicConnection) -> Result<
     let (mut send, mut recv) = connection.open_bi().await?;
     write_message(
         &mut send,
-        Message::Auth {
-            tenant_id: harness.demo.tenant_id.clone(),
-            token: harness.demo.token.clone(),
-            client_flags: Some(felix_wire::KNOWN_FLAGS),
-            client_features: None,
-            client_features_hi: None,
-            client_flags_ext: None,
-        },
+        felix_wire::baseline_auth(harness.demo.tenant_id.clone(), harness.demo.token.clone()),
     )
     .await?;
     let mut scratch = felix_broker_service::serving::quic::FrameScratch::new();

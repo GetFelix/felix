@@ -426,10 +426,10 @@ throughput rather than correctness.
   new leader's generation-start record, which takes an offset and is never
   delivered; a client that negotiated `EVENT_BATCH_SKIPPED` is told about it on
   the next event (`skipped_before`), and an older client reads it as a drop of
-  one. A gap needs a later event, though, so the broker also ends a
+  one. A gap needs a later event, though, so the broker ends every
   durable-stream subscription at its first drop with `subscription_lagged`,
-  naming the offset to resume from, for a client that offered
-  `FEATURE_SUBSCRIPTION_LAGGED`. felix-client reports drops in its own queue
+  naming the offset to resume from. A client cannot keep going past a drop and
+  see only a gap. felix-client reports drops in its own queue
   the same way, as a `SubscriptionLagged` error. A lag is reported over a
   shard move, since the move's resume point is past the drop. The connection
   writer's queue for a subscription can also drop a frame, unreported and below

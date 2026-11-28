@@ -174,32 +174,19 @@ fn shard_moves_from_env() -> crate::cluster::placement::MovePolicy {
         max_per_node: parse("FELIX_SHARD_MOVES_MAX_PER_NODE")
             .filter(|value| *value > 0)
             .map(|value| value as usize),
-        fence_max_lag_records: parse("FELIX_SHARD_MOVE_FENCE_MAX_LAG_RECORDS")
-            .unwrap_or(defaults.fence_max_lag_records),
+        // The fence, pending-set, election-hold and stuck-leader settings
+        // are retired with the hybrid (`docs/hybrid-retirement.md`) and keep
+        // their defaults until #2262 removes them.
+        fence_max_lag_records: defaults.fence_max_lag_records,
         // Zero never gives up.
         timeout_millis: match parse("FELIX_SHARD_MOVE_TIMEOUT_MS") {
             Some(0) => None,
             Some(millis) => Some(millis),
             None => defaults.timeout_millis,
         },
-        // Zero waits for a fenced leader forever.
-        fence_timeout_millis: match parse("FELIX_SHARD_FENCE_TIMEOUT_MS") {
-            Some(0) => None,
-            Some(millis) => Some(millis),
-            None => defaults.fence_timeout_millis,
-        },
-        // Zero waits for a pending replica set forever.
-        pending_set_timeout_millis: match parse("FELIX_SHARD_PENDING_SET_TIMEOUT_MS") {
-            Some(0) => None,
-            Some(millis) => Some(millis),
-            None => defaults.pending_set_timeout_millis,
-        },
-        // Zero promotes on the followers' word as soon as without elections.
-        election_hold_millis: match parse("FELIX_SHARD_ELECTION_HOLD_MS") {
-            Some(0) => None,
-            Some(millis) => Some(millis),
-            None => defaults.election_hold_millis,
-        },
+        fence_timeout_millis: defaults.fence_timeout_millis,
+        pending_set_timeout_millis: defaults.pending_set_timeout_millis,
+        election_hold_millis: defaults.election_hold_millis,
         // Zero never replaces a lost follower.
         restore_after_millis: match parse("FELIX_SHARD_RESTORE_AFTER_MS") {
             Some(0) => None,
@@ -212,12 +199,7 @@ fn shard_moves_from_env() -> crate::cluster::placement::MovePolicy {
             Some(millis) => Some(millis),
             None => defaults.restore_stall_millis,
         },
-        // Zero never renames a stuck leader.
-        stuck_leader_millis: match parse("FELIX_SHARD_STUCK_LEADER_MS") {
-            Some(0) => None,
-            Some(millis) => Some(millis),
-            None => defaults.stuck_leader_millis,
-        },
+        stuck_leader_millis: defaults.stuck_leader_millis,
         // Zero places new shards on whatever is live.
         settle_millis: match parse("FELIX_PLACEMENT_SETTLE_MS") {
             Some(0) => None,

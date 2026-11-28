@@ -605,17 +605,12 @@ pub(crate) async fn handle_cache_watch_message(
     // catch-up already wrote — the registration race — and are dropped by
     // offset; everything else is written until the client goes away or the
     // watch laps its queue.
-    let shard_moved = felix_wire::supports_feature(peer_features, felix_wire::FEATURE_SHARD_MOVED)
-        .then_some(subscription_id);
+    let shard_moved = Some(subscription_id);
     let revoked = owner.map(|auth| {
-        let message = ClientError::revoked().into_message();
-        let message =
-            if felix_wire::supports_feature(peer_features, felix_wire::FEATURE_ERROR_CODES) {
-                message
-            } else {
-                message.without_error_code()
-            };
-        (auth.revocable.clone(), message)
+        (
+            auth.revocable.clone(),
+            ClientError::revoked().into_message(),
+        )
     });
     tokio::spawn(async move {
         run_watch_delivery(

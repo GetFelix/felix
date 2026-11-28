@@ -257,7 +257,6 @@ async fn finish_skips_finish_request_when_channel_closed() {
                 server_flags: felix_wire::KNOWN_FLAGS,
                 publish_window: 0,
                 takes_width: false,
-                takes_shard: false,
                 takes_record_headers: false,
             }]),
             PublishSharding::RoundRobin,

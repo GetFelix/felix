@@ -256,7 +256,7 @@ async fn a_hybrid_broker_refuses_a_shard_shared_with_a_raft_broker() {
     assert_eq!(pass(&check).await, ["scratch"]);
     let why = refusal(&check, "orders").expect("refused");
     assert!(why.contains("hybrid here, raft on broker-b"), "{why}");
-    assert!(why.contains("FELIX_SHARD_ENGINE"), "{why}");
+    assert!(why.contains("must be upgraded"), "{why}");
     assert_eq!(refusal(&check, "scratch"), None);
 }
 

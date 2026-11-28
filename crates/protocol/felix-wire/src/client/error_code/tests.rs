@@ -117,15 +117,6 @@ fn an_uncoded_error_is_byte_identical_to_the_old_shape() {
     let new = Message::error("forbidden").encode().expect("new");
     assert_eq!(new.payload.as_ref(), old.as_slice());
 
-    let coded = Message::Error {
-        message: "forbidden".to_string(),
-        code: Some(ErrorCode::Forbidden),
-        retry: Some(RetryClass::Fatal),
-        detail: None,
-    };
-    let stripped = coded.without_error_code().encode().expect("stripped");
-    assert_eq!(stripped.payload.as_ref(), old.as_slice());
-
     let old = serde_json::to_vec(&OldShape::PublishError {
         request_id: 7,
         message: "server overloaded".to_string(),

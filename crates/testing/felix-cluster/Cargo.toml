@@ -62,6 +62,9 @@ libc = { workspace = true }
 felix-storage = { path = "../../server/felix-storage", version = "0.8.0-preview.2" }
 
 [dev-dependencies]
+# The region tests plan with the bridge allowlist `FELIX_REGION_BRIDGES` gives
+# a control plane.
+felix-router = { path = "../../server/felix-router" }
 # The replica set test speaks to brokers over the peer transport as one of them.
 felix-replication = { path = "../../server/felix-replication" }
 # The Kafka produce test speaks the protocol itself, to re-send on purpose.

@@ -7,6 +7,7 @@
 //! flags.
 
 pub(crate) mod ack_durability;
+pub(crate) mod baseline;
 pub mod binary;
 pub(crate) mod error_code;
 pub(crate) mod features;

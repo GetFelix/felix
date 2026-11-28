@@ -95,7 +95,6 @@ async fn an_acked_publish_out_of_range_is_answered_and_not_written() {
         AckTimeoutState::new(Instant::now()),
     ));
     handle_publish_batch_message(
-        0,
         &broker,
         &publish_ctx,
         None,

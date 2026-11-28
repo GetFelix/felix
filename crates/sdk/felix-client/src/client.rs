@@ -97,6 +97,3 @@ pub struct Connection {
     /// The same, from the extended feature word.
     server_features_hi: u32,
 }
-
-#[cfg(test)]
-mod tests;

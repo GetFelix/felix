@@ -78,7 +78,6 @@ impl Leader {
         };
         let commit_acks = CommitAcks::for_test(&self.out_tx, Arc::new(Semaphore::new(8)));
         handle_publish_batch_message(
-            0,
             &self.broker,
             &self.ctx,
             None,

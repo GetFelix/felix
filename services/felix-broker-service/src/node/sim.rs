@@ -114,7 +114,7 @@ impl SimBrokerConfig {
             fence: true,
             election: true,
             // So a seed can be replayed with the kill switch thrown.
-            unified_fence: std::env::var("FELIX_UNIFIED_FENCE").map_or(true, |v| v.trim() != "0"),
+            unified_fence: true,
             ..Default::default()
         };
         BrokerConfig {

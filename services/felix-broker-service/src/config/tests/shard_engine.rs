@@ -1,9 +1,9 @@
-//! `FELIX_SHARD_ENGINE` and what a Raft broker needs before it starts.
+//! The retired `FELIX_SHARD_ENGINE` and what a Raft broker needs before it starts.
 
 use std::time::Duration;
 
 use crate::config::env::{
-    RaftPrerequisites, ShardEngine, parse_raft_group_threads, parse_shard_engine,
+    RaftPrerequisites, ShardEngine, check_shard_engine, parse_raft_group_threads,
     parse_shard_raft_cache_snapshot_every, parse_shard_raft_elections_at_once,
     parse_shard_raft_lease,
 };
@@ -15,34 +15,41 @@ const ALL: RaftPrerequisites = RaftPrerequisites {
     durable_storage: true,
 };
 
+/// `FELIX_SHARD_ENGINE` is retired. Unset or `raft` starts the broker,
+/// which reports the variable as retired; `hybrid` is refused, so nobody
+/// believes they still run it.
 #[test]
-fn the_setting_names_an_engine_or_none() {
-    for unset in [None, Some(""), Some("  ")] {
-        assert_eq!(parse_shard_engine(unset).expect("unset"), None);
+fn the_hybrid_is_refused_and_raft_is_accepted() {
+    for accepted in [None, Some(""), Some("  "), Some("raft"), Some(" RAFT ")] {
+        check_shard_engine(accepted).expect("accepted");
     }
-    for hybrid in [Some("hybrid"), Some(" Hybrid ")] {
-        assert_eq!(
-            parse_shard_engine(hybrid).expect("hybrid"),
-            Some(ShardEngine::Hybrid)
+    for hybrid in ["hybrid", " Hybrid "] {
+        let err = check_shard_engine(Some(hybrid)).expect_err("hybrid");
+        let text = err.to_string();
+        assert!(
+            text.contains("FELIX_SHARD_ENGINE=hybrid is refused"),
+            "{text}"
         );
+        assert!(text.contains("empty FELIX_DURABLE_STORAGE_DIR"), "{text}");
     }
-    assert_eq!(
-        parse_shard_engine(Some("RAFT")).expect("raft"),
-        Some(ShardEngine::Raft)
-    );
 }
 
-/// A clustered, durable broker with no engine setting runs Raft.
+/// A typo must not read as the default either: it is refused, naming the
+/// variable as retired.
 #[test]
-fn a_broker_with_no_engine_setting_runs_raft() {
-    assert_eq!(ALL.resolve(None).expect("resolve"), ShardEngine::Raft);
-    let hybrid = Some(ShardEngine::Hybrid);
-    assert_eq!(ALL.resolve(hybrid).expect("asked"), ShardEngine::Hybrid);
+fn an_unknown_engine_is_refused() {
+    let err = check_shard_engine(Some("rafts")).expect_err("unknown");
+    assert!(format!("{err}").contains("retired"), "{err}");
+}
+
+/// A clustered, durable broker runs Raft.
+#[test]
+fn a_clustered_broker_runs_raft() {
+    assert_eq!(ALL.resolve().expect("resolve"), ShardEngine::Raft);
 }
 
 /// A standalone broker with durable storage runs its durable shards as
-/// Raft groups of one; it needs no node id and no internal listener. The
-/// hybrid stays selectable by name.
+/// Raft groups of one; it needs no node id and no internal listener.
 #[test]
 fn a_standalone_durable_broker_runs_raft() {
     let standalone = RaftPrerequisites {
@@ -51,40 +58,24 @@ fn a_standalone_durable_broker_runs_raft() {
         ..ALL
     };
     assert_eq!(standalone.missing(), None);
-    assert_eq!(
-        standalone.resolve(None).expect("resolve"),
-        ShardEngine::Raft
-    );
-    let asked = standalone.resolve(Some(ShardEngine::Raft)).expect("asked");
-    assert_eq!(asked, ShardEngine::Raft);
-    let hybrid = standalone
-        .resolve(Some(ShardEngine::Hybrid))
-        .expect("hybrid");
-    assert_eq!(hybrid, ShardEngine::Hybrid);
+    assert_eq!(standalone.resolve().expect("resolve"), ShardEngine::Raft);
 }
 
 /// A standalone broker in memory has nothing durable for an engine to run,
-/// so it still starts with no setting, and is refused when asked for Raft,
-/// naming the durable storage it lacks.
+/// with the `raft` feature or without it.
 #[test]
-fn a_standalone_broker_in_memory_starts_unless_raft_was_asked_for() {
-    let standalone = RaftPrerequisites {
-        membership: false,
-        peer_transport: false,
-        durable_storage: false,
-        ..ALL
-    };
-    assert_eq!(
-        standalone.resolve(None).expect("resolve"),
-        ShardEngine::Hybrid
-    );
-    let err = standalone
-        .resolve(Some(ShardEngine::Raft))
-        .expect_err("refused");
-    assert_eq!(
-        err.to_string(),
-        "FELIX_SHARD_ENGINE=raft is refused: it needs durable storage (FELIX_DURABLE_STORAGE_DIR)"
-    );
+fn a_standalone_broker_in_memory_runs_no_engine() {
+    for compiled in [true, false] {
+        let standalone = RaftPrerequisites {
+            compiled,
+            membership: false,
+            peer_transport: false,
+            durable_storage: false,
+        };
+        assert_eq!(standalone.missing(), None);
+        let engine = standalone.resolve().expect("resolve");
+        assert_eq!(engine, ShardEngine::InMemory);
+    }
 }
 
 /// A broker with a node id and no durable storage runs Raft with no group:
@@ -96,16 +87,14 @@ fn a_registering_broker_without_durable_storage_runs_raft() {
         ..ALL
     };
     assert_eq!(diskless.missing(), None);
-    assert_eq!(diskless.resolve(None).expect("resolve"), ShardEngine::Raft);
-    let asked = diskless.resolve(Some(ShardEngine::Raft)).expect("asked");
-    assert_eq!(asked, ShardEngine::Raft);
+    assert_eq!(diskless.resolve().expect("resolve"), ShardEngine::Raft);
 }
 
-/// A broker with a node id registers, and the control plane places shards
-/// on it beside Raft peers, so with no engine setting it runs Raft or does
-/// not start; the refusal names what Raft needs.
+/// A broker that registers, or keeps durable shards, runs Raft or does not
+/// start: there is no hybrid to fall back on. The refusal names what Raft
+/// needs.
 #[test]
-fn a_registering_broker_that_cannot_run_raft_is_refused() {
+fn a_broker_that_cannot_run_raft_is_refused() {
     let no_listener = RaftPrerequisites {
         peer_transport: false,
         ..ALL
@@ -118,59 +107,23 @@ fn a_registering_broker_that_cannot_run_raft_is_refused() {
         (no_listener, "FELIX_INTERNAL_BIND"),
         (no_feature, "cargo feature `raft`"),
     ] {
-        let err = broker.resolve(None).expect_err("refused");
-        let text = err.to_string();
+        let text = broker.resolve().expect_err("refused").to_string();
         assert!(
             text.contains("FELIX_NODE_ID") && text.contains(needs),
             "{text}"
         );
-        let err = broker
-            .resolve(Some(ShardEngine::Raft))
-            .expect_err("refused");
-        assert!(err.to_string().contains(needs), "{err}");
     }
-}
-
-/// A typo must not read as the default: the broker would run the hybrid
-/// engine beside peers that run Raft.
-#[test]
-fn an_unknown_engine_is_refused() {
-    let err = parse_shard_engine(Some("rafts")).expect_err("unknown");
-    assert!(format!("{err}").contains("hybrid or raft"), "{err}");
-}
-
-#[test]
-fn a_raft_broker_missing_a_prerequisite_is_refused() {
-    assert_eq!(ALL.missing(), None);
-    let cases = [
-        (
-            RaftPrerequisites {
-                compiled: false,
-                ..ALL
-            },
-            "cargo feature",
-        ),
-        (
-            RaftPrerequisites {
-                peer_transport: false,
-                ..ALL
-            },
-            "FELIX_INTERNAL_BIND",
-        ),
-        (
-            RaftPrerequisites {
-                membership: false,
-                peer_transport: false,
-                durable_storage: false,
-                ..ALL
-            },
-            "FELIX_DURABLE_STORAGE_DIR",
-        ),
-    ];
-    for (given, names) in cases {
-        let why = given.missing().expect("refused");
-        assert!(why.contains(names), "{why}");
-    }
+    let standalone_without_feature = RaftPrerequisites {
+        compiled: false,
+        membership: false,
+        peer_transport: false,
+        durable_storage: true,
+    };
+    let text = standalone_without_feature
+        .resolve()
+        .expect_err("refused")
+        .to_string();
+    assert!(text.contains("cargo feature `raft`"), "{text}");
 }
 
 #[test]

@@ -13,7 +13,7 @@ name: Gate - performance A/B
 # (scripts/ci/gate_perf.py) reads the median ratio's exact interval. A cell it
 # cannot decide gets more rounds, 6 then 12 then 24; decided cells stop.
 #
-# `engine: raft` ends in a skip until the Raft engine exists.
+# The hybrid was removed, so `raft` is the only engine and it always runs.
 
 on:
   workflow_dispatch:
@@ -21,8 +21,8 @@ on:
       engine:
         description: "Replication engine under test"
         type: choice
-        options: [hybrid, raft]
-        default: hybrid
+        options: [raft]
+        default: raft
       baseline_ref:
         description: "Baseline tag or commit (the last v0.7.x release)"
         type: string
@@ -33,7 +33,7 @@ on:
         default: "30"
   workflow_call:
     inputs:
-      engine: { type: string, default: hybrid }
+      engine: { type: string, default: raft }
       baseline_ref: { type: string, default: "v0.7.1" }
       seconds: { type: string, default: "30" }
 
@@ -61,11 +61,8 @@ jobs:
         run: |
           set -euo pipefail
           case "$ENGINE" in
-            hybrid) echo "run=true" >> "$GITHUB_OUTPUT" ;;
-            raft)
-              echo "run=false" >> "$GITHUB_OUTPUT"
-              echo "The Raft engine is not available yet; no perf cells to run." >> "$GITHUB_STEP_SUMMARY" ;;
-            *) echo "engine must be hybrid or raft"; exit 1 ;;
+            raft) echo "run=true" >> "$GITHUB_OUTPUT" ;;
+            *) echo "engine must be raft: the hybrid engine was removed"; exit 1 ;;
           esac
           [[ "$BASELINE" =~ ^[A-Za-z0-9][A-Za-z0-9._/-]{0,99}$ ]] || { echo "bad baseline ref"; exit 1; }
           [[ "$SECONDS_PER_TRIAL" =~ ^[1-9][0-9]{0,3}$ ]] || { echo "seconds must be a number"; exit 1; }
@@ -221,11 +218,6 @@ jobs:
           set -euo pipefail
           out=gate-perf
           mkdir -p "$out"
-          if [ "$RUN" != true ]; then
-            jq -cn --arg e "$ENGINE" '{part: "perf", engine: $e, status: "unavailable", summary: "engine not available yet"}' > "$out/result.json"
-            echo "### 2, 3. Throughput and p99: not run, the $ENGINE engine is not available yet." > "$out/section.md"
-            exit 0
-          fi
           if [ -f verdict/verdict.json ]; then
             # Only "pass" passes: undecided, void and fail all fail the part.
             status=$(jq -r 'if .status == "pass" then "pass" else "fail" end' verdict/verdict.json)

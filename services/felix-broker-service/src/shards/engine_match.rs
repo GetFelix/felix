@@ -235,8 +235,8 @@ impl<R: PeerRequester + Send + Sync + 'static> EngineShards for EngineMatch<R> {
                         shard = ?key,
                         peer = %peer,
                         "refusing a durable stream shard: this broker runs the {ours} shard \
-                         engine and {peer} runs {theirs}; set FELIX_SHARD_ENGINE the same on \
-                         every broker"
+                         engine and {peer} runs {theirs}; {peer} predates the hybrid's removal \
+                         and must be upgraded"
                     );
                     metrics::counter!(REFUSED_TOTAL, "engine" => ours).increment(1);
                 }
@@ -293,7 +293,7 @@ impl<R: PeerRequester + Send + Sync + 'static> EngineShards for EngineMatch<R> {
             let (ours, theirs) = (Self::engine_name(self.raft), Self::engine_name(!self.raft));
             return Some(Dispatch::Unavailable(Reason::OwnerUnavailable(format!(
                 "the shard's brokers run different shard engines ({ours} here, {theirs} on \
-                 {peer}); set FELIX_SHARD_ENGINE the same on every broker"
+                 {peer}); {peer} predates the hybrid's removal and must be upgraded"
             ))));
         }
         self.inner.as_ref()?.dispatch(key, nodes)

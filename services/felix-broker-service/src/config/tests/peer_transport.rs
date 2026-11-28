@@ -196,30 +196,24 @@ fn an_unparseable_internal_bind_is_refused() {
     assert!(message.contains("peers.local"), "{message}");
 }
 
-/// **The peer switches take booleans in any case and refuse anything else**:
-/// a typo in a safety switch must not pick a side silently.
+/// **The unauthenticated-peer switch refuses anything but a boolean**: a
+/// typo in a safety switch must not pick a side silently.
 #[serial]
 #[test]
 fn peer_switches_refuse_values_that_are_not_booleans() {
-    for key in [
-        "FELIX_INTERNAL_ALLOW_UNAUTHENTICATED",
-        "FELIX_INTERNAL_FENCE",
-        "FELIX_INTERNAL_ELECTION",
-    ] {
-        cluster_member_env();
-        unsafe {
-            env::set_var(key, "sometimes");
-        }
-        let err = peer_from_env().expect_err(key);
-        let message = err.to_string();
-        assert!(message.contains(key), "{key}: {message}");
-        assert!(message.contains("sometimes"), "{key}: {message}");
+    let key = "FELIX_INTERNAL_ALLOW_UNAUTHENTICATED";
+    cluster_member_env();
+    unsafe {
+        env::set_var(key, "sometimes");
     }
+    let err = peer_from_env().expect_err(key);
+    let message = err.to_string();
+    assert!(message.contains(key), "{key}: {message}");
+    assert!(message.contains("sometimes"), "{key}: {message}");
 }
 
 /// **Unset, the fence and unified fence are on and unauthenticated peers and
-/// elections are off; each switch can be flipped**, and only `0` turns the
-/// unified fence off.
+/// elections are off**, and unauthenticated peers can be allowed.
 #[serial]
 #[test]
 fn peer_switches_default_safe_and_can_be_flipped() {
@@ -232,23 +226,26 @@ fn peer_switches_default_safe_and_can_be_flipped() {
 
     unsafe {
         env::set_var("FELIX_INTERNAL_ALLOW_UNAUTHENTICATED", " YES ");
-        env::set_var("FELIX_INTERNAL_FENCE", "false");
-        env::set_var("FELIX_INTERNAL_ELECTION", "1");
-        env::set_var("FELIX_UNIFIED_FENCE", " 0 ");
     }
     let peer = peer_from_env().expect("flipped");
     assert!(peer.allow_unauthenticated);
-    assert!(!peer.fence);
-    assert!(peer.election);
-    assert!(!peer.unified_fence);
+}
 
+/// **The hybrid's switches are retired**: set, they change nothing, so a
+/// broker offers its peers what it offered with them unset.
+#[serial]
+#[test]
+fn retired_hybrid_switches_change_nothing() {
+    cluster_member_env();
     unsafe {
-        env::set_var("FELIX_UNIFIED_FENCE", "off");
+        env::set_var("FELIX_INTERNAL_FENCE", "false");
+        env::set_var("FELIX_INTERNAL_ELECTION", "1");
+        env::set_var("FELIX_UNIFIED_FENCE", "0");
     }
-    assert!(
-        peer_from_env().expect("kill switch").unified_fence,
-        "the kill switch is `0` alone; any other value keeps it on"
-    );
+    let peer = peer_from_env().expect("retired switches are not parsed");
+    assert!(peer.fence);
+    assert!(!peer.election);
+    assert!(peer.unified_fence);
 }
 
 /// **The pool, admission and timing knobs are read from their variables; a

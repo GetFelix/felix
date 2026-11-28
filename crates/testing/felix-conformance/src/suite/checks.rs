@@ -14,8 +14,7 @@ pub(crate) fn parse_subscribe_response(response: Option<Message>) -> Result<u64>
 }
 
 pub(crate) fn ensure_publish_ok(response: Option<Message>, request_id: u64) -> Result<()> {
-    // A client that did not offer FLAG_BINARY_PUBLISH_ACK_OFFSET must get the
-    // old frame, with no `offset`.
+    // Acked on enqueue there is no offset yet, so none is made up.
     if response
         != Some(Message::PublishOk {
             request_id,
@@ -29,6 +28,14 @@ pub(crate) fn ensure_publish_ok(response: Option<Message>, request_id: u64) -> R
 
 pub(crate) fn ensure_ok_response(response: Option<Message>, context: &str) -> Result<()> {
     if response != Some(Message::Ok) {
+        return Err(anyhow!("{context} failed: {response:?}"));
+    }
+    Ok(())
+}
+
+/// A broker answers a baseline `Auth` with `AuthOk`.
+pub(crate) fn ensure_auth_ok(response: Option<Message>, context: &str) -> Result<()> {
+    if !matches!(response, Some(Message::AuthOk { .. })) {
         return Err(anyhow!("{context} failed: {response:?}"));
     }
     Ok(())
@@ -119,20 +126,6 @@ pub(crate) fn ensure_offset_follows(
         Some(offset) if offset == expected => Ok(offset),
         other => Err(anyhow!("{context}: offset {other:?}, expected {expected}")),
     }
-}
-
-/// Fail unless `frame` is exactly `expected`, header and payload.
-pub(crate) fn ensure_same_frame(frame: &Frame, expected: &Frame, context: &str) -> Result<()> {
-    if frame.header.flags != expected.header.flags || frame.payload != expected.payload {
-        return Err(anyhow!(
-            "{context}: got flags {:#06x} {:?}, expected flags {:#06x} {:?}",
-            frame.header.flags,
-            frame.payload,
-            expected.header.flags,
-            expected.payload,
-        ));
-    }
-    Ok(())
 }
 
 #[cfg(test)]

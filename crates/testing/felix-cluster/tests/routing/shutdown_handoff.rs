@@ -1088,3 +1088,446 @@ async fn a_stopping_leader_ships_its_tail_before_it_stops_replicating() {
     }
     cluster.shutdown().await;
 }
+
+/// Brokers fsyncing on commit, with `handoff_ms` as their handoff timeout.
+fn raft_config_with_handoff(nodes: usize, stream: StreamSpec, handoff_ms: u64) -> ClusterConfig {
+    let env = |name: &str, value: &str| (name.to_string(), value.to_string());
+    ClusterConfig {
+        nodes,
+        streams: vec![stream],
+        broker_env: vec![
+            env("FELIX_SHUTDOWN_HANDOFF_TIMEOUT_MS", &handoff_ms.to_string()),
+            env("FELIX_SHUTDOWN_DRAIN_TIMEOUT_MS", "3000"),
+            env("FELIX_DURABLE_FSYNC_MODE", "on_commit"),
+        ],
+        ..Default::default()
+    }
+}
+
+/// Publish `{base}/{try}` through `via` until a try is acknowledged, and
+/// return that try's payload. A failed try may have been written, so it is
+/// never sent again; the no-duplicate checks cover it.
+async fn publish_unique(cluster: &Cluster, via: &str, key: &[u8], base: &str) -> Vec<u8> {
+    let deadline = Instant::now() + felix_cluster::wait::budget(Duration::from_secs(60));
+    let mut tries = 0usize;
+    loop {
+        let payload = format!("{base}/{tries}").into_bytes();
+        tries += 1;
+        match cluster
+            .publish_keyed_via(via, STREAM, key, payload.clone())
+            .await
+        {
+            Ok(()) => return payload,
+            Err(err) => {
+                assert!(
+                    Instant::now() < deadline,
+                    "publish {base} through {via}, {tries} tries: {err:#}"
+                );
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+        }
+    }
+}
+
+/// The whole replay of each shard from the broker leading it now, as
+/// `(offset, payload)`, with the offsets checked against Raft's skips.
+async fn whole_replay_of_every_shard(cluster: &Cluster, shards: u32) -> Vec<ShardRecords> {
+    let owners = cluster.shard_owners_for(STREAM).await.expect("owners");
+    let mut read = Vec::new();
+    for shard in 0..shards {
+        let owner = owners.get(&shard).expect("every shard is led");
+        let events = cluster
+            .whole_replay_of_shard(
+                owner,
+                STREAM,
+                shard,
+                Duration::from_secs(2),
+                Duration::from_secs(60),
+            )
+            .await
+            .unwrap_or_else(|err| panic!("no whole replay of shard {shard} from {owner}: {err:#}"));
+        let offsets: Vec<(u64, u64)> = events
+            .iter()
+            .map(|event| {
+                let offset = event.offset.expect("a durable stream carries offsets");
+                (offset, event.skipped_before)
+            })
+            .collect();
+        felix_cluster::replay::assert_offsets_account_for_skips(
+            &offsets,
+            &format!("shard {shard} on {owner}"),
+        );
+        let records = events
+            .iter()
+            .map(|event| (event.offset.unwrap_or_default(), event.payload.to_vec()))
+            .collect();
+        read.push((shard, records));
+    }
+    read
+}
+
+/// Every payload in `owed` is in `read` exactly once, and nothing else is
+/// there twice.
+fn assert_each_once(owed: &[Vec<u8>], read: &[ShardRecords]) {
+    let mut seen: std::collections::HashMap<&[u8], usize> = std::collections::HashMap::new();
+    for (_, records) in read {
+        for (_, payload) in records {
+            *seen.entry(payload.as_slice()).or_default() += 1;
+        }
+    }
+    let twice: Vec<String> = seen
+        .iter()
+        // The harness's own start-up probes are published once per broker.
+        .filter(|(payload, count)| **count > 1 && *payload != b"harness-probe")
+        .map(|(payload, count)| format!("{} x{count}", String::from_utf8_lossy(payload)))
+        .collect();
+    assert!(twice.is_empty(), "stored more than once: {twice:?}");
+    let missing: Vec<String> = owed
+        .iter()
+        .filter(|payload| !seen.contains_key(payload.as_slice()))
+        .map(|payload| String::from_utf8_lossy(payload).into_owned())
+        .collect();
+    assert!(
+        missing.is_empty(),
+        "{} of {} acknowledged records are gone: {missing:?}",
+        missing.len(),
+        owed.len()
+    );
+}
+
+/// **A Raft broker whose handoff times out loses no `Quorum` record.** The
+/// Raft half of [`a_handoff_that_times_out_loses_no_acknowledged_record`].
+/// Sixteen `Quorum` shards, three copies each, on four brokers fsyncing on
+/// commit. The broker leading the most shards gets 1.5 s to hand off, and
+/// no placement pass runs in that time: on Raft a pass renames leaders in
+/// placement at once, so a few passes hand everything off. With none, the
+/// handoff gives up with every shard it led, and the broker exits; each of
+/// those groups elects one of the two members left. Every shard then takes a
+/// write again, and each shard's whole replay from its leader holds every
+/// acknowledged record once, nothing twice, with offsets that account for
+/// Raft's skips.
+#[serial]
+#[tokio::test]
+async fn a_raft_handoff_that_times_out_loses_no_quorum_record() {
+    if !felix_cluster::suite_runs_on_raft() {
+        return;
+    }
+    const SHARDS: u32 = 16;
+    const KEYS: usize = 64;
+    let mut cluster = Cluster::start(raft_config_with_handoff(
+        4,
+        StreamSpec::quorum(STREAM, SHARDS, 3),
+        1_500,
+    ))
+    .await
+    .expect("start cluster");
+    let owners = cluster.shard_owners_for(STREAM).await.expect("owners");
+    let stopping = cluster
+        .node_ids()
+        .into_iter()
+        .max_by_key(|node| owners.values().filter(|owner| *owner == node).count())
+        .expect("a broker");
+    let led = owners.values().filter(|owner| **owner == stopping).count();
+    assert!(
+        led >= 3,
+        "{stopping} should lead several shards, leads {led}"
+    );
+
+    let mut owed = Vec::new();
+    for i in 0..KEYS {
+        let node = cluster.node_ids()[i % 4].clone();
+        let key = format!("k{i}");
+        owed.push(publish_unique(&cluster, &node, key.as_bytes(), &format!("before-{i}")).await);
+    }
+
+    let writer = felix_cluster::client::connect_cluster(
+        &cluster.broker_addrs(),
+        &cluster.tenant_id,
+        &cluster.client_token(),
+    )
+    .await
+    .expect("writer");
+    let publisher = Publisher::start(writer, &cluster, KEYS);
+    tokio::time::sleep(Duration::from_millis(300)).await;
+
+    let log_path = cluster
+        .node(&stopping)
+        .expect("node")
+        .data_dir
+        .join("broker.log");
+    let timed_out = || {
+        std::fs::read_to_string(&log_path)
+            .unwrap_or_default()
+            .contains("shutdown handoff timed out")
+    };
+    let signalled = Instant::now();
+    cluster.terminate_node(&stopping).expect("SIGTERM");
+
+    // The harness runs no placement timer, so nothing moves the shards
+    // while the handoff waits and it has to give up.
+    while !timed_out() {
+        assert!(
+            signalled.elapsed() < EXIT_WITHIN,
+            "the handoff did not time out"
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    let status = cluster
+        .wait_for_exit(&stopping, EXIT_WITHIN)
+        .await
+        .expect("the broker exits once its drain is done");
+    assert!(status.success(), "clean exit: {status}");
+    let still_led = cluster
+        .shard_owners_for(STREAM)
+        .await
+        .expect("owners")
+        .values()
+        .filter(|owner| **owner == stopping)
+        .count();
+    assert_eq!(
+        still_led, led,
+        "with no placement pass, every shard it led should still be led at exit"
+    );
+
+    // Their groups elect among the members left, and placement swaps the
+    // stopped broker's seats for the fourth broker.
+    let exited_at = Instant::now();
+    let budget = felix_cluster::wait::budget(Duration::from_secs(180));
+    loop {
+        cluster.place_shards().await;
+        let owners = cluster.shard_owners_for(STREAM).await.unwrap_or_default();
+        let moving = cluster.moving_shards().await.unwrap_or_default();
+        if owners.len() == SHARDS as usize
+            && owners.values().all(|owner| owner != &stopping)
+            && moving.is_empty()
+        {
+            break;
+        }
+        assert!(
+            exited_at.elapsed() < budget,
+            "shards still on {stopping} or moving: {owners:?}, moving {moving:?}"
+        );
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    cluster
+        .await_raft_leaders_placed(Duration::from_secs(120))
+        .await
+        .expect("every shard led where placed");
+
+    // Every key, so every shard, takes a write from the new leaders.
+    let served_at = Instant::now();
+    let served = publisher
+        .wait_for(100, Some(served_at), Duration::from_secs(60))
+        .await;
+    let (during, refused) = publisher.finish().await;
+    assert!(
+        served,
+        "not every key took an acknowledged write after the failover \
+         ({} acked, {refused} refused)",
+        during.len()
+    );
+    let after: std::collections::HashSet<Vec<u8>> = during
+        .iter()
+        .filter(|ack| ack.at >= served_at)
+        .map(|ack| ack.payload.clone())
+        .collect();
+    println!("{} acknowledged during, {refused} refused", during.len());
+    owed.extend(during.into_iter().map(|ack| ack.payload));
+
+    let read = whole_replay_of_every_shard(&cluster, SHARDS).await;
+    assert_each_once(&owed, &read);
+    for (shard, records) in &read {
+        assert!(
+            records.iter().any(|(_, payload)| after.contains(payload)),
+            "shard {shard} took no acknowledged write after the failover"
+        );
+    }
+    cluster.shutdown().await;
+}
+
+/// What a subscription read, as `(offset, skipped_before, payload)`.
+#[derive(Default)]
+struct Delivered(Vec<(u64, u64, Vec<u8>)>);
+
+impl Delivered {
+    /// Read `subscription` until every payload in `owed` has arrived.
+    async fn read_until(
+        &mut self,
+        subscription: &mut felix_client::ClusterSubscription,
+        owed: &[Vec<u8>],
+    ) {
+        let deadline =
+            tokio::time::Instant::now() + felix_cluster::wait::budget(Duration::from_secs(60));
+        let mut missing: std::collections::HashSet<&[u8]> =
+            owed.iter().map(Vec::as_slice).collect();
+        for (_, _, payload) in &self.0 {
+            missing.remove(payload.as_slice());
+        }
+        while !missing.is_empty() {
+            match tokio::time::timeout_at(deadline, subscription.next_event()).await {
+                Ok(Ok(Some(event))) => {
+                    missing.remove(event.payload.as_ref());
+                    self.0.push((
+                        event.offset.expect("a durable stream carries offsets"),
+                        event.skipped_before,
+                        event.payload.to_vec(),
+                    ));
+                }
+                Ok(Ok(None)) => panic!(
+                    "the subscription ended after {} records instead of following the shard",
+                    self.0.len()
+                ),
+                Ok(Err(err)) => panic!("the subscription failed: {err:#}"),
+                Err(_) => panic!(
+                    "timed out with {} of {} acknowledged records",
+                    owed.len() - missing.len(),
+                    owed.len()
+                ),
+            }
+        }
+    }
+
+    /// Every offset once and in order, gaps only where skipped, and no
+    /// record twice.
+    fn assert_once_in_order(&self, who: &str) {
+        let offsets: Vec<(u64, u64)> = self
+            .0
+            .iter()
+            .map(|(offset, skipped, _)| (*offset, *skipped))
+            .collect();
+        felix_cluster::replay::assert_offsets_account_for_skips(&offsets, who);
+        let mut payloads: Vec<&Vec<u8>> = self.0.iter().map(|(_, _, payload)| payload).collect();
+        payloads.sort();
+        let before = payloads.len();
+        payloads.dedup();
+        assert_eq!(payloads.len(), before, "{who}: a record arrived twice");
+    }
+}
+
+/// **A reader whose only seed is drained still finds its Raft shard and
+/// reads every acknowledged record once.** Four brokers, one `Quorum` shard
+/// with three copies. Two readers know only the shard's leader: one
+/// subscribed before it is drained, one connects once the drain has taken
+/// the broker out of the group. Both must reach the new leader and read
+/// every acknowledged record once and in order, and the first keeps
+/// following after the drained broker is stopped.
+#[serial]
+#[tokio::test]
+async fn a_raft_reader_whose_only_seed_is_drained_reads_every_record_once() {
+    if !felix_cluster::suite_runs_on_raft() {
+        return;
+    }
+    let mut cluster = Cluster::start(raft_config_with_handoff(
+        4,
+        StreamSpec::quorum(STREAM, 1, 3),
+        30_000,
+    ))
+    .await
+    .expect("start cluster");
+    let seed = cluster.owner(STREAM).await.expect("owner");
+    let others: Vec<String> = cluster
+        .node_ids()
+        .into_iter()
+        .filter(|node| *node != seed)
+        .collect();
+    let seed_addr = cluster.node(&seed).expect("node").client_addr;
+    let token = cluster.client_token();
+    let connect_to_seed = async || {
+        let client =
+            felix_cluster::client::connect_cluster(&[seed_addr], &cluster.tenant_id, &token)
+                .await?;
+        anyhow::Ok(Arc::new(client))
+    };
+
+    let mut owed = Vec::new();
+    for i in 0..20 {
+        owed.push(publish_unique(&cluster, &seed, b"k", &format!("before-{i}")).await);
+    }
+    let early = connect_to_seed().await.expect("early reader");
+    let mut early_subscription = early
+        .subscribe_from(
+            &cluster.tenant_id,
+            &cluster.namespace,
+            STREAM,
+            Some(felix_client::StartPosition::Offset(0)),
+        )
+        .await
+        .expect("subscribe");
+    let mut early_read = Delivered::default();
+    early_read.read_until(&mut early_subscription, &owed).await;
+
+    cluster.drain_node(&seed).await.expect("drain");
+    felix_cluster::wait::until(
+        Duration::from_secs(120),
+        "the group to drop the drained broker",
+        || async {
+            cluster.place_shards().await;
+            let led_elsewhere = cluster.owner(STREAM).await.is_ok_and(|now| now != seed);
+            let targeted = cluster
+                .raft_target(STREAM, 0)
+                .await
+                .ok()
+                .flatten()
+                .is_some_and(|target| !target.contains_key(&seed));
+            let moving = cluster.moving_shards().await.unwrap_or_default();
+            if !(led_elsewhere && targeted && moving.is_empty()) {
+                return false;
+            }
+            for node in &others {
+                let applied = cluster
+                    .raft_member(node, STREAM)
+                    .await
+                    .is_some_and(|member| {
+                        !member.voters.is_empty() && !member.voters.contains(&seed)
+                    });
+                if !applied {
+                    return false;
+                }
+            }
+            true
+        },
+    )
+    .await
+    .expect("drained out of the group");
+    cluster
+        .await_raft_leaders_placed(Duration::from_secs(60))
+        .await
+        .expect("the group to elect the placed leader");
+
+    for i in 0..20 {
+        let via = &others[i % others.len()];
+        owed.push(publish_unique(&cluster, via, b"k", &format!("drained-{i}")).await);
+    }
+    early_read.read_until(&mut early_subscription, &owed).await;
+
+    // Connected through the drained broker, which no longer holds the shard.
+    let late = connect_to_seed().await.expect("late reader");
+    let mut late_subscription = late
+        .subscribe_from(
+            &cluster.tenant_id,
+            &cluster.namespace,
+            STREAM,
+            Some(felix_client::StartPosition::Offset(0)),
+        )
+        .await
+        .expect("subscribe through the drained seed");
+    let mut late_read = Delivered::default();
+    late_read.read_until(&mut late_subscription, &owed).await;
+
+    // It leads nothing, so it skips the handoff and exits after its drain.
+    cluster.terminate_node(&seed).expect("SIGTERM");
+    cluster
+        .wait_for_exit(&seed, EXIT_WITHIN)
+        .await
+        .expect("the drained broker exits");
+    for i in 0..20 {
+        let via = &others[i % others.len()];
+        owed.push(publish_unique(&cluster, via, b"k", &format!("stopped-{i}")).await);
+    }
+    early_read.read_until(&mut early_subscription, &owed).await;
+    late_read.read_until(&mut late_subscription, &owed).await;
+
+    early_read.assert_once_in_order("the reader subscribed before the drain");
+    late_read.assert_once_in_order("the reader connected after the drain");
+    cluster.shutdown().await;
+}

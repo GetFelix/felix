@@ -32,7 +32,7 @@ pub(crate) fn refuses_flags(flags: u16, negotiated_ext: u32) -> bool {
 /// does not hide what a log already holds.
 pub(crate) fn negotiated_ext(
     broker: &felix_broker::Broker,
-    client_flags: Option<u16>,
+    client_flags: u16,
     client_flags_ext: Option<u32>,
 ) -> u32 {
     let served = if broker.reads_headers() {
@@ -40,10 +40,7 @@ pub(crate) fn negotiated_ext(
     } else {
         0
     };
-    let offered = felix_wire::peer_flags_ext(
-        client_flags.unwrap_or(felix_wire::ORIGINAL_V1_FLAGS),
-        client_flags_ext,
-    );
+    let offered = felix_wire::peer_flags_ext(client_flags, client_flags_ext);
     offered & served
 }
 

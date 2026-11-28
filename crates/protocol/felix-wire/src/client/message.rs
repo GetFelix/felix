@@ -58,11 +58,9 @@ pub enum Message {
         /// Frame-flag bits this client understands, offered so the broker can
         /// reply with its own set.
         ///
-        /// Absent means the client predates capability negotiation. Because
-        /// serde ignores unknown fields, a broker that predates it also simply
-        /// ignores this field and answers with a plain `Ok` — which is exactly
-        /// the signal the client needs to fall back. Both directions therefore
-        /// degrade without a version check.
+        /// Must include [`CLIENT_BASELINE_FLAGS`](crate::CLIENT_BASELINE_FLAGS):
+        /// a broker refuses an `Auth` that does not with `below_baseline`. An
+        /// option so that such an `Auth` still decodes and gets that answer.
         #[serde(skip_serializing_if = "Option::is_none")]
         client_flags: Option<u16>,
         /// Optional protocol features this client understands, as a bitset of
@@ -71,8 +69,8 @@ pub enum Message {
         /// The mirror of `AuthOk.server_features`, and needed for the same
         /// reason in the other direction: a broker must not send a client a
         /// message type it cannot decode, because an undecodable frame costs
-        /// the connection. Absent means a client that predates features, which
-        /// implements none.
+        /// the connection. Must include
+        /// [`CLIENT_BASELINE_FEATURES`](crate::CLIENT_BASELINE_FEATURES).
         #[serde(default, skip_serializing_if = "Option::is_none")]
         client_features: Option<u32>,
         /// Extended feature bits, from `KNOWN_FEATURES_HI`: the second word of
@@ -96,8 +94,10 @@ pub enum Message {
     },
     /// Successful auth, carrying the broker's supported frame-flag bits.
     ///
-    /// Only ever sent in response to an `Auth` that offered `client_flags`, so a
-    /// client old enough not to understand this variant can never receive it.
+    /// The only answer to an accepted `Auth`. A client refuses one that does
+    /// not advertise the broker baseline
+    /// ([`BROKER_BASELINE_FLAGS`](crate::BROKER_BASELINE_FLAGS) and the
+    /// feature words).
     AuthOk {
         server_flags: u16,
         /// Optional protocol features this broker implements, as a bitset of
@@ -108,10 +108,8 @@ pub enum Message {
         /// a frame is shaped differently, and conflating the two would have a
         /// client set a frame flag it never intends to send.
         ///
-        /// Absent means a broker that predates features, and the only safe
-        /// reading of that silence is that it implements none: an unknown
-        /// message type is a fatal protocol error to the broker's control loop,
-        /// so a client must never send one speculatively.
+        /// Beyond the baseline, absent bits mean the broker does not serve the
+        /// request: a client must never send one speculatively.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         server_features: Option<u32>,
         /// Extended feature bits this broker implements, the mirror of
@@ -1433,52 +1431,6 @@ impl Message {
     /// payload is not a JSON object with a string `type`.
     pub fn unknown_request(frame: &Frame) -> Option<UnknownRequest> {
         serde_json::from_slice(&frame.payload).ok()
-    }
-
-    /// Drop a `PublishOk`'s offset, for a client that did not offer
-    /// `FLAG_BINARY_PUBLISH_ACK_OFFSET`. Anything else is returned unchanged.
-    pub fn without_ack_offset(self) -> Self {
-        match self {
-            Message::PublishOk { request_id, .. } => Message::PublishOk {
-                request_id,
-                offset: None,
-            },
-            other => other,
-        }
-    }
-
-    /// Drop a `SubscribeCursorError`'s trim headers, for a client that did
-    /// not offer `FEATURE_HEAD_TRIM`. Anything else is returned unchanged.
-    pub fn without_trim_headers(self) -> Self {
-        match self {
-            Message::SubscribeCursorError {
-                reason,
-                requested,
-                available,
-                ..
-            } => Message::SubscribeCursorError {
-                reason,
-                requested,
-                available,
-                trim_headers: None,
-            },
-            other => other,
-        }
-    }
-
-    /// Drop the error-code fields, for a client that did not offer
-    /// `FEATURE_ERROR_CODES`. Anything but an `Error` or `PublishError` is
-    /// returned unchanged.
-    pub fn without_error_code(self) -> Self {
-        match self {
-            Message::Error { message, .. } => Message::error(message),
-            Message::PublishError {
-                request_id,
-                message,
-                ..
-            } => Message::publish_error(request_id, message),
-            other => other,
-        }
     }
 }
 
