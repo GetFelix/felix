@@ -37,10 +37,6 @@ use crate::serving::quic::telemetry::{
 
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn handle_publish_batch_message(
-    // Frame-flag bits the client advertised, so the ack may name a forwarding
-    // owner only when the client can parse one. Zero from the JSON path, which
-    // has no ack frame to put it in.
-    peer_flags: u16,
     broker: &Broker,
     publish_ctx: &PublishContext,
     // The client's last `publish_width` on this stream, if it sent one.
@@ -291,12 +287,7 @@ pub(crate) async fn handle_publish_batch_message(
         // from the endpoint registry rather than `ForwardTarget::advertise_addr`,
         // which is the *peer* listener -- telling a client to publish to the
         // internal port would send it somewhere that does not speak to clients.
-        //
-        // Only for a client that advertised the bit. Setting a flag it did not
-        // offer makes it reject the frame, and the frame acknowledges a publish
-        // that already succeeded.
-        let hint_owner = matches!(encoding, AckEncoding::Binary)
-            && felix_wire::supports(peer_flags, felix_wire::FLAG_BINARY_PUBLISH_ACK_OWNER);
+        let hint_owner = matches!(encoding, AckEncoding::Binary);
         let forwarded_to = match (&target, hint_owner) {
             (Some(PublishTarget::Forward { target, .. }), true) => {
                 let addr = publish_ctx
@@ -544,16 +535,5 @@ pub(super) fn refusal_for_client(
             .reworded(format!(
                 "stream not found: tenant={tenant_id} namespace={namespace} stream={stream}"
             )),
-    }
-}
-
-/// What a client's idempotent batch gets when its sequence already holds a
-/// different batch: a refusal, if the client offered to read one, and
-/// otherwise the duplicate answer it has always had.
-pub(crate) fn sequence_reuse(peer_features: u32) -> SequenceReuse {
-    if felix_wire::supports_feature(peer_features, felix_wire::FEATURE_SEQUENCE_REUSED) {
-        SequenceReuse::Refuse
-    } else {
-        SequenceReuse::AnswerDuplicate
     }
 }

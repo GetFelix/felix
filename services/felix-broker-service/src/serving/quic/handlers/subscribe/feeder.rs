@@ -25,14 +25,9 @@ fn encode_batch(
     timestamps: Option<&[u64]>,
     headers: Option<&[Option<Bytes>]>,
 ) -> felix_wire::Result<Bytes> {
-    let base_offset = base_offset.filter(|_| config.offsets_enabled);
     let meta = felix_wire::binary::EventBatchMeta {
         base_offset,
-        skipped_before: if config.skip_enabled {
-            skipped_before
-        } else {
-            0
-        },
+        skipped_before,
         publisher: publisher
             .filter(|_| config.publisher_enabled)
             .map(Bytes::as_ref),
@@ -298,7 +293,7 @@ pub(super) async fn run_lane_feeder(
             let held_len = envelope.record_bytes();
             let ends_batch = envelope.len() != 1
                 // Numbering this into the current frame would misreport it.
-                || (config.offsets_enabled && envelope.base_offset() != expected_next)
+                || envelope.base_offset() != expected_next
                 || (config.publisher_enabled && envelope.publisher() != batch_publisher.as_ref())
                 // A frame carries a time for every event or for none.
                 || (batch_times.is_some() && envelope.timestamp_micros().is_none())
@@ -405,22 +400,18 @@ pub(super) async fn run_lane_feeder(
                 .end
                 .and_then(|end| ended_frame(config.subscription_id, end)),
             (Some(resume_from), _) => lagged_frame(config.subscription_id, resume_from),
-            (None, Some(moved)) if config.shard_moved_enabled => {
-                match shard_moved_frame(config.subscription_id, moved) {
-                    Ok(frame) => Some(frame),
-                    Err(err) => {
-                        tracing::warn!(
-                            error = %err,
-                            subscriber_id = config.subscription_id,
-                            "encode shard_moved failed"
-                        );
-                        None
-                    }
+            (None, Some(moved)) => match shard_moved_frame(config.subscription_id, moved) {
+                Ok(frame) => Some(frame),
+                Err(err) => {
+                    tracing::warn!(
+                        error = %err,
+                        subscriber_id = config.subscription_id,
+                        "encode shard_moved failed"
+                    );
+                    None
                 }
-            }
-            (None, None) if config.stream_deleted_enabled && event_rx.deleted() => {
-                stream_deleted_frame(config.subscription_id)
-            }
+            },
+            (None, None) if event_rx.deleted() => stream_deleted_frame(config.subscription_id),
             _ => None,
         };
         // The lane forgets the subscriber when it handles this, after the

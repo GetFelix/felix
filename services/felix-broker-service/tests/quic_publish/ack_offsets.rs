@@ -1,5 +1,4 @@
-//! Publish acks that carry the offset the batch landed at, and only to a
-//! client that offered `FLAG_BINARY_PUBLISH_ACK_OFFSET`.
+//! Publish acks that carry the offset the batch landed at.
 
 use super::pipeline::{raw_stream, serve_orders};
 use super::*;
@@ -10,13 +9,12 @@ fn commit_acked(config: &mut felix_broker_service::config::BrokerConfig) {
     config.ack_on_commit = true;
 }
 
-/// Authenticate one raw stream offering `client_flags`, returning it with the
+/// Authenticate one raw stream offering the baseline, returning it with the
 /// connection that keeps it open.
 async fn authed_stream(
     addr: std::net::SocketAddr,
     cert: CertificateDer<'static>,
     auth: &AuthFixture,
-    client_flags: Option<u16>,
 ) -> Result<(
     felix_transport::QuicConnection,
     quinn::SendStream,
@@ -25,14 +23,7 @@ async fn authed_stream(
     let (connection, mut send, mut recv) = raw_stream(addr, cert).await?;
     felix_broker_service::serving::quic::write_message(
         &mut send,
-        Message::Auth {
-            tenant_id: auth.tenant_id.clone(),
-            token: auth.token.clone(),
-            client_flags,
-            client_features: None,
-            client_features_hi: None,
-            client_flags_ext: None,
-        },
+        felix_wire::baseline_auth(auth.tenant_id.clone(), auth.token.clone()),
     )
     .await?;
     let mut scratch = felix_broker_service::serving::quic::FrameScratch::new();
@@ -40,7 +31,7 @@ async fn authed_stream(
         felix_broker_service::serving::quic::read_message_limited(&mut recv, 1 << 20, &mut scratch)
             .await?;
     anyhow::ensure!(
-        matches!(answer, Some(Message::Ok | Message::AuthOk { .. })),
+        matches!(answer, Some(Message::AuthOk { .. })),
         "auth: {answer:?}"
     );
     Ok((connection, send, recv))
@@ -146,17 +137,15 @@ async fn commit_acked_publishes_report_consecutive_offsets() -> Result<()> {
     Ok(())
 }
 
-/// **Only a client that offered the bit is sent an offset**, over JSON and
-/// binary alike. The others get exactly the frames they always got.
+/// **Every client is sent an offset**, over JSON and binary alike.
 #[tokio::test]
 #[serial]
-async fn an_ack_offset_is_sent_only_to_a_client_that_offered_the_bit() -> Result<()> {
+async fn an_ack_offset_is_sent_to_every_client() -> Result<()> {
     let dir = tempfile::tempdir()?;
     let (_broker, addr, cert, auth, _config) =
         serve_orders(dir.path(), FsyncMode::None, commit_acked).await?;
 
-    let (_offered, mut send, mut recv) =
-        authed_stream(addr, cert.clone(), &auth, Some(felix_wire::KNOWN_FLAGS)).await?;
+    let (_offered, mut send, mut recv) = authed_stream(addr, cert, &auth).await?;
     let json = json_publish(&mut send, &mut recv, 1).await?;
     let Message::PublishOk {
         request_id: 1,
@@ -174,29 +163,6 @@ async fn an_ack_offset_is_sent_only_to_a_client_that_offered_the_bit() -> Result
     assert_eq!((ack.request_id, ack.error), (2, None));
     assert_eq!(ack.offset, Some(json_offset + 1));
 
-    let (_v1, mut send, mut recv) = authed_stream(
-        addr,
-        cert.clone(),
-        &auth,
-        Some(felix_wire::ORIGINAL_V1_FLAGS),
-    )
-    .await?;
-    let json = json_publish(&mut send, &mut recv, 3).await?;
-    let text = std::str::from_utf8(&json)?;
-    assert!(!text.contains("offset"), "{text}");
-    assert_eq!(
-        Message::decode(Frame::new(0, json)?)?,
-        Message::PublishOk {
-            request_id: 3,
-            offset: None
-        }
-    );
-
-    let (_legacy, mut send, mut recv) = authed_stream(addr, cert, &auth, None).await?;
-    let frame = binary_publish(&mut send, &mut recv, 4).await?;
-    assert_eq!(frame.header.flags, felix_wire::FLAG_BINARY_PUBLISH_ACK);
-    let ack = felix_wire::binary::decode_publish_ack(&frame)?;
-    assert_eq!((ack.request_id, ack.error, ack.offset), (4, None, None));
     Ok(())
 }
 

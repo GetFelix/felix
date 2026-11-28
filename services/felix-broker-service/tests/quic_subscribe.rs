@@ -375,16 +375,7 @@ async fn quic_subscribe_invalid_frame_closes_stream() -> Result<()> {
     let (mut send, mut recv) = connection.open_bi().await?;
     felix_broker_service::serving::quic::write_message(
         &mut send,
-        Message::Auth {
-            tenant_id: auth.tenant_id.clone(),
-            token: auth.token.clone(),
-            // Legacy handshake: no capabilities offered, so the broker
-            // answers with a plain `Ok`.
-            client_flags: None,
-            client_features: None,
-            client_features_hi: None,
-            client_flags_ext: None,
-        },
+        felix_wire::baseline_auth(auth.tenant_id.clone(), auth.token.clone()),
     )
     .await?;
     let mut frame_scratch = felix_broker_service::serving::quic::FrameScratch::new();
@@ -394,7 +385,7 @@ async fn quic_subscribe_invalid_frame_closes_stream() -> Result<()> {
         &mut frame_scratch,
     )
     .await?;
-    assert!(matches!(response, Some(Message::Ok)));
+    assert!(matches!(response, Some(Message::AuthOk { .. })));
 
     // Send an invalid JSON frame to trigger decode error handling on the control stream.
     let header = FrameHeader::new(0, 2);

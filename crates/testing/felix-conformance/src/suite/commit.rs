@@ -2,7 +2,7 @@
 //!
 //! The scenarios are the `commit.*` entries in `scenarios.toml`.
 
-use anyhow::{Result, anyhow, bail};
+use anyhow::{Result, bail};
 use bytes::Bytes;
 use felix_broker_service::serving::quic;
 use felix_client::{CommitError, CommitOp, Connection};
@@ -11,7 +11,6 @@ use rustls::pki_types::CertificateDer;
 
 use super::MAX_TEST_FRAME_BYTES;
 use super::fixture::{AuthFixture, build_client_config};
-use super::frames::read_frame;
 
 /// A durable stream the suite registers for these checks: a commit needs a log.
 pub(crate) const COMMIT_STREAM: &str = "conformance-commits";
@@ -21,22 +20,14 @@ pub(crate) async fn run_commit(
     auth: &AuthFixture,
 ) -> Result<()> {
     println!("Running atomic commit checks...");
-    old_peer_sees_a_plain_ok(connection, auth).await?;
+    a_peer_below_the_baseline_is_refused(connection, auth).await?;
 
-    // commit.negotiated: the bit is advertised to a peer that offers
-    // capabilities.
+    // commit.negotiated: the bit is advertised to a baseline peer.
     let (mut send, mut recv) = connection.open_bi().await?;
     let mut scratch = quic::FrameScratch::new();
     quic::write_message(
         &mut send,
-        Message::Auth {
-            tenant_id: auth.tenant_id.clone(),
-            token: auth.token.clone(),
-            client_flags: Some(felix_wire::KNOWN_FLAGS),
-            client_features: Some(felix_wire::FEATURE_REDIRECT),
-            client_features_hi: None,
-            client_flags_ext: None,
-        },
+        felix_wire::baseline_auth(auth.tenant_id.clone(), auth.token.clone()),
     )
     .await?;
     match quic::read_message_limited(&mut recv, MAX_TEST_FRAME_BYTES, &mut scratch).await? {
@@ -191,36 +182,42 @@ async fn conditional_writes(
     }
 }
 
-/// commit.negotiated: a peer that offers nothing gets the plain `ok` it
-/// always did, byte for byte, with no feature it cannot decode.
-async fn old_peer_sees_a_plain_ok(
+/// commit.negotiated: a peer that does not offer the 0.8 baseline is refused
+/// with `below_baseline`, not answered with a plain `ok` or an `auth_ok`.
+async fn a_peer_below_the_baseline_is_refused(
     connection: &felix_transport::QuicConnection,
     auth: &AuthFixture,
 ) -> Result<()> {
-    let (mut send, mut recv) = connection.open_bi().await?;
-    quic::write_message(
-        &mut send,
-        Message::Auth {
-            tenant_id: auth.tenant_id.clone(),
-            token: auth.token.clone(),
-            client_flags: None,
-            client_features: None,
-            client_features_hi: None,
-            client_flags_ext: None,
-        },
-    )
-    .await?;
-    let frame = read_frame(&mut recv)
-        .await?
-        .ok_or_else(|| anyhow!("no answer to a legacy auth"))?;
-    let expected = Message::Ok.encode()?;
-    if frame.header.flags != expected.header.flags || frame.payload != expected.payload {
-        bail!(
-            "a legacy auth was not answered with the original ok frame: {:?}",
-            frame.payload
-        );
+    let mut missing_one_flag =
+        felix_wire::baseline_auth(auth.tenant_id.clone(), auth.token.clone());
+    if let Message::Auth { client_flags, .. } = &mut missing_one_flag {
+        *client_flags =
+            Some(felix_wire::CLIENT_BASELINE_FLAGS & !felix_wire::FLAG_BINARY_PUBLISH_KEYED);
     }
-    send.finish()?;
+    let offers_nothing = Message::Auth {
+        tenant_id: auth.tenant_id.clone(),
+        token: auth.token.clone(),
+        client_flags: None,
+        client_features: None,
+        client_features_hi: None,
+        client_flags_ext: None,
+    };
+    for (what, offer) in [
+        ("an auth missing one baseline flag", missing_one_flag),
+        ("an auth that offers nothing", offers_nothing),
+    ] {
+        let (mut send, mut recv) = connection.open_bi().await?;
+        quic::write_message(&mut send, offer).await?;
+        let mut scratch = quic::FrameScratch::new();
+        match quic::read_message_limited(&mut recv, MAX_TEST_FRAME_BYTES, &mut scratch).await? {
+            Some(Message::Error {
+                code: Some(felix_wire::ErrorCode::BelowBaseline),
+                ..
+            }) => {}
+            other => bail!("{what} was not refused with below_baseline: {other:?}"),
+        }
+        send.finish()?;
+    }
     Ok(())
 }
 

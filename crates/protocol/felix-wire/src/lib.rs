@@ -23,6 +23,11 @@ pub mod internal;
 pub mod routing;
 
 pub use client::ack_durability::{AckCopies, AckDurability, AckFsync, AckPoint};
+pub use client::baseline::{
+    BROKER_BASELINE_FEATURES, BROKER_BASELINE_FEATURES_HI, BROKER_BASELINE_FLAGS,
+    CLIENT_BASELINE_FEATURES, CLIENT_BASELINE_FEATURES_HI, CLIENT_BASELINE_FLAGS, baseline_auth,
+    baseline_auth_ok, broker_missing_baseline, client_missing_baseline,
+};
 pub use client::error_code::{
     ErrorCode, ErrorDetail, RetryClass, feature_reason, shard_unavailable_reason, trim_reason,
 };

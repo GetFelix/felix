@@ -74,13 +74,17 @@ pub enum ErrorCode {
     /// A head trim on a stream holding atomic commits, whose state lives in
     /// the records a trim would remove. Nothing was written.
     StreamHasCommits,
+    /// The `auth` did not offer every bit of the 0.8 baseline, so the client is
+    /// older than the broker serves. The message names the missing bits. See
+    /// [`crate::CLIENT_BASELINE_FLAGS`].
+    BelowBaseline,
     /// A code this version does not know. Its retry class still applies.
     Unknown(String),
 }
 
 impl ErrorCode {
     /// Every code this version defines, for tables and checks.
-    pub const ALL: [ErrorCode; 19] = [
+    pub const ALL: [ErrorCode; 20] = [
         ErrorCode::Unauthenticated,
         ErrorCode::Forbidden,
         ErrorCode::NotFound,
@@ -100,6 +104,7 @@ impl ErrorCode {
         ErrorCode::StaleWidth,
         ErrorCode::FeatureNotEnabled,
         ErrorCode::StreamHasCommits,
+        ErrorCode::BelowBaseline,
     ];
 
     /// The wire name.
@@ -124,6 +129,7 @@ impl ErrorCode {
             ErrorCode::StaleWidth => "stale_width",
             ErrorCode::FeatureNotEnabled => "feature_not_enabled",
             ErrorCode::StreamHasCommits => "stream_has_commits",
+            ErrorCode::BelowBaseline => "below_baseline",
             ErrorCode::Unknown(name) => name,
         }
     }
@@ -160,6 +166,7 @@ impl ErrorCode {
             ErrorCode::StaleWidth => 17,
             ErrorCode::FeatureNotEnabled => 18,
             ErrorCode::StreamHasCommits => 19,
+            ErrorCode::BelowBaseline => 20,
             ErrorCode::Unknown(_) => 0,
         }
     }
@@ -183,7 +190,8 @@ impl ErrorCode {
             | ErrorCode::LimitExceeded
             | ErrorCode::Revoked
             | ErrorCode::FeatureNotEnabled
-            | ErrorCode::StreamHasCommits => RetryClass::Fatal,
+            | ErrorCode::StreamHasCommits
+            | ErrorCode::BelowBaseline => RetryClass::Fatal,
             // A broker learns streams from the control plane, so a promoted
             // broker says "not found" for a stream it is about to serve.
             ErrorCode::NotFound | ErrorCode::Overloaded => RetryClass::RetryAfter,

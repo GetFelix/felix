@@ -125,11 +125,9 @@ ridden in that frame since `0x0040`. The JSON forms measured **645.8 MB/s
 against 917** for the same keyed workload on the same rig, with user CPU up from
 20% to 28%, and they now buy nothing the binary frames do not cover.
 
-They are still accepted, and will be: `ORIGINAL_V1_FLAGS` is frozen, so a client
-older than `0x0008` or `0x0040` is entitled to keep sending them and must keep
-working. What changed is that **no current Felix client emits one except as a
-fallback** it chooses itself, against a broker that did not advertise the frame
-it wanted. Brokers count what still arrives on this path as
+They are still accepted, but **no Felix client emits one**: the binary frames are
+in the [0.8 baseline](#08-baseline), so there is no broker to fall back for.
+Brokers count what still arrives on this path as
 `felix_broker_json_publishes_total{frame="publish"|"publish_batch"}`, which is
 the evidence a deployment would need before this arm could ever be dropped.
 
@@ -332,18 +330,18 @@ on `subscribed`. A client sends it only to a broker that advertised
 `FEATURE_SUBSCRIBE_QUEUE`, since an older broker ignores the field. There is
 no matching field for the overflow policy: under `block` a subscriber's full
 queue makes every publisher on the shard wait, so it stays an operator setting
-for the stream. A reader that cannot tolerate gaps relies on
-`subscription_lagged` and a resume from the log instead.
+for the stream. `DropNew` still drops, but every subscription ends with
+`subscription_lagged` at its first dropped batch, so a reader resumes from the
+log instead of continuing past a gap.
 
 `end` (optional, `u64`) bounds the subscription: it delivers `[start, end)` of a
 durable stream shard and then ends with [`subscription_ended`](#subscriptionended-server---client).
-It needs negotiated event offsets and a durable stream, and is refused with
+It needs a durable stream, and is refused with
 `invalid_request` otherwise. An `end` at or below where the history ends (`live_offset`) is read from
 history alone and never joins fanout; one above it replays up to the tail, then
 follows live delivery and cuts the batch that crosses `end`. A bounded
-subscription also ends at its first queue drop with `subscription_lagged`,
-whether or not the client offered `FEATURE_SUBSCRIPTION_LAGGED`, because a hole
-below `end` would break what it asked for. A client sends `end` only to a broker
+subscription ends at its first queue drop with `subscription_lagged`, like
+every subscription, because a hole below `end` would break what it asked for. A client sends `end` only to a broker
 that advertised `FEATURE_SUBSCRIBE_END`: an older broker ignores the field and
 would run on into live delivery. `end` should be one past the offset of a record
 (for example a `live_offset` or a page's `next_offset`); an `end` that falls on
@@ -457,8 +455,7 @@ An `error` frame, as on a control stream, can be the last frame on the event
 stream of a subscription or cache watch. The broker sends one when the
 credential the subscription or watch was opened with is revoked (code
 `revoked`, see [Error codes](#error-codes)) and finishes the stream after it.
-The code and retry class are left out for a client that did not offer
-`FEATURE_ERROR_CODES`. No feature bit gates the frame itself: a client that
+No feature bit gates the frame itself: a client that
 does not expect it on an event stream reads it as an unexpected frame, which
 still ends the subscription with an error rather than as a clean close.
 
@@ -494,9 +491,10 @@ latter. The broker sends it as
 soon as the events queued before the drop are written, not when the next
 publish arrives, and finishes the stream after it.
 
-Sent only to a client that offered `FEATURE_SUBSCRIPTION_LAGGED` and negotiated
-`FLAG_EVENT_BATCH_OFFSETS`. Any other client keeps its subscription after a drop
-and sees it only as a jump in offsets on a later event. When the shard also
+Every subscription ends this way at its first dropped batch: both
+`FEATURE_SUBSCRIPTION_LAGGED` and `FLAG_EVENT_BATCH_OFFSETS` are in the baseline,
+so every client reads it. `DropNew` still drops, but a client can no longer keep
+going and see the drop as a jump in offsets. When the shard also
 moved, this frame is sent rather than `shard_moved`, since resuming where the
 move says would skip the dropped records.
 
@@ -1552,12 +1550,10 @@ owner that predates versions answers without one.
 ```
 
 A request failed. `message` is prose for people. `code`, `retry` and `detail`
-are sent only to a client that offered `FEATURE_ERROR_CODES`; without them the
-frame is byte-identical to the one a broker that predates codes sends. Every
-field of `detail` is optional. See [Error codes](#error-codes).
+are always sent. Every field of `detail` is optional. See [Error codes](#error-codes).
 
 `publish_error` carries the same three optional fields next to its
-`request_id` and `message`, under the same negotiation.
+`request_id` and `message`.
 
 ## Semantics (v1)
 - Subscribe starts at the tail unless `start` asks otherwise; a durable stream
@@ -1656,11 +1652,10 @@ each batch it remembers, a CRC-64 digest of the batch's payloads (on a durable
 stream it is derived from the log, so it survives a restart and a failover;
 see `docs/storage-format.md`). A batch under a remembered sequence whose
 digest differs is not a re-send. A client that offered `FEATURE_SEQUENCE_REUSED`
-is refused with `sequence_reused`; the Rust client offers it and surfaces the
-refusal as `PublishRefused` with `PublishRefusalReason::SequenceReused`. A
-client that did not offer it cannot decode the reason, so it gets what it always
-got: `publish_ok`, and the batch is silently not written. That gap is why a
-client must never reuse a sequence whose outcome it does not know. A batch held
+is refused with `sequence_reused`; `FEATURE_SEQUENCE_REUSED` is in the baseline,
+and the Rust client surfaces the refusal as `PublishRefused` with
+`PublishRefusalReason::SequenceReused`. A client must never reuse a sequence
+whose outcome it does not know. A batch held
 without a digest, known only from a producer snapshot written before digests
 were kept, is treated as matching. The Kafka listener does not check digests:
 Kafka answers a duplicate sequence by its numbers alone and has no error for
@@ -1755,9 +1750,7 @@ way: the Rust client counts every unanswered publish's bytes against one
 `publish_window` is present only when the client offered the bit and the broker
 grants it; a broker configured with `publish_window = 0`
 (`FELIX_BROKER_PUBLISH_WINDOW=0`) neither advertises the bits nor grants a
-window. A client that did not offer it, and one that predates negotiation, get
-exactly the frames they always got: completion-order answers and no window. A
-client reads a window without the bit as no window.
+window. A client reads a window without the bit as no window.
 
 It is a feature bit rather than a frame flag because no payload changes shape:
 the same frames go both ways, and only their timing and order differ.
@@ -1788,8 +1781,7 @@ Per-shard order does not depend on answer order: the broker commits each
 shard's publishes in the order it read them from a stream. That holds for
 plain and idempotent publishes mixed on one stream too. A client must match answers by
 `request_id`, as it does without pipelining. A broker that does not answer the
-bit keeps request order for every publish, and a client that did not offer it
-gets the frames it always got.
+bit keeps request order for every publish. Every 0.8 client offers it.
 
 The Rust client offers the bit. When it is granted, the stream's writer keeps
 writing new publishes while answers are outstanding and settles each answer as
@@ -2139,8 +2131,8 @@ The same offer adds `offset` to the JSON `publish_ok`, under the same rules:
 {"type":"publish_ok","request_id":7,"offset":42}
 ```
 
-A client that did not offer `0x1000` gets exactly the frames it always got: no
-flag bit and no `offset` field.
+`0x1000` is in the baseline, so every client gets the `offset` when the ack is
+sent after the write.
 
 This is the response to a `0x0008` publish. It carries exactly the information the
 JSON `publish_ok` / `publish_error` messages do; a client that published with the
@@ -2158,13 +2150,13 @@ other side understands. The supported set is exchanged on the `auth` handshake,
 which is already the first round trip on every control stream and therefore costs
 no extra latency.
 
-A client that implements negotiation includes its own set:
+A client includes its own set:
 
 ```json
 {"type":"auth","tenant_id":"t1","token":"...","client_flags":25}
 ```
 
-A broker that implements negotiation replies with its own:
+A broker replies with its own:
 
 ```json
 {"type":"auth_ok","server_flags":25}
@@ -2173,24 +2165,76 @@ A broker that implements negotiation replies with its own:
 The client MUST use the advertised value to decide which encodings it may send, and
 MUST NOT assume its own set is supported.
 
-Both directions degrade without a version check, because serde-style decoders ignore
-unknown fields:
+### 0.8 baseline
 
-| Client | Broker | Outcome |
-| --- | --- | --- |
-| negotiating | negotiating | `auth_ok`; client uses any advertised bit |
-| negotiating | legacy | `client_flags` ignored, plain `ok` returned; client assumes `ORIGINAL_V1_FLAGS` and falls back to the JSON encoding for acked publishes |
-| legacy | negotiating | no `client_flags` offered, so the broker replies with a plain `ok` and never sends a message the client cannot parse |
-| legacy | legacy | unchanged |
+0.8 starts fresh and has no upgrade path from 0.7, so the bits that existed when
+it was cut are not optional. Every 0.8 client offers all of them and every 0.8
+broker advertises all of them. Neither side keeps a fallback for a peer that does
+not. The lists are frozen: a bit added after 0.8 never joins them.
+
+The client baseline:
+
+- Flags: `BINARY_PUBLISH_BATCH`, `BINARY_EVENT_BATCH`, `BINARY_EVENT_BATCH_SHARED`,
+  `BINARY_PUBLISH_ACKED`, `BINARY_PUBLISH_ACK`, `EVENT_BATCH_OFFSETS`,
+  `BINARY_PUBLISH_KEYED`, `BINARY_PUBLISH_ACK_OWNER`, `BINARY_PUBLISH_IDEMPOTENT`,
+  `BINARY_PUBLISH_ACK_CODE`, `BINARY_PUBLISH_ACK_DETAIL`, `EVENT_BATCH_SKIPPED` and
+  `BINARY_PUBLISH_ACK_OFFSET`.
+- Features: `TOPOLOGY`, `REDIRECT`, `CACHE_DELETE`, `CONSUMER_GROUP`,
+  `GROUP_DEAD_LETTERS`, `STREAM_SHARDS`, `CACHE_WATCH`, `CACHE_WATCH_RETAINED`,
+  `COUNTERS`, `IDEMPOTENT_PRODUCER`, `CACHE_SHARDS`, `ERROR_CODES`, `SHARD_MOVED`,
+  `UNSUPPORTED`, `SEQUENCE_REUSED`, `PUBLISH_PIPELINE`, `ATOMIC_COMMIT`,
+  `STREAM_PUBLISH_WINDOW`, `SHARD_OWNERS`, `GROUP_CONSUMER`, `SUBSCRIPTION_LAGGED`,
+  `GROUP_SKIPPED`, `GROUP_ADMIN`, `CACHE_CONDITIONAL`, `GROUP_CLAIM_CONTROL`,
+  `PUBLISH_CONDITIONAL`, `STREAM_READ` and `SUBSCRIBE_QUEUE`.
+- Extended features, which ride behind the `EXTENDED` marker: `INSPECT`,
+  `STREAM_DELETED`, `PUBLISH_WIDTH`, `EXPLICIT_SHARD`, `HEAD_TRIM`, `LEASE_TOKEN`,
+  `PUBLISH_ANSWER_ON_COMPLETION`, `SUBSCRIBE_END` and `ACK_DURABILITY`.
+
+Left out, because a client asks for them only when its application wants them:
+`EVENT_BATCH_PUBLISHER`, `EVENT_BATCH_TIMESTAMPS`, `ACK_ON_COMMIT`,
+`GROUP_PUBLISHER`, `RECORD_TIMESTAMPS` and the `RECORD_HEADERS` extension.
+
+The broker baseline is every flag defined at 0.8 (the client flags plus
+`EVENT_BATCH_PUBLISHER` and `EVENT_BATCH_TIMESTAMPS`), and these features,
+whatever the broker is configured with: `CACHE_DELETE`, `STREAM_SHARDS`,
+`IDEMPOTENT_PRODUCER`, `CACHE_SHARDS`, `ERROR_CODES`, `SHARD_MOVED`, `UNSUPPORTED`,
+`SEQUENCE_REUSED`, `ATOMIC_COMMIT`, `SHARD_OWNERS`, `ACK_ON_COMMIT`,
+`SUBSCRIPTION_LAGGED`, `CACHE_CONDITIONAL`, `RECORD_TIMESTAMPS`,
+`PUBLISH_CONDITIONAL`, `STREAM_READ` and `SUBSCRIBE_QUEUE`, plus the extended
+features `INSPECT`, `STREAM_DELETED`, `PUBLISH_WIDTH`, `EXPLICIT_SHARD`,
+`HEAD_TRIM`, `SUBSCRIBE_END` and `ACK_DURABILITY`. Features that describe
+something a broker may not have (a cluster, durable storage, a publish window, a
+lease key) are not in it, and a client still checks each of those.
+
+A broker that gets an `auth` missing any baseline bit, or carrying no
+`client_flags` at all, answers `error` with code `below_baseline` and closes the
+stream. It does this before it checks the credential, so a client that is both
+below the baseline and unauthorised hears about the baseline. The `message`
+names the missing bits. A client that gets an `auth_ok` missing a broker baseline bit, or a
+plain `ok`, refuses the connection the same way.
 
 `ORIGINAL_V1_FLAGS` is `0x0001 | 0x0002 | 0x0004`, the bits that existed before
-negotiation. It is the only safe reading of an absent advertisement, and it is
-frozen: adding a bit to it would make clients assume support that older brokers
-do not have.
+negotiation. It stays frozen, and no longer stands for anything a peer can send: a
+peer that does not negotiate is refused, so there is no silence to read.
 
-A broker MUST only send `auth_ok` in response to an `auth` that offered
-`client_flags`. A client old enough not to know the variant can then never receive
-it.
+Bits added after 0.8 negotiate as they always have. An unknown frame flag or
+extension bit is still rejected, since masking it off would misparse the body, and
+an unknown feature bit is ignored. A broker only gives a client a shape the client
+offered, but for baseline bits that is every client.
+
+What the baseline removed:
+
+- The plain `ok` in answer to `auth`. A broker only sends `auth_ok`.
+- The JSON fallback in the Rust client for acked, keyed and idempotent publishes.
+  Each goes out as its binary frame.
+- Per-bit stripping on the broker: error codes, `detail`, retry classes, publish
+  ack offsets and trim headers are always sent, and a binary ack always carries
+  its code, detail and offset.
+- Sending `not_leader` as an `error` to a QUIC client. It always gets the
+  redirect message.
+- Answers in request order for a plain publish on a pipelining stream. Answers
+  come on completion, and only idempotent publishes keep request order among
+  themselves.
 
 ## Feature negotiation
 
@@ -2349,14 +2393,11 @@ above.
 
 ## Error codes
 
-A client that offers `FEATURE_ERROR_CODES` in `auth` gets a typed `code` and a
-`retry` class on every `error` and `publish_error` the broker sends it, and on a
-failed binary ack if it also offered `BINARY_PUBLISH_ACK_CODE` (and the `detail`
-there too if it offered `BINARY_PUBLISH_ACK_DETAIL`). A client that did not offer
-the bit gets the same frames as before, with no new fields. The broker
-advertises the bit too, so a client can tell "no code applies" from "this broker
-predates codes". That includes a refused `auth`: the broker reads the offer
-before answering it.
+Every client gets a typed `code` and a `retry` class on every `error` and
+`publish_error` the broker sends it, and on a failed binary ack, with the
+`detail` there too. `FEATURE_ERROR_CODES`, `BINARY_PUBLISH_ACK_CODE` and
+`BINARY_PUBLISH_ACK_DETAIL` are part of the [0.8 baseline](#08-baseline). That
+includes a refused `auth`.
 
 Some refusals end the stream, such as a forbidden request or a cache request
 naming a cache the broker does not have. The broker writes the `error` before
@@ -2403,6 +2444,7 @@ client MUST act on the class it received, not on this table.
 | `stale_width` | `retry` | 17 | The keyed batch was routed by a width the stream does not have on this broker. Nothing was written. | A keyed batch to the stream named by the client's last `publish_width` on that control stream, when the width or mapping it names differs from the broker's routing snapshot: the stream was most likely deleted and created again. Ask `stream_shards` again before retrying. Only a client that sent `publish_width` can get it. |
 | `feature_not_enabled` | `fatal` | 18 | The request needs a fleet feature that has not been finalized. `detail.reason` names it. Nothing was applied. | A `trim_before` before the fleet finalizes `head_trim`, or `raft_head_trim` for a shard on Raft (`detail.reason` = `head_trim` for both). It keeps failing until an operator finalizes the feature. Only a client that offered `FEATURE_HEAD_TRIM` can get it. Also, with `detail.reason` = `record_headers`, a publish that carries record headers to a single broker whose `FELIX_RECORD_HEADERS` switch is off, or that is forwarded to an owner that predates headers or has not yet seen the finalize, or, for a shard on Raft, before the fleet finalizes `raft_record_headers`: [what the broker does with headers](#what-the-broker-does-with-headers). |
 | `stream_has_commits` | `fatal` | 19 | The stream holds atomic commits, whose state lives in the records a trim would remove. Nothing was written. | A `trim_before` on such a stream. Only a client that offered `FEATURE_HEAD_TRIM` can get it. |
+| `below_baseline` | `fatal` | 20 | The `auth` did not offer the whole [0.8 baseline](#08-baseline). Nothing was applied and the stream is closed. | An `auth` missing a baseline flag or feature, or carrying no `client_flags`. Sent before the credential is checked. The `message` names the missing bits. |
 
 `Number` is the `u16` the binary ack carries. `0` is never sent.
 
@@ -2413,9 +2455,9 @@ shard went and then sends it there, forwarded if that is another broker. A
 client sees a slower acknowledgement, not an error. Only a move that takes
 longer than `FELIX_SHARD_MOVE_HOLD_MS` (2 s by default), or a burst beyond
 `FELIX_SHARD_MOVE_HOLD_MAX` held publishes, is answered with
-`shard_unavailable` / `moving`. A client without `FEATURE_ERROR_CODES` gets
-only the `publish_error` text, which names the stream and the reason, such as
-`publish to t1/ns/orders refused: shard is moving to another broker`. Cache
+`shard_unavailable` / `moving`, whose `message` names the stream and the reason,
+such as `publish to t1/ns/orders refused: shard is moving to another broker`.
+Cache
 and counter operations are held and forwarded the same way, under the same
 bounds. A write that reaches the new owner while it is still opening or
 fencing the shard is held the same way until it serves. A consumer-group operation is held too, and once the move cuts over is
@@ -2435,9 +2477,6 @@ answered at once with `shard_unavailable` and reason `not_ready`, even while an
 earlier publish on the shard is still waiting for its commit. Nothing of it
 was written and it holds no offset, so sending it again cannot write it twice,
 and the re-send lands after the earlier publish if that one survives.
-
-A client without `FEATURE_ERROR_CODES` that the broker is draining still gets no
-answer on a new stream until the connection closes, as it always did.
 
 A forwarded write that the owner refused because its epoch was fenced reaches
 the client as `shard_unavailable` with reason `not_ready`, not `fenced`: the
@@ -2662,8 +2701,9 @@ Two uses:
 - **Checkpointing.** A client records the offset it last handled and resumes at
   that offset plus one after a reconnect.
 - **Detecting loss.** Subscriber queues drop under `DropNew`, so consecutive
-  delivered batches can have a gap. Without offsets that loss is invisible; with
-  them it is a discontinuity the client can see and act on. Not every offset
+  delivered batches can have a gap, which the offsets make visible. A
+  subscription ends with `subscription_lagged` at its first dropped batch, so
+  the gap is normally the last thing a client sees on it. Not every offset
   holds an event, though (below), so the number of events dropped between an
   event at `previous` and the next at `offset` is
   `offset - previous - 1 - skipped_before`. Before the first event there is no

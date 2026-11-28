@@ -31,7 +31,7 @@ async fn subscription_binary_batch_mismatched_id_errors() -> Result<()> {
                 return Ok(());
             };
             let _ = read_message(&mut recv, &mut frame_scratch).await?;
-            write_message(&mut send, Message::Ok).await?;
+            write_message(&mut send, felix_wire::baseline_auth_ok()).await?;
             loop {
                 let next = read_message(&mut recv, &mut frame_scratch).await?;
                 match next {
@@ -134,7 +134,7 @@ async fn subscription_decode_error_on_invalid_frame() -> Result<()> {
                 return Ok(());
             };
             let _ = read_message(&mut recv, &mut frame_scratch).await?;
-            write_message(&mut send, Message::Ok).await?;
+            write_message(&mut send, felix_wire::baseline_auth_ok()).await?;
             loop {
                 let next = read_message(&mut recv, &mut frame_scratch).await?;
                 match next {
@@ -240,7 +240,7 @@ async fn subscription_legacy_event_paths_and_unexpected_message_error() -> Resul
                 return Ok(());
             };
             let _ = read_message(&mut recv, &mut frame_scratch).await?;
-            write_message(&mut send, Message::Ok).await?;
+            write_message(&mut send, felix_wire::baseline_auth_ok()).await?;
             loop {
                 let next = read_message(&mut recv, &mut frame_scratch).await?;
                 match next {
@@ -380,7 +380,7 @@ async fn subscription_binary_batch_decode_error_on_invalid_payload() -> Result<(
                 return Ok(());
             };
             let _ = read_message(&mut recv, &mut frame_scratch).await?;
-            write_message(&mut send, Message::Ok).await?;
+            write_message(&mut send, felix_wire::baseline_auth_ok()).await?;
             loop {
                 let next = read_message(&mut recv, &mut frame_scratch).await?;
                 match next {
@@ -488,7 +488,7 @@ async fn subscription_binary_batch_success_records_decode_timing() -> Result<()>
                 return Ok(());
             };
             let _ = read_message(&mut recv, &mut frame_scratch).await?;
-            write_message(&mut send, Message::Ok).await?;
+            write_message(&mut send, felix_wire::baseline_auth_ok()).await?;
             loop {
                 let next = read_message(&mut recv, &mut frame_scratch).await?;
                 match next {
@@ -634,7 +634,7 @@ async fn ended_by(last: Message) -> Result<crate::Subscription> {
                 return Ok(());
             };
             let _ = read_message(&mut recv, &mut frame_scratch).await?;
-            write_message(&mut send, Message::Ok).await?;
+            write_message(&mut send, felix_wire::baseline_auth_ok()).await?;
             while let Some(message) = read_message(&mut recv, &mut frame_scratch).await? {
                 let Message::Subscribe {
                     subscription_id, ..
@@ -731,7 +731,7 @@ async fn a_skip_count_reaches_the_first_event_of_its_batch() -> Result<()> {
                 return Ok(());
             };
             let _ = read_message(&mut recv, &mut frame_scratch).await?;
-            write_message(&mut send, Message::Ok).await?;
+            write_message(&mut send, felix_wire::baseline_auth_ok()).await?;
             while let Some(message) = read_message(&mut recv, &mut frame_scratch).await? {
                 let Message::Subscribe {
                     subscription_id, ..

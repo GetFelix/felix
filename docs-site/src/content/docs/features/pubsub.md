@@ -224,7 +224,8 @@ at each level:
 
 Under the default a publisher never waits on a subscriber. That is why one
 stalled consumer cannot degrade the rest, and also why a subscriber can
-silently miss records.
+miss records. On a durable stream its subscription ends with
+`subscription_lagged` at the first dropped batch, and it resumes from the log.
 
 Under `block`, a batch reaches every subscriber with room before the publish
 waits on the full ones. The next batch on the shard waits behind it, though,

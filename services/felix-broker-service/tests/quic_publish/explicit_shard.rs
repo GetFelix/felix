@@ -123,13 +123,11 @@ async fn a_shard_out_of_range_is_refused() -> Result<()> {
     Ok(())
 }
 
-/// **A client that did not offer the extended features is unaffected.** It
-/// is not told about the bit, and its keyed publishes route by the key as
-/// they always did. A raw idempotent producer naming shards keeps one
-/// sequence per named shard.
+/// **A keyed publish with no shard routes by the key's hash.** A raw
+/// idempotent producer naming shards keeps one sequence per named shard.
 #[tokio::test]
 #[serial]
-async fn an_old_client_is_unaffected_and_sequences_follow_the_named_shard() -> Result<()> {
+async fn a_keyed_publish_routes_by_hash_and_sequences_follow_the_named_shard() -> Result<()> {
     let fixture = TwoShards::start().await?;
     let quic = QuicClient::bind(
         "0.0.0.0:0".parse()?,
@@ -145,25 +143,17 @@ async fn an_old_client_is_unaffected_and_sequences_follow_the_named_shard() -> R
             .await
     };
 
-    match exchange(Message::Auth {
-        tenant_id: fixture.auth.tenant_id.clone(),
-        token: fixture.auth.token.clone(),
-        client_flags: Some(felix_wire::ORIGINAL_V1_FLAGS),
-        client_features: Some(felix_wire::FEATURE_IDEMPOTENT_PRODUCER),
-        client_features_hi: None,
-        client_flags_ext: None,
-    })
+    match exchange(felix_wire::baseline_auth(
+        fixture.auth.tenant_id.clone(),
+        fixture.auth.token.clone(),
+    ))
     .await?
     {
-        Some(Message::AuthOk {
-            server_features_hi: None,
-            server_flags_ext: None,
-            ..
-        }) => {}
-        other => anyhow::bail!("expected an AuthOk with no extended word, got {other:?}"),
+        Some(Message::AuthOk { .. }) => {}
+        other => anyhow::bail!("expected an AuthOk, got {other:?}"),
     }
 
-    // Keyed, with no shard: the frame an older client sends, routed by hash.
+    // Keyed, with no shard: routed by hash.
     let keyed = Message::PublishBatch {
         tenant_id: TENANT.to_string(),
         namespace: NAMESPACE.to_string(),

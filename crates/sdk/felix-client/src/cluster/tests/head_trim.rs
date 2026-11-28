@@ -9,7 +9,7 @@ use felix_wire::{CursorErrorReason, ErrorCode, Message, PublishRefusalReason, Re
 use super::connections::{default_config, policy};
 use super::stub_broker::StubBroker;
 use crate::cluster::Client;
-use crate::{BrokerError, ConditionalTrim, SubscribeCursorError, TrimError};
+use crate::{BrokerError, ConditionalTrim, SubscribeCursorError};
 
 async fn client_of(
     script: impl Fn(u64) -> Message + Send + Sync + 'static,
@@ -50,21 +50,6 @@ async fn trim(cluster: &Client) -> Result<ConditionalTrim> {
     cluster
         .trim_before("t1", "default", "orders", 2, 5, 9, Some(b"holder-2"))
         .await
-}
-
-/// **A broker that never advertised head trims is not sent the request.** An
-/// older broker would drop the unknown frame and cost the connection.
-#[tokio::test]
-#[serial_test::serial]
-async fn an_unsupporting_broker_is_not_sent_a_trim() -> Result<()> {
-    let (broker, cluster) = client_of(|_| Message::Ok, false).await?;
-    let error = trim(&cluster).await.expect_err("unsupported");
-    assert_eq!(
-        error.downcast_ref::<TrimError>(),
-        Some(&TrimError::Unsupported)
-    );
-    assert_eq!(trims(&broker), 0);
-    Ok(())
 }
 
 #[tokio::test]

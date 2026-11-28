@@ -2437,7 +2437,7 @@ that says so. It reads one file, not every log.
 
 > `a_trim_hides_history_and_a_stale_one_is_refused`,
 > `a_viewer_or_publisher_cannot_trim`,
-> `refusals_are_coded_and_old_clients_see_old_frames`,
+> `refusals_are_coded`,
 > `the_first_trim_marks_the_directory_before_it_writes`,
 > `a_trimmed_directory_refuses_a_fleet_without_head_trim`,
 > `a_trimmed_directory_joins_a_fleet_with_head_trim`,

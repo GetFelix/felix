@@ -22,23 +22,9 @@ fn frame(records: Vec<GroupRecord>) -> String {
     String::from_utf8(message.encode().expect("encode").payload.to_vec()).expect("utf8")
 }
 
-/// **A client that never negotiated `skipped_before` does not get it**, even
-/// when the broker has a count to report, so its frame is the one it always
-/// got.
 #[test]
-fn a_client_without_the_feature_gets_records_without_skipped_before() {
-    let records = for_peer(
-        polled(),
-        felix_wire::KNOWN_FEATURES & !felix_wire::FEATURE_GROUP_SKIPPED,
-    );
-    assert_eq!(records[0].skipped_before, 0);
-    assert!(!frame(records).contains("skipped_before"));
-    assert!(!frame(for_peer(polled(), 0)).contains("skipped_before"));
-}
-
-#[test]
-fn a_client_with_the_feature_gets_skipped_before() {
-    let records = for_peer(polled(), felix_wire::FEATURE_GROUP_SKIPPED);
+fn every_client_gets_skipped_before() {
+    let records = for_peer(polled(), 0);
     assert_eq!(records[0].skipped_before, 2);
     assert!(frame(records).contains("\"skipped_before\":2"));
 }
@@ -59,8 +45,7 @@ fn only_a_client_with_the_feature_gets_the_publisher() {
     assert!(frame(with).contains("\"publisher\":\"alice\""));
 }
 
-/// The append time goes only to a client that asked. A client that offered
-/// none of the bits gets exactly the frame a broker before them sent.
+/// The append time goes only to a client that asked.
 #[test]
 fn only_a_client_with_the_feature_gets_the_time() {
     let without = for_peer(
@@ -71,7 +56,7 @@ fn only_a_client_with_the_feature_gets_the_time() {
     assert!(!frame(without).contains("timestamp_micros"));
     assert_eq!(
         frame(for_peer(polled(), 0)),
-        r#"{"type":"group_records","records":[{"offset":7,"payload":"dg==","attempts":1}],"request_id":1}"#
+        r#"{"type":"group_records","records":[{"offset":7,"payload":"dg==","attempts":1,"skipped_before":2}],"request_id":1}"#
     );
 
     let with = for_peer(polled(), felix_wire::FEATURE_RECORD_TIMESTAMPS);

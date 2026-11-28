@@ -121,54 +121,12 @@ impl Connection {
         let OpenedStream {
             mut send,
             mut recv,
-            negotiated,
             lease,
             ..
         } = self.open_event_stream_bounded().await?;
         let connection_index = lease.slot();
-        let server_flags = negotiated.server_flags;
-        // Sent only where it will be answered: an older broker ignores it.
-        let queue_capacity = self.runtime_config.broker_sub_queue_capacity.filter(|_| {
-            felix_wire::supports_feature(
-                negotiated.server_features,
-                felix_wire::FEATURE_SUBSCRIBE_QUEUE,
-            )
-        });
+        let queue_capacity = self.runtime_config.broker_sub_queue_capacity;
 
-        // A broker that predates resume ignores the unknown `start` field and
-        // subscribes at the tail, then answers `Subscribed` -- so the client
-        // would report success while silently losing everything published
-        // during the disconnect. That is worse than an error, because the
-        // application has no way to notice. `Latest` is safe to send either
-        // way: it is what an old broker does anyway.
-        if end.is_some() {
-            if !felix_wire::supports_feature(
-                negotiated.server_features_hi,
-                felix_wire::FEATURE_SUBSCRIBE_END,
-            ) {
-                return Err(anyhow::anyhow!(
-                    "broker does not support bounded subscriptions \
-                     (it did not advertise FEATURE_SUBSCRIBE_END); nothing was sent"
-                ));
-            }
-            if !felix_wire::supports(server_flags, felix_wire::FLAG_EVENT_BATCH_OFFSETS) {
-                return Err(anyhow::anyhow!(
-                    "broker does not deliver event offsets (negotiated flags {server_flags:#06x}); \
-                     a bounded subscription counts offsets"
-                ));
-            }
-        }
-        let needs_replay = matches!(
-            start,
-            Some(StartPosition::Earliest) | Some(StartPosition::Offset(_))
-        );
-        if needs_replay && !felix_wire::supports(server_flags, felix_wire::FLAG_EVENT_BATCH_OFFSETS)
-        {
-            return Err(anyhow::anyhow!(
-                "broker does not support resumable subscriptions (negotiated flags {server_flags:#06x}); \
-                 resuming from a position would silently start at the tail instead"
-            ));
-        }
         let mut frame_scratch = BytesMut::with_capacity(64 * 1024);
         write_message(
             &mut send,
@@ -204,11 +162,6 @@ impl Connection {
                 live_offset,
                 queue_capacity,
             }) => (subscription_id, start_offset, live_offset, queue_capacity),
-            Some(Message::Ok) => {
-                return Err(anyhow::anyhow!(
-                    "subscribe response missing subscription id"
-                ));
-            }
             Some(Message::SubscribeCursorError {
                 reason,
                 requested,

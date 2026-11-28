@@ -50,7 +50,7 @@ def test_a_commit_is_read_at_its_offset(client, fixture, key):
 
 
 @pytest.mark.scenario("commit.negotiated")
-def test_commits_are_refused_by_a_broker_that_advertised_none(fixture, key):
+def test_a_broker_below_the_baseline_is_refused_and_sent_no_commit(fixture, key):
     addrs = fixture.get("no_commit_addrs")
     control_url = fixture.get("control_url")
     if not addrs or not control_url:
@@ -58,20 +58,15 @@ def test_commits_are_refused_by_a_broker_that_advertised_none(fixture, key):
     tenant, namespace = fixture["tenant_id"], fixture["namespace"]
     stream = fixture["durable_stream"]
 
-    with felix.Client(
-        addrs,
-        tenant_id=tenant,
-        token=fixture["token"],
-        ca_file=fixture["ca_file"],
-    ) as bare:
-        # The plain base class: a typed refusal (wrong shard, event count) would
-        # mean the call reached the broker.
-        with pytest.raises(felix.CommitError) as refused:
+    # The client refuses the broker's auth_ok for lacking the baseline.
+    with pytest.raises(felix.FelixError):
+        with felix.Client(
+            addrs,
+            tenant_id=tenant,
+            token=fixture["token"],
+            ca_file=fixture["ca_file"],
+        ) as bare:
             bare.commit(tenant, namespace, key.encode(), [felix.CommitOp.publish(stream, b"x")])
-        assert type(refused.value) is felix.CommitError
-        with pytest.raises(felix.CommitError) as refused:
-            bare.state_get(tenant, namespace, stream, key.encode(), key)
-        assert type(refused.value) is felix.CommitError
 
     with urllib.request.urlopen(control_url + "/no-commit/requests", timeout=10) as response:
         assert int(response.read()) == 0, "the broker was sent a commit or state read"

@@ -1724,7 +1724,7 @@ Three signals look alike from the outside and mean different things.
 
 | Signal | What happened | What the client does |
 | --- | --- | --- |
-| A jump in offsets, less `skipped_before` | The subscriber's queue overflowed and records were dropped. | Nothing. This is the only trace a broker without `subscription_lagged` leaves, so check for it. |
+| A jump in offsets, less `skipped_before` | The subscriber's queue overflowed and records were dropped. | Nothing more: the broker ends a subscription at its first dropped batch with `subscription_lagged`, so a jump is at most the last thing you see. Check for it on an in-memory stream. |
 | `subscription_lagged` | A durable stream's queue on the broker dropped records, and the broker ended the subscription after delivering what was queued. `resume_from` is the first dropped offset. | The cluster client and every binding resubscribe after the last event they delivered and replay the gap from the log. A bare Rust `Connection` subscription ends with `SubscriptionLagged` and you resubscribe. |
 | `shard_moved` | A rebalance or a drain moved the shard. The old owner delivered everything it committed, then said where the shard went. | The cluster client and every binding follow the shard to its new owner. On a durable stream nothing is repeated or skipped. A bare Rust `Connection` subscription ends and `shard_moved()` says where. |
 

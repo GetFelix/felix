@@ -517,10 +517,13 @@ async fn serve_stream(
                 } else {
                     0
                 };
+                let features_hi = features_hi | felix_wire::BROKER_BASELINE_FEATURES_HI;
+                let extended = extended | felix_wire::FEATURE_EXTENDED;
                 let answer = Message::AuthOk {
-                    server_flags,
+                    server_flags: server_flags | felix_wire::BROKER_BASELINE_FLAGS,
                     server_features: Some(
-                        felix_wire::FEATURE_ERROR_CODES
+                        felix_wire::BROKER_BASELINE_FEATURES
+                            | felix_wire::FEATURE_ERROR_CODES
                             | felix_wire::FEATURE_IDEMPOTENT_PRODUCER
                             | felix_wire::FEATURE_STREAM_SHARDS
                             | felix_wire::FEATURE_SHARD_OWNERS

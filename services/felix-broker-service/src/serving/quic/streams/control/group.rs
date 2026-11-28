@@ -885,9 +885,6 @@ async fn group_admit(
     if matches!(dispatched, Dispatch::Local { .. }) {
         return Ok(fenced);
     }
-    if !felix_wire::supports_feature(peer_features, felix_wire::FEATURE_REDIRECT) {
-        return Ok(None);
-    }
     match crate::serving::quic::handlers::redirect::redirect_from(
         dispatched,
         publish_ctx.client_endpoints.as_deref(),
@@ -902,11 +899,6 @@ async fn group_admit(
 /// Clear what `peer_features` did not negotiate, so the field is left out of
 /// the frame for a client that cannot read it.
 fn for_peer(mut records: Vec<GroupRecord>, peer_features: u32) -> Vec<GroupRecord> {
-    if !felix_wire::supports_feature(peer_features, felix_wire::FEATURE_GROUP_SKIPPED) {
-        for record in &mut records {
-            record.skipped_before = 0;
-        }
-    }
     if !felix_wire::supports_feature(peer_features, felix_wire::FEATURE_GROUP_PUBLISHER) {
         for record in &mut records {
             record.publisher = None;

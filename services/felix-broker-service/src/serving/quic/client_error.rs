@@ -1,11 +1,9 @@
 //! What a client is told when its request fails.
 //!
 //! Every failure site states a code through [`ClientError`], and the writer
-//! decides per control stream whether the code reaches the wire: only a client
-//! that offered `FEATURE_ERROR_CODES` gets it, so every other client sees the
-//! same frames it always did. See the error-code table in `docs/protocol.md`.
-
-use std::sync::atomic::{AtomicBool, Ordering};
+//! decides per control stream how the code reaches the wire. Every client is
+//! in the baseline and offers `FEATURE_ERROR_CODES`, so every client gets the
+//! code. See the error-code table in `docs/protocol.md`.
 
 use felix_wire::{ErrorCode, ErrorDetail, Message, RetryClass};
 
@@ -70,6 +68,18 @@ impl ClientError {
 
     pub(crate) fn invalid(message: impl Into<String>) -> Self {
         Self::new(ErrorCode::InvalidRequest, message)
+    }
+
+    /// An `Auth` that did not offer the whole 0.8 baseline, naming what it
+    /// lacked as `(flags, features, features_hi)`.
+    pub(crate) fn below_baseline((flags, features, features_hi): (u16, u32, u32)) -> Self {
+        Self::new(
+            ErrorCode::BelowBaseline,
+            format!(
+                "client does not offer the 0.8 baseline: missing flags {flags:#06x}, \
+                 features {features:#010x}, features_hi {features_hi:#010x}"
+            ),
+        )
     }
 
     pub(crate) fn overloaded(message: impl Into<String>) -> Self {
@@ -419,85 +429,6 @@ impl std::error::Error for ClientError {}
 impl From<Fenced> for ClientError {
     fn from(refused: Fenced) -> Self {
         Self::fenced(refused.to_string())
-    }
-}
-
-/// Whether this control stream's client reads error codes.
-///
-/// Set once when the stream authenticates and read by the writer, which is the
-/// one place every answer passes through. The flags are only ever set before
-/// the `AuthOk` is queued, and the queue orders everything after it.
-#[derive(Debug, Default)]
-pub(crate) struct ErrorCodeSupport {
-    json: AtomicBool,
-    binary_ack: AtomicBool,
-    binary_ack_detail: AtomicBool,
-    ack_offset: AtomicBool,
-    trim_headers: AtomicBool,
-}
-
-impl ErrorCodeSupport {
-    /// Record what the client offered in `Auth`.
-    pub(crate) fn negotiate(&self, peer_features: u32, peer_flags: u16) {
-        self.json.store(
-            felix_wire::supports_feature(peer_features, felix_wire::FEATURE_ERROR_CODES),
-            Ordering::Relaxed,
-        );
-        self.binary_ack.store(
-            felix_wire::supports(peer_flags, felix_wire::FLAG_BINARY_PUBLISH_ACK_CODE),
-            Ordering::Relaxed,
-        );
-        self.binary_ack_detail.store(
-            felix_wire::supports(peer_flags, felix_wire::FLAG_BINARY_PUBLISH_ACK_DETAIL),
-            Ordering::Relaxed,
-        );
-        self.ack_offset.store(
-            felix_wire::supports(peer_flags, felix_wire::FLAG_BINARY_PUBLISH_ACK_OFFSET),
-            Ordering::Relaxed,
-        );
-    }
-
-    /// Record whether the client offered `FEATURE_HEAD_TRIM`, from the
-    /// extended word of its `Auth`.
-    pub(crate) fn negotiate_hi(&self, peer_features_hi: u32) {
-        self.trim_headers.store(
-            felix_wire::supports_feature(peer_features_hi, felix_wire::FEATURE_HEAD_TRIM),
-            Ordering::Relaxed,
-        );
-    }
-
-    /// The message as this client should receive it.
-    pub(crate) fn shape(&self, message: Message) -> Message {
-        let message = if self.ack_offset() {
-            message
-        } else {
-            message.without_ack_offset()
-        };
-        let message = if self.trim_headers.load(Ordering::Relaxed) {
-            message
-        } else {
-            message.without_trim_headers()
-        };
-        if self.json.load(Ordering::Relaxed) {
-            message
-        } else {
-            message.without_error_code()
-        }
-    }
-
-    /// Whether a successful ack, binary or JSON, may carry its offset.
-    pub(crate) fn ack_offset(&self) -> bool {
-        self.ack_offset.load(Ordering::Relaxed)
-    }
-
-    /// Whether a failed binary ack may carry its code.
-    pub(crate) fn binary_ack(&self) -> bool {
-        self.binary_ack.load(Ordering::Relaxed)
-    }
-
-    /// Whether a failed binary ack may carry its detail as well as its code.
-    pub(crate) fn binary_ack_detail(&self) -> bool {
-        self.binary_ack_detail.load(Ordering::Relaxed)
     }
 }
 

@@ -292,46 +292,6 @@ async fn a_thousand_re_asks_overlap() -> Result<()> {
     Ok(())
 }
 
-/// **A cluster client re-asks widths whatever its first broker negotiated.**
-/// Re-asking needs only `stream_shards`; the declaration it builds goes only
-/// to a stream that negotiated it, which here is none.
-#[tokio::test]
-#[serial_test::serial]
-async fn a_cluster_client_re_asks_even_against_an_older_broker() -> Result<()> {
-    let (broker, cert) = StubBroker::start(ok)?;
-    let cluster = Client::connect(
-        &[broker.addr],
-        "localhost",
-        build_client_config_with_overrides(cert, 1)?,
-    )
-    .await?;
-    let key = moving_key(2);
-    cluster
-        .publish_keyed(
-            "t1",
-            "default",
-            "orders",
-            b"x".to_vec(),
-            key.clone(),
-            AckMode::PerBatch,
-        )
-        .await?;
-    let (_, width) = cluster
-        .stream_widths()
-        .shard_of("t1", "default", "orders", &key)
-        .await;
-    assert!(
-        width.declaration.is_some(),
-        "the cluster client's width is never asked again"
-    );
-    assert_eq!(
-        broker.widths_declared(),
-        0,
-        "declared to a broker without the bit"
-    );
-    Ok(())
-}
-
 /// **An owner learned under one width does not keep out an owner learned
 /// under another,** whatever their generations: the shard numbers name
 /// different shards. A late answer from the old width replaces the entry
