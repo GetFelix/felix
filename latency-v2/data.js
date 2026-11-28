@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795842502826,
+  "lastUpdate": 1795844225836,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -95172,6 +95172,72 @@ window.BENCHMARK_DATA = {
             "range": "805.81",
             "unit": "us",
             "extra": "trials: 5\nmedian: 566.00\nmean: 1012.00\nstdev: 805.81\ncv: 79.63%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "da24c654af150af4fe7247283b8206bc700a25da",
+          "message": "fix(raft): a lease read is not failed by heartbeats a batch refused as late (#3032) (#3409)\n\n* fix(raft): heartbeats a read waits on go alone, not in a batch (#3032)\n\nA read-index round needs a majority to answer a heartbeat sent after it was\nasked. In a heartbeat batch, a member that answers more than the straggler\nwait after the first answer is refused as slow. Under bulk shard creation a\nfollower's core answered the lease cache's heartbeats 200 to 800 ms late, so\nthe round lost them, waited out the 1.5 s lease, answered QuorumNotEnough,\nand the client asked again through another broker: 2 to 3.3 s reads.\n\nWhile any read of a group waits in read_index, the router marks that\ngroup's heartbeats alone and Beats sends them on their own, answered\nwhenever the member answers. Groups with no read waiting still batch.\n\nSpec-Unaffected: heartbeat transport batching only; read-index semantics unchanged\n\n* test(raft): a read dropped or refused stops counting as waiting (#3032)\n\nSpec-Unaffected: test only\n\n* fix(raft): a read round without a majority is asked again within the read's bound (#3032)\n\nA heartbeat sent late in a round's lease can answer after the round gave\nup with QuorumNotEnough, and the read then failed although it had time\nleft, so the client retried through another broker. The read now asks a\nfresh round, which needs its own majority, until its bound or one peer\ndeadline past the first round, so a cut-off leader still refuses early.\n\nSpec-Unaffected: read retry timing only; every confirmed read still needs a fresh ReadIndex majority round\n\n* docs(raft): per-shard-raft.md back under its line ceiling (#3032)\n\nThe read and heartbeat additions put the page over the ratchet in\nscripts/check_doc_size.py. Tighten the Reads section and the heartbeat\nbullets without dropping a claim, and fix the stale round bound: a round\nis dropped after a lease, not the election timeout.\n\nSpec-Unaffected: docs only",
+          "timestamp": "2026-11-28T05:30:25Z",
+          "tree_id": "60bde82d2733860d75ac408b705ab83a4239aeaa",
+          "url": "https://github.com/GetFelix/felix/commit/da24c654af150af4fe7247283b8206bc700a25da"
+        },
+        "date": 1795844206131,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 150,
+            "range": "2.07",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 150.00\nmean: 150.40\nstdev: 2.07\ncv: 1.38%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 212,
+            "range": "6.83",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 212.00\nmean: 210.80\nstdev: 6.83\ncv: 3.24%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 507,
+            "range": "865.65",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 507.00\nmean: 860.80\nstdev: 865.65\ncv: 100.56%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 198,
+            "range": "12.54",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 198.00\nmean: 203.60\nstdev: 12.54\ncv: 6.16%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 396,
+            "range": "245.19",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 396.00\nmean: 504.60\nstdev: 245.19\ncv: 48.59%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 652,
+            "range": "902.46",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 652.00\nmean: 1236.40\nstdev: 902.46\ncv: 72.99%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
