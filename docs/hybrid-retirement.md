@@ -432,10 +432,12 @@ Each has an issue and blocks what is named.
    them until #2524. Its twin with the table in memory fails it. Issue #2267.
 3. **Placement liveness under Raft membership is unmodelled**, and two
    specs that stay still speak of fences and promotions. `EventuallyAtFactor`
-   and the move give-up configs need a twin over joint consensus.
+   and the move give-up configs need a twin over Raft membership changes.
    `FelixHeadTrim.tla` and `FelixPlacementPacing.tla` are restated. These
-   are liveness checks, and membership safety is in the joint consensus
-   configs (#2244). Blocks PR 8. Issue #2268.
+   are liveness checks, and membership safety is in the membership and
+   placement configs (#2244). A seat swap goes through a joint entry;
+   growing or shrinking the voter set is a single entry, after the leader
+   has committed in its own term and with no other change uncommitted. Blocks PR 8. Issue #2268.
 4. **No check that the host opens only what Raft elected.** Closed by
    `felix-sim/src/raft/opens.rs`, which replaces `adopted-matches-opened`.
 5. **No test starts from a released version's data.** Not needed: there is

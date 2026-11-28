@@ -2635,9 +2635,12 @@ async fn voters_become(cluster: &Cluster, want: &[String], within: Duration) {
 }
 
 /// **An operator move outside a Raft shard's set swaps the leader's seat.**
-/// The destination joins as a learner, the voters change through joint
-/// consensus, the old leader hands its leadership on before it leaves, and
-/// the new broker ends up leading with every acknowledged record, including
+/// The destination joins as a learner, the voter set grows to take it, the
+/// old leader hands its leadership on, and the set shrinks without it.
+/// Growing or shrinking the voter set is a single entry, after the leader
+/// has committed in its own term and with no other change uncommitted; only
+/// a follower's seat swap goes through a joint entry. The new broker ends
+/// up leading with every acknowledged record, including
 /// those published during the change.
 #[tokio::test]
 #[serial]

@@ -5859,8 +5859,11 @@ every broker placed for a group, which the re-form command lists
 match it:
 
 1. Add each new member as a learner. Catch-up happens with the fence open.
-2. Call `change_membership` with the new set. openraft goes through joint
-   consensus on its own and commits the membership as the typed record.
+2. Call `change_membership` with the new set. openraft commits the
+   membership as the typed record. A seat swap goes through a joint entry;
+   growing or shrinking the voter set is a single entry, after the leader
+   has committed in its own term and with no other change uncommitted
+   (`FelixRaftPlacement.tla` with `Direct`).
 3. If the leader is not in the new set, transfer leadership first.
 
 A copy that left the target keeps its directory until a committed
@@ -6069,7 +6072,8 @@ as idle, settled, converging or stuck with a reason. Across the broker:
 Only the leader acts, one change at a time, and the steps can be repeated
 safely. A leader that acts on a target the control plane has since replaced
 is safe too: a change goes through a joint configuration whenever a
-majority of the old voters could miss a majority of the new ones. Writes go on during every step, because membership entries and
+majority of the old voters could miss a majority of the new ones, as in a
+seat swap. Growing or shrinking the voter set by one is a single entry. Writes go on during every step, because membership entries and
 publishes both get their index from openraft. A copy with a new copy id is
 handled by the same loop: the set names the broker, the member id differs,
 so the old member is swapped for a learner with the new id.
