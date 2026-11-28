@@ -111,14 +111,13 @@ pub(crate) async fn handle_subscribe_message(
     // only when this carries `EXT_RECORD_HEADERS`.
     peer_flags_ext: u32,
     peer_features: u32,
-    peer_features_hi: u32,
     owner: Option<&crate::serving::auth::AuthContext>,
 ) -> Result<bool> {
     let principal = owner.map(|auth| auth.subject.clone());
     let revocation = match owner {
         Some(auth) => Some(SubscriberRevocation {
             revocable: auth.revocable.clone(),
-            last_frame: revoked_frame(peer_features)?,
+            last_frame: revoked_frame()?,
         }),
         None => None,
     };
@@ -129,12 +128,6 @@ pub(crate) async fn handle_subscribe_message(
     // multi-shard stream is one subscription per shard (#297). Absent means 0,
     // which is every record of a single-shard stream.
     let shard = shard.unwrap_or(0);
-    // Offsets ride the event batch only for a client that negotiated the bit.
-    // One that did not gets exactly the frames it got before this existed.
-    let offsets_enabled = felix_wire::supports(peer_flags, felix_wire::FLAG_EVENT_BATCH_OFFSETS);
-    // A skip count describes offsets, so it is sent only with them.
-    let skip_enabled =
-        offsets_enabled && felix_wire::supports(peer_flags, felix_wire::FLAG_EVENT_BATCH_SKIPPED);
     let publisher_enabled =
         felix_wire::supports(peer_flags, felix_wire::FLAG_EVENT_BATCH_PUBLISHER);
     let timestamps_enabled =
@@ -179,31 +172,15 @@ pub(crate) async fn handle_subscribe_message(
             return Ok(true);
         }
 
-        // A bound counts offsets, so the subscriber must be reading them.
-        if end.is_some() && !offsets_enabled {
-            return subscribe_failed(
-                ClientError::invalid("end needs the event offsets flag").into_message(),
-                subscriptions,
-                out_ack_tx,
-                out_ack_depth,
-                ack_throttle_tx,
-                ack_timeout_state,
-                cancel_tx,
-            )
-            .await;
-        }
-
         // Ask broker core for a managed subscriber queue.
         //
         // With a start position the broker registers the live subscription
         // first and hands back the history needed to reach it -- see
-        // `Broker::subscribe_from`. A plain subscribe from a client that reads
-        // offsets is `latest`, so it learns where live delivery began. Without
-        // offsets it is the tail-only path every client used before resume
-        // existed, byte for byte.
+        // `Broker::subscribe_from`. A plain subscribe is `latest`, so the
+        // client learns where live delivery began.
         // On failure, respond on the control stream (through the ack queue) and keep
         // the stream alive.
-        let start = start.or(offsets_enabled.then_some(StartPosition::Latest));
+        let start = start.or(Some(StartPosition::Latest));
         // A range below the tail cannot grow, so it is read from disk and
         // never registered for fanout.
         let mut history_only = None;
@@ -416,16 +393,10 @@ pub(crate) async fn handle_subscribe_message(
                 out_ack_depth,
                 "felix_broker_out_ack_depth",
                 ack_throttle_tx,
-                // Only to a client that gets offsets on its events; without them
-                // there is nothing to compare these against.
                 Outgoing::Message(Message::Subscribed {
                     subscription_id,
-                    start_offset: join
-                        .filter(|_| offsets_enabled)
-                        .map(|join| join.start_offset),
-                    live_offset: join
-                        .filter(|_| offsets_enabled)
-                        .map(|join| join.live_offset),
+                    start_offset: join.map(|join| join.start_offset),
+                    live_offset: join.map(|join| join.live_offset),
                     // Echoed only when asked for, so a subscribe without it
                     // gets the frame it always did.
                     queue_capacity,
@@ -446,8 +417,8 @@ pub(crate) async fn handle_subscribe_message(
         // below. History, then backlog, then live -- contiguous.
         let delivery = TenantDelivery::for_tenant(&tenant_id);
         let format = EventFormat {
-            offsets: offsets_enabled && !in_memory,
-            skips: skip_enabled && !in_memory,
+            offsets: !in_memory,
+            skips: !in_memory,
             publisher: publisher_enabled,
             headers: headers_enabled,
             timestamps: timestamps_enabled,
@@ -585,19 +556,9 @@ pub(crate) async fn handle_subscribe_message(
             flush_delay,
             single_event_mode: config.fanout_batch_size <= 1,
             end,
-            offsets_enabled,
-            skip_enabled,
             publisher_enabled,
             timestamps_enabled,
             headers_enabled,
-            shard_moved_enabled: felix_wire::supports_feature(
-                peer_features,
-                felix_wire::FEATURE_SHARD_MOVED,
-            ),
-            stream_deleted_enabled: felix_wire::supports_feature(
-                peer_features_hi,
-                felix_wire::FEATURE_STREAM_DELETED,
-            ),
             flush_max_items: config.subscriber_flush_max_items.max(1),
             flush_max_delay: Duration::from_micros(config.subscriber_flush_max_delay_us.max(1)),
             max_bytes_per_write: config.subscriber_max_bytes_per_write.max(1),
@@ -609,18 +570,7 @@ pub(crate) async fn handle_subscribe_message(
         if let Some(end) = end {
             event_rx.end_at(end);
         }
-        // Without offsets the client could not resume from where the drop was.
-        // A bounded subscription ends at a drop whatever the client offered:
-        // it asked for every record below `end`, and a hole would break that.
-        if offsets_enabled
-            && (end.is_some()
-                || felix_wire::supports_feature(
-                    peer_features,
-                    felix_wire::FEATURE_SUBSCRIPTION_LAGGED,
-                ))
-        {
-            event_rx.end_on_lag();
-        }
+        event_rx.end_on_lag();
         if manager
             .enqueue(
                 lane_idx,
@@ -713,18 +663,9 @@ pub(crate) async fn handle_subscribe_message(
     .await
 }
 
-/// The `error` a subscription ends with when its credential is revoked, code
-/// included only for a client that reads codes. A client that predates this
-/// reads it as an unexpected frame, which still ends the subscription with an
-/// error rather than as a clean close.
-fn revoked_frame(peer_features: u32) -> Result<Bytes> {
-    let message = ClientError::revoked().into_message();
-    let message = if felix_wire::supports_feature(peer_features, felix_wire::FEATURE_ERROR_CODES) {
-        message
-    } else {
-        message.without_error_code()
-    };
-    Ok(message.encode()?.encode())
+/// The `error` a subscription ends with when its credential is revoked.
+fn revoked_frame() -> Result<Bytes> {
+    Ok(ClientError::revoked().into_message().encode()?.encode())
 }
 
 /// The queue capacity a subscriber gets for `requested`: at least one, and

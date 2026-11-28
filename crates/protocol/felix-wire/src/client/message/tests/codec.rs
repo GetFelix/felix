@@ -152,5 +152,4 @@ fn publish_ok_offset_is_optional_on_the_wire() {
         br#"{"type":"publish_ok","request_id":7,"offset":42}"#
     );
     assert_eq!(Message::decode(frame).expect("decode"), placed);
-    assert_eq!(placed.without_ack_offset(), plain);
 }

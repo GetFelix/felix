@@ -103,7 +103,6 @@ async fn a_batch_acked_on_enqueue_is_written_across_a_move() {
     let (cancel_tx, _cancel_rx) = watch::channel(false);
     let commit_acks = CommitAcks::detached(Arc::new(Semaphore::new(1)));
     handle_publish_batch_message(
-        0,
         &leader.broker,
         &queued,
         None,

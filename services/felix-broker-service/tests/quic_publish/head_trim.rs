@@ -15,8 +15,7 @@ struct Session {
 }
 
 impl Session {
-    /// Authenticate with `perms`, offering error codes, commit acks with their
-    /// offsets and, when `head_trim`, `FEATURE_HEAD_TRIM`.
+    /// Authenticate with `perms`, offering the baseline and commit acks.
     ///
     /// The helper broker acks durable publishes on enqueue, so without commit
     /// acks a trim sent right after a publish can read the tail before the
@@ -25,7 +24,6 @@ impl Session {
         addr: std::net::SocketAddr,
         cert: CertificateDer<'static>,
         perms: &[&str],
-        head_trim: bool,
     ) -> Result<(Self, Option<u32>)> {
         let client = QuicClient::bind(
             "0.0.0.0:0".parse()?,
@@ -42,27 +40,21 @@ impl Session {
             _client: client,
         };
         let token = auth_fixture("t1", perms.iter().map(|perm| perm.to_string()).collect()).token;
-        let hi = if head_trim {
-            felix_wire::FEATURE_HEAD_TRIM
-        } else {
-            0
-        };
-        let (features, features_hi) = felix_wire::offer_features(
-            felix_wire::FEATURE_ERROR_CODES | felix_wire::FEATURE_ACK_ON_COMMIT,
-            hi,
-        );
-        let answer = session
-            .exchange(Message::Auth {
-                tenant_id: "t1".to_string(),
-                token,
-                client_flags: Some(
-                    felix_wire::ORIGINAL_V1_FLAGS | felix_wire::FLAG_BINARY_PUBLISH_ACK_OFFSET,
-                ),
-                client_features: Some(features),
-                client_features_hi: features_hi,
-                client_flags_ext: None,
-            })
-            .await?;
+        let mut auth = felix_wire::baseline_auth("t1", token);
+        if let Message::Auth {
+            client_features,
+            client_features_hi,
+            ..
+        } = &mut auth
+        {
+            let (features, features_hi) = felix_wire::offer_features(
+                client_features.unwrap_or(0) | felix_wire::FEATURE_ACK_ON_COMMIT,
+                client_features_hi.unwrap_or(0),
+            );
+            *client_features = Some(features);
+            *client_features_hi = features_hi;
+        }
+        let answer = session.exchange(auth).await?;
         match answer {
             Message::AuthOk {
                 server_features_hi, ..
@@ -170,7 +162,7 @@ async fn a_trim_hides_history_and_a_stale_one_is_refused() -> Result<()> {
     let (broker, addr, cert, _auth, _config, server_task) =
         serve_durable_orders(dir.path()).await?;
     broker.allow_head_trims_when(|| true);
-    let (mut session, server_hi) = Session::open(addr, cert.clone(), MANAGER, true).await?;
+    let (mut session, server_hi) = Session::open(addr, cert.clone(), MANAGER).await?;
     assert!(
         server_hi.is_some_and(|hi| felix_wire::supports_feature(hi, felix_wire::FEATURE_HEAD_TRIM)),
         "the broker advertises head_trim: {server_hi:?}"
@@ -211,7 +203,7 @@ async fn a_trim_hides_history_and_a_stale_one_is_refused() -> Result<()> {
         } => {}
         other => anyhow::bail!("expected offset_mismatch with tail 11, got {other:?}"),
     }
-    let (mut late, _) = Session::open(addr, cert, MANAGER, true).await?;
+    let (mut late, _) = Session::open(addr, cert, MANAGER).await?;
     match late.trim(8, 10).await? {
         Message::PublishRefused {
             reason: felix_wire::PublishRefusalReason::OffsetMismatch { tail: 11 },
@@ -245,14 +237,14 @@ async fn a_viewer_or_publisher_cannot_trim() -> Result<()> {
     let (broker, addr, cert, _auth, _config, server_task) =
         serve_durable_orders(dir.path()).await?;
     broker.allow_head_trims_when(|| true);
-    let (mut manager, _) = Session::open(addr, cert.clone(), MANAGER, true).await?;
+    let (mut manager, _) = Session::open(addr, cert.clone(), MANAGER).await?;
     manager.publish(4).await?;
 
     for perms in [
         &["stream.subscribe:stream:t1/*/*"][..],
         &["stream.publish:stream:t1/*/*"][..],
     ] {
-        let (mut session, _) = Session::open(addr, cert.clone(), perms, true).await?;
+        let (mut session, _) = Session::open(addr, cert.clone(), perms).await?;
         let answer = session.trim(2, 4).await?;
         assert_eq!(
             code_of(&answer).map(|(code, _)| code),
@@ -270,7 +262,7 @@ async fn a_viewer_or_publisher_cannot_trim() -> Result<()> {
 
     // `stream.trim` alone is enough.
     let (mut trimmer, _) =
-        Session::open(addr, cert, &["stream.trim:stream:t1/default/orders"], true).await?;
+        Session::open(addr, cert, &["stream.trim:stream:t1/default/orders"]).await?;
     match trimmer.trim(2, 4).await? {
         Message::TrimOk { oldest: 2, .. } => {}
         other => anyhow::bail!("expected trim_ok, got {other:?}"),
@@ -281,19 +273,17 @@ async fn a_viewer_or_publisher_cannot_trim() -> Result<()> {
 
 /// **Each refusal has its own code.** Before the node allows trims the
 /// answer is `feature_not_enabled` naming `head_trim`; a floor past the
-/// trim's own record is `invalid_request` with `trim_past_tail`. And a
-/// client that did not offer `FEATURE_HEAD_TRIM` gets the cursor error it
-/// always got, without the headers.
+/// trim's own record is `invalid_request` with `trim_past_tail`.
 #[tokio::test]
 #[serial]
-async fn refusals_are_coded_and_old_clients_see_old_frames() -> Result<()> {
+async fn refusals_are_coded() -> Result<()> {
     let dir = tempfile::tempdir()?;
     let (broker, addr, cert, _auth, _config, server_task) =
         serve_durable_orders(dir.path()).await?;
     let enabled = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let gate = Arc::clone(&enabled);
     broker.allow_head_trims_when(move || gate.load(std::sync::atomic::Ordering::Acquire));
-    let (mut session, _) = Session::open(addr, cert.clone(), MANAGER, true).await?;
+    let (mut session, _) = Session::open(addr, cert.clone(), MANAGER).await?;
     session.publish(4).await?;
 
     let answer = session.trim(2, 4).await?;
@@ -328,41 +318,6 @@ async fn refusals_are_coded_and_old_clients_see_old_frames() -> Result<()> {
     );
     assert!(matches!(session.trim(2, 4).await?, Message::TrimOk { .. }));
 
-    let (mut old, server_hi) = Session::open(addr, cert, MANAGER, false).await?;
-    assert_eq!(server_hi, None, "no extended word for a client without one");
-    let frame_json = {
-        felix_broker_service::serving::quic::write_message(
-            &mut old.send,
-            Message::StreamRead {
-                tenant_id: "t1".to_string(),
-                namespace: "default".to_string(),
-                stream: "orders".to_string(),
-                shard: 0,
-                from: 0,
-                end: None,
-                max_records: 0,
-                max_bytes: 0,
-                request_id: 9,
-            },
-        )
-        .await?;
-        let frame = timeout(
-            Duration::from_secs(10),
-            felix_broker_service::serving::quic::read_frame_limited_into(
-                &mut old.recv,
-                1 << 20,
-                &mut old.scratch,
-            ),
-        )
-        .await??
-        .context("closed")?;
-        String::from_utf8(frame.payload.to_vec())?
-    };
-    assert!(
-        frame_json.contains(r#""type":"subscribe_cursor_error""#)
-            && !frame_json.contains("trim_headers"),
-        "{frame_json}"
-    );
     server_task.abort();
     Ok(())
 }

@@ -105,18 +105,7 @@ async fn answer(
             break;
         }
         tokens.lock().unwrap().push((tenant_id, token));
-        write_message(
-            &mut send,
-            Message::AuthOk {
-                server_flags: felix_wire::KNOWN_FLAGS,
-                server_features: Some(0),
-                server_features_hi: None,
-                server_flags_ext: None,
-                listener_ports: None,
-                publish_window: None,
-            },
-        )
-        .await?;
+        write_message(&mut send, felix_wire::baseline_auth_ok()).await?;
     }
     send.finish()?;
     Ok(())

@@ -124,12 +124,8 @@ pub(super) async fn stream_shards(
             routing: Default::default(),
         },
     };
-    // Only for a client that offered the bit and a stream this broker knows,
-    // so every other client reads the frame it always did.
-    let ack_durability = if felix_wire::supports_feature(
-        session.peer_features_hi,
-        felix_wire::FEATURE_ACK_DURABILITY,
-    ) {
+    // Only for a stream this broker knows.
+    let ack_durability = {
         match broker
             .stream_metadata(&tenant_id, &namespace, &stream)
             .await
@@ -169,8 +165,6 @@ pub(super) async fn stream_shards(
             }
             None => None,
         }
-    } else {
-        None
     };
     handle_ack_enqueue_result(
         send_outgoing_critical(

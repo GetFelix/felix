@@ -68,7 +68,7 @@ pub(crate) use admission::{ConnLimits, IdentityKey, IdentityLimits, PublishAdmis
 pub(crate) use commit_ack::CommitAcks;
 pub(crate) use control::{
     handle_acked_binary_publish_batch_control, handle_binary_publish_batch_control,
-    handle_publish_batch_message, handle_publish_message, sequence_reuse,
+    handle_publish_batch_message, handle_publish_message,
 };
 pub(crate) use ingress::{PublishTarget, admit_unqueued, decrement_depth, reset_local_depth_only};
 pub(crate) use order::AckOrder;
@@ -371,14 +371,10 @@ impl From<String> for PublishAs {
 
 /// Count a publish that arrived on the JSON encoding.
 ///
-/// The data path is binary as of 0.5.0 and no Felix client emits a JSON publish
-/// unless it is talking to a broker that never advertised the binary frame. The
-/// arm cannot be removed on that reasoning alone, though: `ORIGINAL_V1_FLAGS` is
-/// frozen, so a client older than the flags is entitled to keep sending JSON
-/// forever. This counter is what turns "nothing should be sending these" into
-/// "nothing in this deployment is", which is the precondition for ever dropping
-/// it. `frame` separates the single publish from the batch, because a client
-/// still on the single form is a different (older) client.
+/// The data path is binary, and the Rust client never emits a JSON publish: the
+/// 0.8 baseline guarantees it the binary frame. Other clients may still send
+/// one, which this counter shows. `frame` separates the single publish from the
+/// batch.
 pub(crate) fn record_json_publish(frame: &'static str) {
     metrics::counter!("felix_broker_json_publishes_total", "frame" => frame).increment(1);
 }

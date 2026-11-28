@@ -398,16 +398,7 @@ async fn quic_publish_binary_decode_error_closes_stream() -> Result<()> {
     let (mut send, mut recv) = connection.open_bi().await?;
     felix_broker_service::serving::quic::write_message(
         &mut send,
-        Message::Auth {
-            tenant_id: auth.tenant_id.clone(),
-            token: auth.token.clone(),
-            // Legacy handshake: no capabilities offered, so the broker
-            // answers with a plain `Ok`.
-            client_flags: None,
-            client_features: None,
-            client_features_hi: None,
-            client_flags_ext: None,
-        },
+        felix_wire::baseline_auth(auth.tenant_id.clone(), auth.token.clone()),
     )
     .await?;
     let mut frame_scratch = felix_broker_service::serving::quic::FrameScratch::new();
@@ -417,7 +408,7 @@ async fn quic_publish_binary_decode_error_closes_stream() -> Result<()> {
         &mut frame_scratch,
     )
     .await?;
-    assert!(matches!(response, Some(Message::Ok)));
+    assert!(matches!(response, Some(Message::AuthOk { .. })));
 
     // Send a malformed binary publish batch payload to exercise decode errors.
     let header = FrameHeader::new(FLAG_BINARY_PUBLISH_BATCH, 2);
@@ -481,16 +472,7 @@ async fn quic_publish_missing_request_id_returns_error() -> Result<()> {
     let (mut send, mut recv) = connection.open_bi().await?;
     felix_broker_service::serving::quic::write_message(
         &mut send,
-        Message::Auth {
-            tenant_id: auth.tenant_id.clone(),
-            token: auth.token.clone(),
-            // Legacy handshake: no capabilities offered, so the broker
-            // answers with a plain `Ok`.
-            client_flags: None,
-            client_features: None,
-            client_features_hi: None,
-            client_flags_ext: None,
-        },
+        felix_wire::baseline_auth(auth.tenant_id.clone(), auth.token.clone()),
     )
     .await?;
     let mut frame_scratch = felix_broker_service::serving::quic::FrameScratch::new();
@@ -500,7 +482,7 @@ async fn quic_publish_missing_request_id_returns_error() -> Result<()> {
         &mut frame_scratch,
     )
     .await?;
-    assert!(matches!(response, Some(Message::Ok)));
+    assert!(matches!(response, Some(Message::AuthOk { .. })));
 
     // Acked publish without request_id should yield an error on the control stream.
     felix_broker_service::serving::quic::write_message(
@@ -753,16 +735,7 @@ async fn quic_publish_unknown_flag_bit_is_rejected() -> Result<()> {
     let (mut send, mut recv) = connection.open_bi().await?;
     felix_broker_service::serving::quic::write_message(
         &mut send,
-        Message::Auth {
-            tenant_id: auth.tenant_id.clone(),
-            token: auth.token.clone(),
-            // Legacy handshake: no capabilities offered, so the broker
-            // answers with a plain `Ok`.
-            client_flags: None,
-            client_features: None,
-            client_features_hi: None,
-            client_flags_ext: None,
-        },
+        felix_wire::baseline_auth(auth.tenant_id.clone(), auth.token.clone()),
     )
     .await?;
     let mut frame_scratch = felix_broker_service::serving::quic::FrameScratch::new();
@@ -772,7 +745,7 @@ async fn quic_publish_unknown_flag_bit_is_rejected() -> Result<()> {
         &mut frame_scratch,
     )
     .await?;
-    assert!(matches!(response, Some(Message::Ok)));
+    assert!(matches!(response, Some(Message::AuthOk { .. })));
 
     // Derived rather than hardcoded: the lowest bit outside `KNOWN_FLAGS`. A
     // literal here becomes a defined bit the moment the next flag lands, and the
@@ -850,16 +823,7 @@ async fn quic_publish_binary_acked_reply_is_a_binary_frame() -> Result<()> {
     let (mut send, mut recv) = connection.open_bi().await?;
     felix_broker_service::serving::quic::write_message(
         &mut send,
-        Message::Auth {
-            tenant_id: auth.tenant_id.clone(),
-            token: auth.token.clone(),
-            // Legacy handshake: no capabilities offered, so the broker
-            // answers with a plain `Ok`.
-            client_flags: None,
-            client_features: None,
-            client_features_hi: None,
-            client_flags_ext: None,
-        },
+        felix_wire::baseline_auth(auth.tenant_id.clone(), auth.token.clone()),
     )
     .await?;
     let mut frame_scratch = felix_broker_service::serving::quic::FrameScratch::new();
@@ -869,7 +833,7 @@ async fn quic_publish_binary_acked_reply_is_a_binary_frame() -> Result<()> {
         &mut frame_scratch,
     )
     .await?;
-    assert!(matches!(response, Some(Message::Ok)));
+    assert!(matches!(response, Some(Message::AuthOk { .. })));
 
     let bytes = felix_wire::binary::encode_acked_publish_batch_bytes(
         4242,
@@ -1128,7 +1092,7 @@ async fn a_reused_sequence_is_refused_to_the_rust_client() -> Result<()> {
     Ok(())
 }
 
-/// Over JSON frames on one connection offering `client_features`: take a
+/// Over JSON frames on one baseline connection: take a
 /// producer id, publish `a` under sequence 0, then `b` under the same sequence,
 /// and return the answer to `b`.
 async fn reuse_a_sequence_over_json(
@@ -1136,7 +1100,6 @@ async fn reuse_a_sequence_over_json(
     cert: CertificateDer<'static>,
     auth: &AuthFixture,
     config: &felix_broker_service::config::BrokerConfig,
-    client_features: u32,
 ) -> Result<Option<Message>> {
     let client = QuicClient::bind(
         "0.0.0.0:0".parse()?,
@@ -1156,14 +1119,10 @@ async fn reuse_a_sequence_over_json(
         .await
     };
 
-    match exchange(Message::Auth {
-        tenant_id: auth.tenant_id.clone(),
-        token: auth.token.clone(),
-        client_flags: Some(felix_wire::ORIGINAL_V1_FLAGS),
-        client_features: Some(client_features),
-        client_features_hi: None,
-        client_flags_ext: None,
-    })
+    match exchange(felix_wire::baseline_auth(
+        auth.tenant_id.clone(),
+        auth.token.clone(),
+    ))
     .await?
     {
         Some(Message::AuthOk {
@@ -1195,7 +1154,7 @@ async fn reuse_a_sequence_over_json(
             first,
             Some(Message::PublishOk {
                 request_id: 2,
-                offset: None
+                offset: Some(0)
             })
         ),
         "first: {first:?}"
@@ -1203,59 +1162,28 @@ async fn reuse_a_sequence_over_json(
     exchange(publish(3, b"b")).await
 }
 
-// A client that did not offer `FEATURE_SEQUENCE_REUSED` cannot decode the
-// refusal, so it gets the answer it always got: acknowledged, and not written.
-// One that offered it over JSON is refused as over binary.
+// A reused sequence over JSON is refused as over binary.
 #[tokio::test]
 #[serial]
-async fn a_reused_sequence_is_refused_over_json_only_when_negotiated() -> Result<()> {
+async fn a_reused_sequence_is_refused_over_json() -> Result<()> {
     let dir = tempfile::tempdir()?;
     let (broker, addr, cert, auth, config, server_task) = serve_durable_orders(dir.path()).await?;
 
-    let legacy = reuse_a_sequence_over_json(
-        addr,
-        cert.clone(),
-        &auth,
-        &config,
-        felix_wire::FEATURE_IDEMPOTENT_PRODUCER,
-    )
-    .await?;
+    let refused = reuse_a_sequence_over_json(addr, cert, &auth, &config).await?;
     assert!(
         matches!(
-            legacy,
-            Some(Message::PublishOk {
-                request_id: 3,
-                offset: None
-            })
-        ),
-        "a legacy client should get publish_ok for a reused sequence"
-    );
-
-    let negotiated = reuse_a_sequence_over_json(
-        addr,
-        cert,
-        &auth,
-        &config,
-        felix_wire::FEATURE_IDEMPOTENT_PRODUCER | felix_wire::FEATURE_SEQUENCE_REUSED,
-    )
-    .await?;
-    assert!(
-        matches!(
-            negotiated,
+            refused,
             Some(Message::PublishRefused {
                 request_id: 3,
                 reason: felix_wire::PublishRefusalReason::SequenceReused,
                 ..
             })
         ),
-        "a negotiating client should get publish_refused sequence_reused"
+        "a reused sequence should get publish_refused sequence_reused"
     );
 
-    // One `a` per producer, and no `b`.
-    assert_eq!(
-        stored_orders(&broker).await?,
-        vec![b"a".to_vec(), b"a".to_vec()]
-    );
+    // One `a`, and no `b`.
+    assert_eq!(stored_orders(&broker).await?, vec![b"a".to_vec()]);
     server_task.abort();
     Ok(())
 }

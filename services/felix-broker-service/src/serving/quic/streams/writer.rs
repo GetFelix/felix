@@ -38,7 +38,6 @@ use super::hooks::{
 };
 use crate::observability::timings;
 use crate::serving::quic::GLOBAL_ACK_DEPTH;
-use crate::serving::quic::client_error::ErrorCodeSupport;
 use crate::serving::quic::handlers::publish::{AckOrder, Outgoing, decrement_depth};
 use crate::serving::quic::telemetry::{t_counter, t_histogram, t_now_if, t_should_sample};
 
@@ -60,7 +59,6 @@ const CANCEL_FLUSH_LIMIT: Duration = Duration::from_secs(1);
 pub(super) async fn run_writer_loop(
     mut send: SendStream,
     mut out_ack_rx: mpsc::Receiver<Outgoing>,
-    error_codes: Arc<ErrorCodeSupport>,
     ack_order: Arc<AckOrder>,
     stall_limit: Duration,
     out_ack_depth_worker: Arc<AtomicUsize>,
@@ -89,7 +87,6 @@ pub(super) async fn run_writer_loop(
                         &ack_order,
                         &mut ready,
                         &mut chunks,
-                        &error_codes,
                         &out_ack_depth_worker,
                     )
                     .await;
@@ -116,7 +113,7 @@ pub(super) async fn run_writer_loop(
                     ack_order.release(outgoing, &mut ready);
                     dequeued += 1;
                 }
-                let failed = write_ready(&mut send, &mut ready, &mut chunks, &error_codes)
+                let failed = write_ready(&mut send, &mut ready, &mut chunks)
                     .await
                     .is_err();
                 felix_storage::hops::mark(felix_storage::hops::Stage::AckSent);
@@ -153,7 +150,6 @@ async fn flush_queued(
     ack_order: &AckOrder,
     ready: &mut Vec<Outgoing>,
     chunks: &mut Vec<Bytes>,
-    error_codes: &ErrorCodeSupport,
     out_ack_depth_worker: &Arc<AtomicUsize>,
 ) {
     while let Ok(outgoing) = out_ack_rx.try_recv() {
@@ -164,11 +160,7 @@ async fn flush_queued(
             "felix_broker_out_ack_depth",
         );
     }
-    let _ = tokio::time::timeout(
-        CANCEL_FLUSH_LIMIT,
-        write_ready(send, ready, chunks, error_codes),
-    )
-    .await;
+    let _ = tokio::time::timeout(CANCEL_FLUSH_LIMIT, write_ready(send, ready, chunks)).await;
 }
 
 async fn sleep_until_or_never(deadline: Option<tokio::time::Instant>) {
@@ -184,7 +176,6 @@ async fn write_ready(
     send: &mut SendStream,
     ready: &mut Vec<Outgoing>,
     chunks: &mut Vec<Bytes>,
-    error_codes: &ErrorCodeSupport,
 ) -> Result<(), ()> {
     if ready.is_empty() {
         return Ok(());
@@ -194,7 +185,7 @@ async fn write_ready(
     let mut encoded = Ok(());
     for outgoing in ready.drain(..) {
         if encoded.is_ok() {
-            encoded = encode_outgoing(outgoing, error_codes, chunks, sample);
+            encoded = encode_outgoing(outgoing, chunks, sample);
         }
     }
     encoded?;
@@ -212,17 +203,11 @@ async fn write_ready(
 }
 
 /// Append one response's bytes to `chunks`.
-fn encode_outgoing(
-    outgoing: Outgoing,
-    error_codes: &ErrorCodeSupport,
-    chunks: &mut Vec<Bytes>,
-    sample: bool,
-) -> Result<(), ()> {
+fn encode_outgoing(outgoing: Outgoing, chunks: &mut Vec<Bytes>, sample: bool) -> Result<(), ()> {
     #[cfg(not(feature = "telemetry"))]
     let _ = sample;
     match outgoing {
         Outgoing::Message(message) => {
-            let message = error_codes.shape(message);
             #[cfg(feature = "telemetry")]
             let is_publish_ack = matches!(
                 message,
@@ -258,17 +243,12 @@ fn encode_outgoing(
             // ack unencodable — dropping an ack strands a client that is
             // synchronously waiting for it.
             let error = error.as_deref().map(truncate_ack_message);
-            let code = code
-                .as_ref()
-                .filter(|_| error_codes.binary_ack())
-                .map(|(code, retry)| (code, *retry));
-            let detail = detail.as_ref().filter(|_| error_codes.binary_ack_detail());
-            let offset = offset.filter(|_| error_codes.ack_offset());
+            let code = code.as_ref().map(|(code, retry)| (code, *retry));
             let bytes = match felix_wire::binary::encode_publish_ack_bytes_at(
                 request_id,
                 error,
                 code,
-                detail,
+                detail.as_ref(),
                 offset,
                 forwarded_to.as_ref(),
             ) {
@@ -287,7 +267,6 @@ fn encode_outgoing(
             }
         }
         Outgoing::CacheMessage(message) => {
-            let message = error_codes.shape(message);
             let encode_start = t_now_if(sample);
             let frame = match encode_cache_message_with_hook(message) {
                 Ok(frame) => frame,

@@ -22,7 +22,6 @@ fn publisher(takes_record_headers: bool) -> (Publisher, mpsc::Receiver<PublishRe
                 server_flags: felix_wire::KNOWN_FLAGS | felix_wire::FLAG_EXTENDED,
                 publish_window: 0,
                 takes_width: false,
-                takes_shard: false,
                 takes_record_headers,
             }]),
             PublishSharding::RoundRobin,

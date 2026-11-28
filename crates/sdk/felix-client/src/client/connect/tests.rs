@@ -49,7 +49,7 @@ impl Broker {
                                 return;
                             };
                             let reply = if admit {
-                                Message::Ok
+                                felix_wire::baseline_auth_ok()
                             } else {
                                 Message::error("auth failed")
                             };

@@ -427,7 +427,6 @@ impl Connection {
             &event_node,
             &credentials,
             &auth_tenant_id,
-            server_features,
             server_features_hi,
             &cache_request_counter,
             runtime_config,
@@ -626,7 +625,6 @@ pub(super) fn stream_widths(
     event_node: &Arc<NodeConnections>,
     credentials: &Arc<Credentials>,
     auth_tenant_id: &str,
-    server_features: u32,
     server_features_hi: u32,
     requests: &Arc<AtomicU64>,
     runtime_config: ClientRuntimeConfig,
@@ -644,10 +642,6 @@ pub(super) fn stream_widths(
         let tenant = tenant.clone();
         Box::pin(async move {
             // The checks `Connection::stream_routing` makes before asking.
-            anyhow::ensure!(
-                felix_wire::supports_feature(server_features, felix_wire::FEATURE_STREAM_SHARDS),
-                "broker does not report stream shard counts"
-            );
             anyhow::ensure!(tenant_id == tenant, "tenant mismatch");
             ask_stream_routing(
                 &node,
@@ -777,10 +771,6 @@ pub(super) fn spawn_publish_worker(
         takes_width: felix_wire::supports_feature(
             negotiated.server_features_hi,
             felix_wire::FEATURE_PUBLISH_WIDTH,
-        ),
-        takes_shard: felix_wire::supports_feature(
-            negotiated.server_features_hi,
-            felix_wire::FEATURE_EXPLICIT_SHARD,
         ),
         takes_record_headers: negotiated.server_flags_ext & felix_wire::EXT_RECORD_HEADERS != 0,
     }

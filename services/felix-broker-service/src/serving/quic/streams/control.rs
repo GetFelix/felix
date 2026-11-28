@@ -63,7 +63,7 @@ use super::frame_source::FrameSource;
 use crate::config::BrokerConfig;
 use crate::observability::timings;
 use crate::serving::auth::{AuthContext, BrokerAuth};
-use crate::serving::quic::client_error::{ClientError, ErrorCodeSupport};
+use crate::serving::quic::client_error::ClientError;
 use crate::serving::quic::handlers::publish::{
     AckOrder, AckTimeoutState, CommitAcks, DeclaredWidth, Outgoing, PublishContext,
     StreamHandleCache, handle_ack_enqueue_result, handle_acked_binary_publish_batch_control,
@@ -106,7 +106,6 @@ pub(super) async fn run_control_loop<S: FrameSource + ?Sized>(
     mut cancel_rx_read: watch::Receiver<bool>,
     commit_acks: CommitAcks,
     frame_scratch: &mut FrameScratch,
-    error_codes: Arc<ErrorCodeSupport>,
     ack_order: Arc<AckOrder>,
 ) -> Result<bool> {
     // If we observe EOF from the peer (source returns None), we treat it as a graceful close.
@@ -114,12 +113,11 @@ pub(super) async fn run_control_loop<S: FrameSource + ?Sized>(
     let mut graceful_close = false;
     let mut session = Session {
         auth_ctx: None,
-        peer_flags: felix_wire::ORIGINAL_V1_FLAGS,
+        peer_flags: 0,
         peer_flags_ext: 0,
         peer_features: 0,
         peer_features_hi: 0,
         commit_ack: false,
-        error_codes,
         ack_order,
         publish_window: None,
         publish_width: None,
@@ -256,8 +254,6 @@ pub(super) async fn run_control_loop<S: FrameSource + ?Sized>(
                     &ack_timeout_state,
                     &cancel_tx,
                     &commit_acks,
-                    session.peer_flags,
-                    session.peer_features,
                 )
                 .await?;
             } else {
@@ -1252,8 +1248,7 @@ enum Step {
 /// The per-stream state the arms change.
 struct Session {
     auth_ctx: Option<AuthContext>,
-    /// Frame-flag bits the client understands. Narrowed to the pre-negotiation
-    /// set until an `Auth` says otherwise.
+    /// Frame-flag bits the client offered in `Auth`. None until then.
     peer_flags: u16,
     /// The extension bits both sides agreed on in `Auth` and `AuthOk`. None
     /// until an `Auth` says otherwise; a frame with `FLAG_EXTENDED` before that
@@ -1268,8 +1263,6 @@ struct Session {
     /// Acknowledged publishes are answered after the write: the broker-wide
     /// `ack_on_commit`, or `FEATURE_ACK_ON_COMMIT` from this client.
     commit_ack: bool,
-    /// Shared with the writer, which shapes every error to what `Auth` offered.
-    error_codes: Arc<ErrorCodeSupport>,
     /// Shared with the writer, which holds answers back into request order
     /// once `Auth` asks for pipelining.
     ack_order: Arc<AckOrder>,

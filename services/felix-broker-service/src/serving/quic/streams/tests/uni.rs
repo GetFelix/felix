@@ -312,19 +312,22 @@ fn headers_block() -> Bytes {
 }
 
 fn uni_auth(auth: &AuthFixture, offer_headers: bool) -> Frame {
-    let (client_flags, client_flags_ext) = if offer_headers {
-        felix_wire::offer_flags(felix_wire::KNOWN_FLAGS, felix_wire::EXT_RECORD_HEADERS)
-    } else {
-        (felix_wire::KNOWN_FLAGS, None)
-    };
-    frame_from_message(Message::Auth {
-        tenant_id: auth.tenant_id.clone(),
-        token: auth.token.clone(),
-        client_flags: Some(client_flags),
-        client_features: None,
-        client_features_hi: None,
-        client_flags_ext,
-    })
+    let mut message = felix_wire::baseline_auth(&auth.tenant_id, &auth.token);
+    if offer_headers
+        && let Message::Auth {
+            client_flags,
+            client_flags_ext,
+            ..
+        } = &mut message
+    {
+        let (flags, ext) = felix_wire::offer_flags(
+            felix_wire::CLIENT_BASELINE_FLAGS,
+            felix_wire::EXT_RECORD_HEADERS,
+        );
+        *client_flags = Some(flags);
+        *client_flags_ext = ext;
+    }
+    frame_from_message(message)
 }
 
 async fn in_memory_broker() -> Result<Arc<Broker>> {
