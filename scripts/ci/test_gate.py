@@ -215,6 +215,19 @@ class PairedRule(unittest.TestCase):
         self.assertEqual(gate_perf.failover_max_ms("failover heal: outage: 1 of 1 served, max Some(850ms);"), 850.0)
         self.assertIsNone(gate_perf.failover_max_ms("failover heal: outage: 0 of 1 served, max None"))
 
+    def test_a_skipped_failover_test_says_it_skipped(self):
+        name = "failover_heal::with_election_every_shard_of_a_killed_leader_serves_again"
+        line = f"{name}: skipped on Raft, retires with hybrid: replica_election is a hybrid switch"
+        out = f"running 1 test\ntest {name} ... {line}\nok\n"
+        self.assertEqual(gate_perf.failover_skip(out), line)
+        self.assertIsNone(gate_perf.failover_skip("failover heal: outage: 1 of 1 served, max Some(1s);"))
+        with tempfile.TemporaryDirectory() as tmp:
+            path = pathlib.Path(tmp) / "out.txt"
+            path.write_text(out)
+            with self.assertRaises(SystemExit) as exit:
+                gate_perf.main(["failover-max", str(path)])
+        self.assertIn("skipped itself", str(exit.exception.code))
+
 
 class Workflow(unittest.TestCase):
     def test_head_runs_in_the_middle_slot_every_round(self):
@@ -224,6 +237,11 @@ class Workflow(unittest.TestCase):
         for order in orders:
             self.assertEqual(order.split()[1], "head", order)
         self.assertEqual({o.split()[0] for o in orders}, {"baseline", "baseline_aa"})
+
+    def test_failover_runs_and_expects_only_the_variant_raft_measures(self):
+        text = (pathlib.Path(__file__).parents[2] / ".github/workflows/gate-failover.yml").read_text()
+        self.assertEqual(re.findall(r"for variant in ([a-z_ ]+); do", text), ["without_election"] * 2)
+        self.assertEqual(re.findall(r"--expect-cells (\S+)", text), ["failover-without_election"])
 
     def test_a_non_pass_verdict_fails_the_part(self):
         text = (pathlib.Path(__file__).parents[2] / ".github/workflows/gate-perf.yml").read_text()

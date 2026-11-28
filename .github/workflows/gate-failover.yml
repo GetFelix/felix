@@ -27,7 +27,7 @@ on:
         type: string
         default: "v0.7.1"
       rounds:
-        description: "Rounds (6, 12 or 24); each runs both failover variants once per side. The cell passes when the lower end of the interval of the median baseline/candidate outage ratio is above 0.95"
+        description: "Rounds (6, 12 or 24); each runs the failover test once per side. The cell passes when the lower end of the interval of the median baseline/candidate outage ratio is above 0.95"
         type: string
         default: "6"
       streams:
@@ -145,10 +145,13 @@ jobs:
           set -euo pipefail
           results=/tmp/felix-gate/failover.jsonl
           : > "$results"
+          # One variant. A Raft group always elects, so `with_election` skips
+          # itself on the head; `without_election` is Raft's failover there and
+          # the baseline's default, which is also its faster one.
           for round in $(seq 1 "$ROUNDS"); do
             echo "::group::Round $round of $ROUNDS"
             if [ $((round % 2)) -eq 1 ]; then sides="baseline head"; else sides="head baseline"; fi
-            for variant in without_election with_election; do
+            for variant in without_election; do
               for side in $sides; do
                 exe=$(cat "/tmp/felix-gate/$side.scale")
                 out="/tmp/felix-gate/$side-$variant-$round.txt"
@@ -174,14 +177,12 @@ jobs:
           ROUNDS: ${{ inputs.rounds }}
         run: |
           set -o pipefail
-          # One cell per variant, so with and without election are each held to
-          # the gate.
-          for variant in without_election with_election; do
+          for variant in without_election; do
             jq -c --arg v "$variant" 'select(.variant == $v) | .cell = "failover-" + $v' \
               /tmp/felix-gate/failover.jsonl
           done > /tmp/felix-gate/failover-cells.jsonl
           python3 scripts/ci/gate_perf.py compare /tmp/felix-gate/failover-cells.jsonl \
-            --expect-cells failover-without_election,failover-with_election \
+            --expect-cells failover-without_election \
             --rounds "$ROUNDS" --md /tmp/felix-gate/failover.md --json /tmp/felix-gate/failover-verdict.json
 
       # Criterion 5. The control plane is stopped or paused while a leader is
@@ -202,9 +203,14 @@ jobs:
           # One test at a time: eleven clusters at once on a runner make the
           # timing windows of these tests miss for reasons that are not the engine.
           # two_followers_stand_at_once_and_one_opens fails in a release build
-          # (#2272); it is skipped until that is understood.
+          # (#2272); it is skipped until that is understood. The unified-fence
+          # test starts a broker from its control-plane view, which needs
+          # replica_election finalized; a release broker never reports it and
+          # ignores FELIX_TEST_FLEET_FEATURES, so only debug CI can run it.
           "$exe" --nocapture --test-threads 1 "replica_election::" \
-            --skip two_followers_stand_at_once_and_one_opens 2>&1 | tee /tmp/felix-gate/cpdown.txt
+            --skip two_followers_stand_at_once_and_one_opens \
+            --skip a_broker_restarted_while_the_control_plane_is_down_waits_for_it_under_the_unified_fence \
+            2>&1 | tee /tmp/felix-gate/cpdown.txt
           grep -E '^test result:' /tmp/felix-gate/cpdown.txt
 
       - name: Upload the outputs
@@ -272,7 +278,7 @@ jobs:
             echo
             if [ -f outputs/failover.md ]; then cat outputs/failover.md; else echo "No failover table."; fi
             echo
-            echo "Control plane down: \`replica_election::\` tests on this commit, except \`two_followers_stand_at_once_and_one_opens\`, which fails in a release build (#2272)."
+            echo "Control plane down: \`replica_election::\` tests on this commit, except \`two_followers_stand_at_once_and_one_opens\`, which fails in a release build (#2272), and \`a_broker_restarted_while_the_control_plane_is_down_waits_for_it_under_the_unified_fence\`, which needs a debug broker's test fleet features and runs in CI."
             if [ -f outputs/cpdown.txt ]; then echo; echo '```'; grep -E '^test .* \.\.\. |^test result' outputs/cpdown.txt | head -40; echo '```'; fi
           } > "$out/section.md"
           cat "$out/section.md" >> "$GITHUB_STEP_SUMMARY"

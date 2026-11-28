@@ -1638,7 +1638,7 @@ and writes one report:
 |---|---|---|
 | `gate-history.yml` | 1 | 2000 simulator seeds in each of `off`, `clocks`, `placement` and `power-loss`, split across jobs of at most 50 seeds, then the history campaigns `all`, `adversarial` and `election` (leaders killed while the control plane is down) |
 | `gate-perf.yml` | 2, 3 | RF 1 on one broker and RF 3 on three, 1 KiB and 64 KiB, batch 64 for throughput and batch 1 for p50 and p99, the baseline tag against this commit on one runner |
-| `gate-failover.yml` | 4, 5 | The failover-heal scale test on both sides, then the `replica_election::` control-plane-down tests on this commit (one test is skipped until #2272 is understood) |
+| `gate-failover.yml` | 4, 5 | The failover-heal scale test without the hybrid's election switch on both sides (a Raft group always elects, so the switch's variant skips itself), then the `replica_election::` control-plane-down tests on this commit. One test is skipped until #2272 is understood, and the unified-fence restart test runs only in debug CI, since it needs a broker's test fleet features |
 | `gate-groups.yml` | 6 | 5,000 idle members on one broker. A stub until the Raft engine exists |
 
 Each part also runs alone with its own "Run workflow" button. Small sizes make
