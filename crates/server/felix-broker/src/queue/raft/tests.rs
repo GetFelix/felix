@@ -983,3 +983,46 @@ async fn an_ack_above_a_gap_survives_a_change_of_leader() {
         "1 was handed out again after its ack was answered: {handed:?}"
     );
 }
+
+/// **A redriven dead letter's ack survives a change of leader** when the
+/// advance over the dead letter was lost: the rebuilt tracker settles the
+/// dead letter above the table's cursor, so the record's ack is below the
+/// tracker's position but not the table's, and only its own entry keeps it.
+#[tokio::test]
+async fn a_redriven_ack_above_the_tables_cursor_survives_a_change_of_leader() {
+    let fx = fixture(5);
+    publish(&fx.log, 2).await;
+    assert_eq!(fx.poll(G, 1).await.expect("poll"), vec![0]);
+    // 0's dead letter committed and the advance over it did not.
+    let cre = fx.fake().groups.read().table().group(G).expect("group").cre;
+    let index = {
+        let mut state = fx.fake().state.lock();
+        state.next_index += 1;
+        state.next_index
+    };
+    let dead = GroupEntry {
+        group: G.to_owned(),
+        op: GroupOp::DeadLetter { cre, offset: 0 },
+    };
+    fx.fake().groups.write().apply(TERM, index, &dead);
+    fx.fake().new_term();
+    assert!(
+        fx.groups
+            .redrive(&key(G), 0, later())
+            .await
+            .expect("redrive")
+    );
+    let worker = GroupConsumer::new("svc", "w", 1, false);
+    let handed = fx.poll_as(1, Instant::now(), &worker).await.expect("poll");
+    assert_eq!(handed.first().map(|(offset, _)| *offset), Some(0));
+    fx.groups.ack(&key(G), 0, later()).await.expect("ack");
+    assert_eq!(fx.cursor(G), Some(0));
+    fx.fake().new_term();
+    let lapsed = Instant::now() + VIS * 3;
+    let other = GroupConsumer::new("svc", "other", 1, false);
+    let handed = fx.poll_as(2, lapsed, &other).await.expect("poll");
+    assert!(
+        handed.iter().all(|(offset, _)| *offset != 0),
+        "0 was handed out again after its ack was answered: {handed:?}"
+    );
+}

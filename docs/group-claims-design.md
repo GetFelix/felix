@@ -45,10 +45,11 @@ count, on connection 0 so a named member's `reclaim` takes it back
 Nacks and delayed nacks are leader memory already (`queue/raft.rs:402`).
 An ack is not: every ack answered OK is durable, so it is never handed out
 again, even after a change of leader. An ack that closes a run writes the
-`Advance`; one above a gap writes a `GroupOp::Ack` (op 8) of its own, which
-the table keeps until the cursor passes it and a new leader takes as settled
-(`queue/raft.rs:717`, `queue/table.rs:223`, `queue/raft.rs:885`). The ack is
-answered only after that entry has applied.
+`Advance`; one that closes no run and is at or above the table's cursor (an
+ack above a gap, or of a redriven dead letter there) writes a `GroupOp::Ack`
+(op 8) of its own, which the table keeps until the cursor passes it and a new
+leader takes as settled (`queue/raft.rs:727`, `queue/table.rs:223`,
+`queue/raft.rs:895`). The ack is answered only after that entry has applied.
 
 ### The issue's claims
 

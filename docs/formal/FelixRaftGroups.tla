@@ -335,8 +335,11 @@ HandOut(o) ==
 \* The acknowledgement is answered once what it proposed has applied (see
 \* Answer), and so has everything the leader decided before it: the code
 \* waits for its own last proposal before any operation of the group. With
-\* nothing to wait on it is answered at once. An ack above a gap closes no
-\* run, so it proposes `ack(o)` of its own.
+\* nothing to wait on it is answered at once. An ack that closes no run
+\* and that the table's cursor has not passed proposes `ack(o)` of its own.
+\* The tracker's position is not enough: a rebuilt tracker settles a dead
+\* letter above the cursor with no advance, and its redrive is then below
+\* the tracker only.
 Ack(o) ==
     LET t == Lead
         t1 == [t EXCEPT !.out = @ \ {o}, !.owed = @ \ {o}]
@@ -344,7 +347,7 @@ Ack(o) ==
         fin == IF o \in t.owed
                THEN {[kind |-> "finish", o |-> o, hyd |-> t.hyd, cre |-> t.cre]}
                ELSE {}
-        ahead == IF DurableAckAhead /\ o > t1.pos
+        ahead == IF DurableAckAhead /\ s.adv = {} /\ o >= Fold(log).cursor
                  THEN {[kind |-> "ack", o |-> o, hyd |-> t.hyd, cre |-> t.cre]}
                  ELSE {}
         es == s.adv \cup fin \cup ahead

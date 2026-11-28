@@ -704,12 +704,22 @@ impl<C: GroupConsensus> RaftGroups<C> {
         deadline: Instant,
     ) -> Result<()> {
         let held = guard.as_mut().expect("hydrated");
-        // Above the cursor an ack closes no run, so no advance records it.
-        // A dead letter is on disk already.
-        let ahead = how == Settled::Acked && offset > held.tracker.committed();
         let advanced = held.tracker.ack(offset);
         let redriven = held.tracker.take_redriven(offset);
         let cre = held.cre;
+        // An ack the table's cursor has not passed and no advance here
+        // covers is written on its own. The tracker's position is not enough:
+        // a rebuilt tracker settles a dead letter above the cursor without an
+        // advance, and a redrive of it is then below the tracker only. A dead
+        // letter is on disk already.
+        let cursor = held
+            .groups
+            .read()
+            .table()
+            .group(&key.group)
+            .map_or(0, |state| state.cursor);
+        let ahead =
+            how == Settled::Acked && offset >= cursor && advanced.is_none_or(|to| to <= offset);
         if redriven {
             let entry = GroupOp::FinishRedrive { cre, offset };
             self.write_held(key, guard, entry, offset, deadline).await?;
