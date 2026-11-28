@@ -609,7 +609,7 @@ advertises. A broker that cannot be reached is listed under `unreachable`, and
 nothing is said on its behalf. When the leader answers, each replica's row is
 the leader's account of it: the next offset it ships, the lag behind the tail,
 whether it took the fence, and its state (`shipping`, `stalled`, `copying`,
-`rebuilding`, `halted` with its reason, or `fencing`). With `--json` each
+`rebuilding`, or `halted` with its reason). With `--json` each
 replica also carries its own view under `own`: its phase, generation and tail.
 
 Without `--shard` every shard of the stream is shown, one block (or one JSON

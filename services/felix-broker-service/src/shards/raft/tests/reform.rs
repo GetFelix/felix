@@ -4,7 +4,6 @@
 
 use std::collections::BTreeMap;
 
-use felix_replication::engine::Engine as _;
 use felix_storage::raft_copy::{
     BrokerReport, GroupRecord, PlanView, SurveyStep, VoterId, WireStart, first_probes, plan_starts,
     survey_step,

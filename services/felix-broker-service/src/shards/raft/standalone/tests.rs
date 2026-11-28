@@ -2,7 +2,6 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use felix_broker::Broker;
-use felix_replication::engine::Engine;
 use felix_replication::raft::GroupRuntime;
 use tokio_util::sync::CancellationToken;
 
@@ -35,7 +34,7 @@ pub(in crate::shards::raft) fn members(
     let shards = RaftShards::new(Arc::clone(broker), runtime, LOCAL_MEMBER.to_string(), fleet);
     let engine = Arc::new(StreamEngine::default());
     engine.set_raft(Arc::clone(&shards));
-    broker.set_read_bounds(Arc::new(felix_replication::engine::CommittedReads::new(
+    broker.set_read_bounds(Arc::new(crate::shards::routing::CommittedReads::new(
         Arc::clone(&engine),
     )));
     open_root(broker, &shards);

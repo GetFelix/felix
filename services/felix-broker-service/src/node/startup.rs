@@ -4,7 +4,6 @@ use std::sync::Arc;
 
 use anyhow::Result;
 use felix_broker::{Broker, DurableStorage};
-use felix_replication as replication;
 
 use super::cluster::ShardState;
 use super::storage;
@@ -204,9 +203,9 @@ pub(super) async fn wire_broker(
         });
     }
     // Readers of a replicated `Quorum` stream see only what its quorum mark
-    // has passed; see `replication::engine::Engine::committed_bound`.
+    // has passed; see `StreamEngine::committed_bound`.
     if ingress_router.is_some() {
-        broker.set_read_bounds(Arc::new(replication::engine::CommittedReads::new(
+        broker.set_read_bounds(Arc::new(crate::shards::routing::CommittedReads::new(
             Arc::clone(engine),
         )));
     }

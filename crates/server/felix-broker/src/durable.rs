@@ -983,67 +983,10 @@ impl StreamLog {
             .map_err(BrokerError::from)
     }
 
-    /// [`StreamLog::record_generation`], with the write, when there is one,
-    /// on the blocking pool: it fsyncs a file and a directory.
-    pub async fn record_generation_off_runtime(
-        &self,
-        generation: u64,
-        start_offset: Offset,
-    ) -> Result<bool> {
-        if !self.log.records_generation(generation, start_offset) {
-            return self.record_generation(generation, start_offset);
-        }
-        let log = self.clone();
-        match felix_common::blocking::spawn(move || log.record_generation(generation, start_offset))
-            .await
-        {
-            Ok(recorded) => recorded,
-            Err(err) if err.is_panic() => std::panic::resume_unwind(err.into_panic()),
-            Err(_) => Err(BrokerError::Storage("the runtime is shutting down".into())),
-        }
-    }
-
-    /// Label the records from `from` on with the generations that wrote them.
-    /// See `DiskLog::label_generations`.
-    pub fn label_generations(
-        &self,
-        from: Offset,
-        generations: &[felix_storage::log::Epoch],
-    ) -> Result<()> {
-        self.log
-            .label_generations(from, generations)
-            .map_err(BrokerError::from)
-    }
-
-    /// [`StreamLog::label_generations`], with the write, when there is one,
-    /// on the blocking pool: it fsyncs a file and a directory.
-    pub async fn label_generations_off_runtime(
-        &self,
-        from: Offset,
-        generations: Vec<felix_storage::log::Epoch>,
-    ) -> Result<()> {
-        if !self.log.relabels(from, &generations) {
-            return self.label_generations(from, &generations);
-        }
-        let log = self.clone();
-        match felix_common::blocking::spawn(move || log.label_generations(from, &generations)).await
-        {
-            Ok(labelled) => labelled,
-            Err(err) if err.is_panic() => std::panic::resume_unwind(err.into_panic()),
-            Err(_) => Err(BrokerError::Storage("the runtime is shutting down".into())),
-        }
-    }
-
     /// Note that this broker leads the log at `generation`. See
     /// `DiskLog::lead_at`.
     pub fn lead_at(&self, generation: u64) {
         self.log.lead_at(generation);
-    }
-
-    /// Whether the log stamps records with their writer's generation, or may
-    /// soon. See `DiskLog::stamps_generations`.
-    pub fn stamps_generations(&self) -> bool {
-        self.log.stamps_generations()
     }
 
     /// The highest generation a leader of this shard was accepted at here.
@@ -1065,108 +1008,6 @@ impl StreamLog {
     ) -> Result<felix_storage::disk_log::GenerationCheck> {
         self.log
             .accept_generation(generation, leader)
-            .await
-            .map_err(BrokerError::from)
-    }
-
-    /// Accept `leader` at `generation` only while the kept set is still
-    /// `kept`; `None`, with nothing written, when it moved. See
-    /// `DiskLog::accept_generation_on_set`.
-    pub async fn accept_generation_on_set(
-        &self,
-        generation: u64,
-        leader: &str,
-        kept: felix_storage::disk_log::ReplicaSet,
-    ) -> Result<Option<felix_storage::disk_log::GenerationCheck>> {
-        self.log
-            .accept_generation_on_set(generation, leader, kept)
-            .await
-            .map_err(BrokerError::from)
-    }
-
-    /// Give up the accepted generation, so no leader is accepted at it here
-    /// again. See `DiskLog::give_up_generation`.
-    pub async fn give_up_generation(&self) -> Result<u64> {
-        self.log
-            .give_up_generation()
-            .await
-            .map_err(BrokerError::from)
-    }
-
-    /// The generation of the replica set this copy counts, zero for none.
-    pub fn set_generation(&self) -> u64 {
-        self.log.set_generation()
-    }
-
-    /// The replica set this copy counts, if it has kept one.
-    pub fn replica_set(&self) -> Option<felix_storage::disk_log::ReplicaSet> {
-        self.log.replica_set()
-    }
-
-    /// Count `set` if it is newer than the one kept; a raised set is on disk
-    /// on return. Persist the ballot first. See `DiskLog::accept_set`.
-    pub async fn accept_set(
-        &self,
-        set: felix_storage::disk_log::ReplicaSet,
-    ) -> Result<felix_storage::disk_log::SetCheck> {
-        self.log.accept_set(set).await.map_err(BrokerError::from)
-    }
-
-    /// [`Self::accept_set`] keeping earlier sets, once `joint_fence` is
-    /// finalized. See `DiskLog::accept_set_keeping_earlier`.
-    pub async fn accept_set_keeping_earlier(
-        &self,
-        set: felix_storage::disk_log::ReplicaSet,
-    ) -> Result<felix_storage::disk_log::SetCheck> {
-        self.log
-            .accept_set_keeping_earlier(set)
-            .await
-            .map_err(BrokerError::from)
-    }
-
-    /// Count `set`, sent by `leader` at `generation`, unless this copy
-    /// accepted a newer generation or another leader at that one: then the
-    /// ballot's answer, and nothing written. See `DiskLog::accept_set_from`.
-    pub async fn accept_set_from(
-        &self,
-        set: felix_storage::disk_log::ReplicaSet,
-        keep_earlier: bool,
-        generation: u64,
-        leader: Option<&str>,
-    ) -> Result<
-        std::result::Result<
-            felix_storage::disk_log::SetCheck,
-            felix_storage::disk_log::GenerationCheck,
-        >,
-    > {
-        self.log
-            .accept_set_from(set, keep_earlier, generation, leader)
-            .await
-            .map_err(BrokerError::from)
-    }
-
-    /// Whether this log holds a record written at `generation`. See
-    /// `DiskLog::holds_records_of`.
-    pub fn holds_records_of(&self, generation: u64) -> bool {
-        self.log.holds_records_of(generation)
-    }
-
-    /// Whether the kept set lists `node` as a learner. See
-    /// `DiskLog::member_is_learner`.
-    pub fn member_is_learner(&self, node: &str) -> Option<bool> {
-        self.log.member_is_learner(node)
-    }
-
-    /// Whether the kept set marks `node` wiped. See `DiskLog::member_is_wiped`.
-    pub fn member_is_wiped(&self, node: &str) -> bool {
-        self.log.member_is_wiped(node)
-    }
-
-    /// Count `node` as a voter in the kept set, and with `settled` drop its
-    /// wiped mark. See `DiskLog::admit_member`.
-    pub async fn admit_member(&self, node: &str, settled: bool) -> Result<bool> {
-        self.log
-            .admit_member(node, settled)
             .await
             .map_err(BrokerError::from)
     }

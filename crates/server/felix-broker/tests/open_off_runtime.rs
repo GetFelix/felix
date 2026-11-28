@@ -1,13 +1,12 @@
-//! A stream's log does its disk work off the runtime's workers: opening it
-//! when the stream registers, and labelling replicated records with their
-//! generations. Each fsyncs, and a bulk create does hundreds of them.
+//! A stream's log does its disk work off the runtime's workers when the
+//! stream registers. Opening it fsyncs, and a bulk create does hundreds.
 
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use felix_broker::{Broker, DurableStorage, StreamMetadata};
 use felix_storage::EphemeralCache;
-use felix_storage::log::{Epoch, FsyncMode, LogConfig};
+use felix_storage::log::{FsyncMode, LogConfig};
 use serial_test::serial;
 
 /// Holds every flush in the process for as long as it lives.
@@ -107,36 +106,4 @@ async fn registering_a_durable_stream_does_not_flush_on_the_runtime() {
     })
     .await;
     assert_off_runtime("registering the stream", stalls);
-}
-
-/// **Labelling replicated records does not flush on the runtime.** A
-/// follower labels the first batch of each new generation, which for a bulk
-/// create is a write per shard.
-#[tokio::test]
-#[serial]
-async fn labelling_generations_does_not_flush_on_the_runtime() {
-    let dir = tempfile::tempdir().expect("tempdir");
-    let storage = DurableStorage::open(dir.path(), on_commit()).expect("storage");
-    let log = storage
-        .open_stream("t1", "default", "orders", 0)
-        .expect("open");
-    let _held = HeldFlushes::hold(FLUSH);
-
-    let stalls = stall_while(async {
-        log.label_generations_off_runtime(
-            0,
-            vec![Epoch {
-                generation: 3,
-                start_offset: 0,
-            }],
-        )
-        .await
-        .expect("label");
-    })
-    .await;
-    assert_off_runtime("labelling", stalls);
-    assert_eq!(
-        log.generations().last().map(|epoch| epoch.generation),
-        Some(3)
-    );
 }

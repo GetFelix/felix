@@ -186,11 +186,9 @@ change no method that is there. It narrows once, when the hybrid is deleted.
 
 | Question | `Engine` method | How the hybrid answers |
 | --- | --- | --- |
-| Append | `appended(shard, Written)` | Marks the shard for a driver pass, the same mark the broker core makes when a publish becomes durable. The driver ships from its own cursors, so the position is not used |
 | Commit mark | `await_commit(handle, shard, outcome, generation, timeout)` | `quorum::await_quorum`: at once for a `Leader` stream, on the mark and then the lease for `Quorum` |
 | Commit mark | `admit_local_ack(shard, generation)` | Always yes. The hybrid checks the lease when a write enters the write fence, and has no second check when it acknowledges |
 | Read bound | `read_bound(consistency, shard)` | `quorum::read_bound`: the mark at the served generation, for `Quorum` only |
-| Read bound | `committed_bound(shard)` | `quorum::committed_bound`: the same mark plus the lease check, for the broker core's readers |
 | Leadership for a read | `confirm_read(shard)` | The lease, or a read round |
 | Membership change | `placement_changed(shard, Placement)` | Wakes the driver, which reads the new set from the routing table, as the routing feed's wake does |
 | Peer messages | `handle(from, caller, request)` | The replica handler |
@@ -200,11 +198,13 @@ change no method that is there. It narrows once, when the hybrid is deleted.
 outcome. `Placement` is the brokers the control plane placed the shard on.
 `CommitError` is `quorum::QuorumError` under the name the engine uses.
 
-Five more methods exist only for the hybrid and go when it does:
-`cache_write_at`, `await_cache_quorum`, `await_counter_quorum`,
-`read_skips_lease` and `await_readable`. `committed_bound` merges into
-`read_bound` at the same time. [`per-shard-raft.md`](per-shard-raft.md), "The
-engine interface", says why each is safe to drop then and not before.
+The hybrid's own methods (`appended`, `cache_write_at`, `await_cache_quorum`,
+`await_counter_quorum`, `read_skips_lease`, `await_readable`) were removed
+with it. `committed_bound`, the bound the broker core's readers take, is a
+method of the broker service's `StreamEngine` and not of the trait, because
+an in-memory shard's answer still checks the lease.
+[`per-shard-raft.md`](per-shard-raft.md), "The engine interface", has the
+trait as it is now.
 
 `EngineHost` has five methods:
 

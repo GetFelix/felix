@@ -966,7 +966,7 @@ mod on_raft {
         let term = shards.leading(&orders).expect("term");
         let engine = Arc::new(fixture::engine(&shards));
         // As startup binds them: readers see what the group committed.
-        broker.set_read_bounds(Arc::new(felix_replication::engine::CommittedReads::new(
+        broker.set_read_bounds(Arc::new(crate::shards::routing::CommittedReads::new(
             Arc::clone(&engine),
         )));
         let cluster = ClusterContext {
@@ -1086,7 +1086,7 @@ mod on_raft {
         fixture::until("the term is served", || shards.leading(&orders).is_some()).await;
         let term = shards.leading(&orders).expect("term");
         let engine = Arc::new(fixture::engine(&shards));
-        broker.set_read_bounds(Arc::new(felix_replication::engine::CommittedReads::new(
+        broker.set_read_bounds(Arc::new(crate::shards::routing::CommittedReads::new(
             Arc::clone(&engine),
         )));
         let cluster = ClusterContext {
@@ -1166,7 +1166,7 @@ mod on_raft {
         fixture::until("the term is served", || shards.leading(&orders).is_some()).await;
         let term = shards.leading(&orders).expect("term");
         let engine = Arc::new(fixture::engine(&shards));
-        broker.set_read_bounds(Arc::new(felix_replication::engine::CommittedReads::new(
+        broker.set_read_bounds(Arc::new(crate::shards::routing::CommittedReads::new(
             Arc::clone(&engine),
         )));
         let cluster = ClusterContext {
@@ -1250,7 +1250,7 @@ mod on_raft {
         fixture::until("the term is served", || shards.leading(&orders).is_some()).await;
         let term = shards.leading(&orders).expect("term");
         let engine = Arc::new(fixture::engine(&shards));
-        broker.set_read_bounds(Arc::new(felix_replication::engine::CommittedReads::new(
+        broker.set_read_bounds(Arc::new(crate::shards::routing::CommittedReads::new(
             Arc::clone(&engine),
         )));
         let cluster = ClusterContext {
@@ -1321,7 +1321,7 @@ mod on_raft {
         fixture::until("the term is served", || shards.leading(&orders).is_some()).await;
         let term = shards.leading(&orders).expect("term");
         let engine = Arc::new(fixture::engine(&shards));
-        broker.set_read_bounds(Arc::new(felix_replication::engine::CommittedReads::new(
+        broker.set_read_bounds(Arc::new(crate::shards::routing::CommittedReads::new(
             Arc::clone(&engine),
         )));
         let cluster = ClusterContext {
@@ -1462,7 +1462,7 @@ mod on_raft {
             fixture::until("the term is served", || shards.leading(&orders).is_some()).await;
             let term = shards.leading(&orders).expect("term");
             let engine = Arc::new(fixture::engine(&shards));
-            broker.set_read_bounds(Arc::new(felix_replication::engine::CommittedReads::new(
+            broker.set_read_bounds(Arc::new(crate::shards::routing::CommittedReads::new(
                 Arc::clone(&engine),
             )));
             let cluster = ClusterContext {
