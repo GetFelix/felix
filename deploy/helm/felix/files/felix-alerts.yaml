@@ -72,25 +72,16 @@ groups:
           summary: "Broker {{ $labels.instance }} has not polled principal revocations for {{ $value | humanizeDuration }}"
           description: "A revoked token is accepted for new sessions until it expires. Check the control plane."
           runbook_url: "https://docs.getfelix.dev/features/observability/#alert-rules"
-      - alert: FelixReplicationHalted
-        # A leader rebuilds halted followers on its own; this outlasts the queue.
-        expr: felix_broker_replication_halted > 0
+      - alert: FelixRaftShardStopped
+        # The broker reopens the copy once the disk takes writes; this outlasts that.
+        expr: felix_broker_raft_shards_stopped_on_storage_error > 0
         for: 15m
         labels:
           severity: critical
         annotations:
-          summary: "Broker {{ $labels.instance }} leads {{ $value }} halted replicas"
-          description: "A halted replica is in no quorum. Run GET /replication/halted on the broker for the reason and remedy."
-          runbook_url: "https://docs.getfelix.dev/deployment/diagnosing/#a-follower-is-lagging-or-halted"
-      - alert: FelixQuorumPublishTimeouts
-        expr: sum by (instance) (rate(felix_broker_publish_quorum_failed_total{reason="timed_out"}[5m])) > 0
-        for: 5m
-        labels:
-          severity: warning
-        annotations:
-          summary: "Broker {{ $labels.instance }} Quorum publishes are timing out"
-          description: "No majority acknowledged within the budget. Check replication lag and the followers' brokers."
-          runbook_url: "https://docs.getfelix.dev/deployment/diagnosing/#quorum-writes-time-out"
+          summary: "Broker {{ $labels.instance }} has {{ $value }} Raft shard copies stopped on a storage error"
+          description: "A stopped copy is in no majority. shard_inspect on the broker shows the term and the error; check the disk."
+          runbook_url: "https://docs.getfelix.dev/features/observability/#alert-rules"
       - alert: FelixSubscriberDrops
         expr: sum by (instance) (rate(felix_sub_queue_dropped_total[5m])) > 0
         for: 10m

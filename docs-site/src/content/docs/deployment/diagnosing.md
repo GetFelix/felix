@@ -126,9 +126,8 @@ after a move finished and its destination then failed.
 the peer listener. Check each replica's broker is running, that the peer port
 (`5001` in the chart) is open between them, and that peer mTLS is accepted
 (see [A peer is refused](/reference/troubleshooting/#a-peer-is-refused)). The shard opens on the next attempt after
-a majority answers. `felix_broker_promotions_opened_total{path="fenced"}`
-counts promotions that opened this way, and
-`felix_broker_shard_phase{phase="fencing"}` how many shards wait now.
+a majority answers. `felix_broker_shard_phase{phase="fencing"}` counts how
+many shards wait now.
 
 ### Two of three replicas lost power together
 
@@ -202,9 +201,8 @@ is serving or a replica can take over without loss.
 
 ## A follower is lagging or halted
 
-**What you see.** `felix_broker_replication_lag_records` on a leader keeps
-growing, or `felix_broker_replication_halted` is above zero. On the control
-plane, `felix_shard_replicas_halted` counts the same halts.
+**What you see.** On the control plane, `felix_shard_replicas_halted` is above
+zero.
 
 **What to run.**
 
@@ -258,8 +256,7 @@ majority. The leader writes it, ships it, and waits up to
 The retry class is `outcome_unknown`: the record may be on the leader and may yet
 reach a majority, so a retry can write it twice unless the producer is
 idempotent. `leadership_lost` is the same outcome when the leader changed
-during the wait. `felix_broker_publish_quorum_failed_total{reason}` counts
-both.
+during the wait.
 
 **What to run.**
 
@@ -272,14 +269,6 @@ follower. If both followers are `stalled` or `halted`, or listed as
 `unreachable`, no majority can form, and every `Quorum` write to the shard
 times out. A `committed` mark well below `tail` that does not move is the same
 thing seen from the mark.
-
-If the followers are level and idle but the mark still lags, the shard may be
-waiting for a pass slot. The leader ships at most 16 shards at a time, and
-shards with new writes take turns at the slots. Check
-`felix_broker_replication_passes_waiting` and
-`felix_broker_replication_slot_wait_seconds` on the leader: a wait that is a
-large part of the quorum timeout means the broker leads more busy shards than it
-ships at once, and moving some shards to another broker helps.
 
 **What to do.** Restore a majority: start the followers' brokers or fix the
 peer network between them. Placement restores a follower whose broker has been

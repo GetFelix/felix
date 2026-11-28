@@ -461,9 +461,8 @@ kubectl -n felix delete pvc data-felix-broker-2 --wait=false
 kubectl -n felix delete pod felix-broker-2
 ```
 
-It is done when the replacement is ready, `felix_broker_replication_lag_records`
-on each leader it follows has fallen to where it was before, and
-`/replication/halted` is empty on every broker:
+It is done when the replacement is ready and `/replication/halted` is empty on
+every broker:
 
 ```bash
 for i in 0 1 2; do

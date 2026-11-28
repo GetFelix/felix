@@ -212,19 +212,6 @@ felix_node_count                            # control plane: fleet size by lifec
 felix_broker_membership_live                # broker: does the cluster still count me
 felix_broker_heartbeat_age_seconds          # alert when this nears the expiry timeout
 felix_broker_fleet_feature_enabled{feature} # 1 once an operator has finalized it
-felix_broker_replication_lag_records
-felix_broker_publish_quorum_wait_seconds    # a Quorum publish's wait for its majority; a tail near the replication tick is a missed wake
-felix_broker_replication_halted             # a count; GET /replication/halted says which
-felix_broker_replication_passes_waiting     # shards waiting for a pass slot; high for long means more busy shards than the broker ships at once
-felix_broker_replication_slot_wait_seconds  # by queue; how long each waited for its slot
-felix_broker_replication_scans_total        # by wake; its rate is the driver's scans per second
-felix_broker_replication_rebuilding         # halted followers the leader is rebuilding right now
-felix_broker_replication_rebuilds_total     # by outcome: started, completed, refused
-felix_broker_replication_drain_withheld_total # by log; a planned move waiting to hand over group state or counters
-felix_broker_replica_reports_per_request    # shards per control-plane report; 1 on a busy broker means batching found nothing
-felix_broker_promotions_opened_total       # every new leadership, by path: fenced (a majority took the new leader's generation) or lease
-felix_broker_promotion_truncated_total      # a promoted leader dropped its own records a replica's newer log superseded
-felix_broker_fence_refused_ids_beyond_two_total # a crashed leader's copy refused a fence whose ids name a copy beside the set of two (#1635)
 felix_broker_lease_held
 felix_broker_lease_refusals_total           # writes and reads refused after a lease lapsed, by boundary
 felix_broker_credential_expires_in_seconds  # counts down; -1 when the token carries no exp
@@ -364,7 +351,7 @@ replaces a copy that stays halted past the restore delay.
 
 ### Which replica stopped
 
-`felix_broker_replication_halted` is a count, and stays one: a label per shard
+`felix_shard_replicas_halted` is a count, and stays one: a label per shard
 would be a label per stream per tenant. A leader rebuilds a halted follower on
 its own, one at a time by default (`FELIX_REPLICATION_REBUILD_MAX_CONCURRENT`),
 so a brief non-zero is a rebuild queue. When it stays above zero, ask the broker
@@ -395,8 +382,7 @@ A halt that a rebuild cannot resolve does not clear on its own. That replica is
 out of every quorum until someone acts, so a count that stays non-zero is worth
 waking for. A rebuild keeps the follower's committed records, so the one a
 follower refuses is from a leader that disagreed with one of them: the
-follower's log says so at `ERROR` ("refusing to rebuild"), and
-`felix_broker_replicated_total{outcome="below_commit"}` counts it. The leader
+follower's log says so at `ERROR` ("refusing to rebuild"). The leader
 asks again after a backoff that grows to 5 minutes, so an entry that clears
 after an upgrade or a repair needs nothing more. `reason` is stable
 and safe to key a runbook off; `remedy` is prose and says whether the
@@ -512,8 +498,7 @@ under-replication alerts if you change `FELIX_SHARD_RESTORE_AFTER_MS`.
 | `FelixBrokerHeartbeatStale` | Heartbeat age over 10 s for 1 minute | warning | The broker is two beats from being declared down (default expiry 15 s). |
 | `FelixCredentialExpiring` | Less than 300 s left on the node credential, or already expired (a value of -1 means the token has no expiry and is ignored) | warning | The heartbeat carries it, so expiry stops the broker serving. Keep this below the token lifetime you issue. |
 | `FelixRevocationFeedStale` | No good revocation poll for 60 s | warning | A revoked token is still accepted for new sessions. |
-| `FelixReplicationHalted` | `felix_broker_replication_halted` above 0 for 15 minutes | critical | A replica is in no quorum. See [Which replica stopped](#which-replica-stopped). |
-| `FelixQuorumPublishTimeouts` | Quorum publishes failing as `timed_out` for 5 minutes | warning | No majority acknowledged in time. |
+| `FelixRaftShardStopped` | `felix_broker_raft_shards_stopped_on_storage_error` above 0 for 15 minutes | critical | A copy stopped on a storage error is in no majority. `shard_inspect` on the broker shows the term and the error. |
 | `FelixSubscriberDrops` | Subscriber queue drops for 10 minutes | warning | Subscribers are missing records. |
 | `FelixAckedPublishesDropped` | Publishes acknowledged and then not written | critical | Acks on accept lost a record. |
 | `FelixPublishWorkerRestarted` | A publish executor was replaced after a panic | warning | Should stay at zero. |

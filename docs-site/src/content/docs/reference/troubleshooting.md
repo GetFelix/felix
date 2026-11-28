@@ -210,7 +210,7 @@ without peer mTLS) and `the peer's certificate does not parse`.
 
 ### Replication has stopped for a replica
 
-`felix_broker_replication_halted` counts the replicas a leader has stopped
+`felix_shard_replicas_halted` counts the replicas a leader has stopped
 shipping to. Which ones, and why, is on the leader's metrics port:
 
 ```bash

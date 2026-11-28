@@ -582,8 +582,7 @@ fleet reads v9. Recovery treats them like any other record: one cut short is a
 torn tail, and a damaged one in the middle of a log stops the open.
 
 Replication does not carry them yet either. A leader holds a follower before
-the first such record (`kind_unsupported` in
-`felix_broker_replication_shipped_total`) rather than send it under another
+the first such record rather than send it under another
 mark.
 
 ### Group records
@@ -876,8 +875,7 @@ does for `head_trim`.
 
 A follower from an older build cannot read the block, so the leader holds
 shipping at the first record that has one rather than send it bare, logs the
-stall, and counts it as `headers_unsupported` in
-`felix_broker_replication_shipped_total`. That follower catches up once it is
+stall. That follower catches up once it is
 upgraded.
 
 ## Index file

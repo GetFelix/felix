@@ -293,20 +293,13 @@ Metrics on any broker a publish reaches during the switch-over:
 | `felix_broker_shard_move_hold_seconds` | histogram: how long each held publish waited |
 | `felix_broker_shard_move_hold_refused_total{reason}` | publishes refused as `moving`: `timed_out` after `FELIX_SHARD_MOVE_HOLD_MS`, or `full` past `FELIX_SHARD_MOVE_HOLD_MAX` |
 
-On the broker a shard is moving off:
-
-| Metric | Meaning |
-| --- | --- |
-| `felix_broker_replication_move_throttled_bytes_total` | bytes shipped to move destinations under `FELIX_SHARD_MOVE_BYTES_PER_SEC` |
-
 Every step is written only if the shard is still at the generation the pass
 planned from, so two control-plane instances running placement at once
 cannot undo each other's steps. A conflict is skipped and re-planned on the
 next pass; an occasional one is normal with several instances.
 
 `felix_shard_moves_waiting` sitting above zero for longer than a couple of
-placement intervals means a successor is not catching up (check the leader's
-`felix_broker_replication_lag_records` and `/replication/halted`), a fenced
+placement intervals means a successor is not catching up (check `/replication/halted` on the leader), a fenced
 leader is not reporting drained (a write stuck inside its fence, or the broker
 lost its control-plane connection), or a drain is queued behind a move
 limit.

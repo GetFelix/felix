@@ -549,8 +549,7 @@ has no request that trims.
   follower that predates the feature would refuse the batch and stop
   replicating there. A leader also sends a batch holding a trim only to a
   follower that offered `HEAD_TRIM` in its handshake, and holds the others at
-  the trim, counted as `trim_unsupported` in
-  `felix_broker_replication_shipped_total`.
+  the trim.
 - **A single broker** allows trims from the start: it has no followers.
   A data directory that trimmed as a single broker joins a cluster only once
   that cluster has finalized `head_trim`. A log that has trimmed holds
@@ -635,8 +634,7 @@ anyway is refused as invalid (`unsupported frame flags`) and nothing is stored.
   readable by older builds. Take a backup first.
 - **Replication carries it.** A batch holding a block goes only to a follower
   that offered `RECORD_HEADERS` in its handshake. A follower that did not is
-  held at the first such record rather than sent it bare, counted as
-  `headers_unsupported` in `felix_broker_replication_shipped_total`. The
+  held at the first such record rather than sent it bare. The
   finalize needs every broker to report the feature, so no follower is held
   once it is done.
 - **MQTT forwards** need the owner to be on a build that offers

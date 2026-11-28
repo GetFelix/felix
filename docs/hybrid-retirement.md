@@ -4,7 +4,9 @@ This page is the design for track 6 of the one-engine plan (issue #2167):
 delete the bespoke shard replication protocol, which the other pages call
 "the hybrid", so that 0.8 has one engine (a Raft group per shard, through
 openraft) and one model set (`FelixRaft`). Raft is the only engine at run
-time on main (PR 3); the code deletion is not built yet.
+time on main (PR 3), and PR 4 deleted the hybrid from `felix-replication`
+and the broker service. The control plane, wire and storage leftovers and the
+specs go in the pull requests after it.
 
 Read [`per-shard-raft.md`](per-shard-raft.md) first. It defines the Raft
 engine and the pull requests of track 4 that this page orders itself
@@ -20,8 +22,8 @@ Line counts and paths are as of the commit that added this page.
   ship both engines.
 - Raft is the only shard engine at run time on main. `FELIX_SHARD_ENGINE` is
   retired, and a broker or control plane asked for `hybrid` refuses to
-  start. The hybrid's code is still compiled, frozen, and reached only by
-  the simulator's hybrid clusters, until PR 4 deletes it.
+  start. PR 4 deleted the hybrid's code in `felix-replication` and the
+  broker service, with the simulator's hybrid clusters.
 - Then the hybrid is deleted, in the pull requests below, in dependency
   order. 0.8.0 contains no hybrid code.
 - Deleting is about 21,000 lines of non-test replication code, 2,000 lines
@@ -184,17 +186,18 @@ because it only wraps records kinds and is sent only to a peer that offered
 | `fence_refused_ids_beyond_two_total` | `crates/server/felix-replication/src/peer/metrics.rs` | Removed |
 | `shard_confirmed_reads_total` | `services/felix-broker-service/src/shards/watch/metrics.rs` | Removed |
 | `felix_placement_writes_fenced_total`, `felix_shard_move_fence_seconds`, `felix_replica_status_rejected_total` | control plane, `cluster/placement/` and `api/nodes/reports.rs` | Removed |
-| Replication lag, halted, rebuild, shipped and `publish_quorum_*` | `crates/server/felix-replication/src/metrics.rs` | Kept by name, fed by the Raft engine, so dashboards keep working |
+| Replication lag, halted, rebuild, shipped, scans, slots, `replicated_total`, `replica_reports_per_request`, `quorum_marks_withheld_total` and `publish_quorum_*` | `crates/server/felix-replication/src/metrics.rs` | Removed (PR 4). The Raft engine never fed them. The dashboard and alert rules use the `felix_broker_raft_*` metrics in their place |
 | Peer transport, forwarding, move and watch metrics | | Kept |
 
 The metrics reference and the dashboards under the observability assets
-change in the same pull request as the metric.
+change in the same pull request as the metric. PR 4 removed every row above
+except the control plane's, which go with PR 6.
 
 ### Docs
 
 | Page | Fate |
 | --- | --- |
-| `docs/replication-design.md` (5,873 lines) | Replaced by a short page for the one engine. The history stays in git |
+| `docs/replication-design.md` (5,873 lines) | Replaced by a short page for the one engine. The history stays in git. PR 4 cut it to a pointer at the v0.7.0 page |
 | `docs/internal-protocol.md` | Hybrid kinds move to a "Retired" table |
 | `docs/formal/README.md` (2,251 lines) | Rewritten for the specs that remain |
 | `docs/control-plane.md`, `docs/storage-format.md`, `docs/durable-storage.md`, `docs/semantics.md`, `docs/simulation.md`, `docs/history-checker.md`, `docs/cluster-harness.md`, `docs/rebalancing-plan.md` | Hybrid sections removed or restated |
@@ -303,7 +306,7 @@ flowchart LR
 | Phase | What main has | What CI runs |
 | --- | --- | --- |
 | 1. Raft by default (done) | Both engines. A control plane with no `FELIX_SHARD_ENGINE` forms the cluster for Raft. A broker with no `FELIX_SHARD_ENGINE` and a node id (`FELIX_NODE_ID`) runs Raft, and refuses to start, naming what is missing, without the internal listener or the `raft` build feature; without durable storage it runs no group and holds only in-memory stream shards (#3067). A standalone broker, with no node id, runs each durable stream and cache shard as a Raft group of one, with no peer, internal listener or control-plane placement (decided in #2986); it refuses `FELIX_SHARD_ENGINE=raft` without durable storage, and without durable storage it runs in memory as before. Every registering broker is compared with the engine the control plane recorded. `FELIX_SHARD_ENGINE=hybrid` still works and logs a deprecation warning. `compose.yaml` runs its broker this way on images built from main, and `felix-cluster up` starts its brokers and control plane on Raft (#2985) | Raft cluster jobs gate. The hybrid cluster jobs run beside them and only report |
-| 2. Hybrid deleted (now, from PR 3) | Raft only, one pull request at a time (see "Pull request split"). PR 3 leaves Raft the only engine at run time: `FELIX_SHARD_ENGINE=hybrid` is refused by brokers and control planes, the other hybrid variables are reported as retired and ignored, and no broker starts the hybrid's driver, suspicion heartbeat, election driver or promotion fence. A broker with a node id runs Raft as in phase 1. A standalone broker runs its durable shards as single-voter Raft groups, as in phase 1, so nothing about it changes when the hybrid goes | Raft only: the cluster jobs `Cluster tests (routing, failures, history, rest)` and `Cluster tests (Raft shards)`, the history campaign in its one mode, and the nightly simulator sweep in the `raft-*` modes. The hybrid cluster jobs, the history modes `lease` and `lease-free`, the hybrid nightly simulator modes and `perf-raft-rf3.yml` are gone. Until PR 4 deletes the code, the per-PR simulator jobs (`Simulator determinism` and the seed batch) still run the simulator's hybrid clusters, which test code no broker reaches. Each later pull request removes the hybrid tests for the code it removes |
+| 2. Hybrid deleted (now, from PR 3) | Raft only, one pull request at a time (see "Pull request split"). PR 3 leaves Raft the only engine at run time: `FELIX_SHARD_ENGINE=hybrid` is refused by brokers and control planes, the other hybrid variables are reported as retired and ignored, and no broker starts the hybrid's driver, suspicion heartbeat, election driver or promotion fence. A broker with a node id runs Raft as in phase 1. A standalone broker runs its durable shards as single-voter Raft groups, as in phase 1, so nothing about it changes when the hybrid goes | Raft only: the cluster jobs `Cluster tests (routing, failures, history, rest)` and `Cluster tests (Raft shards)`, the history campaign in its one mode, and the nightly simulator sweep in the `raft-*` modes. The hybrid cluster jobs, the history modes `lease` and `lease-free`, the hybrid nightly simulator modes and `perf-raft-rf3.yml` are gone. The per-PR simulator jobs (`Simulator determinism` and the seed batch) run only the Raft groups simulation since PR 4; the determinism job replays 20 seeds, as the hybrid one did. Each later pull request removes the hybrid tests for the code it removes |
 
 The order, decided with Raft as the default:
 
@@ -532,7 +535,7 @@ Each is safe to merge alone. All are tracked under #2167.
 | 1 (#2257) | The default. A new cluster starts on Raft, the release build includes the engine, `FELIX_SHARD_ENGINE=hybrid` is deprecated | None | Both engines stay under CI. The hybrid tests pin the hybrid |
 | 2 (#2258) | Coverage hand-off. The Raft checks in the tables above that track 4 did not already land, and the `opened` checker | 1 | Tests only |
 | 3 (#2259, done) | One engine at run time. `FELIX_SHARD_ENGINE` and the hybrid environment variables are retired, the hybrid wiring in the broker is cut, hybrid CI jobs and history modes are dropped | 1, 2, the gates under "Ordering", Gaps 1 and 2 | No format changes |
-| 4 (#2260) | Delete the hybrid in `felix-replication` and the broker service, with its metrics and tests | 3 | Deletes only code nothing runs |
+| 4 (#2260, done) | Delete the hybrid in `felix-replication` and the broker service, with its metrics and tests | 3 | Deletes only code nothing runs |
 | 5 (#2261) | The engine trait, the write fence and the shard lifecycle in their final shape | 4 | A refactor with no behaviour change. Simulator seeds and the history run pass unchanged |
 | 6 (#2262) | Control plane: no assigned leader, no generation bump, no reports, adoption, suspicion or seat fences, for durable shards. Routes removed | 3, #3066 | Removes code a Raft cluster never reaches once in-memory shards are placed on their own (#3066) |
 | 7 (#2263) | Leftovers on the wire and on disk: retired kinds and capability bits with the reserved list and its test, the code that writes the three replica files and `copy-trust` | 4, 6 | Nothing refers to them. Formats on the wire and on disk are unchanged for what remains |
@@ -544,20 +547,24 @@ Each is safe to merge alone. All are tracked under #2167.
 Decision 6 of the engine page says size is reported and is not a pass
 criterion. That stands for the gate. This section is what track 6 reports.
 
-| Measure | Today | Removed by track 6 | Left for the Raft engine |
-| --- | --- | --- | --- |
-| `felix-replication/src`, non-test lines | 27,265 | about 21,000 in 19 files, plus the hybrid half of 3 more | Under 12,000 in the crate, transport included |
-| `felix-replication/src`, test lines | 46,844 | most of it | Reported |
-| `felix-storage` hybrid state | 2,016 in 4 files | all | 0 |
-| Broker service: confirmed reads, promotion gate | 312 in 2 files | all | 0 |
-| Broker service: control-plane lease | 470 in 1 file | none | 470, for in-memory shards |
-| Broker service: lifecycle and fence | 3,281 | reported | Under half, including the lease gate and reader watch in-memory shards keep |
-| Shard protocol specs | 7,994 lines, 8 specs, 426 configs | all | `FelixRaft` and its configs, reported |
-| Hybrid cluster tests | about 7,800 lines, 16 files | all, some ported | Reported |
-| Environment variables | 11 hybrid | 11 | 0 |
-| Fleet features an operator must finalize for replication | 6 | 6 | 0 |
-| Internal message kinds | 56 | 34 | 20 to 22, plus Raft's own behind one capability |
-| `docs/replication-design.md` | 5,873 lines | replaced | Under 1,000 |
+"Today" is the plan's starting point. "After PR 4" counts every `.rs` file
+under the path, with files under `tests/` or named `tests.rs` as test lines,
+so the Raft engine (`raft/`) is included.
+
+| Measure | Today | Removed by track 6 | Left for the Raft engine | After PR 4 |
+| --- | --- | --- | --- | --- |
+| `felix-replication/src`, non-test lines | 27,265 | about 21,000 in 19 files, plus the hybrid half of 3 more | Under 12,000 in the crate, transport included | 51,351 before, 27,267 after: 24,084 removed (98 files) |
+| `felix-replication/src`, test lines | 46,844 | most of it | Reported | 79,853 before, 35,048 after: 44,805 removed |
+| `felix-storage` hybrid state | 2,016 in 4 files | all | 0 | Not yet: PR 7 |
+| Broker service: confirmed reads, promotion gate | 312 in 2 files | all | 0 | Done: both deleted |
+| Broker service: control-plane lease | 470 in 1 file | none | 470, for in-memory shards | Kept |
+| Broker service: lifecycle and fence | 3,281 | reported | Under half, including the lease gate and reader watch in-memory shards keep | Service `src` 65,744 non-test and 82,021 test lines before, 63,399 and 76,369 after (11 files gone). The lifecycle and fence are cut down in PR 5 |
+| Shard protocol specs | 7,994 lines, 8 specs, 426 configs | all | `FelixRaft` and its configs, reported | Not yet: PR 8 |
+| Hybrid cluster tests | about 7,800 lines, 16 files | all, some ported | Reported | Not yet: PR 9. They build without the hybrid and skip on Raft |
+| Environment variables | 11 hybrid | 11 | 0 | Done in PR 3. `FELIX_REPLICATION_REBUILD_*` and `FELIX_SHARD_MOVE_BYTES_PER_SEC` are now read by nothing; PR 5 wires them to Raft snapshot sends or retires them |
+| Fleet features an operator must finalize for replication | 6 | 6 | 0 | Not yet: PR 6 |
+| Internal message kinds | 56 | 34 | 20 to 22, plus Raft's own behind one capability | Not yet: PR 7 |
+| `docs/replication-design.md` | 5,873 lines | replaced | Under 1,000 | 18 lines in PR 4, pointing at the v0.7.0 page. The one-engine page is track 7 |
 
 The numbers after the last pull request go in the gate write-up and in the
 release notes.

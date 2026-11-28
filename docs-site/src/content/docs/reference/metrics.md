@@ -177,7 +177,6 @@ How a broker joins the cluster, holds its lease and follows shard assignments.
 | `felix_broker_shard_watch_resyncs_total` | counter | `reason` | Forced resyncs: `gap_in_history` or `sequence_reset`. |
 | `felix_broker_shard_watch_failures_total` | counter | - | Watch polls that failed outright. |
 | `felix_broker_shard_watch_withheld_rereads_total` | counter | - | Snapshots a Raft broker took to read again a target the control plane withheld from a shard it holds none for. Rising for long means a registered broker has not acknowledged the placement incarnation. |
-| `felix_broker_shard_confirmed_reads_total` | counter | `outcome` | Confirmed assignment reads for a copy with no election promise: `assigned`, `unassigned`, `not_served` or `unavailable`. `not_served` means the control plane cannot confirm a read and the routing view decides alone. A broker reads in the background, one read per shard at a time, never while a peer request waits. |
 | `felix_broker_shard_changes_applied_total` | counter | - | Assignment changes applied. |
 | `felix_broker_shard_changes_stale_total` | counter | - | Changes ignored for carrying a generation at or below the one held. Routine in small numbers; it is what makes duplicate delivery harmless. |
 | `felix_broker_shard_stale_events_total` | counter | - | Events ignored for naming a generation at or below the one already acted on. |
@@ -212,14 +211,10 @@ Broker-to-broker traffic: publishes forwarded to a shard's owner and the peer co
 
 ## Replication
 
-Replication from a shard's leader to its followers, and the `Quorum` publish path. See [Durable storage](/architecture/durable-storage/) for how the log underneath behaves.
+The per-shard Raft groups: elections, membership, snapshots and how a leader replicates to its followers. See [Durable storage](/architecture/durable-storage/) for how the log underneath behaves.
 
 | Metric | Type | Labels | Measures |
 | --- | --- | --- | --- |
-| `felix_broker_replication_shipped_total` | counter | `outcome` | Replication batches shipped as a leader. `trim_unsupported` is a batch holding a head trim that was not sent because the follower does not offer `head_trim`; that follower stays behind until it is upgraded. `headers_unsupported` is a batch holding a record with headers that was not sent because the follower does not offer `record_headers`; that follower stays behind the record until it is upgraded. `kind_unsupported` is a batch not sent because its next record is a membership or counter record, which this build cannot replicate yet; the follower stays behind it. |
-| `felix_broker_replication_lag_records` | gauge | - | How far the slowest follower is behind, in records, across every shard this broker leads. This is the loss window for `Leader` consistency. |
-| `felix_broker_replication_halted` | gauge | - | Followers replication has stopped for because their log diverged or this broker was superseded. Any non-zero value needs attention. |
-| `felix_broker_replication_rebuilding` | gauge | - | Followers being rebuilt right now. |
 | `felix_broker_raft_peer_refusals_total` | counter | `reason` | Sends of Raft messages this broker refused to a peer, by `reason`; a refused batch of heartbeats counts once. `layout`: the peer's handshake states Raft layouts this build does not write, as when two builds on different layouts meet in an upgrade. Raft sees that peer as unreachable, and the broker logs a warning naming both ranges about once a minute per peer. A value that keeps rising means a group's voters run builds that cannot talk; finish the upgrade or roll back. |
 | `felix_broker_raft_ticker_restarts_total` | counter | - | Times the per-shard Raft ticker ended on a panic and was started again. Any increase is a bug: no Raft group on the broker heartbeats or notices a timeout while the ticker is down. Only in builds with the `raft` feature, which no release enables. |
 | `felix_broker_raft_elections_in_flight` | gauge | - | Raft members on this broker let stand whose election is not over. Starts at `FELIX_SHARD_RAFT_ELECTIONS_AT_ONCE` and may reach four times that while elections win and vote saves keep up. Only in builds with the `raft` feature, which no release enables. |
@@ -234,21 +229,6 @@ Replication from a shard's leader to its followers, and the `Quorum` publish pat
 | `felix_broker_raft_held_base_refusals_total` | counter | `reason` | Gap snapshots a learner of a re-formed stream group refused although it held the records below the gap it pulled. `reason` is `held_above_floor` (its log starts above the snapshot's floor), `floor_past_base`, `not_gap_end` (the snapshot is not the one at the gap's end, or the learner's epoch file names an older base) or `unreadable`. Any increase means the learner is not catching up: it logs why every 30 seconds, and drops the base and pulls it again up to four times per re-form, waiting longer each time. Only in builds with the `raft` feature. |
 | `felix_broker_raft_snapshots_installed_total` | counter | `kind` | Snapshots a Raft member on this broker was sent by its group's leader and installed, by `kind`: `cache` or `stream`. A member that builds its own snapshot does not count one. A cache member installs one when it is further behind than the entries its leader keeps under its last snapshot (`FELIX_SHARD_RAFT_CACHE_LOG_KEEP`). Only in builds with the `raft` feature. |
 | `felix_broker_raft_membership_refusals_total` | counter | `kind` | Membership steps that were not written: `transient` (tried again), `permanent` (reported stuck) or `broken` (a safety check failed, which is a bug). Only in builds with the `raft` feature, which no release enables. |
-| `felix_broker_replication_rebuilds_total` | counter | `outcome` | Follower rebuilds by outcome. |
-| `felix_broker_replication_move_throttled_bytes_total` | counter | - | Bytes shipped to a move's destination under `FELIX_SHARD_MOVE_BYTES_PER_SEC`. |
-| `felix_broker_replication_scans_total` | counter | `wake` | Scans of the shards this broker leads, by what woke the driver: `append`, `tick` or `routes`. Its rate is scans per second. |
-| `felix_broker_replication_passes_waiting` | gauge | - | Shards waiting for a pass or fence slot right now. Staying high means more shards have work than this broker ships at once. |
-| `felix_broker_replication_slot_wait_seconds` | histogram | `queue` | How long a shard waited for a slot before its pass or fence started. `appended` is an append since the shard was last asked; `urgent` is a write waiting on the mark, a shard new to this leader, or a follower answer; `refresh` is the regular pass; `fence` is a promoted shard's fence. |
-| `felix_broker_replication_drain_withheld_total` | counter | `log` | Drained reports held back because a follower was still behind on a log. A planned move waits on this. |
-| `felix_broker_replicated_total` | counter | `outcome` | Replication batches stored as a follower. `gap` is ordinary during catch-up; other failure outcomes need different responses. |
-| `felix_broker_replica_reports_per_request` | histogram | - | Shards' reports sharing one control-plane request. One means nothing was batched. |
-| `felix_broker_quorum_marks_withheld_total` | counter | - | Quorum marks held back because the replica report did not reach the control plane. `Quorum` publishes time out on those shards while nothing else looks unwell. |
-| `felix_broker_publish_quorum_failed_total` | counter | `reason` | `Quorum` publishes that did not reach a majority. |
-| `felix_broker_publish_quorum_wait_seconds` | histogram | - | How long a `Quorum` publish waited for its majority, whatever the outcome. |
-| `felix_broker_promotions_opened_total` | counter | `path` | Shards opened for writes at a new leadership. `path` is `fenced` once a majority took the fence and `lease` when some replica did not offer it. |
-| `felix_broker_promotion_truncated_total` | counter | - | Times a promoted leader dropped records of its own that a replica's newer log had superseded. |
-| `felix_broker_fence_set_unknown_total` | counter | - | Fences under `joint_fence` that could not learn the set before this generation but proved this broker opened it (its own set kept at the generation, or its own ballot and start record there), or a shard at generation 0, and reported the generation refused so the control plane names the leader again one generation up. |
-| `felix_broker_fence_refused_ids_beyond_two_total` | counter | - | Fences a crashed leader's copy refused because the failover's fence ids also name a copy beside the set of two. With this control plane that is a staged or joining successor the failover left out. The shard stays closed; the [remedy](https://github.com/GetFelix/felix/blob/main/docs/replication-design.md#a-leaders-own-crash) is in the replication design ([#1635](https://github.com/GetFelix/felix/issues/1635)). |
 
 ## Storage
 

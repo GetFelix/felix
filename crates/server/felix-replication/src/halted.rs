@@ -1,16 +1,8 @@
 //! Which replicas replication has stopped for, and why.
 //!
-//! The metric next door is a bare count, deliberately: a label per shard is a
-//! label per stream per tenant, which is unbounded in a multi-tenant broker. So
-//! `felix_broker_replication_halted` can say *three replicas have stopped* and
-//! nothing more, and the only way to learn which was to grep the broker's logs
-//! for the warning that accompanied each halt.
-//!
-//! That is a poor position to be in, because a halt does not resolve on its
-//! own. The follower is out of every quorum until an operator acts, and acting
-//! means knowing exactly which replica of which shard, on which node, and
-//! whether it diverged or simply needs history this leader no longer holds —
-//! the answers decide whether a rebuild is the right move at all.
+//! A halt does not resolve on its own. The follower is out of every quorum
+//! until an operator acts, and acting means knowing exactly which replica of
+//! which shard, on which node, and why it stopped.
 //!
 //! This is a *listing*, not a metric, which is why it can carry the identity a
 //! metric cannot: it is read on demand and its size is the number of halted
