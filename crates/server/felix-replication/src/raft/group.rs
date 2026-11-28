@@ -2472,17 +2472,20 @@ impl Group {
         let timers = self.pace.timers;
         let patience = Duration::from_millis(timers.election_max);
         let started = tokio::time::Instant::now();
-        // The error names how long the read waited, which is less than
-        // `patience` when no majority answered within a round.
+        // The error names how long the read waited.
         let unanswered = || CommitError::TimedOut {
             what: "read",
             timeout: started.elapsed().min(patience),
         };
-        let deadline = started + patience;
+        let mut deadline = started + patience;
         // A majority answers a round within a lease or is not there. Held to
         // the election timeout instead, a leader cut off from every peer
         // keeps each group call waiting that long before it can refuse.
         let round_limit = Duration::from_millis(timers.lease.max(timers.heartbeat)).min(patience);
+        // A round that found no majority may have sent its last heartbeat
+        // too late to hear the answer. One peer deadline past the first
+        // round covers that answer and still refuses a cut-off leader early.
+        let unanswered_by = started + round_limit + timers.peer_deadline;
         let _waiting = self.reading.enter();
         loop {
             let raft = self.raft.clone();
@@ -2517,8 +2520,9 @@ impl Group {
                     ));
                 }
                 Round::LeaseExpired => {}
+                // Asked again, a fresh round that needs its own majority.
+                Round::QuorumNotEnough => deadline = deadline.min(unanswered_by),
                 Round::NotLeader => return Err(lost("this broker does not lead the shard")),
-                Round::QuorumNotEnough => return Err(unanswered()),
                 Round::Stopped => return Err(propose::stopped()),
             }
             // The leader is still the leader. Ask for a heartbeat, wait for

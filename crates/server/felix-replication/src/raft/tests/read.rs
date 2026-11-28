@@ -100,6 +100,65 @@ async fn a_read_stops_waiting_when_refused_or_dropped() {
     led.cluster.stop().await;
 }
 
+/// Cut the leader off from its followers, which cannot stand either, so
+/// each round finds no majority and nobody else takes the shard.
+fn isolate_leader(led: &Led) {
+    led.cluster
+        .net
+        .unheard_candidates
+        .lock()
+        .extend(led.followers());
+    led.cut_followers();
+}
+
+/// A round that found no majority does not end a read that still has time:
+/// it asks a fresh round, and one answered by a majority confirms it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_read_asks_again_after_a_round_without_a_majority() {
+    let mut led = led().await;
+    let member = led
+        .cluster
+        .runtime(&led.leader.broker)
+        .group(&shard(0))
+        .expect("group");
+    let key = shard(0);
+    let before = member.read_rounds_asked();
+    isolate_leader(&led);
+    let read = led.engine.confirm_read(&key, led.term);
+    let heal = async {
+        // Past the first round, which waits one lease, and short of the
+        // read's own bound.
+        tokio::time::sleep(timers().lease + timers().heartbeat).await;
+        led.heal();
+    };
+    let (confirmed, ()) = tokio::join!(read, heal);
+    led.cluster.net.unheard_candidates.lock().clear();
+    assert_eq!(confirmed, Ok(()));
+    let asked = member.read_rounds_asked() - before;
+    assert!(asked >= 2, "{asked} rounds: the first did not fail");
+    led.cluster.stop().await;
+}
+
+/// With no majority in any round, the read fails at its bound, not at the
+/// end of the first round.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_read_with_no_majority_fails_at_its_bound() {
+    let mut led = led().await;
+    let key = shard(0);
+    isolate_leader(&led);
+    let started = Instant::now();
+    let refused = led.engine.confirm_read(&key, led.term).await;
+    let waited = started.elapsed();
+    led.heal();
+    led.cluster.net.unheard_candidates.lock().clear();
+    assert!(refused.is_err(), "{refused:?}");
+    assert!(
+        waited >= timers().election_max,
+        "refused after {waited:?}, before the bound"
+    );
+    led.cluster.stop().await;
+}
+
 /// 1 KiB records, written while one follower was cut off.
 const CATCH_UP_RECORD: usize = 1024;
 

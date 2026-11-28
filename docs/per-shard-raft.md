@@ -4001,7 +4001,11 @@ openraft always asks the core for a fresh quorum confirmation for
 nothing more. A round that has not answered within the longest election
 timeout is dropped and the next one is asked. openraft reports a lapsed lease to writes only. If a later openraft
 reports one to a read, the engine asks for a heartbeat, waits for a majority
-to answer and asks again within the same bound.
+to answer and asks again within the same bound. A round that found no
+majority is asked again the same way, since a heartbeat sent late in its
+lease can answer after it gave up. Each new round needs a majority of its
+own, and the read fails at the bound or one peer deadline past the first
+round, whichever comes first, so a cut-off leader still refuses early.
 
 > `crates/server/felix-replication/src/raft/tests/commit.rs`,
 > `a_lapsed_lease_and_an_unconfirmed_read_do_not_close_the_shard` and
@@ -4042,7 +4046,9 @@ A round's heartbeats go on their own while any read waits on it, never in
 a batch that could refuse a late answer ("Heartbeats sent together").
 
 > `crates/server/felix-replication/src/raft/tests/read.rs`,
-> `heartbeats_go_alone_only_while_a_read_waits`, and
+> `heartbeats_go_alone_only_while_a_read_waits`,
+> `a_read_asks_again_after_a_round_without_a_majority` and
+> `a_read_with_no_majority_fails_at_its_bound`, and
 > `crates/server/felix-replication/src/raft/beats/tests.rs`,
 > `a_heartbeat_a_read_waits_on_is_not_cut_short_by_the_others`.
 
