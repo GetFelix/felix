@@ -1009,11 +1009,20 @@ DirectScope ==
     /\ rep' = rep
     /\ doomed' = doomed
 
+OneCandidateScope ==
+    \A c \in Brokers : (term'[c] > term[c] /\ role'[c] = "candidate")
+        => \A s \in Brokers \ {c} : term[s] < term'[c]
+
 \* DirectScope with one candidate per term.
-DirectOneCandidateScope ==
-    /\ DirectScope
-    /\ \A c \in Brokers : (term'[c] > term[c] /\ role'[c] = "candidate")
-            => \A s \in Brokers \ {c} : term[s] < term'[c]
+DirectOneCandidateScope == DirectScope /\ OneCandidateScope
+
+DirectTightScope ==
+    /\ DirectOneCandidateScope
+    /\ ~\E i, j \in Brokers : Heartbeat(i, j) \/ LearnCommit(i, j) \/ Probe(i, j)
+
+DirectEarlyTargetsScope ==
+    /\ DirectTightScope
+    /\ used'.targets > used.targets => \A s \in Brokers : term[s] < MaxTerm
 
 ----------------------------------------------------------------------------
 
