@@ -304,9 +304,11 @@ async fn a_token_minted_for_one_gateway_cannot_be_delegated_by_another() {
 }
 
 #[tokio::test]
-async fn a_token_that_names_no_actor_is_refused_by_default() {
+async fn a_token_that_names_no_actor_is_refused() {
     let fixture = fixture().await;
     let unbound = alice_token_for(&fixture.keys, "t1", Duration::from_secs(60), None);
+    // The retired switch that let it through changes nothing.
+    let _set = RetiredSwitch::on("FELIX_CONTROLPLANE_DELEGATE_UNBOUND_TOKENS");
     let result = delegate(
         &fixture,
         "t1",
@@ -316,10 +318,6 @@ async fn a_token_that_names_no_actor_is_refused_by_default() {
     .await;
     assert_eq!(status(result), StatusCode::FORBIDDEN);
 
-    // Only the explicit switch lets it through, and it never lets a token
-    // bound to someone else through.
-    let claims = verify_token(&fixture.keys, "t1", &unbound, 0).expect("verify");
-    assert!(check_may_act(&claims, "p:test", true).is_ok());
     let bound = verify_token(
         &fixture.keys,
         "t1",
@@ -327,7 +325,7 @@ async fn a_token_that_names_no_actor_is_refused_by_default() {
         0,
     )
     .expect("verify");
-    assert!(check_may_act(&bound, "p:gateway-b", true).is_err());
+    assert!(check_may_act(&bound, "p:gateway-b").is_err());
 }
 
 /// The whole path: alice's sign-in exchanged with the gateway's credential as
@@ -808,8 +806,52 @@ async fn a_failed_read_does_not_spend_the_refresh_token() {
         .expect("the retry is not a replay");
 }
 
+/// A retired variable, set for one test and cleared after it.
+struct RetiredSwitch(&'static str);
+
+impl RetiredSwitch {
+    fn on(name: &'static str) -> Self {
+        // SAFETY: nothing reads a retired variable; only a regression would.
+        unsafe { std::env::set_var(name, "true") };
+        Self(name)
+    }
+}
+
+impl Drop for RetiredSwitch {
+    fn drop(&mut self) {
+        // SAFETY: as in `on`.
+        unsafe { std::env::remove_var(self.0) };
+    }
+}
+
+/// A bare group name grants nothing, even with the retired switch that used
+/// to link one set.
+#[tokio::test]
+async fn a_bare_group_name_cannot_grant_token_delegate() {
+    let fixture = fixture().await;
+    grant_alice(&fixture).await;
+    fixture
+        .state
+        .store
+        .remove_rbac_policy("t1", delegate_grant("p:test"))
+        .await
+        .expect("remove direct grant");
+    fixture
+        .state
+        .store
+        .add_rbac_policy("t1", delegate_grant("group:gateways"))
+        .await
+        .expect("group grant");
+    let gateway = crate::test_support::token(&fixture.keys, &["token.delegate:tenant:t1"]);
+    let _set = RetiredSwitch::on("FELIX_CONTROLPLANE_LEGACY_UNSCOPED_GROUPS");
+    let err = exchange_for_alice(&fixture, gateway)
+        .await
+        .expect_err("a bare name is no trusted issuer's group");
+    assert_eq!(err.body.code, "actor_refused");
+}
+
 /// A grant of `token.delegate` through an IdP group counts only for a group
-/// of an issuer the tenant trusts, and a bare group name only in legacy mode.
+/// of an issuer the tenant trusts.
 #[tokio::test]
 async fn only_a_trusted_issuers_group_can_grant_token_delegate() {
     let fixture = fixture().await;

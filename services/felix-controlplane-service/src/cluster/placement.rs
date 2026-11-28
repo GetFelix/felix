@@ -76,7 +76,7 @@ pub use reconciler::{
     SHARD_MOVE_STEPS_TOTAL, SHARD_MOVES_TIMED_OUT_TOTAL, SHARD_MOVES_WAITING,
     SHARD_REPLICAS_HALTED, SHARD_REPLICAS_MISSING, SHARDS_ON_INTERNAL_NODES, SHARDS_PLACED_TOTAL,
     SHARDS_UNDER_REPLICATED, SHARDS_UNPLACEABLE, SHARDS_ZONE_UNSPREAD, reconcile_once,
-    reconcile_once_waking, reconcile_remembering, spawn_reconciler,
+    reconcile_remembering, spawn_reconciler,
 };
 pub use replica_positions::ReplicaPositions;
 pub use restore::{Replication, replication};

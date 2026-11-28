@@ -527,6 +527,11 @@ pub trait ControlPlaneStore: Send + Sync {
         &self,
         since: u64,
     ) -> StoreResult<ChangeSet<ShardAssignmentChange>>;
+    /// Changes each time a shard assignment change is recorded on this
+    /// instance, by any writer: a long-poll on `shard_assignment_changes`
+    /// waits on it instead of re-reading. Subscribe before reading, so a
+    /// change landing between the read and the wait still wakes it.
+    async fn watch_shard_assignment_changes(&self) -> tokio::sync::watch::Receiver<u64>;
 
     /// Record what a shard's leader reports about its replicas.
     ///

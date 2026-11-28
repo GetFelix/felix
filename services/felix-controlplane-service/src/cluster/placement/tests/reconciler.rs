@@ -456,13 +456,7 @@ async fn a_fence_planned_before_a_cut_over_is_not_written_after_it() {
 
     // At the current token, so it is the generation that stops it.
     let stale = stale.at_token(store.placement_token().await.expect("token"));
-    let late = super::super::reconciler::apply_pass(
-        &store,
-        &stale,
-        &mut Default::default(),
-        &Default::default(),
-    )
-    .await;
+    let late = super::super::reconciler::apply_pass(&store, &stale, &mut Default::default()).await;
     assert_eq!(late.moved, 0);
     assert_eq!(late.conflicts, 1);
     assert_eq!(
@@ -498,26 +492,15 @@ async fn a_placement_planned_against_no_assignment_does_not_overwrite_one() {
     .expect("plan");
 
     assert_eq!(
-        super::super::reconciler::apply_pass(
-            &store,
-            &first,
-            &mut Default::default(),
-            &Default::default()
-        )
-        .await
-        .placed,
+        super::super::reconciler::apply_pass(&store, &first, &mut Default::default())
+            .await
+            .placed,
         3
     );
     let placed = store.list_shard_assignments().await.expect("list");
     // At the current token, so it is the generation that stops it.
     let second = second.at_token(store.placement_token().await.expect("token"));
-    let late = super::super::reconciler::apply_pass(
-        &store,
-        &second,
-        &mut Default::default(),
-        &Default::default(),
-    )
-    .await;
+    let late = super::super::reconciler::apply_pass(&store, &second, &mut Default::default()).await;
     assert_eq!(late.placed, 0);
     assert_eq!(late.conflicts, 3);
     assert_eq!(store.list_shard_assignments().await.expect("list"), placed);
@@ -625,13 +608,7 @@ async fn a_promotion_planned_from_an_old_read_is_not_written_later() {
 
     // At the current token, so it is the generation that stops it.
     let stale = stale.at_token(store.placement_token().await.expect("token"));
-    let late = super::super::reconciler::apply_pass(
-        &store,
-        &stale,
-        &mut Default::default(),
-        &Default::default(),
-    )
-    .await;
+    let late = super::super::reconciler::apply_pass(&store, &stale, &mut Default::default()).await;
     assert_eq!(late.placed, 0);
     assert_eq!(late.conflicts, 1);
     assert_eq!(

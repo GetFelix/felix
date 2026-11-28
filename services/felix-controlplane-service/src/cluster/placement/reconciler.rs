@@ -207,20 +207,9 @@ pub async fn reconcile_once(
     liveness: &crate::config::NodeLivenessConfig,
     policy: MovePolicy,
 ) -> ReconcileOutcome {
-    reconcile_once_waking(store, liveness, policy, &PlacementWakes::default()).await
-}
-
-/// [`reconcile_once`] that wakes `wakes`' assignment long-polls for each
-/// write, as the running loop does.
-pub async fn reconcile_once_waking(
-    store: &dyn crate::store::ControlPlaneStore,
-    liveness: &crate::config::NodeLivenessConfig,
-    policy: MovePolicy,
-    wakes: &PlacementWakes,
-) -> ReconcileOutcome {
     // One pass watches nothing move, so it gives no restore up as stalled.
     match plan_pass(store, liveness, policy, &mut CopyProgress::default()).await {
-        Some(pass) => apply_pass(store, &pass, &mut MoveClock::default(), wakes).await,
+        Some(pass) => apply_pass(store, &pass, &mut MoveClock::default()).await,
         None => ReconcileOutcome::default(),
     }
 }
@@ -237,7 +226,7 @@ pub struct PlacementMemory {
     under_replicated: usize,
 }
 
-/// One pass of the running loop ([`spawn_reconciler`]): [`reconcile_once_waking`]
+/// One pass of the running loop ([`spawn_reconciler`]): [`reconcile_once`]
 /// that keeps what it saw in `memory`, so time based decisions (fence
 /// timeouts, ageing suspicions and pending sets, stalled restores) fire
 /// across passes.
@@ -245,13 +234,12 @@ pub async fn reconcile_remembering(
     store: &dyn crate::store::ControlPlaneStore,
     liveness: &crate::config::NodeLivenessConfig,
     policy: MovePolicy,
-    wakes: &PlacementWakes,
     memory: &mut PlacementMemory,
 ) -> ReconcileOutcome {
     let Some(pass) = plan_pass(store, liveness, policy, &mut memory.progress).await else {
         return ReconcileOutcome::default();
     };
-    let outcome = apply_pass(store, &pass, &mut memory.clock, wakes).await;
+    let outcome = apply_pass(store, &pass, &mut memory.clock).await;
     memory.under_replicated = log_replication(memory.under_replicated, &pass.plan);
     outcome
 }
@@ -515,8 +503,7 @@ pub(super) async fn plan_pass(
     })
 }
 
-/// Write what a planned pass calls for, timing the moves it advances and
-/// waking this instance's long-polls on every write.
+/// Write what a planned pass calls for, timing the moves it advances.
 ///
 /// The writes chain the token: each lands only if the one before it was the
 /// last placement write. The first that finds another writer got in ends the
@@ -525,7 +512,6 @@ pub(super) async fn apply_pass(
     store: &dyn crate::store::ControlPlaneStore,
     pass: &PlannedPass,
     clock: &mut MoveClock,
-    wakes: &PlacementWakes,
 ) -> ReconcileOutcome {
     let plan = &pass.plan;
     let mut fence = pass.fence;
@@ -561,7 +547,6 @@ pub(super) async fn apply_pass(
             }
             Ok(AssignmentWrite::Written(written)) => {
                 fence += 1;
-                wakes.assignment_written();
                 outcome.moved += 1;
                 if let Some(times) = clock.written(
                     key,
@@ -700,7 +685,6 @@ pub(super) async fn apply_pass(
         {
             Ok(changed) => {
                 if changed {
-                    wakes.assignment_written();
                     tracing::info!(
                         kind = %vouched.key.kind,
                         name = %vouched.key.stream,
@@ -814,7 +798,6 @@ pub(super) async fn apply_pass(
             }
             Ok(AssignmentWrite::Written(assignment)) => {
                 fence += 1;
-                wakes.assignment_written();
                 outcome.placed += 1;
                 warn_if_unspread(plan, key, &assignment);
                 tracing::info!(
@@ -975,7 +958,6 @@ pub fn spawn_reconciler(
                 store.as_ref(),
                 &liveness,
                 pass_policy(&policy, held),
-                &wakes,
                 &mut memory,
             )
             .await;
