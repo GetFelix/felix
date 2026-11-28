@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795846364548,
+  "lastUpdate": 1795846764895,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -95370,6 +95370,72 @@ window.BENCHMARK_DATA = {
             "range": "586.49",
             "unit": "us",
             "extra": "trials: 5\nmedian: 2091.00\nmean: 1986.40\nstdev: 586.49\ncv: 29.53%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "88e2b897546a0312144a3e0b8a860abfffcc35cc",
+          "message": "fix(queues)!: an acknowledged group ack is never handed out again after a leader change (#3360) (#3417)\n\n* test(groups): an ack above a gap is handed out again after a change of leader\n\nA Raft group answers an ack above a gap from the tracker alone and the\ntable keeps the record's claim, so the next leader restores the claim and\nredelivers the record once it lapses. This reproduces what\na_raft_hand_over_keeps_every_kind_of_acknowledged_write saw on #3408's run\n(offset 186 handed out again after an acknowledged ack). Ignored until a\ndurable settle for acks above a gap lands; it fails on main today.\n\nSpec-Unaffected: a test only; FelixRaftGroups already models acks above a gap as leader memory\n\n* spec(groups): an ack above a gap is a durable entry the next leader applies\n\nFelixRaftGroups gains an ack(o) entry for an acknowledgement that closes\nno run, folded into the table and taken as settled by a new leader's\ntracker. An acknowledgement is answered only once every entry it proposed\nhas applied. AckedStaysSettled checks that no record whose ack was answered\nis handed out again by the same incarnation of the group, in any term.\nFelixRaftGroupsAckAheadInMemory keeps the ack in the tracker only and must\nviolate it.\n\n* fix(groups): an ack above a gap is durable before it is answered\n\nOn a Raft shard an ack that closed no run lived only in the leader's\ntracker, so the next leader restored the record's claim and handed it out\nagain once it lapsed. settle now writes a GroupOp::Ack (op 8) for an ack\nabove the tracker's cursor and answers only once it has applied. The\ntable keeps acks above the cursor until an advance passes them, drops the\nrecord's claim, and carries them in the snapshot (table version 3; older\nversions still load). A new leader takes them as settled, as it does dead\nletters above the cursor. In-order acks still write only the Advance, and\ndead letters write no Ack.\n\nOp 8 and table version 3 change bytes on disk, so this lands before the\nformat v9 freeze.\n\n* spec(groups): an ack waits for what the leader decided before it\n\nTLC found an ack of a redriven record answered while the advance from the\nearlier dead letter of that record was still a proposal; the advance was\ndropped at a change of leader and the record was handed out again. The\ncode cannot do this: every group operation first waits for the leader's\nown last proposal in the term (RaftGroups::ready), and a dead letter is\nanswered only after its advance applied. The model's ack now waits on\neverything the leader decided before it, as the code does.\n\n* fix(groups): an ack the table's cursor has not passed is durable\n\nTLC (FelixRaftGroupsTwoChanges) found a second way an answered ack was\nlost. A tracker rebuilt after a lost advance settles a dead letter above\nthe table's cursor with no advance; a redrive of it is then below the\ntracker's position, so its ack wrote only FinishRedrive and the next\nleader handed the record out again. settle now decides from the table's\ncursor: an ack that no advance covers and the cursor has not passed\nwrites its own Ack. The model's rule is the same.\n\n* spec(groups): an ack reads the cursor with the leader's own entries applied\n\nTLC found an ack decided against the committed cursor while the leader's\nown seek back was still in flight, so it proposed no ack entry and was\nanswered once the seek committed. The code cannot do this: ready() applies\nthe leader's own last proposal before any group operation.\n\n* spec(groups): record the checked state counts and CI weights\n\nFelixRaftGroups passes in 28.3M distinct states (7 min) and\nFelixRaftGroupsTwoChanges in 71.9M (20 min), run 46106686053;\nFelixRaftGroupsAckAheadInMemory violates AckedStaysSettled.\n\n* fix(groups): acks on one group commit together, and old group tables are refused\n\nAn ack proposes its entries under the group's slot and waits for them\nafter releasing it, so out-of-order acks no longer serialize at commit\nlatency. Apply is in log order and a term's entry commits only with every\nearlier one, so an ack answered OK still has everything the leader\nproposed before it applied; a cut entry fails the wait. An ack on a\ncurrent tracker skips the wait for earlier entries; a hydrate does not.\n\nGroup table versions 1 and 2 held no acks above the cursor and no\nrelease wrote them, so decode refuses them instead of loading no acks.\nThe snapshot's v3 table layout is in storage-format.md.\n\n* fix(groups): say why old group tables are refused, and bound the ack tests\n\nv0.8.0-preview.1 wrote table v2 into Raft snapshots. They stay refused,\nsince 0.8 starts fresh, and the shard must be recreated; the CHANGELOG\nsays so. The concurrent ack tests wait at most two seconds, so a\nregression fails instead of hanging, and a new one checks that an ack\nwhose tracker was forgotten before its entry applied is answered lapsed.",
+          "timestamp": "2026-11-27T22:07:38-08:00",
+          "tree_id": "82d26973cc7c38ea8e46799a74a6226218cf90d8",
+          "url": "https://github.com/GetFelix/felix/commit/88e2b897546a0312144a3e0b8a860abfffcc35cc"
+        },
+        "date": 1795846747296,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 149,
+            "range": "0.55",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 149.00\nmean: 149.40\nstdev: 0.55\ncv: 0.37%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 203,
+            "range": "6.46",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 203.00\nmean: 205.20\nstdev: 6.46\ncv: 3.15%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 551,
+            "range": "316.02",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 551.00\nmean: 533.40\nstdev: 316.02\ncv: 59.25%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 198,
+            "range": "15.50",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 198.00\nmean: 206.80\nstdev: 15.50\ncv: 7.49%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 398,
+            "range": "370.91",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 398.00\nmean: 578.40\nstdev: 370.91\ncv: 64.13%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 858,
+            "range": "851.31",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 858.00\nmean: 1266.60\nstdev: 851.31\ncv: 67.21%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
