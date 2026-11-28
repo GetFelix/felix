@@ -320,6 +320,7 @@ expectations=(
   "FelixRaftGroupsStaleByHydrateIndex violates RedrivenOwed"
   "FelixRaftGroupsDeadAfterAdvance violates NoSkip"
   "FelixRaftGroupsNoRefreshOnDrop violates TrackerHeard"
+  "FelixRaftGroupsAckAheadInMemory violates AckedStaysSettled"
   "FelixRaftGroupsTwoChanges pass"
   "FelixRaftStreamPurgeSmall pass"
   "FelixRaftStreamPurgeLearnerSmall pass"
