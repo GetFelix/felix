@@ -167,6 +167,7 @@ jobs:
         config:
           - FelixRaftPlacementFull
           - FelixRaftPlacementRewindSpare
+          - FelixRaftPlacementDirectTerms
           - FelixRaftWrittenFailover
           - FelixRaftReformTwoReformsOldRestore
           - FelixRaftReformKeptTerms

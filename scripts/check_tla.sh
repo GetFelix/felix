@@ -881,12 +881,13 @@ fi
 # (191M distinct states) in 90 minutes on 16 cores, about ten hours on a CI
 # runner by its siblings' times, past the nightly job's six. Run it on a
 # build box.
-# FelixRaftPlacementFull (160 minutes on a CI runner) and
-# FelixRaftPlacementRewindSpare (176 minutes) run nightly (tla-walk.yml).
+# FelixRaftPlacementFull (160 minutes on a CI runner),
+# FelixRaftPlacementRewindSpare (176 minutes) and
+# FelixRaftPlacementDirectTerms (4 h 49 min) run nightly (tla-walk.yml).
 # FelixRaftPlacementMoveWipeFull did not finish in three hours and
 # FelixRaftPlacementTransferMoveFull, TransferMove with a write, not in six,
 # so nothing checks them yet (issue 2497).
-# FelixRaftPlacement{DirectTerms,MoveWipeTwoMoves,TransferMoveWipe,
+# FelixRaftPlacement{MoveWipeTwoMoves,TransferMoveWipe,
 # StaleWipeRewindNoAck} did not finish in six hours on a CI runner, and
 # FelixRaftPlacement{StaleReturnWipe,StaleReturnWipeAnyVersion} ran past
 # 45 minutes on a build box at their bounds; each is registered once a
@@ -949,7 +950,7 @@ weights=(
   "FelixRaftPlacementStaleWipeNoVersion 60"
   "FelixRaftPlacementTransferMove 51"
   "FelixRaftPlacementRewindSpareCommitted 57"
-  "FelixRaftPlacementDirectTermsNoBarrier 46"
+  "FelixRaftPlacementDirectTermsNoBarrier 19"
   "FelixRaftPlacementPlacedTargetNoWrite 108"
   "FelixRaftPlacementStaleWipeTwoTerms 150"
   "FelixRaftPlacementStaleWipeRewind 275"
