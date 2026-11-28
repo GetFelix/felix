@@ -59,6 +59,8 @@
 (*   ReservedCovers -- every offset given out is below the synced          *)
 (*                     reservation, so a power cut never gives it out      *)
 (*                     again.                                              *)
+(*   BucketFloor    -- the bucket is never more than one maximum entry in  *)
+(*                     debt, which is what a new leader's start pays back. *)
 (*                                                                         *)
 (* Each knob removes one rule: NoBucket caps entries per tick (Rate of     *)
 (* them) and not offsets; BucketStartsFull gives each new leader a full    *)
@@ -259,5 +261,9 @@ OffsetNeverReused == ~reused
 
 \* Not by construction: IssueBatch never raises the reservation itself.
 ReservedCovers == next <= reserved
+
+\* A publish needs a positive bucket and takes at most MaxBatch, so the
+\* lowest it leaves is 1 - MaxBatch, above a fresh leader's -MaxBatch.
+BucketFloor == bucket >= -MaxBatch
 
 =============================================================================
