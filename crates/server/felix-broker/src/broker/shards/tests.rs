@@ -1580,6 +1580,40 @@ mod engine_log {
         assert_eq!(batch(&mut receiver).await, (2, 1, payloads(&["b"])));
     }
 
+    /// **A pass after a jump that finds only entries holding no record still
+    /// leaves the count to the next batch (#3412).** At a leader change the
+    /// bound can cover the new term's blank before its first record. That
+    /// pass delivers nothing, and the batch after it must count the offsets
+    /// below the jump as well as the blank, or the reader sees a gap nobody
+    /// told it of.
+    #[tokio::test]
+    async fn a_jump_counts_its_run_past_a_pass_that_delivered_nothing() {
+        let dir = tempfile::tempdir().expect("dir");
+        let log = engine_log(dir.path(), 0).await;
+        let (broker, bound) = broker(ReadBound::Committed(0)).await;
+        let handle = open(&broker, &log).await;
+        append(&log, &["a"], 1).await;
+        assert_eq!(log.append_generation_start(2).await.expect("marker"), 1);
+        *bound.0.lock() = ReadBound::Committed(2);
+        handle.deliver_from_log().await.expect("pass");
+
+        let resumed = broker
+            .subscribe_from("t1", "ns", "orders", 0, StartPosition::Latest)
+            .await
+            .expect("subscribe");
+        assert_eq!(resumed.join.expect("durable join").start_offset, 1);
+        let (mut receiver, _guard) = resumed.subscription.into_parts();
+        assert_eq!(log.append_generation_start(3).await.expect("marker"), 2);
+        *bound.0.lock() = ReadBound::Committed(3);
+        handle.deliver_from_log().await.expect("pass");
+        quiet(&mut receiver).await;
+
+        append(&log, &["b"], 4).await;
+        *bound.0.lock() = ReadBound::Committed(4);
+        handle.deliver_from_log().await.expect("pass");
+        assert_eq!(batch(&mut receiver).await, (3, 2, payloads(&["b"])));
+    }
+
     /// [`a_jump_past_a_generation_start_still_reports_it_skipped`] for the
     /// member that leads next: its first publish reports the run.
     #[tokio::test]
