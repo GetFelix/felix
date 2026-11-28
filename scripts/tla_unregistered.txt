@@ -47,3 +47,7 @@ FelixRaftWrittenReformReplaced  past a pull request's time, never run to the end
 FelixRaftWrittenReformReplacedFull  past a pull request's time, never run to the end; re-form bounds in #2729
 FelixRaftWrittenTerms  measuring in dispatch 44384289786
 FelixRaftCondBatchThreeTerms  measuring by dispatch, run id in the lane's PR
+FelixRaftReformBatchKeptTwoReforms  past three hours on a CI runner, no violation at 196M distinct (dispatch 46104122614)
+FelixRaftReformBatchKeptTwoReformsNoEarlier  past three hours on a CI runner, no violation at 123M distinct (dispatch 46104122614)
+FelixRaftReformBatchKeptOldKept  past three hours on a CI runner, no violation at 165M distinct (dispatch 46104122614)
+FelixRaftReformBatchKeptOldKeptNoEarlier  past three hours on a CI runner, no violation at 185M distinct (dispatch 46104122614)

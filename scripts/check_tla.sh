@@ -592,10 +592,6 @@ expectations=(
   "FelixRaftReformBatchAloneTwoCuts pass"
   "FelixRaftReformBatchKept pass"
   "FelixRaftReformBatchAbandon pass"
-  "FelixRaftReformBatchKeptTwoReforms pass"
-  "FelixRaftReformBatchKeptTwoReformsNoEarlier pass"
-  "FelixRaftReformBatchKeptOldKept pass"
-  "FelixRaftReformBatchKeptOldKeptNoEarlier pass"
   "FelixRaftReformOneReplicaLearner pass"
   "FelixRaftReformDead pass"
   "FelixRaftReformStaleMembership pass"
@@ -927,6 +923,11 @@ fi
 # FelixHeadTrim is not registered: its dispatch (run 43870273108) passed 29 of
 # 30 shards and shard 0 hit the six hour limit at depth 34 with no violation
 # (1.75B states, 244M distinct).
+# FelixRaftReformBatchKept{TwoReforms,OldKept} and their NoEarlier twins are
+# not registered: none finished in three hours on a CI runner (run
+# 46104122614), with no violation at 196M, 165M, 123M and 185M distinct
+# states and queues of 52M to 90M left. Each is registered once a run gives
+# it an outcome.
 
 # Minutes each of the longer configurations takes on a four-core CI runner,
 # from the `Finished in` lines of a CI run (a new one is a guess until it has
@@ -968,6 +969,7 @@ weights=(
   "FelixRaftReformBatchAbandon 43"
   "FelixRaftEntriesSnapshotCrash 25"
   "FelixRaftRestoreRepeatedBatch 11"
+  "FelixRaftRestoreRepeatedBatchSkewBucket 7"
   "FelixRaftFourTerms 45"
   "FelixRaftTermsFull 59"
   "FelixRaftOffsetsFull 20"

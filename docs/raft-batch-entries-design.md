@@ -198,8 +198,10 @@ The line and its gap checks (`restore_line_clears`, `LineBehind`) are
 restated in offsets, and the rate is enforced instead of assumed:
 
 - **A token bucket per shard, at propose.** It fills at 2^13 offsets per
-  millisecond on a monotonic clock, up to a fixed capacity. A publish takes
-  its record count. A publish may take the bucket into debt by up to one
+  millisecond on a monotonic clock, up to a capacity of 2^21 offsets
+  (256 ms of the allowance). That is the smallest power of two above one
+  maximum entry, so a full bucket takes the largest batch without debt, and
+  it keeps `B` below 2^22. A publish takes its record count. A publish may take the bucket into debt by up to one
   entry, so a batch that is large but within the cap is never refused for
   its size; every later publish waits until the bucket is positive again.
 - **Only at propose, never in the log append.** Blanks, membership changes,
@@ -207,11 +209,12 @@ restated in offsets, and the rate is enforced instead of assumed:
   offsets and never wait on the bucket, so the cap cannot stall a leader's
   own entries or an election.
 - **The burst.** Over any span of `t` ms a shard gives out at most
-  `2^13 * t` offsets plus a burst `B`: the bucket's capacity, one entry's
-  worth (32 MiB over the smallest record frame) and, for each relaxed
-  re-form in the span, up to `STEP` (2^20, `raft_log/reserved.rs`) offsets
-  it skips between the last counted entry and the reservation it starts
-  from. With no re-form, `B` is about 2^22 offsets.
+  `2^13 * t` offsets plus a burst `B`: the bucket's capacity (2^21), one
+  entry's worth (32 MiB over the smallest record frame, 20 bytes: 1,677,721)
+  and, for each relaxed re-form in the span, up to `STEP` (2^20,
+  `raft_log/reserved.rs`) offsets it skips between the last counted entry
+  and the reservation it starts from. With no re-form, `B` is 3,774,873
+  offsets, under 2^22.
 - **A new leader's bucket starts in debt by one maximum entry.** A publish
   may leave the bucket in debt by up to one entry, and a new leader cannot
   know how much its predecessor owed. Starting at minus one maximum entry
@@ -230,11 +233,14 @@ restated in offsets, and the rate is enforced instead of assumed:
   starts `R * (E - D)` above it, so no offset is reused while
   `E > 2D + 2B/R`. The check holds `E` to at least `D + 2^18` ms, which
   covers that for `D` up to `2^18 - 2B/R` ms: the skew tolerance drops by
-  `2B/R`, about 512 ms with no re-form and 128 ms more for each relaxed
+  `2B/R`, under 512 ms with no re-form and 128 ms more for each relaxed
   re-form inside `E`. Control-plane clocks must agree within
   `2^18 - 512` ms, about 4 min 21.6 s, instead of `2^18` ms.
   `FelixRaftRestoreRepeatedBatchSkew.cfg` checks the bound and
-  `...SkewShort.cfg` and `...SkewStep.cfg` break it.
+  `...SkewShort.cfg` and `...SkewStep.cfg` break it. `...SkewBucket.cfg`
+  checks it with a bucket of twice the largest entry, and
+  `...SkewBucketShort.cfg` breaks it with a spacing that leaves the bucket
+  out.
 - **The gap still has to hold a burst.** Every offset given out at time
   `t` is below `R * t + gap` plus what skew added only while `B` is below
   the gap. `felixctl reform`'s `MIN_OFFSET_GAP` (2^32) is far above it; a
