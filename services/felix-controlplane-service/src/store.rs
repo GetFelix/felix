@@ -468,22 +468,6 @@ pub trait ControlPlaneStore: Send + Sync {
         sealer: &str,
     ) -> StoreResult<AssignmentWrite>;
     async fn get_shard_assignment(&self, key: &ShardKey) -> StoreResult<ShardAssignment>;
-    /// The assignment for `key`, read no earlier than every write
-    /// acknowledged before the call. [`Self::get_shard_assignment`] on a
-    /// Raft member answers from what that member has applied, which can lag.
-    async fn confirmed_shard_assignment(&self, key: &ShardKey) -> StoreResult<ConfirmedAssignment>;
-    /// [`Self::confirmed_shard_assignment`] for every key, in order, all
-    /// read no earlier than every write acknowledged before the call.
-    async fn confirmed_shard_assignments(
-        &self,
-        keys: &[ShardKey],
-    ) -> StoreResult<Vec<ConfirmedAssignment>> {
-        let mut confirmed = Vec::with_capacity(keys.len());
-        for key in keys {
-            confirmed.push(self.confirmed_shard_assignment(key).await?);
-        }
-        Ok(confirmed)
-    }
     /// The shard-assignment feed's `next_seq`, read no earlier than every
     /// write acknowledged before the call, so every change committed by then
     /// has a lower seq. `None` from a Raft leader that predates the read.
@@ -1345,28 +1329,6 @@ impl From<serde_json::Error> for StoreError {
 }
 
 pub type StoreResult<T> = Result<T, StoreError>;
-
-/// What [`ControlPlaneStore::confirmed_shard_assignment`] found.
-#[allow(clippy::large_enum_variant)]
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ConfirmedAssignment {
-    Assigned(ShardAssignment),
-    Unassigned,
-    /// No confirmed read could be made: a Raft leader that predates the
-    /// request, mid-way through a rolling upgrade.
-    NotServed,
-}
-
-impl ConfirmedAssignment {
-    /// From a read of a store every instance writes to, which is current.
-    pub(crate) fn from_read(read: StoreResult<ShardAssignment>) -> StoreResult<Self> {
-        match read {
-            Ok(assignment) => Ok(Self::Assigned(assignment)),
-            Err(StoreError::NotFound(_)) => Ok(Self::Unassigned),
-            Err(err) => Err(err),
-        }
-    }
-}
 
 /// What [`ControlPlaneStore::put_shard_assignment_if`] did.
 // One per write, so the size of the written variant costs nothing worth a box

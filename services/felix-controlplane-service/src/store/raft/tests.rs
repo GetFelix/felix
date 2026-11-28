@@ -3488,14 +3488,13 @@ async fn revocation_cutoffs_are_read_on_the_leader() {
     );
 }
 
-/// A confirmed shard assignment, and the feed's head, are read on the
-/// leader, so a member that has not applied the latest assignment still
-/// answers with it, and a shard with none answers unassigned. The lagging
-/// member is a second store over the same group whose own state is empty.
+/// The shard-assignment feed's head is read on the leader, so a member that
+/// has not applied the latest assignment still answers with its seq. The
+/// lagging member is a second store over the same group whose own state is
+/// empty.
 #[tokio::test]
-async fn confirmed_shard_assignments_are_read_on_the_leader() {
+async fn confirmed_assignment_head_is_read_on_the_leader() {
     use crate::model::{ShardKind, ShardState};
-    use crate::store::ConfirmedAssignment;
     let dir = tempfile::tempdir().expect("tempdir");
     let leader = single_node_store(dir.path()).await;
     leader
@@ -3530,7 +3529,7 @@ async fn confirmed_shard_assignments_are_read_on_the_leader() {
         shard: 0,
         kind: ShardKind::Stream,
     };
-    let assigned = leader
+    leader
         .put_shard_assignment(ShardAssignment {
             key: key.clone(),
             leader: "broker-b".to_string(),
@@ -3574,35 +3573,8 @@ async fn confirmed_shard_assignments_are_read_on_the_leader() {
         behind.get_shard_assignment(&key).await,
         Err(StoreError::NotFound(_))
     ));
-    assert_eq!(
-        behind.confirmed_shard_assignment(&key).await.expect("read"),
-        ConfirmedAssignment::Assigned(assigned.clone())
-    );
-    let unplaced = ShardKey {
-        shard: 1,
-        ..key.clone()
-    };
-    assert_eq!(
-        behind
-            .confirmed_shard_assignment(&unplaced)
-            .await
-            .expect("read"),
-        ConfirmedAssignment::Unassigned
-    );
-    // Several at once, in order, after one read on the leader.
-    assert_eq!(
-        behind
-            .confirmed_shard_assignments(&[unplaced, key])
-            .await
-            .expect("read"),
-        [
-            ConfirmedAssignment::Unassigned,
-            ConfirmedAssignment::Assigned(assigned)
-        ]
-    );
-
-    // The feed's head too: a broker marked down serves again only on routes
-    // that reach it, so a lagging member's head would bring back #1955.
+    // A broker marked down serves again only on routes that reach it, so a
+    // lagging member's head would bring back #1955.
     let head = leader
         .local()
         .expect("caught up")

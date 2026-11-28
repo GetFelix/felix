@@ -1265,13 +1265,6 @@ impl ControlPlaneStore for FailingStore {
         Err(StoreError::Unexpected(anyhow::anyhow!("fail")))
     }
 
-    async fn confirmed_shard_assignment(
-        &self,
-        _key: &ShardKey,
-    ) -> StoreResult<felix_controlplane_service::store::ConfirmedAssignment> {
-        Err(StoreError::Unexpected(anyhow::anyhow!("fail")))
-    }
-
     async fn confirmed_shard_assignment_head(&self) -> StoreResult<Option<u64>> {
         Err(StoreError::Unexpected(anyhow::anyhow!("fail")))
     }

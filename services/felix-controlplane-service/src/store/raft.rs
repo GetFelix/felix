@@ -1509,56 +1509,6 @@ impl ControlPlaneStore for RaftStore {
         self.local()?.get_shard_assignment(key).await
     }
 
-    /// Read on the leader after a read-index. Never from local state: the
-    /// caller asked for a confirmed read because this member's may lag.
-    async fn confirmed_shard_assignment(
-        &self,
-        key: &ShardKey,
-    ) -> StoreResult<crate::store::ConfirmedAssignment> {
-        let asked = self
-            .ask_leader(LeaderRequest::ShardAssignment { key: key.clone() })
-            .await;
-        match asked {
-            Ok(Some(MetaResponse::Assignment { assignment })) => {
-                Ok(crate::store::ConfirmedAssignment::Assigned(assignment))
-            }
-            Ok(Some(_)) => Err(unexpected_shape("assignment")),
-            Ok(None) => Ok(crate::store::ConfirmedAssignment::NotServed),
-            Err(err) => crate::store::ConfirmedAssignment::from_read(Err(err)),
-        }
-    }
-
-    async fn confirmed_shard_assignments(
-        &self,
-        keys: &[ShardKey],
-    ) -> StoreResult<Vec<crate::store::ConfirmedAssignment>> {
-        let asked = self
-            .ask_leader(LeaderRequest::ShardAssignments {
-                keys: keys.to_vec(),
-            })
-            .await?;
-        match asked {
-            Some(MetaResponse::Assignments { assignments }) if assignments.len() == keys.len() => {
-                Ok(assignments
-                    .into_iter()
-                    .map(|assignment| match assignment {
-                        Some(assignment) => crate::store::ConfirmedAssignment::Assigned(assignment),
-                        None => crate::store::ConfirmedAssignment::Unassigned,
-                    })
-                    .collect())
-            }
-            Some(_) => Err(unexpected_shape("assignments")),
-            // A leader that predates the batch: one read each.
-            None => {
-                let mut confirmed = Vec::with_capacity(keys.len());
-                for key in keys {
-                    confirmed.push(self.confirmed_shard_assignment(key).await?);
-                }
-                Ok(confirmed)
-            }
-        }
-    }
-
     async fn confirmed_shard_assignment_head(&self) -> StoreResult<Option<u64>> {
         match self.ask_leader(LeaderRequest::ShardAssignmentHead).await? {
             Some(MetaResponse::AssignmentHead { next_seq }) => Ok(Some(next_seq)),

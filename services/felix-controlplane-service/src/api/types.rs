@@ -682,14 +682,6 @@ pub struct ShardAssignmentSnapshotResponse {
     pub next_seq: u64,
 }
 
-/// One shard's assignment, read no earlier than every write acknowledged
-/// before the request.
-#[derive(Debug, Serialize, Deserialize, ToSchema)]
-pub struct ConfirmedShardAssignmentResponse {
-    /// Absent when the shard has no assignment.
-    pub assignment: Option<RoutedShardAssignment>,
-}
-
 /// A seal leader's report of its shard's seal.
 #[derive(Debug, Serialize, Deserialize, ToSchema)]
 pub struct SealReportRequest {
@@ -768,18 +760,6 @@ pub struct SealGiveUpResponse {
     /// This request gave the seal up. False when none stood at that
     /// generation.
     pub given_up: bool,
-}
-
-/// Several shards to read as `GET /v1/shard-assignments/confirmed` reads one.
-#[derive(Debug, Serialize, Deserialize, ToSchema)]
-pub struct ConfirmedShardAssignmentsRequest {
-    pub keys: Vec<crate::model::ShardKey>,
-}
-
-/// One answer per requested shard, in the request's order.
-#[derive(Debug, Serialize, Deserialize, ToSchema)]
-pub struct ConfirmedShardAssignmentsResponse {
-    pub items: Vec<ConfirmedShardAssignmentResponse>,
 }
 
 #[derive(Debug, Serialize, Deserialize, ToSchema)]

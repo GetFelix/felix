@@ -973,13 +973,6 @@ impl ControlPlaneStore for InMemoryStore {
         shards::get_shard_assignment(self, key).await
     }
 
-    async fn confirmed_shard_assignment(
-        &self,
-        key: &ShardKey,
-    ) -> StoreResult<super::ConfirmedAssignment> {
-        super::ConfirmedAssignment::from_read(shards::get_shard_assignment(self, key).await)
-    }
-
     async fn confirmed_shard_assignment_head(&self) -> StoreResult<Option<u64>> {
         Ok(Some(self.shards.read().await.changes.next_seq))
     }
