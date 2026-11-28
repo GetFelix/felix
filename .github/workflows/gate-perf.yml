@@ -145,7 +145,12 @@ jobs:
                 IFS=: read -r name rf payload batch <<<"$cell"
                 for side in $sides; do
                   dir=/tmp/felix-gate/${side%_aa}
-                  scripts/ci/gate-perf-cell.sh "$dir" "$side" "$name" "$rf" "$payload" "$batch" \
+                  # The harness is head's for both sides, so each broker is told
+                  # its own engine: head's is Raft, and the baseline release
+                  # runs the hybrid, which opens no Raft member for the
+                  # harness's start-up hand-over wait to find.
+                  if [ "$dir" = /tmp/felix-gate/head ]; then side_engine=raft; else side_engine=hybrid; fi
+                  ENGINE=$side_engine scripts/ci/gate-perf-cell.sh "$dir" "$side" "$name" "$rf" "$payload" "$batch" \
                     "$SECONDS_PER_TRIAL" "$round" "$results" \
                     || echo "::warning::$side $name round $round failed"
                 done
