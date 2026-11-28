@@ -1772,8 +1772,10 @@ tombstones: the data does not parse.
 The group table is the shard's consumer groups as of the snapshot's last
 entry (`felix-broker`, `GroupTable::encode`). A reader refuses names or
 offsets out of order, so one table has one encoding. It reads version 3
-only: versions 1 and 2 carried no acks above the cursor, and no release
-wrote them.
+only. Versions 1 and 2 carried no acks above the cursor, so reading one as
+"no acks" could redeliver acked records. 0.8 starts fresh, so a snapshot
+with an older table, such as one v0.8.0-preview.1 wrote, is refused and the
+shard must be recreated.
 
 ```text
 u8   version (3)

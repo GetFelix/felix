@@ -253,8 +253,10 @@ const TABLE_VERSION: u8 = 3;
 pub enum TableRefused {
     #[error("the group table does not parse")]
     Damaged,
-    /// Versions 1 and 2 hold no acks above the cursor. No release wrote
-    /// them, and loading one as "no acks" would redeliver acked records.
+    /// Versions 1 and 2 hold no acks above the cursor, so loading one as
+    /// "no acks" could redeliver acked records. 0.8 starts fresh: a
+    /// preview's snapshot with an older table is refused, and the shard
+    /// must be recreated.
     #[error("group table version {0} is not supported; only version {TABLE_VERSION} is read")]
     Version(u8),
 }

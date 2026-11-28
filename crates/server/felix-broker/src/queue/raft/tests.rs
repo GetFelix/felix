@@ -1104,19 +1104,18 @@ async fn out_of_order_acks_cut_by_a_new_term_fail() {
     fx.set(|state| state.lag_reads = true);
     fx.fake().closed.store(true, Ordering::SeqCst);
     let cut = async {
-        while fx.fake().state.lock().pending.len() < 2 {
-            tokio::task::yield_now().await;
-        }
+        let proposed = both_pending(fx.fake()).await;
         fx.fake().new_term();
-        fx.fake().closed.store(false, Ordering::SeqCst);
-        fx.fake().opened.notify_waiters();
+        open(fx.fake());
+        proposed
     };
     let k = key(G);
-    let (two, one, ()) = tokio::join!(
+    let (two, one, proposed) = tokio::join!(
         fx.groups.ack(&k, 2, later()),
         fx.groups.ack(&k, 1, later()),
         cut,
     );
+    assert!(proposed, "the second ack waited for the first's commit");
     assert!(two.is_err() && one.is_err(), "a cut ack answered OK");
     let acked = fx
         .fake()
@@ -1126,4 +1125,53 @@ async fn out_of_order_acks_cut_by_a_new_term_fail() {
         .group(G)
         .map(|s| s.acked.len());
     assert_eq!(acked, Some(0), "the table holds a cut ack");
+}
+
+/// Bounded: true once two entries wait, false after two seconds.
+async fn both_pending(fake: &Fake) -> bool {
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while fake.state.lock().pending.len() < 2 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .is_ok()
+}
+
+fn open(fake: &Fake) {
+    fake.closed
+        .store(false, std::sync::atomic::Ordering::SeqCst);
+    fake.opened.notify_waiters();
+}
+
+/// An ack waiting outside the slot whose entry applies after the apply path
+/// forgot its tracker is answered lapsed, not OK.
+#[tokio::test]
+async fn an_applied_ack_whose_tracker_was_forgotten_is_lapsed() {
+    let fx = fixture(5);
+    publish(&fx.log, 3).await;
+    assert_eq!(fx.poll(G, 3).await.expect("poll"), vec![0, 1, 2]);
+    fx.set(|state| state.lag_reads = true);
+    fx.fake()
+        .closed
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    let forget = async {
+        let proposed = both_pending(fx.fake()).await;
+        fx.fake().groups.write().untrack(G);
+        open(fx.fake());
+        proposed
+    };
+    let k = key(G);
+    let (two, one, proposed) = tokio::join!(
+        fx.groups.ack(&k, 2, later()),
+        fx.groups.ack(&k, 1, later()),
+        forget,
+    );
+    assert!(proposed, "the second ack waited for the first's commit");
+    for (offset, answer) in [(2, two), (1, one)] {
+        assert!(
+            matches!(answer, Err(BrokerError::GroupClaimLapsed { offset: o }) if o == offset),
+            "ack {offset}: {answer:?}"
+        );
+    }
 }
