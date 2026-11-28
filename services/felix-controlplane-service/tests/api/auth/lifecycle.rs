@@ -487,11 +487,15 @@ async fn the_api_refuses_a_broker_audience_token() {
         std::time::Duration::from_secs(900),
     )
     .unwrap();
+    // The retired migration switch that let one in changes nothing.
+    // SAFETY: nothing reads a retired variable; only a regression would.
+    unsafe { std::env::set_var("FELIX_CONTROLPLANE_ACCEPT_BROKER_AUDIENCE", "true") };
     let response = app
         .clone()
         .oneshot(get("/v1/tenants/t1/signing-keys", &broker))
         .await
         .unwrap();
+    unsafe { std::env::remove_var("FELIX_CONTROLPLANE_ACCEPT_BROKER_AUDIENCE") };
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
 
     let api = token(&keys, vec!["tenant.manage:tenant:t1"]);

@@ -1,8 +1,6 @@
 //! What a subscriber sees when its shard moves: its last events, then
-//! `shard_moved` if it offered `FEATURE_SHARD_MOVED`, then the end of the
-//! stream. A client that did not offer the feature must see the stream end
-//! exactly as it did before the frame existed. Deleting the stream works the
-//! same way, with `stream_deleted` under `FEATURE_STREAM_DELETED`.
+//! `shard_moved`, then the end of the stream. Deleting the stream works the
+//! same way, with `stream_deleted`.
 //!
 //! Ending a shard's subscriptions ends every subscriber of that stream, so
 //! each check runs on a stream of its own.
@@ -17,7 +15,7 @@ use felix_wire::{FLAG_BINARY_EVENT_BATCH, FLAG_BINARY_EVENT_BATCH_SHARED, Messag
 use quinn::RecvStream;
 
 use super::MAX_TEST_FRAME_BYTES;
-use super::checks::{ensure_ok_response, parse_subscribe_response};
+use super::checks::{ensure_auth_ok, parse_subscribe_response};
 use super::fixture::AuthFixture;
 use super::frames::read_frame;
 use super::raw::publish;
@@ -33,15 +31,7 @@ pub(crate) async fn run_shard_move(
     broker: &Arc<Broker>,
 ) -> Result<()> {
     println!("Running shard move checks...");
-    let (offered_id, mut offered) = subscribe(
-        connection,
-        auth,
-        MOVED_STREAM,
-        Some(felix_wire::FEATURE_SHARD_MOVED),
-        None,
-    )
-    .await?;
-    let (plain_id, mut plain) = subscribe(connection, auth, MOVED_STREAM, None, None).await?;
+    let (subscription_id, mut events) = subscribe(connection, auth, MOVED_STREAM).await?;
 
     publish(connection, auth, MOVED_STREAM, b"before-move").await?;
     let handoff = ShardHandoff {
@@ -52,12 +42,12 @@ pub(crate) async fn run_shard_move(
     let ended = broker
         .end_subscriptions("t1", "default", MOVED_STREAM, 0, Some(handoff.clone()))
         .await;
-    if ended != 2 {
-        return Err(anyhow!("ended {ended} subscriptions, expected 2"));
+    if ended != 1 {
+        return Err(anyhow!("ended {ended} subscriptions, expected 1"));
     }
 
     let expected_moved = Message::ShardMoved {
-        subscription_id: offered_id,
+        subscription_id,
         // An in-memory stream: its sequence means nothing on another broker.
         resume_from: None,
         node_id: handoff.node_id,
@@ -65,12 +55,10 @@ pub(crate) async fn run_shard_move(
         generation: handoff.generation,
     };
     ensure_moved_tail(
-        &read_to_end(&mut offered, offered_id).await?,
-        Some(&expected_moved),
+        &read_to_end(&mut events, subscription_id).await?,
+        &expected_moved,
     )
-    .context("subscriber that offered FEATURE_SHARD_MOVED")?;
-    ensure_moved_tail(&read_to_end(&mut plain, plain_id).await?, None)
-        .context("subscriber that did not offer FEATURE_SHARD_MOVED")?;
+    .context("subscriber of a moved shard")?;
     Ok(())
 }
 
@@ -80,16 +68,7 @@ pub(crate) async fn run_stream_deleted(
     broker: &Arc<Broker>,
 ) -> Result<()> {
     println!("Running stream delete checks...");
-    // An extended bit: offered only alongside the marker.
-    let (offered_id, mut offered) = subscribe(
-        connection,
-        auth,
-        DELETED_STREAM,
-        Some(felix_wire::FEATURE_EXTENDED),
-        Some(felix_wire::FEATURE_STREAM_DELETED),
-    )
-    .await?;
-    let (plain_id, mut plain) = subscribe(connection, auth, DELETED_STREAM, None, None).await?;
+    let (subscription_id, mut events) = subscribe(connection, auth, DELETED_STREAM).await?;
 
     publish(connection, auth, DELETED_STREAM, b"before-move").await?;
     if !broker
@@ -99,16 +78,9 @@ pub(crate) async fn run_stream_deleted(
         return Err(anyhow!("{DELETED_STREAM} was not registered"));
     }
 
-    let expected = Message::StreamDeleted {
-        subscription_id: offered_id,
-    };
-    ensure_moved_tail(
-        &read_to_end(&mut offered, offered_id).await?,
-        Some(&expected),
-    )
-    .context("subscriber that offered FEATURE_STREAM_DELETED")?;
-    ensure_moved_tail(&read_to_end(&mut plain, plain_id).await?, None)
-        .context("subscriber that did not offer FEATURE_STREAM_DELETED")?;
+    let expected = Message::StreamDeleted { subscription_id };
+    ensure_moved_tail(&read_to_end(&mut events, subscription_id).await?, &expected)
+        .context("subscriber of a deleted stream")?;
     Ok(())
 }
 
@@ -119,14 +91,13 @@ pub(crate) enum Received {
     Message(Message),
 }
 
-/// The event, then the closing frame (`shard_moved` or `stream_deleted`)
-/// when one is expected, then nothing: the stream has already ended by the
-/// time this sees it.
-pub(crate) fn ensure_moved_tail(received: &[Received], moved: Option<&Message>) -> Result<()> {
-    let mut expected = vec![Received::Event(b"before-move".to_vec())];
-    if let Some(moved) = moved {
-        expected.push(Received::Message(moved.clone()));
-    }
+/// The event, then the closing frame (`shard_moved` or `stream_deleted`),
+/// then nothing: the stream has already ended by the time this sees it.
+pub(crate) fn ensure_moved_tail(received: &[Received], moved: &Message) -> Result<()> {
+    let expected = [
+        Received::Event(b"before-move".to_vec()),
+        Received::Message(moved.clone()),
+    ];
     if received != expected.as_slice() {
         return Err(anyhow!(
             "expected {expected:?} then end of stream, got {received:?}"
@@ -139,28 +110,17 @@ async fn subscribe(
     connection: &felix_transport::QuicConnection,
     auth: &AuthFixture,
     stream: &str,
-    client_features: Option<u32>,
-    client_features_hi: Option<u32>,
 ) -> Result<(u64, RecvStream)> {
     let (mut send, mut recv) = connection.open_bi().await?;
     let mut scratch = quic::FrameScratch::new();
     quic::write_message(
         &mut send,
-        Message::Auth {
-            tenant_id: auth.tenant_id.clone(),
-            token: auth.token.clone(),
-            // Features without flags: the broker remembers them and still
-            // answers the plain `Ok` a flagless client expects.
-            client_flags: None,
-            client_features,
-            client_features_hi,
-            client_flags_ext: None,
-        },
+        felix_wire::baseline_auth(auth.tenant_id.clone(), auth.token.clone()),
     )
     .await?;
     let response =
         quic::read_message_limited(&mut recv, MAX_TEST_FRAME_BYTES, &mut scratch).await?;
-    ensure_ok_response(response, "auth")?;
+    ensure_auth_ok(response, "auth")?;
     quic::write_message(
         &mut send,
         Message::Subscribe {

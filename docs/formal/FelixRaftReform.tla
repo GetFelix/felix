@@ -178,7 +178,7 @@
 (*                         the blank copy form from index 0, and "open"    *)
 (*                         lets a copy behind the abandoned epoch open.    *)
 (*                                                                         *)
-(* Two more are set by override in a cfg, so the other cfgs stay as they   *)
+(* Three more are set by override in a cfg, so the other cfgs stay as they *)
 (* are:                                                                    *)
 (*                                                                         *)
 (*   Campaigns      -- FALSE, or CampaignsOn: a voter can stand for        *)
@@ -187,6 +187,13 @@
 (*   LoneVoteCounts -- FALSE, or LoneVoteCountsOn: removes a rule. Every   *)
 (*                     vote read counts toward T, not only one a majority  *)
 (*                     of some voter set reached (#3351).                  *)
+(*   EarlierBound   -- FALSE, or EarlierBoundOn: an epoch's first index is *)
+(*                     at or above every earlier epoch's, as the code      *)
+(*                     holds it (raft_copy/vouch.rs, plan_reform_as; the   *)
+(*                     control plane's start_reformed_epoch). Without it a *)
+(*                     copy rotated below an earlier base starts the group *)
+(*                     by itself under an index that epoch served (#3410). *)
+(*                     With Batch the bound is on unless EarlierNotBound.  *)
 (*                                                                         *)
 (* Batch entries (docs/raft-batch-entries-design.md) are set by override   *)
 (* too. Without them every entry takes one offset and the offset is the    *)
@@ -948,12 +955,16 @@ StartPad(base, n, offs, e) ==
        THEN Append(p, [Gap(e) EXCEPT !.n = first - NextOffOf(p)])
        ELSE p
 
-\* With Batch an epoch also starts at or above every earlier epoch's first
-\* index and first offset, as raft_copy/vouch.rs does. Without Batch the
-\* model leaves this bound out, so those state spaces stay as they were.
+EarlierBound == FALSE
+EarlierBoundOn == TRUE
+
+\* An epoch starts at or above every earlier epoch's first index, and with
+\* Batch its first offset, as raft_copy/vouch.rs does. Without Batch the
+\* bound is on only with EarlierBound, so those state spaces stay as they were.
+EarlierOn == IF Batch THEN ~EarlierNotBound ELSE EarlierBound
 EarlierIndex ==
-    IF Batch /\ ~EarlierNotBound THEN MaxIn({Len(f.base) : f \in forms} \cup {0}) ELSE 0
-EarlierOffs == IF Batch /\ ~EarlierNotBound THEN {f.first : f \in forms} ELSE {}
+    IF EarlierOn THEN MaxIn({Len(f.base) : f \in forms} \cup {0}) ELSE 0
+EarlierOffs == IF Batch /\ EarlierOn THEN {f.first : f \in forms} ELSE {}
 
 \* Offsets up to the floor are not given out again.
 Pad(base, e) ==

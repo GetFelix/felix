@@ -1613,6 +1613,12 @@ impl ControlPlaneStore for RaftStore {
         self.local()?.shard_assignment_changes(since).await
     }
 
+    async fn watch_shard_assignment_changes(&self) -> tokio::sync::watch::Receiver<u64> {
+        // Not `local()`: a member still replaying wakes its waiters as it
+        // catches up, and their reads then answer.
+        self.machine.store().watch_shard_assignment_changes().await
+    }
+
     async fn record_replica_report_with(
         &self,
         report: ReplicaReport,

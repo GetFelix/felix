@@ -264,7 +264,6 @@ impl NodeConnections {
             connection,
             router,
             streams: AtomicUsize::new(0),
-            publish_window: std::sync::OnceLock::new(),
         });
         let mut state = self.state.lock().expect("node state");
         if !state.listeners.contains(&target) {
@@ -368,17 +367,7 @@ impl StreamLease {
         if size == 0 {
             return None;
         }
-        if felix_wire::supports_feature(
-            negotiated.server_features,
-            felix_wire::FEATURE_STREAM_PUBLISH_WINDOW,
-        ) {
-            return Some(Arc::new(Semaphore::new(size)));
-        }
-        Some(Arc::clone(
-            self.link
-                .publish_window
-                .get_or_init(|| Arc::new(Semaphore::new(size))),
-        ))
+        Some(Arc::new(Semaphore::new(size)))
     }
 
     /// The connection's position in the set, stable while it lives and below
@@ -416,10 +405,6 @@ struct Link {
     connection: QuicConnection,
     router: mpsc::Sender<EventRouterCommand>,
     streams: AtomicUsize,
-    /// One permit per acknowledged publish the connection has unanswered,
-    /// shared by every publish stream on it, for a broker that counts the
-    /// window per connection.
-    publish_window: std::sync::OnceLock<Arc<Semaphore>>,
 }
 
 impl Link {

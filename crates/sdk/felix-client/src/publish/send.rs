@@ -1,7 +1,7 @@
 //! Encoding a publish, admitting it, and handing it to a stream's writer.
 //!
-//! Binary frames are the data path. JSON is reached only as a fallback, for
-//! a broker that never advertised the binary frame a publish needs.
+//! Binary frames are the data path. JSON is sent only when the caller asks
+//! for it, or for a request that has no binary form.
 
 use std::sync::atomic::Ordering;
 
@@ -21,46 +21,6 @@ use crate::telemetry::{maybe_append_publish_ts, maybe_append_publish_ts_batch};
 use crate::timings;
 
 impl Publisher {
-    /// Whether the broker advertised support for the acked binary publish frame.
-    ///
-    /// False against any broker that predates capability negotiation, because an
-    /// unadvertised mask resolves to `ORIGINAL_V1_FLAGS`. That is the whole point:
-    /// such a broker would match on `FLAG_BINARY_PUBLISH_BATCH`, know nothing of
-    /// the `request_id` prefix, and read it as `tenant_len`.
-    pub(super) fn supports_binary_ack(&self) -> bool {
-        felix_wire::supports(
-            self.inner.server_flags,
-            felix_wire::FLAG_BINARY_PUBLISH_ACKED,
-        )
-    }
-
-    /// Whether the broker advertised the keyed binary publish frame.
-    ///
-    /// False against a broker that predates it, for the same reason
-    /// `supports_binary_ack` is: an unadvertised mask resolves to
-    /// `ORIGINAL_V1_FLAGS`, and such a broker would read the key prefix as a
-    /// `tenant_len`.
-    pub(super) fn supports_binary_keyed(&self) -> bool {
-        felix_wire::supports(
-            self.inner.server_flags,
-            felix_wire::FLAG_BINARY_PUBLISH_KEYED,
-        )
-    }
-
-    /// Whether the broker takes an idempotent batch as a binary frame.
-    pub(super) fn supports_binary_idempotent(&self) -> bool {
-        felix_wire::supports(
-            self.inner.server_flags,
-            felix_wire::FLAG_BINARY_PUBLISH_ACKED | felix_wire::FLAG_BINARY_PUBLISH_IDEMPOTENT,
-        )
-    }
-
-    /// Whether the broker takes this idempotent batch as a binary frame: a
-    /// keyed one also needs the keyed layout.
-    pub(super) fn supports_binary_idempotent_for(&self, key: Option<&bytes::Bytes>) -> bool {
-        self.supports_binary_idempotent() && (key.is_none() || self.supports_binary_keyed())
-    }
-
     #[allow(clippy::too_many_arguments)]
     pub(super) async fn publish_batch_binary_inner(
         &self,
@@ -330,9 +290,6 @@ impl Publisher {
         let worker = self
             .route_to_shard(tenant_id, namespace, stream, shard)
             .await?;
-        if !worker.takes_shard {
-            return Err(super::explicit_shard_unsupported());
-        }
         let payloads = maybe_append_publish_ts_batch(payloads, self.inner.bench_embed_ts);
         let request_id = if ack == AckMode::None {
             None

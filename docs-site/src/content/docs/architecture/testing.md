@@ -137,12 +137,9 @@ to, and a replica reported caught up so it could fail over again. If one does no
 stuck shard that names its leader, its generation and the transition it is
 stuck in.
 
-`FELIX_HISTORY_MODE` picks the replication path. In `lease` mode the campaign
-tests the report and lease path every stream uses by default. In `lease-free`
-mode it finalizes `generation_start`, `majority_ack`, `lease_free_reads` and
-`fenced_caches` after start-up and fails at once if any broker does not turn them on. The
-nightly run and the per-PR main campaign use `lease-free`; the per-PR
-every-family campaign uses `lease`, so each pull request covers both.
+The campaign has one mode: the brokers run every shard on Raft. The hybrid
+engine's `lease` and `lease-free` modes, and the `FELIX_HISTORY_MODE` variable
+that chose between them, are gone.
 
 ```bash
 cargo build -p felix-broker-service --bin felix-broker
@@ -156,7 +153,7 @@ or the compound faults with `FELIX_HISTORY_NEMESIS=adversarial`. The nightly
 jobs print their seed, mode and nemesis first, so a red night replays with:
 
 ```bash
-FELIX_HISTORY_SEED=<seed> FELIX_HISTORY_MODE=lease-free FELIX_HISTORY_NEMESIS=adversarial \
+FELIX_HISTORY_SEED=<seed> FELIX_HISTORY_NEMESIS=adversarial \
     FELIX_HISTORY_DURATION_SECS=1200 cargo test -p felix-cluster --test history -- --nocapture
 ```
 
@@ -241,11 +238,11 @@ is CPU work no virtual clock skips, so run them one at a time on a busy
 machine. A run that stops making progress ends
 with a `stalled` finding instead of hanging.
 
-A nightly workflow, `dst-nightly.yml`, runs 2000 seeds, and 250 more with each of
-clock skew, placement faults and power loss. It lists history violations and
+A nightly workflow, `dst-nightly.yml`, runs 2000 Raft seeds, and 250 more with each of
+skewed timers, disk faults and power loss. It lists history violations and
 safety findings, which are bugs, apart from the tracked liveness stalls, and
 prints the command that replays each failing seed. It can also be started by
-hand with 2000 seeds in every mode, which is how the release gate runs it.
+hand with 2000 seeds in each of the Raft modes, which is how the release gate runs it.
 `docs/simulation.md` has the inputs.
 
 A replay injects the same faults at the same virtual times and sends the same
@@ -306,7 +303,7 @@ scenario can cut a leader's links and speed up its clock at once.
 | Fault | Effect | Mechanism |
 | --- | --- | --- |
 | `Drop`, `Delay` | Traffic on one link, one direction, lost or late | Harness-owned proxies (`ClusterConfig::proxy_links`) |
-| `Refuse` | A broker's requests to chosen peers fail at once | `FELIX_PEER_PARTITION_FILE` |
+| `Refuse` | A broker's requests to chosen peers fail at once | `FELIX_PEER_PARTITION_FILE` (debug and `fault-injection` builds only) |
 | `Suspend` | `SIGSTOP`: the broker stays alive, holds its lease and answers nothing | Signal (Unix only) |
 | `Clock` | Time stepped or running at a different rate | `FELIX_CLOCK_FAULT_FILE` |
 | `Fsync` | Flushes delayed, failing with `EIO`, or failing once | `FELIX_STORAGE_FAULT_FILE` |

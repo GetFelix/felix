@@ -11,7 +11,7 @@ use super::{Ctx, Session, Step};
 use crate::serving::quic::client_error::ClientError;
 use crate::serving::quic::handlers::publish::{
     AckEncoding, DeclaredWidth, Outgoing, handle_ack_enqueue_result, handle_publish_batch_message,
-    handle_publish_message, send_outgoing_critical, sequence_reuse,
+    handle_publish_message, send_outgoing_critical,
 };
 
 // One parameter per field of the message it answers.
@@ -128,7 +128,6 @@ pub(super) async fn publish_batch(
         return Ok(Step::Close(false));
     }
     handle_publish_batch_message(
-        session.peer_flags,
         broker,
         publish_ctx,
         session.publish_width.as_ref(),
@@ -206,7 +205,6 @@ pub(super) async fn publish_idempotent(
         return Ok(Step::Close(false));
     }
     handle_publish_batch_message(
-        session.peer_flags,
         broker,
         publish_ctx,
         session.publish_width.as_ref(),
@@ -237,7 +235,7 @@ pub(super) async fn publish_idempotent(
             .auth_ctx
             .as_ref()
             .map_or_else(Default::default, |ctx| ctx.publishing_as()),
-        Some((producer_id, sequence, sequence_reuse(session.peer_features))),
+        Some((producer_id, sequence, felix_broker::SequenceReuse::Refuse)),
     )
     .await?;
     Ok(Step::Next)

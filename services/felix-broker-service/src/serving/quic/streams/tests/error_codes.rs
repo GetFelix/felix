@@ -1,20 +1,11 @@
-//! A client that offers `FEATURE_ERROR_CODES` gets codes; one that does not
-//! gets exactly the frames it always did.
+//! Every client is told the code and retry class of a failure.
 
 use felix_wire::{ErrorCode, RetryClass};
 
 use super::*;
-use crate::serving::quic::client_error::ErrorCodeSupport;
 
-fn auth_offering(fixture: &AuthFixture, features: Option<u32>) -> Message {
-    Message::Auth {
-        tenant_id: fixture.tenant_id.clone(),
-        token: fixture.token.clone(),
-        client_flags: Some(felix_wire::KNOWN_FLAGS),
-        client_features: features,
-        client_features_hi: None,
-        client_flags_ext: None,
-    }
+fn auth_offering(fixture: &AuthFixture) -> Message {
+    felix_wire::baseline_auth(&fixture.tenant_id, &fixture.token)
 }
 
 fn publish(request_id: u64) -> Message {
@@ -31,30 +22,22 @@ fn publish(request_id: u64) -> Message {
 }
 
 /// Run the frames and return the publish errors as the writer would send them.
-async fn publish_errors(
-    broker: Arc<Broker>,
-    auth: &AuthFixture,
-    features: Option<u32>,
-) -> Result<Vec<Message>> {
-    let error_codes = Arc::new(ErrorCodeSupport::default());
+async fn publish_errors(broker: Arc<Broker>, auth: &AuthFixture) -> Result<Vec<Message>> {
     let frames = vec![
-        Ok(Some(frame_from_message(auth_offering(auth, features)))),
+        Ok(Some(frame_from_message(auth_offering(auth)))),
         Ok(Some(frame_from_message(publish(7)))),
     ];
-    let (_, outgoing) = run_control_loop_with_codes(
+    let (_, outgoing) = run_control_loop_with_frames(
         broker,
         Arc::clone(&auth.auth),
         frames,
         BrokerConfig::default(),
-        Arc::clone(&error_codes),
     )
     .await?;
     Ok(outgoing
         .into_iter()
         .filter_map(|outgoing| match outgoing {
-            Outgoing::Message(message @ Message::PublishError { .. }) => {
-                Some(error_codes.shape(message))
-            }
+            Outgoing::Message(message @ Message::PublishError { .. }) => Some(message),
             _ => None,
         })
         .collect())
@@ -68,10 +51,10 @@ fn code_of(message: &Message) -> (Option<ErrorCode>, Option<RetryClass>) {
 }
 
 #[tokio::test]
-async fn a_negotiated_client_is_told_forbidden() -> Result<()> {
+async fn a_client_is_told_forbidden() -> Result<()> {
     let broker = Arc::new(Broker::new(EphemeralCache::new().into()));
     let auth = auth_fixture("t1", vec![]);
-    let errors = publish_errors(broker, &auth, Some(felix_wire::FEATURE_ERROR_CODES)).await?;
+    let errors = publish_errors(broker, &auth).await?;
     assert_eq!(errors.len(), 1);
     assert_eq!(
         code_of(&errors[0]),
@@ -81,10 +64,10 @@ async fn a_negotiated_client_is_told_forbidden() -> Result<()> {
 }
 
 #[tokio::test]
-async fn a_negotiated_client_is_told_not_found() -> Result<()> {
+async fn a_client_is_told_not_found() -> Result<()> {
     let broker = Arc::new(Broker::new(EphemeralCache::new().into()));
     let auth = auth_fixture("t1", default_perms());
-    let errors = publish_errors(broker, &auth, Some(felix_wire::FEATURE_ERROR_CODES)).await?;
+    let errors = publish_errors(broker, &auth).await?;
     assert_eq!(errors.len(), 1);
     assert_eq!(
         code_of(&errors[0]),
@@ -97,19 +80,6 @@ async fn a_negotiated_client_is_told_not_found() -> Result<()> {
     Ok(())
 }
 
-/// The same failure for a client that did not offer the bit, whether it
-/// negotiated other capabilities or none at all, carries no code.
-#[tokio::test]
-async fn an_unnegotiated_client_gets_the_old_frame() -> Result<()> {
-    for features in [None, Some(felix_wire::FEATURE_REDIRECT)] {
-        let broker = Arc::new(Broker::new(EphemeralCache::new().into()));
-        let auth = auth_fixture("t1", vec![]);
-        let errors = publish_errors(broker, &auth, features).await?;
-        assert_eq!(errors, vec![Message::publish_error(7, "forbidden")]);
-    }
-    Ok(())
-}
-
 /// A stream the broker does not know is `not_found` to a client that
 /// declared a width for it, not `stale_width`: a deleted stream has to read
 /// as gone, so the client waits for it rather than asking a width it lacks.
@@ -117,12 +87,8 @@ async fn an_unnegotiated_client_gets_the_old_frame() -> Result<()> {
 async fn a_declared_batch_to_an_unknown_stream_is_not_found() -> Result<()> {
     let broker = Arc::new(Broker::new(EphemeralCache::new().into()));
     let auth = auth_fixture("t1", default_perms());
-    let error_codes = Arc::new(ErrorCodeSupport::default());
     let frames = vec![
-        Ok(Some(frame_from_message(auth_offering(
-            &auth,
-            Some(felix_wire::FEATURE_ERROR_CODES),
-        )))),
+        Ok(Some(frame_from_message(auth_offering(&auth)))),
         Ok(Some(frame_from_message(Message::PublishWidth {
             tenant_id: "t1".to_string(),
             namespace: "default".to_string(),
@@ -141,20 +107,17 @@ async fn a_declared_batch_to_an_unknown_stream_is_not_found() -> Result<()> {
             ack: Some(felix_wire::AckMode::PerBatch),
         }))),
     ];
-    let (_, outgoing) = run_control_loop_with_codes(
+    let (_, outgoing) = run_control_loop_with_frames(
         broker,
         Arc::clone(&auth.auth),
         frames,
         BrokerConfig::default(),
-        Arc::clone(&error_codes),
     )
     .await?;
     let errors: Vec<_> = outgoing
         .into_iter()
         .filter_map(|outgoing| match outgoing {
-            Outgoing::Message(message @ Message::PublishError { .. }) => {
-                Some(error_codes.shape(message))
-            }
+            Outgoing::Message(message @ Message::PublishError { .. }) => Some(message),
             _ => None,
         })
         .collect();

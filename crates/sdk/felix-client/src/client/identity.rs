@@ -90,7 +90,6 @@ impl Connection {
             &self.event_node,
             &credentials,
             &auth_tenant_id,
-            server_features,
             server_features_hi,
             &cache_request_counter,
             self.runtime_config,

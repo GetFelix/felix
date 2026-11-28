@@ -882,29 +882,27 @@ read served by a member that has fallen behind another.
 
 `.github/workflows/dst-nightly.yml` runs 2000 seeds every night at 01:13
 Pacific, the same seeds each night, so a red night replays as it is. It builds
-the seeds test once, in release with `--cfg tokio_unstable` as `task sim:replay`
+the `raft_seeds` test once, in release with `--cfg tokio_unstable` as `task sim:replay`
 does, and hands it to shards that each run a range of seeds two at a time
 through `scripts/sim-sweep.sh`.
 
-The opt-in nemeses run too. Each night also runs 250 seeds in each other
-mode, a window that moves 250 seeds a night, so eight nights cover seeds 1 to
-2000 in every mode:
+The nightly sweep runs Raft groups only. The first 2000 seeds run in `raft`
+mode. Each night also runs 250 seeds in each opt-in nemesis, a window that
+moves 250 seeds a night, so eight nights cover seeds 1 to 2000 in every mode.
+The hybrid's modes (`off`, `clocks`, `placement`, `power-loss` and the
+disk modes without the `raft-` prefix) are not run in the sweep; the per-PR
+simulator jobs still run the hybrid's clusters until its code is deleted.
 
 | Mode | What it adds |
 | --- | --- |
-| `clocks` | Bounded clock skew (`FELIX_SIM_CLOCKS=bounded`). |
-| `placement` | Placement faults (`FELIX_SIM_PLACEMENT=1`). |
-| `power-loss` | Power cuts in place of kills (`FELIX_SIM_POWER_LOSS=1`). |
-| `relaxed-power-loss` | The same on brokers that do not sync on commit. |
-| `majority-cut`, `majority-cut-relaxed` | Several brokers lose power at once. |
-| `wipe` | Shard and data directories emptied. |
-| `raft`, `raft-clocks` | Raft groups ([Raft groups](#raft-groups)) in place of a whole cluster, the second with skewed timers. |
-| `raft-wipe`, `raft-restore` | Raft groups with members stopped and a shard directory or data root wiped, or put back from an older copy. |
-| `raft-power-loss`, `raft-relaxed-power-loss` | Raft groups with one member's power cut at a time, answered at the commit or on a written majority ([Raft groups](#raft-groups), "Power cuts"). |
+| `raft` | Raft groups ([Raft groups](#raft-groups)) in place of a whole cluster. |
+| `raft-clocks` | The same with skewed timers. |
+| `raft-wipe`, `raft-restore` | Members stopped and a shard directory or data root wiped, or put back from an older copy. |
+| `raft-power-loss`, `raft-relaxed-power-loss` | One member's power cut at a time, answered at the commit or on a written majority ([Raft groups](#raft-groups), "Power cuts"). |
 | `raft-majority-cut`, `raft-majority-cut-relaxed` | The same, and several members lose power at once. |
 
-A Raft seed runs through the same script, one process per seed, on the
-`raft_seeds` test binary built beside the `seeds` one.
+A seed runs through `scripts/sim-sweep.sh`, one process per seed, on the
+`raft_seeds` test binary.
 
 A failing seed is sorted by its log:
 
@@ -934,7 +932,7 @@ For the release gate, start the workflow by hand (Actions, "Simulation sweep
 | `first` | The first seed. | 1 |
 | `seeds` | How many seeds per mode. | 2000 |
 | `shards` | Jobs per mode, lowered to `seeds` when larger. | 50 |
-| `modes` | Modes from the table above (comma separated), `all` (`off`, `clocks`, `placement`, `power-loss`), `disks` (`relaxed-power-loss`, `majority-cut`, `majority-cut-relaxed`, `wipe`) or `raft-disks` (`raft-power-loss`, `raft-relaxed-power-loss`, `raft-majority-cut`, `raft-majority-cut-relaxed`). Other Raft modes are named one by one. | `off` |
+| `modes` | Modes from the table above (comma separated), `all` (`raft`, `raft-clocks`, `raft-wipe`, `raft-restore`) or `raft-disks` (`raft-power-loss`, `raft-relaxed-power-loss`, `raft-majority-cut`, `raft-majority-cut-relaxed`). | `raft` |
 | `parallel` | Jobs running at once, 1 to 20. | 4 |
 
 `modes` `all` with 2000 seeds is 200 jobs (the limit is 256), and a job takes at most 50 seeds. Repeated modes count once. Dispatched runs queue behind each other. The gate is no

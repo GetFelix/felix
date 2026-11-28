@@ -24,6 +24,7 @@ fn every_code_maps_to_a_kind_that_matches_its_retry_class() {
         ("revoked", KIND_AUTH),
         ("feature_not_enabled", KIND_GENERIC),
         ("stream_has_commits", KIND_GENERIC),
+        ("below_baseline", KIND_GENERIC),
     ];
     assert_eq!(expected.len(), ErrorCode::ALL.len(), "a code is unmapped");
     for code in ErrorCode::ALL {

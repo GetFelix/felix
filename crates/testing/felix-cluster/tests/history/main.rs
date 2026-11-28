@@ -5,15 +5,12 @@
 //! the same fault schedule. The nightly workflow runs it for longer with a
 //! random seed and every fault family. See `docs/history-checker.md`.
 //!
-//! Unless `FELIX_HISTORY_MODE` says otherwise, the main campaign runs
-//! lease-free and the every-family one on the lease, so each PR covers both.
-//! The adversarial one runs lease-free on four brokers.
+//! The adversarial campaign runs on four brokers.
 //! `FELIX_HISTORY_NEMESIS=election` runs the main campaign with only leader
 //! kills while the control plane is down.
 //!
 //! ```text
-//! FELIX_HISTORY_SEED=1234 FELIX_HISTORY_DURATION_SECS=300 FELIX_HISTORY_MODE=lease-free \
-//!     FELIX_HISTORY_NEMESIS=adversarial \
+//! FELIX_HISTORY_SEED=1234 FELIX_HISTORY_DURATION_SECS=300 FELIX_HISTORY_NEMESIS=adversarial \
 //!     cargo test -p felix-cluster --test history -- --nocapture
 //! ```
 use std::collections::BTreeSet;
@@ -24,8 +21,7 @@ use felix_cluster::history::nemesis::ClusterView;
 use felix_cluster::history::register::RegisterAction;
 use felix_cluster::history::rng::Rng;
 use felix_cluster::history::{
-    self, Campaign, EveryFamily, Fault, FaultFamily, FaultKind, History, Mode, Nemesis,
-    RandomNemesis,
+    self, Campaign, EveryFamily, Fault, FaultFamily, FaultKind, History, Nemesis, RandomNemesis,
 };
 use serial_test::serial;
 
@@ -48,8 +44,7 @@ const ADVERSARIAL_DURATION: Duration = Duration::from_secs(150);
 /// **Acknowledged `Quorum` appends survive kills, pauses and partitions**,
 /// nothing is duplicated or reordered, reads are prefixes of the final log,
 /// no read sees a value that was never written or was refused, and no
-/// `Quorum` cache get is stale. Lease-free unless `FELIX_HISTORY_MODE` says
-/// otherwise.
+/// `Quorum` cache get is stale.
 ///
 /// A run given `FELIX_HISTORY_DURATION_SECS`, as the nightly one is, also
 /// cuts links, skews clocks, fails fsyncs, moves shards and drains brokers
@@ -64,8 +59,7 @@ const ADVERSARIAL_DURATION: Duration = Duration::from_secs(150);
 #[serial]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_fault_campaign_keeps_quorum_histories_valid() {
-    let mut campaign =
-        Campaign::from_env(SEED, DURATION, Mode::LeaseFree).expect("campaign settings");
+    let mut campaign = Campaign::from_env(SEED, DURATION).expect("campaign settings");
     let long = std::env::var_os(history::campaign::DURATION_VAR).is_some();
     let nemesis_var = std::env::var(history::campaign::NEMESIS_VAR).ok();
     let (mut nemesis, faults) = match nemesis_var.as_deref() {
@@ -73,20 +67,14 @@ async fn a_fault_campaign_keeps_quorum_histories_valid() {
             campaign = campaign.with_spare_broker();
             (RandomNemesis::adversarial(), "adversarial faults")
         }
-        Some("metadata") => {
-            campaign.mode = Mode::LeaseFree;
-            (
-                RandomNemesis::metadata(),
-                "faults on a three-member metadata group",
-            )
-        }
-        Some("election") => {
-            campaign.mode = Mode::LeaseFree;
-            (
-                RandomNemesis::election(),
-                "leader kills with the control plane down",
-            )
-        }
+        Some("metadata") => (
+            RandomNemesis::metadata(),
+            "faults on a three-member metadata group",
+        ),
+        Some("election") => (
+            RandomNemesis::election(),
+            "leader kills with the control plane down",
+        ),
         Some("all") | None if long => (RandomNemesis::all_faults(), "every fault family"),
         None => (RandomNemesis::process_faults(), "process faults"),
         Some(other) => panic!(
@@ -94,10 +82,10 @@ async fn a_fault_campaign_keeps_quorum_histories_valid() {
             history::campaign::NEMESIS_VAR
         ),
     };
-    let (seed, mode) = (campaign.seed, campaign.mode);
+    let seed = campaign.seed;
     println!(
-        "history campaign: seed {seed}, mode {mode}, {:?}, {faults}; rerun with \
-         FELIX_HISTORY_SEED={seed} FELIX_HISTORY_MODE={mode}",
+        "history campaign: seed {seed}, {:?}, {faults}; rerun with \
+         FELIX_HISTORY_SEED={seed}",
         campaign.duration
     );
     let history = run_checked(&campaign, &mut nemesis).await;
@@ -111,19 +99,17 @@ async fn a_fault_campaign_keeps_quorum_histories_valid() {
 /// disk and assignment faults, one after another with the process faults,
 /// leave a
 /// valid history, and at least one fault of each family is injected and
-/// healed. What the long random schedule relies on, checked on every PR, on
-/// the lease unless `FELIX_HISTORY_MODE` says otherwise.
+/// healed. What the long random schedule relies on, checked on every PR.
 #[serial]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn every_fault_family_is_injected_and_healed_in_a_campaign() {
-    let mut campaign =
-        Campaign::from_env(SEED, EVERY_FAMILY_DURATION, Mode::Lease).expect("campaign settings");
+    let mut campaign = Campaign::from_env(SEED, EVERY_FAMILY_DURATION).expect("campaign settings");
     // Fixed: the nightly's long random run already covers these faults.
     campaign.duration = EVERY_FAMILY_DURATION;
-    let (seed, mode) = (campaign.seed, campaign.mode);
+    let seed = campaign.seed;
     println!(
-        "every-family campaign: seed {seed}, mode {mode}; rerun with \
-         FELIX_HISTORY_SEED={seed} FELIX_HISTORY_MODE={mode}"
+        "every-family campaign: seed {seed}; rerun with \
+         FELIX_HISTORY_SEED={seed}"
     );
     let mut nemesis = every_family();
     let history = run_checked(&campaign, &mut nemesis).await;
@@ -170,14 +156,14 @@ async fn every_fault_family_is_injected_and_healed_in_a_campaign() {
 #[serial]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn adversarial_faults_heal_and_every_shard_serves_again() {
-    let mut campaign = Campaign::from_env(SEED, ADVERSARIAL_DURATION, Mode::LeaseFree)
+    let mut campaign = Campaign::from_env(SEED, ADVERSARIAL_DURATION)
         .expect("campaign settings")
         .with_spare_broker();
     campaign.duration = ADVERSARIAL_DURATION;
-    let (seed, mode) = (campaign.seed, campaign.mode);
+    let seed = campaign.seed;
     println!(
-        "adversarial campaign: seed {seed}, mode {mode}; rerun with \
-         FELIX_HISTORY_SEED={seed} FELIX_HISTORY_MODE={mode}"
+        "adversarial campaign: seed {seed}; rerun with \
+         FELIX_HISTORY_SEED={seed}"
     );
     let mut nemesis = RoundRobin::new(adversarial_order());
     let history = run_checked(&campaign, &mut nemesis).await;
@@ -237,13 +223,12 @@ const OUTAGE_DURATION: Duration = Duration::from_secs(60);
 #[serial]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_power_loss_or_a_control_plane_crash_loses_nothing_acknowledged() {
-    let mut campaign =
-        Campaign::from_env(SEED, OUTAGE_DURATION, Mode::LeaseFree).expect("campaign settings");
+    let mut campaign = Campaign::from_env(SEED, OUTAGE_DURATION).expect("campaign settings");
     campaign.duration = OUTAGE_DURATION;
-    let (seed, mode) = (campaign.seed, campaign.mode);
+    let seed = campaign.seed;
     println!(
-        "outage campaign: seed {seed}, mode {mode}; rerun with \
-         FELIX_HISTORY_SEED={seed} FELIX_HISTORY_MODE={mode}"
+        "outage campaign: seed {seed}; rerun with \
+         FELIX_HISTORY_SEED={seed}"
     );
     let mut nemesis = RoundRobin::new(vec![FaultKind::PowerLoss, FaultKind::ControlPlaneCrash]);
     let history = run_checked(&campaign, &mut nemesis).await;
@@ -287,15 +272,12 @@ const ELECTION_DURATION: Duration = Duration::from_secs(90);
 #[serial]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn replicas_elect_a_leader_while_the_control_plane_is_down() {
-    let mut campaign =
-        Campaign::from_env(SEED, ELECTION_DURATION, Mode::LeaseFree).expect("campaign settings");
+    let mut campaign = Campaign::from_env(SEED, ELECTION_DURATION).expect("campaign settings");
     campaign.duration = ELECTION_DURATION;
-    // Elections need the lease-free path, whatever mode the nightly runs.
-    campaign.mode = Mode::LeaseFree;
-    let (seed, mode) = (campaign.seed, campaign.mode);
+    let seed = campaign.seed;
     println!(
-        "election campaign: seed {seed}, mode {mode}; rerun with \
-         FELIX_HISTORY_SEED={seed} FELIX_HISTORY_MODE={mode}"
+        "election campaign: seed {seed}; rerun with \
+         FELIX_HISTORY_SEED={seed}"
     );
     let mut nemesis = RoundRobin::new(vec![FaultKind::ElectWithoutControlPlane]);
     let history = run_checked(&campaign, &mut nemesis).await;
@@ -348,13 +330,13 @@ const CACHE_PROMOTION_DURATION: Duration = Duration::from_secs(60);
 #[serial]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn quorum_cache_writes_survive_a_promotion_in_a_campaign() {
-    let mut campaign = Campaign::from_env(SEED, CACHE_PROMOTION_DURATION, Mode::LeaseFree)
-        .expect("campaign settings");
+    let mut campaign =
+        Campaign::from_env(SEED, CACHE_PROMOTION_DURATION).expect("campaign settings");
     campaign.duration = CACHE_PROMOTION_DURATION;
-    let (seed, mode) = (campaign.seed, campaign.mode);
+    let seed = campaign.seed;
     println!(
-        "cache promotion campaign: seed {seed}, mode {mode}; rerun with \
-         FELIX_HISTORY_SEED={seed} FELIX_HISTORY_MODE={mode}"
+        "cache promotion campaign: seed {seed}; rerun with \
+         FELIX_HISTORY_SEED={seed}"
     );
     let mut nemesis = CacheLeader::default();
     run_checked(&campaign, &mut nemesis).await;
@@ -383,11 +365,7 @@ const LEADER_LIST: &str = "history-leader";
 #[serial]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn no_offset_is_held_as_two_records_across_leader_faults() {
-    if std::env::var("FELIX_TEST_SHARD_ENGINE").as_deref() == Ok("hybrid") {
-        println!("skipped: a hybrid `Leader` stream may rewrite a delivered tail");
-        return;
-    }
-    let mut campaign = Campaign::from_env(SEED, OFFSET_REUSE_DURATION, Mode::LeaseFree)
+    let mut campaign = Campaign::from_env(SEED, OFFSET_REUSE_DURATION)
         .expect("campaign settings")
         .with_leader_list(LEADER_LIST);
     campaign.duration = OFFSET_REUSE_DURATION;

@@ -16,13 +16,11 @@ use felix_storage::EphemeralCache;
 use felix_storage::log::LogConfig;
 use felix_transport::{QuicClient, QuicConnection, QuicServer, TransportConfig};
 use felix_wire::binary::{self, ProducerSequence};
-use felix_wire::{AckMode, FLAG_BINARY_PUBLISH_ACK_OFFSET, Frame, KNOWN_FLAGS, Message};
+use felix_wire::{AckMode, FLAG_BINARY_PUBLISH_ACK_OFFSET, Frame, Message};
 use quinn::{RecvStream, SendStream};
 
 use super::MAX_TEST_FRAME_BYTES;
-use super::checks::{
-    ensure_flag_advertised, ensure_offset_follows, ensure_same_frame, publish_ack_offset,
-};
+use super::checks::{ensure_flag_advertised, ensure_offset_follows, publish_ack_offset};
 use super::commit::COMMIT_STREAM;
 
 /// An in-memory stream, which has no log to commit to.
@@ -40,7 +38,7 @@ pub(crate) async fn run_ack_offsets(
     println!("Running publish ack offset checks...");
     if !suite_acks_on_commit {
         // Acked on enqueue there is no offset yet, and none may be made up.
-        let mut stream = Stream::open(suite, auth, KNOWN_FLAGS).await?;
+        let mut stream = Stream::open(suite, auth).await?;
         let offset = stream.acked_binary(b"early".to_vec()).await?;
         if offset.is_some() {
             return Err(anyhow!(
@@ -136,7 +134,7 @@ async fn serve(
 /// carries the offset it was written at, and an in-memory stream's is sent on
 /// enqueue.
 async fn shipped_default(connection: &QuicConnection, auth: &AuthFixture) -> Result<()> {
-    let mut stream = Stream::open(connection, auth, KNOWN_FLAGS).await?;
+    let mut stream = Stream::open(connection, auth).await?;
     stream
         .acked_binary_to(COMMIT_STREAM, b"durable".to_vec())
         .await?
@@ -156,7 +154,7 @@ async fn shipped_default(connection: &QuicConnection, auth: &AuthFixture) -> Res
 /// A client that offered the bit gets the offset, and the offsets agree with
 /// each other and with the log.
 async fn offered(connection: &QuicConnection, auth: &AuthFixture) -> Result<()> {
-    let mut stream = Stream::open(connection, auth, KNOWN_FLAGS).await?;
+    let mut stream = Stream::open(connection, auth).await?;
     // ack.offset_negotiated
     ensure_flag_advertised(stream.auth_response.take(), FLAG_BINARY_PUBLISH_ACK_OFFSET)?;
 
@@ -205,56 +203,28 @@ async fn offered(connection: &QuicConnection, auth: &AuthFixture) -> Result<()> 
     Ok(())
 }
 
-/// ack.offset_negotiated: a client that did not offer the bit gets the frames
-/// it always did, byte for byte.
+/// ack.offset_negotiated: a client that does not offer the bit is refused
+/// with `below_baseline` rather than sent frames without the offset.
 async fn not_offered(connection: &QuicConnection, auth: &AuthFixture) -> Result<()> {
-    let mut stream = Stream::open(
-        connection,
-        auth,
-        KNOWN_FLAGS & !FLAG_BINARY_PUBLISH_ACK_OFFSET,
-    )
-    .await?;
-    let (request_id, frame) = stream.acked_binary_frame(&[b"old".to_vec()]).await?;
-    let expected = Frame::decode(binary::encode_publish_ack_bytes(request_id, None)?)?;
-    ensure_same_frame(&frame, &expected, "binary ack without the offset flag")?;
-
-    let (request_id, frame) = stream.acked_json_frame(b"old".to_vec()).await?;
-    let plain_ok = |request_id| {
-        Message::PublishOk {
-            request_id,
-            offset: None,
+    let (mut send, mut recv) = connection.open_bi().await?;
+    let mut offer = felix_wire::baseline_auth(auth.tenant_id.clone(), auth.token.clone());
+    if let Message::Auth { client_flags, .. } = &mut offer {
+        *client_flags = Some(felix_wire::CLIENT_BASELINE_FLAGS & !FLAG_BINARY_PUBLISH_ACK_OFFSET);
+    }
+    quic::write_message(&mut send, offer).await?;
+    let mut scratch = quic::FrameScratch::new();
+    match quic::read_message_limited(&mut recv, MAX_TEST_FRAME_BYTES, &mut scratch).await? {
+        Some(Message::Error {
+            code: Some(felix_wire::ErrorCode::BelowBaseline),
+            ..
+        }) => {}
+        other => {
+            return Err(anyhow!(
+                "an auth without the offset flag was not refused: {other:?}"
+            ));
         }
-        .encode()
-    };
-    ensure_same_frame(
-        &frame,
-        &plain_ok(request_id)?,
-        "publish_ok without the offset flag",
-    )?;
-
-    let producer_id = stream.producer_init().await?;
-    let request_id = stream.next_request_id();
-    stream
-        .write_bytes(binary::encode_idempotent_publish_batch_bytes(
-            request_id,
-            ProducerSequence {
-                producer_id,
-                sequence: 0,
-            },
-            None,
-            &stream.tenant,
-            "default",
-            COMMIT_STREAM,
-            &[b"old".to_vec()],
-        )?)
-        .await?;
-    let frame = stream.read().await?;
-    ensure_same_frame(
-        &frame,
-        &plain_ok(request_id)?,
-        "idempotent ack without the offset flag",
-    )?;
-    stream.send.finish()?;
+    }
+    send.finish()?;
     Ok(())
 }
 
@@ -268,22 +238,11 @@ struct Stream {
 }
 
 impl Stream {
-    async fn open(
-        connection: &QuicConnection,
-        auth: &AuthFixture,
-        client_flags: u16,
-    ) -> Result<Self> {
+    async fn open(connection: &QuicConnection, auth: &AuthFixture) -> Result<Self> {
         let (mut send, mut recv) = connection.open_bi().await?;
         quic::write_message(
             &mut send,
-            Message::Auth {
-                tenant_id: auth.tenant_id.clone(),
-                token: auth.token.clone(),
-                client_flags: Some(client_flags),
-                client_features: None,
-                client_features_hi: None,
-                client_flags_ext: None,
-            },
+            felix_wire::baseline_auth(auth.tenant_id.clone(), auth.token.clone()),
         )
         .await?;
         let mut scratch = quic::FrameScratch::new();

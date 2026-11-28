@@ -300,8 +300,8 @@ pub(super) struct RaftRoot<L> {
     /// Cancelled once the start's restore check has answered. A rotation
     /// that check makes removes the mark log, so the gate waits for it.
     pub(super) restore_checked: CancellationToken,
-    /// Set by a start from the control-plane view under the pin rule
-    /// (`FELIX_UNIFIED_FENCE=0`), to the token cancelled once the broker has
+    /// Set by a start from the control-plane view without the unified fence
+    /// (never, now that it is always on), to the token cancelled once the broker has
     /// registered. The gate then judges the root on the run witness without
     /// waiting for the restore check, and the members that open vote but do
     /// not lead until the broker has registered.
@@ -797,7 +797,9 @@ pub(super) struct ShardTaskDeps<'a, R, L> {
     pub(super) leads_after: Option<CancellationToken>,
     /// Whoever runs the shards the hybrid does not.
     pub(super) engine_shards: Option<Arc<dyn shard_routing::EngineShards>>,
-    /// This broker runs its durable stream shards on Raft.
+    /// This broker runs its durable stream shards on Raft. Every broker does;
+    /// only the simulator's hybrid clusters pass `false`, until #2260
+    /// deletes them with the hybrid.
     pub(super) raft: bool,
     pub(super) sync_shutdown: &'a CancellationToken,
 }
@@ -865,7 +867,9 @@ where
             // A promoted shard waits for replication to fence its replicas,
             // so only where replication runs: a peer transport to fence over,
             // and durable logs to fence.
+            // A Raft broker opens no shard on a promotion: its groups elect.
             let gate: Arc<dyn replication::promotion::PromotionGate> = match (peers, storage) {
+                _ if raft => Arc::new(replication::promotion::NoGate),
                 // A broker with the fence turned off is an older broker to its
                 // peers, and leads like one too.
                 (Some(pool), Some(storage)) if pool.offers_fence() => match lifecycle.try_lock() {
@@ -909,7 +913,7 @@ where
                     // Ballots ride with the fence, as its peers are told
                     // (`PeerCapabilities::BALLOTS`).
                     Arc::new(match (&config.peer_transport, &config.membership) {
-                        (Some(peer), Some(membership)) if peer.fence => {
+                        (Some(peer), Some(membership)) if peer.fence && !raft => {
                             store.with_ballots(membership.node_id.clone())
                         }
                         _ => store,
@@ -933,7 +937,7 @@ where
             // Leaderships the replicas elect, only where this broker checks
             // sets: the routing feed lays them over the control plane's.
             let elections = replication::engine::elections(
-                peers.as_ref().is_some_and(|pool| pool.offers_election()),
+                !raft && peers.as_ref().is_some_and(|pool| pool.offers_election()),
                 router,
                 Arc::clone(&assignments_changed),
                 quorum_marks,
@@ -975,9 +979,11 @@ where
             );
             // Shipping to followers, for the shards this broker leads, the
             // suspicion heartbeat over the same pool and the election driver
-            // standing on it. Only when there is a peer transport: without
-            // one the replica set is a plan nobody can act on.
-            let replication = peers.as_ref().map(|pool| {
+            // standing on it: the hybrid's, so never on a Raft broker, whose
+            // groups replicate and elect for themselves. Only when there is a
+            // peer transport: without one the replica set is a plan nobody
+            // can act on.
+            let replication = peers.as_ref().filter(|_| !raft).map(|pool| {
                 engine.wake_driver(Arc::clone(broker), Arc::clone(&routes_changed));
                 replication::engine::Hybrid::<shard_routing::IngressRouter>::start(
                     replication::engine::StartDeps {

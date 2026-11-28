@@ -35,8 +35,9 @@ fn raft_is_the_default_test_engine() {
 }
 
 #[test]
-fn hybrid_is_opt_in() {
-    assert_eq!(engine_named(Some("hybrid")), "hybrid");
+#[should_panic(expected = "the hybrid shard engine was removed")]
+fn a_hybrid_suite_run_is_refused() {
+    engine_named(Some("hybrid"));
 }
 
 /// **A Raft cluster starts new; a hybrid one starts as before #1774.** The

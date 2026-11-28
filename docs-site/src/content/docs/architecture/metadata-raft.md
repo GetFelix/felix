@@ -12,7 +12,7 @@ and snapshots on each instance's own volume. No external database is needed.
 [Control-plane HA](/deployment/control-plane-ha/) covers running it.
 
 The group also records its own identity once, when it forms: a random group
-id and the shard engine (`FELIX_SHARD_ENGINE`, `raft` by default). The first
+id and the shard engine (always `raft`; `FELIX_SHARD_ENGINE` is retired). The first
 record wins and it never changes, so a broker that kept data from one group can
 tell when it reaches another. `GET /v1/cluster/identity` returns it.
 
@@ -424,8 +424,8 @@ membership was evaluated alongside this design and rejected for now. The
 heartbeat is also the lease renewal, so liveness and serving authority
 deliberately travel one channel to one authority. The 15 s liveness timeout is the
 lease, and a `Leader` shard has to wait it out (plus a 3.75 s margin) before
-another broker may lead, so faster detection buys nothing safety uses. A
-lease-free `Quorum` stream already fails over in about 5 s on its followers'
+another broker may lead, so faster detection buys nothing safety uses. The
+hybrid's lease-free `Quorum` stream failed over in about 5 s on its followers'
 word. And SWIM's constant-load advantage pays off at
 hundreds of nodes rather than tens. The full decision, including the asymmetric
 reachability gap that peer-reachability reports would cover more cheaply and

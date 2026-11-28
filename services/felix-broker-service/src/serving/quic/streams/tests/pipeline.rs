@@ -5,14 +5,7 @@ use super::*;
 use crate::serving::quic::handlers::publish::AckOrder;
 
 fn pipelining_auth(fixture: &AuthFixture) -> Message {
-    Message::Auth {
-        tenant_id: fixture.tenant_id.clone(),
-        token: fixture.token.clone(),
-        client_flags: Some(felix_wire::KNOWN_FLAGS),
-        client_features: Some(felix_wire::FEATURE_PUBLISH_PIPELINE),
-        client_features_hi: None,
-        client_flags_ext: None,
-    }
+    felix_wire::baseline_auth(&fixture.tenant_id, &fixture.token)
 }
 
 fn acked_publish(request_id: u64) -> Message {
@@ -117,7 +110,6 @@ fn spawn_pipelining_stream(
             cancel_rx,
             commit_acks,
             &mut scratch,
-            Default::default(),
             loop_order,
         )
         .await
@@ -295,7 +287,6 @@ async fn the_writer_answers_a_pipelining_stream_in_request_order() -> Result<()>
     let writer = tokio::spawn(run_writer_loop(
         send,
         out_ack_rx,
-        Default::default(),
         Arc::clone(&order),
         Duration::from_secs(5),
         Arc::new(std::sync::atomic::AtomicUsize::new(4)),
@@ -334,7 +325,6 @@ async fn a_lost_answer_closes_a_pipelining_stream() -> Result<()> {
     let writer = tokio::spawn(run_writer_loop(
         send,
         out_ack_rx,
-        Default::default(),
         Arc::clone(&order),
         Duration::from_millis(100),
         Arc::new(std::sync::atomic::AtomicUsize::new(1)),
@@ -374,7 +364,6 @@ async fn a_lost_answer_closes_a_stream_that_answers_on_completion() -> Result<()
     let writer = tokio::spawn(run_writer_loop(
         send,
         out_ack_rx,
-        Default::default(),
         Arc::clone(&order),
         Duration::from_millis(100),
         Arc::new(std::sync::atomic::AtomicUsize::new(1)),
@@ -395,12 +384,12 @@ async fn a_lost_answer_closes_a_stream_that_answers_on_completion() -> Result<()
     Ok(())
 }
 
-/// **Commit acks sent by the tasks that settle them keep request order.**
-/// Sixty-four publishes pipelined over four streams, two durable and two in
-/// memory, settle on different executors and commit tasks in whatever order
-/// they finish. The client still reads every answer in the order it sent.
+/// **Commit acks sent by the tasks that settle them each reach the client
+/// once.** Sixty-four publishes pipelined over four streams, two durable and
+/// two in memory, settle on different executors and commit tasks in whatever
+/// order they finish, and are answered as they complete.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn pipelined_commit_acks_reach_the_client_in_request_order() -> Result<()> {
+async fn pipelined_commit_acks_each_reach_the_client() -> Result<()> {
     const PUBLISHES: u64 = 64;
     let dir = tempfile::tempdir()?;
     let storage = felix_broker::DurableStorage::open(
@@ -460,10 +449,7 @@ async fn pipelined_commit_acks_reach_the_client_in_request_order() -> Result<()>
     let authed =
         crate::serving::quic::read_message_limited(&mut recv, max_frame_bytes, &mut scratch)
             .await?;
-    assert!(
-        matches!(authed, Some(Message::Ok | Message::AuthOk { .. })),
-        "{authed:?}"
-    );
+    assert!(matches!(authed, Some(Message::AuthOk { .. })), "{authed:?}");
 
     for request_id in 1..=PUBLISHES {
         crate::serving::quic::write_message(
@@ -493,6 +479,7 @@ async fn pipelined_commit_acks_reach_the_client_in_request_order() -> Result<()>
             other => panic!("expected publish_ok, got {other:?}"),
         }
     }
+    answered.sort_unstable();
     assert_eq!(answered, (1..=PUBLISHES).collect::<Vec<_>>());
     server_task.abort();
     Ok(())

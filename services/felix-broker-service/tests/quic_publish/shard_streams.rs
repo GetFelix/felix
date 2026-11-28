@@ -353,11 +353,10 @@ async fn spreading_a_stream_keeps_each_shards_records_in_publish_order() -> Resu
     Ok(())
 }
 
-/// Authenticate a raw pipelining stream, offering answers on completion when
-/// `on_completion`, and return whether the broker answered that bit.
+/// Authenticate a raw pipelining stream, and return whether the broker
+/// answered `FEATURE_PUBLISH_ANSWER_ON_COMPLETION`.
 async fn pipelining_stream(
     fixture: &TwoShards,
-    on_completion: bool,
 ) -> Result<(
     felix_transport::QuicConnection,
     quinn::SendStream,
@@ -366,23 +365,9 @@ async fn pipelining_stream(
 )> {
     let (connection, mut send, mut recv) =
         super::pipeline::raw_stream(fixture.addr, fixture.cert.clone()).await?;
-    let (client_features, client_features_hi) = felix_wire::offer_features(
-        felix_wire::FEATURE_PUBLISH_PIPELINE,
-        match on_completion {
-            true => felix_wire::FEATURE_PUBLISH_ANSWER_ON_COMPLETION,
-            false => 0,
-        },
-    );
     felix_broker_service::serving::quic::write_message(
         &mut send,
-        Message::Auth {
-            tenant_id: fixture.auth.tenant_id.clone(),
-            token: fixture.auth.token.clone(),
-            client_flags: Some(felix_wire::KNOWN_FLAGS),
-            client_features: Some(client_features),
-            client_features_hi,
-            client_flags_ext: None,
-        },
+        felix_wire::baseline_auth(fixture.auth.tenant_id.clone(), fixture.auth.token.clone()),
     )
     .await?;
     let mut scratch = felix_broker_service::serving::quic::FrameScratch::new();
@@ -435,16 +420,12 @@ async fn next_answer(recv: &mut quinn::RecvStream, wait: Duration) -> Result<u64
 /// **A plain publish is answered as it completes.** A client that offered
 /// `FEATURE_PUBLISH_ANSWER_ON_COMPLETION` sends a publish to a stalled shard
 /// and then one to a healthy shard on the same stream. The second is
-/// answered while the first still waits. A client that did not offer the
-/// bit is not told about it.
+/// answered while the first still waits.
 #[tokio::test]
 #[serial]
 async fn a_plain_publish_is_answered_ahead_of_a_stalled_one_on_its_stream() -> Result<()> {
     let fixture = TwoShards::start().await?;
-    let (_old, _, _, granted) = pipelining_stream(&fixture, false).await?;
-    assert!(!granted, "answered a bit the client did not offer");
-
-    let (_connection, mut send, mut recv, granted) = pipelining_stream(&fixture, true).await?;
+    let (_connection, mut send, mut recv, granted) = pipelining_stream(&fixture).await?;
     assert!(
         granted,
         "the bit was offered with a window and not answered"
@@ -550,7 +531,7 @@ async fn next_any_answer(
 async fn idempotent_batches_keep_request_order_on_a_stream_that_answers_on_completion() -> Result<()>
 {
     let fixture = TwoShards::start().await?;
-    let (_connection, mut send, mut recv, granted) = pipelining_stream(&fixture, true).await?;
+    let (_connection, mut send, mut recv, granted) = pipelining_stream(&fixture).await?;
     assert!(granted);
     let mut scratch = felix_broker_service::serving::quic::FrameScratch::new();
     let mut producers = Vec::new();

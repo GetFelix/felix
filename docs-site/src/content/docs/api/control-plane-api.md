@@ -146,8 +146,7 @@ The caller needs `token.delegate:tenant:{tenant_id}`; `tenant.manage` does not
 imply it. The subject token must be a broker token of the same tenant that is
 not already delegated, and its `may_act` must name the caller: it has to come
 from an exchange (or a refresh of one) that sent the caller's token as
-`actor_token`. A subject token with no `may_act` is refused unless the control
-plane runs with `FELIX_CONTROLPLANE_DELEGATE_UNBOUND_TOKENS=true`. The result has the subject token's `sub`, `act:
+`actor_token`. A subject token with no `may_act` is refused. The result has the subject token's `sub`, `act:
 {"sub": "<caller>"}`, its permissions or the subset `permissions` keeps (never
 wider), and expires no later than the subject token. `subject_token_type` and
 `permissions` are optional. No refresh token is issued.

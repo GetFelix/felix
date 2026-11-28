@@ -1368,6 +1368,10 @@ impl ControlPlaneStore for FailingStore {
         Err(StoreError::Unexpected(anyhow::anyhow!("fail")))
     }
 
+    async fn watch_shard_assignment_changes(&self) -> tokio::sync::watch::Receiver<u64> {
+        tokio::sync::watch::channel(0).1
+    }
+
     async fn tenant_exists(&self, _tenant_id: &str) -> StoreResult<bool> {
         Ok(self.tenant_exists)
     }

@@ -38,7 +38,7 @@ async fn cache_worker_exits_on_stream_error() -> Result<()> {
             let mut frame_scratch = BytesMut::with_capacity(64 * 1024);
             let auth_msg = read_message(&mut recv, &mut frame_scratch).await;
             debug!(?auth_msg, "test server read auth message");
-            let ok_result = write_message(&mut send, Message::Ok).await;
+            let ok_result = write_message(&mut send, felix_wire::baseline_auth_ok()).await;
             debug!(?ok_result, "test server sent auth ok");
             let request = timeout(
                 Duration::from_millis(200),
@@ -150,7 +150,7 @@ async fn cache_worker_keeps_its_stream_after_a_refusal() -> Result<()> {
             };
             let mut frame_scratch = BytesMut::with_capacity(64 * 1024);
             let _auth = read_message(&mut recv, &mut frame_scratch).await;
-            write_message(&mut send, Message::Ok).await?;
+            write_message(&mut send, felix_wire::baseline_auth_ok()).await?;
             let mut puts = 0;
             while let Ok(Ok(Some(message))) = timeout(
                 Duration::from_secs(2),

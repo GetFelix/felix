@@ -145,26 +145,3 @@ fn ensure_offset_follows_variants() {
     assert!(ensure_offset_follows("back", 10, 2, Some(10)).is_err());
     assert!(ensure_offset_follows("none", 10, 2, None).is_err());
 }
-
-#[test]
-fn ensure_same_frame_compares_flags_and_payload() {
-    let plain = felix_wire::binary::encode_publish_ack_bytes(4, None).expect("encode");
-    let plain = Frame::decode(plain).expect("frame");
-    ensure_same_frame(&plain, &plain.clone(), "same").expect("ok");
-    let at = felix_wire::binary::encode_publish_ack_bytes_at(4, None, None, None, Some(1), None)
-        .expect("encode");
-    assert!(ensure_same_frame(&Frame::decode(at).expect("frame"), &plain, "offset").is_err());
-    let json = Message::PublishOk {
-        request_id: 4,
-        offset: None,
-    }
-    .encode()
-    .expect("encode");
-    let with_offset = Message::PublishOk {
-        request_id: 4,
-        offset: Some(1),
-    }
-    .encode()
-    .expect("encode");
-    assert!(ensure_same_frame(&with_offset, &json, "json").is_err());
-}

@@ -90,8 +90,8 @@ start-up and drain helpers both services use.
 The broker-to-broker transport in `peer/` (connection pool, listener, mTLS) and the replication
 that travels over it. The default engine is a Raft group per shard (`raft/`, behind the `raft`
 feature the broker service enables by default), which `node/cluster.rs` opens and drives from
-one ticker. The older hybrid protocol is still in the crate, deprecated and selectable only
-with `FELIX_SHARD_ENGINE=hybrid`, until it is deleted (`docs/hybrid-retirement.md`): `driver/`
+one ticker. The older hybrid protocol is still compiled in the crate but no broker starts it, and
+`FELIX_SHARD_ENGINE=hybrid` is refused at start. It is deleted later (`docs/hybrid-retirement.md`): `driver/`
 ships committed records to each shard's followers, `replica.rs` stores them on a follower,
 `quorum.rs` is what a `Quorum` write waits on, and `reporter.rs` tells the control plane which
 replicas hold the log. What the hybrid needs from the broker service comes in through three

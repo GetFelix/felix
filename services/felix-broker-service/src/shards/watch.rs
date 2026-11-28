@@ -13,8 +13,7 @@
 //!
 //! Changes are long-polled: the control plane holds the request until one
 //! lands, so a fence or a cut-over reaches this broker as it is written rather
-//! than at its next poll. A control plane that predates long-polling answers at
-//! once, and the loop then waits out the interval as it always did.
+//! than at its next poll.
 pub mod metrics;
 
 use felix_common::random::{HashMap, HashSet};

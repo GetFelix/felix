@@ -12,8 +12,8 @@ use felix_wire::{AckMode, Message};
 
 use super::MAX_TEST_FRAME_BYTES;
 use super::checks::{
-    ensure_cache_expired, ensure_cache_value, ensure_event_order, ensure_ok_response,
-    ensure_publish_ok, parse_cache_get_response, parse_subscribe_response,
+    ensure_auth_ok, ensure_cache_expired, ensure_cache_value, ensure_event_order,
+    ensure_ok_response, ensure_publish_ok, parse_cache_get_response, parse_subscribe_response,
 };
 use super::fixture::AuthFixture;
 use super::frames::{handle_event_frame, read_frame};
@@ -27,21 +27,12 @@ pub(crate) async fn run_pubsub(
     let mut frame_scratch = quic::FrameScratch::new();
     quic::write_message(
         &mut sub_send,
-        Message::Auth {
-            tenant_id: auth.tenant_id.clone(),
-            token: auth.token.clone(),
-            // Legacy handshake: no capabilities offered, so the broker
-            // answers with a plain `Ok`.
-            client_flags: None,
-            client_features: None,
-            client_features_hi: None,
-            client_flags_ext: None,
-        },
+        felix_wire::baseline_auth(auth.tenant_id.clone(), auth.token.clone()),
     )
     .await?;
     let auth_response =
         quic::read_message_limited(&mut sub_recv, MAX_TEST_FRAME_BYTES, &mut frame_scratch).await?;
-    ensure_ok_response(auth_response, "auth")?;
+    ensure_auth_ok(auth_response, "auth")?;
     quic::write_message(
         &mut sub_send,
         Message::Subscribe {
@@ -99,21 +90,12 @@ pub(crate) async fn run_cache(
     let mut frame_scratch = quic::FrameScratch::new();
     quic::write_message(
         &mut send,
-        Message::Auth {
-            tenant_id: auth.tenant_id.clone(),
-            token: auth.token.clone(),
-            // Legacy handshake: no capabilities offered, so the broker
-            // answers with a plain `Ok`.
-            client_flags: None,
-            client_features: None,
-            client_features_hi: None,
-            client_flags_ext: None,
-        },
+        felix_wire::baseline_auth(auth.tenant_id.clone(), auth.token.clone()),
     )
     .await?;
     let auth_response =
         quic::read_message_limited(&mut recv, MAX_TEST_FRAME_BYTES, &mut frame_scratch).await?;
-    ensure_ok_response(auth_response, "auth")?;
+    ensure_auth_ok(auth_response, "auth")?;
     quic::write_message(
         &mut send,
         Message::CachePut {
@@ -153,21 +135,12 @@ pub(crate) async fn publish(
     let mut frame_scratch = quic::FrameScratch::new();
     quic::write_message(
         &mut send,
-        Message::Auth {
-            tenant_id: auth.tenant_id.clone(),
-            token: auth.token.clone(),
-            // Legacy handshake: no capabilities offered, so the broker
-            // answers with a plain `Ok`.
-            client_flags: None,
-            client_features: None,
-            client_features_hi: None,
-            client_flags_ext: None,
-        },
+        felix_wire::baseline_auth(auth.tenant_id.clone(), auth.token.clone()),
     )
     .await?;
     let auth_response =
         quic::read_message_limited(&mut recv, MAX_TEST_FRAME_BYTES, &mut frame_scratch).await?;
-    ensure_ok_response(auth_response, "auth")?;
+    ensure_auth_ok(auth_response, "auth")?;
     quic::write_message(
         &mut send,
         Message::Publish {
@@ -198,21 +171,12 @@ async fn cache_get(
     let mut frame_scratch = quic::FrameScratch::new();
     quic::write_message(
         &mut send,
-        Message::Auth {
-            tenant_id: auth.tenant_id.clone(),
-            token: auth.token.clone(),
-            // Legacy handshake: no capabilities offered, so the broker
-            // answers with a plain `Ok`.
-            client_flags: None,
-            client_features: None,
-            client_features_hi: None,
-            client_flags_ext: None,
-        },
+        felix_wire::baseline_auth(auth.tenant_id.clone(), auth.token.clone()),
     )
     .await?;
     let auth_response =
         quic::read_message_limited(&mut recv, MAX_TEST_FRAME_BYTES, &mut frame_scratch).await?;
-    ensure_ok_response(auth_response, "auth")?;
+    ensure_auth_ok(auth_response, "auth")?;
     quic::write_message(
         &mut send,
         Message::CacheGet {

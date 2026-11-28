@@ -45,11 +45,6 @@ pub const TOKEN_EXCHANGE_GRANT: &str = "urn:ietf:params:oauth:grant-type:token-e
 /// RFC 8693's token type for a JWT, the only kind taken and issued here.
 pub const JWT_TOKEN_TYPE: &str = "urn:ietf:params:oauth:token-type:jwt";
 
-/// Set to `true` to also delegate a subject token that names no actor in
-/// `may_act`. Any holder of `token.delegate` can then delegate any of the
-/// tenant's broker tokens it has, so it is off by default.
-pub const DELEGATE_UNBOUND_TOKENS_ENV: &str = "FELIX_CONTROLPLANE_DELEGATE_UNBOUND_TOKENS";
-
 /// Clock skew tolerated on the subject token's `exp`, as on the caller's.
 const LEEWAY_SECS: u64 = 5;
 
@@ -172,7 +167,7 @@ pub async fn delegate_token(
             "the subject token is already delegated",
         ));
     }
-    check_may_act(&subject, &actor.sub, delegate_unbound_tokens())?;
+    check_may_act(&subject, &actor.sub)?;
     // Both cutoffs in one read; each already counts the whole tenant's.
     let cutoffs = state
         .store
@@ -345,14 +340,14 @@ impl DelegateRules {
     ///
     /// The principal's IdP groups are not known here, so it counts as a
     /// member of every group the rules name from an issuer the tenant still
-    /// trusts, and of bare legacy names only while those are honoured.
+    /// trusts. A bare, unscoped group name reaches no one.
     /// Removing a rule that reaches a group, or an issuer, revokes the whole
     /// tenant, which the cutoff check catches.
     pub(crate) async fn grant(&self, tenant_id: &str, principal: &str) -> Result<bool, ApiError> {
-        let legacy = crate::auth::exchange::legacy_unscoped_groups();
-        let trusted = |group: &str| match group.split_once('#') {
-            Some((issuer, _)) => self.issuers.iter().any(|item| item.issuer == issuer),
-            None => legacy,
+        let trusted = |group: &str| {
+            group
+                .split_once('#')
+                .is_some_and(|(issuer, _)| self.issuers.iter().any(|item| item.issuer == issuer))
         };
         let mut groups: Vec<&String> = self
             .policies
@@ -404,27 +399,20 @@ pub(crate) fn holds_token_delegate(perms: &[String], tenant_id: &str) -> bool {
         })
 }
 
-/// Refuse a subject token whose `may_act` names someone other than
-/// `caller`, or names no one unless `allow_unbound`.
-fn check_may_act(subject: &FelixClaims, caller: &str, allow_unbound: bool) -> Result<(), ApiError> {
+/// Refuse a subject token whose `may_act` names no one, or someone other
+/// than `caller`.
+fn check_may_act(subject: &FelixClaims, caller: &str) -> Result<(), ApiError> {
     match &subject.may_act {
         Some(bound) if bound.sub == caller => Ok(()),
         Some(_) => Err(refused(
             Refusal::Forbidden,
             "the subject token was issued for another actor",
         )),
-        None if allow_unbound => Ok(()),
         None => Err(refused(
             Refusal::Forbidden,
             "the subject token names no actor (may_act)",
         )),
     }
-}
-
-fn delegate_unbound_tokens() -> bool {
-    std::env::var(DELEGATE_UNBOUND_TOKENS_ENV)
-        .map(|value| matches!(value.trim(), "1" | "true" | "TRUE" | "yes"))
-        .unwrap_or(false)
 }
 
 #[cfg(test)]

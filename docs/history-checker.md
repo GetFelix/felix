@@ -205,7 +205,8 @@ rule 1 cannot be trusted for that list. `malformed-history` means the recorder
 itself is wrong, for example because one value was appended twice.
 
 A read that is *missing* a record in the middle is not a violation. Subscribers
-may drop records by design (`DropNew`), and the offsets show the gap. What a
+may drop records by design (`DropNew`), and the subscription ends at its first drop with
+`subscription_lagged`. What a
 read does hold has to agree with the final log.
 
 For rule 4, A must be acknowledged, because an unknown append can land at any
@@ -287,26 +288,13 @@ single-shard `Quorum` cache (`history-cache`), all replicated across all three
 brokers. The control plane's placement loop runs every 500ms so failovers
 happen without anyone stepping them.
 
-### Modes
+### Mode
 
-`FELIX_HISTORY_MODE` picks which replication path the brokers take.
-`Campaign::start` starts the cluster and, in `lease-free` mode, finalizes the
-`generation_start`, `majority_ack`, `lease_free_reads` and `fenced_caches`
-fleet features, then waits until every broker reports all four on
-(`felix_broker_fleet_feature_enabled`). A broker that does not turn them on
-fails the run before any fault, so a lease-free run cannot quietly test the
-lease. The features are described in
-[replication design](replication-design.md). Both modes also finalize
-`atomic_commit`, which changes no acknowledgement or read path and only lets
-the clients commit.
-
-| Mode | Stream writes are acknowledged | Cache reads confirm leadership |
-| --- | --- | --- |
-| `lease` | Once the control plane stored a majority report, with the lease re-checked | With the lease |
-| `lease-free` | Once a majority answers at the leader's generation, cache puts too | With a majority round after taking the value |
-
-Unset, the main campaign runs `lease-free` and the every-family campaign runs
-`lease`, so every PR exercises both paths. Set, it applies to both.
+The campaign has one mode: every shard runs on Raft. The hybrid's `lease` and
+`lease-free` modes and the `FELIX_HISTORY_MODE` variable are gone.
+`Campaign::start` starts the cluster and finalizes the `atomic_commit` fleet
+feature, which changes no acknowledgement or read path and only lets the clients
+commit.
 
 The nemesis then loops:
 
@@ -547,13 +535,9 @@ sequenceDiagram
    started (or its early start waited on), and the usual liveness check
    runs.
 
-A campaign that runs this fault also finalizes `joint_fence` and
-`replica_election` on top of the lease-free features, and starts brokers with
-`FELIX_INTERNAL_ELECTION=true`, `FELIX_LEADER_SUSPECT_AFTER_MS=1000`,
-`FELIX_PUBLISH_QUORUM_TIMEOUT_MS=2000`, and `FELIX_TEST_FLEET_FEATURES`
-naming the election features. After the features are on, it writes each of
-the workload's assignments again, so each leader fences and keeps its set at
-the new generation. It refuses to run in `lease` mode.
+The hybrid's replica election this fault was written for is retired, and the
+settings it needed (`FELIX_INTERNAL_ELECTION`, `FELIX_LEADER_SUSPECT_AFTER_MS`)
+are ignored. On Raft every failover is the group's own election.
 
 ### Liveness
 
@@ -666,12 +650,12 @@ whether each fault was injected and healed, and `satisfied` can keep the
 campaign going past its duration, up to twice it, until the nemesis has
 seen what it needs.
 
-> `a_fault_campaign_keeps_quorum_histories_valid`: a 45-second lease-free
+> `a_fault_campaign_keeps_quorum_histories_valid`: a 45-second
 > campaign of kills, pauses and partitions leaves a valid history, with at
 > least 50 acknowledged appends, 10 acknowledged cache puts, 10 cache gets and
 > at least one fault injected and healed.
 > `every_fault_family_is_injected_and_healed_in_a_campaign`: a 75-second
-> campaign on the lease that goes round every kind in a fixed order leaves a valid history
+> campaign that goes round every kind in a fixed order leaves a valid history
 > and injects and heals at least one fault of each family. The order puts a
 > shard move fourth and a drain sixth, so both run on every PR. The cluster
 > may refuse a fault for good reason: the operator API answers a move with a
@@ -684,18 +668,18 @@ seen what it needs.
 > `an_unsatisfied_nemesis_keeps_the_run_going_up_to_twice_the_duration`: the
 > retry and the overrun, without a cluster.
 > `adversarial_faults_heal_and_every_shard_serves_again`: a 150-second
-> lease-free campaign on four brokers that goes round the compound kinds,
+> campaign on four brokers that goes round the compound kinds,
 > starting with the three it checks for so a slow run is less likely to end
 > before them, leaves a valid history, every shard serves again after each
 > heal, and at least one `Isolate`, one `KillTwo` and one `RestartLoop` are
 > injected and healed. The healed `Isolate` means a partition caused a
 > failover.
 > `a_power_loss_or_a_control_plane_crash_loses_nothing_acknowledged`: a
-> 60-second lease-free campaign that alternates the two leaves a valid
+> 60-second campaign that alternates the two leaves a valid
 > history, and injects and heals at least one `ControlPlaneCrash` and, on
 > Linux, one `PowerLoss`.
 > `quorum_cache_writes_survive_a_promotion_in_a_campaign`: a 60-second
-> lease-free campaign that pauses, kills or partitions whichever broker leads
+> campaign that pauses, kills or partitions whichever broker leads
 > the cache, in turn, leaves a valid history, and the cache changes leader at
 > least once, so its puts are written across a fenced promotion.
 > `no_offset_is_held_as_two_records_across_leader_faults`: a 120-second
@@ -711,7 +695,7 @@ seen what it needs.
 > each kind healed, both `Leader` subscribers delivered at least 20 records
 > and the per-broker reads of the `Leader` list non-empty.
 > `replicas_elect_a_leader_while_the_control_plane_is_down`: a 90-second
-> lease-free campaign of `ElectWithoutControlPlane` faults leaves a valid
+> campaign of `ElectWithoutControlPlane` faults leaves a valid
 > history, rule 21 included, with at least one fault healed, an elected
 > leader serving each killed leader's shards while the control plane was
 > down, and at least one open read from the logs.
@@ -743,11 +727,10 @@ cargo test -p felix-cluster --test history -- --nocapture
 | --- | --- | --- |
 | `FELIX_HISTORY_SEED` | a fixed seed | The schedule's seed: a number, or `random` |
 | `FELIX_HISTORY_DURATION_SECS` | `45` | How long the nemesis runs. When set, the main campaign uses every fault family |
-| `FELIX_HISTORY_MODE` | `lease-free` for the main campaign, `lease` for the every-family one | `lease` or `lease-free`; see "Modes" |
 | `FELIX_HISTORY_NEMESIS` | `all` | Which faults the main campaign injects: `all` for every single kind on three brokers and `adversarial` for the compound kinds on four (both only when `FELIX_HISTORY_DURATION_SECS` is set), or `election` for leader kills with the control plane down |
 
 ```bash
-FELIX_HISTORY_SEED=1234 FELIX_HISTORY_DURATION_SECS=600 FELIX_HISTORY_MODE=lease-free \
+FELIX_HISTORY_SEED=1234 FELIX_HISTORY_DURATION_SECS=600 \
     cargo test -p felix-cluster --test history -- --nocapture
 ```
 
@@ -762,16 +745,15 @@ small disk, set `FELIX_DURABLE_PREALLOCATE=false` to turn that off.
 The per-PR run uses the fixed seed and takes one to three minutes per test,
 cluster start-up included. The nightly workflow (`.github/workflows/history.yml`) runs
 it for 20 minutes as two jobs, one per nemesis (`all` and `adversarial`), each
-with its own random seed, in `lease-free` mode unless a manual run picks
-`lease`. Each prints its seed, mode and nemesis first, and in the job summary,
+with its own random seed, Each prints its seed and nemesis first, and in the job summary,
 so a red night can be replayed. Setting `FELIX_HISTORY_DURATION_SECS` is what
 switches the main campaign off the per-PR schedule, so replay a nightly seed
-with it, the mode and the nemesis set. A manual run takes `nemesis=both`,
+with it and the nemesis set. A manual run takes `nemesis=both`,
 `all`, `adversarial` or `election`:
 
 ```bash
-gh workflow run history.yml -f mode=lease-free -f duration_secs=1200 -f nemesis=adversarial
-gh workflow run history.yml -f mode=lease-free -f duration_secs=600 -f nemesis=election
+gh workflow run history.yml -f duration_secs=1200 -f nemesis=adversarial
+gh workflow run history.yml -f duration_secs=600 -f nemesis=election
 ```
 
 ## Reading a violation

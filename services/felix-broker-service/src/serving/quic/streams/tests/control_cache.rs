@@ -77,7 +77,6 @@ async fn control_loop_cache_put_best_effort_closed_reports_error() -> Result<()>
         commit_acks,
         &mut scratch,
         Default::default(),
-        Default::default(),
     )
     .await;
     assert!(result.is_err());
@@ -275,7 +274,6 @@ async fn control_loop_cache_put_best_effort_full_and_closed() -> Result<()> {
         commit_acks.clone(),
         &mut scratch,
         Default::default(),
-        Default::default(),
     )
     .await?;
     assert!(result);
@@ -305,7 +303,6 @@ async fn control_loop_cache_put_best_effort_full_and_closed() -> Result<()> {
         cancel_rx,
         commit_acks,
         &mut scratch,
-        Default::default(),
         Default::default(),
     )
     .await;
@@ -393,7 +390,6 @@ async fn control_loop_cache_get_records_lookup_timing() -> Result<()> {
         cancel_rx,
         commit_acks,
         &mut scratch,
-        Default::default(),
         Default::default(),
     )
     .await?;
@@ -491,7 +487,6 @@ async fn control_loop_cache_timings_recorded() -> Result<()> {
         commit_acks,
         &mut scratch,
         Default::default(),
-        Default::default(),
     )
     .await?;
     assert!(result);
@@ -560,7 +555,6 @@ async fn control_loop_cache_get_missing_no_request_id_returns_true() -> Result<(
         cancel_rx,
         commit_acks,
         &mut scratch,
-        Default::default(),
         Default::default(),
     )
     .await?;
@@ -632,7 +626,6 @@ async fn control_loop_cache_put_missing_no_request_id_returns_true() -> Result<(
         cancel_rx,
         commit_acks,
         &mut scratch,
-        Default::default(),
         Default::default(),
     )
     .await?;
@@ -881,14 +874,7 @@ async fn control_loop_serves_conditional_cache_writes() -> Result<()> {
         request_id: Some(3),
     })));
     let frames = vec![
-        Ok(Some(frame_from_message(Message::Auth {
-            tenant_id: auth.tenant_id.clone(),
-            token: auth.token.clone(),
-            client_flags: Some(0),
-            client_features: Some(felix_wire::FEATURE_CACHE_CONDITIONAL),
-            client_features_hi: None,
-            client_flags_ext: None,
-        }))),
+        Ok(Some(frame_from_message(auth_message(&auth)))),
         put_if(1),
         put_if(2),
         get,
@@ -929,45 +915,5 @@ async fn control_loop_serves_conditional_cache_writes() -> Result<()> {
     ));
     assert_eq!(answers[3], &result(false, Some(first), 4));
     assert_eq!(answers[4], &result(true, None, 5));
-
-    // A client that did not offer the bit gets the answer it always got.
-    broker
-        .cache()
-        .put(
-            "t1",
-            "default",
-            "leases",
-            0,
-            "endpoint-7",
-            Bytes::from_static(b"v"),
-            None,
-        )
-        .await?;
-    let frames = vec![
-        Ok(Some(frame_from_message(auth_message(&auth)))),
-        Ok(Some(frame_from_message(Message::CacheGet {
-            tenant_id: "t1".to_string(),
-            namespace: "default".to_string(),
-            cache: "leases".to_string(),
-            key: "endpoint-7".to_string(),
-            request_id: Some(6),
-        }))),
-        Ok(None),
-    ];
-    let (_, messages) = run_control_loop_with_frames(
-        broker,
-        Arc::clone(&auth.auth),
-        frames,
-        BrokerConfig::default(),
-    )
-    .await?;
-    assert!(messages.iter().any(|message| matches!(
-        message,
-        Outgoing::CacheMessage(Message::CacheValue {
-            value: Some(_),
-            version: None,
-            ..
-        })
-    )));
     Ok(())
 }

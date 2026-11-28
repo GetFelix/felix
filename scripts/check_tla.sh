@@ -646,6 +646,8 @@ expectations=(
   "FelixRaftReformAbandonAtFloor violates OffsetNeverReused"
   "FelixRaftReformAbandonFromZero violates OffsetNeverReused"
   "FelixRaftReformAbandonOpen violates AbandonedNotLed"
+  "FelixRaftReformAbandonEarlier pass"
+  "FelixRaftReformAbandonNoEarlier violates OffsetNeverReused"
   "FelixRaftRestore pass"
   "FelixRaftRestoreGap pass"
   "FelixRaftRestoreNoReserve violates BackedUpNeverReused"

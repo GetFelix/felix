@@ -297,9 +297,6 @@ fn responder<'a>(cx: &'a Ctx<'_>) -> WatchResponder<'a> {
 /// `not_leader` naming the shard's leader, for a client that follows it,
 /// when this broker does not lead the shard.
 fn redirect(publish_ctx: &PublishContext, peer_features: u32, target: &Target) -> Option<Message> {
-    if !felix_wire::supports_feature(peer_features, felix_wire::FEATURE_REDIRECT) {
-        return None;
-    }
     // A shard out of range is not redirected anywhere; the request itself
     // answers that.
     let shard = resolve_publish_shard(

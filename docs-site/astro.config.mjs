@@ -141,6 +141,7 @@ export default defineConfig({
           label: 'Architecture',
           collapsed: true,
           items: [
+            { label: 'Felix in Ten Minutes', slug: 'architecture/overview' },
             { label: 'An Architecture Tour', slug: 'architecture/tour' },
             { label: 'System Design', slug: 'architecture/system-design' },
             { label: 'Components', slug: 'architecture/components' },

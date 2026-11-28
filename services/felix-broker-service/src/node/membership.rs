@@ -293,9 +293,9 @@ pub(super) fn attest(marks: &felix_replication::quorum::QuorumMarks, kept: super
 /// Whether this start's Raft members open, and vote, before its restore
 /// check has answered: only a start from the control-plane view, whose run
 /// witness showed the directory is the one its last run left, and only
-/// under the pin rule (`FELIX_UNIFIED_FENCE=0`). With the unified fence a
-/// restarted broker counts for nothing until the control plane has checked
-/// it, on Raft as on the hybrid engine.
+/// without the unified fence. The fence is always on for a broker with a
+/// durable directory (`FELIX_UNIFIED_FENCE` is retired), so a restarted
+/// broker counts for nothing until the control plane has checked it.
 pub(super) fn votes_unchecked(config: &BrokerConfig, from_view: bool) -> bool {
     from_view
         && config

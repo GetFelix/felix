@@ -35,7 +35,7 @@ use std::sync::{Arc, Mutex};
 
 use anyhow::{Context, Result};
 use bytes::Bytes;
-use felix_wire::{AckMode, Message};
+use felix_wire::AckMode;
 use tokio::sync::oneshot;
 
 #[cfg(feature = "telemetry")]
@@ -59,11 +59,9 @@ pub struct Publisher {
 
 impl Publisher {
     /// Frame-flag bits the broker advertised during the auth handshake,
-    /// intersected across this publisher's streams.
-    ///
-    /// Resolves to `felix_wire::ORIGINAL_V1_FLAGS` against a broker that predates
-    /// capability negotiation. Exposed so callers can log or assert what was
-    /// actually negotiated rather than inferring it from behaviour.
+    /// intersected across this publisher's streams. Always holds
+    /// `felix_wire::BROKER_BASELINE_FLAGS`. Exposed so callers can log or assert
+    /// what was actually negotiated rather than inferring it from behaviour.
     pub fn negotiated_server_flags(&self) -> u16 {
         self.inner.server_flags
     }
@@ -175,16 +173,6 @@ impl Publisher {
                 .await
                 .map(|()| None);
         }
-        // Fall back to the JSON encoding against a broker that has not advertised
-        // the acked binary frame. Both paths are equivalent in semantics; only the
-        // framing differs, so the fallback costs throughput, not correctness.
-        if !self.supports_binary_ack() {
-            // The private keyed form, not the deprecated public one: the
-            // fallback has to keep working after that surface is removed.
-            return self
-                .publish_batch_json_keyed(tenant_id, namespace, stream, payloads, None, ack)
-                .await;
-        }
         self.publish_batch_binary_acked(tenant_id, namespace, stream, payloads, ack)
             .await
     }
@@ -192,10 +180,6 @@ impl Publisher {
     /// A batch routed by one key. Every record in it lands on the same shard,
     /// because a batch is acknowledged as a unit and splitting it across shards
     /// would make it several batches.
-    ///
-    /// Binary whenever the broker advertised `FLAG_BINARY_PUBLISH_KEYED`, with
-    /// the JSON encoding as the fallback for brokers that predate it. The
-    /// fallback costs throughput, not correctness.
     ///
     /// Returns the batch's first log offset, when there is one; see
     /// [`Self::publish_batch`].
@@ -208,11 +192,6 @@ impl Publisher {
         payloads: Vec<Vec<u8>>,
         ack: AckMode,
     ) -> Result<Option<u64>> {
-        if !self.supports_binary_keyed() {
-            return self
-                .publish_batch_json_keyed(tenant_id, namespace, stream, payloads, Some(key), ack)
-                .await;
-        }
         if ack == AckMode::None {
             return self
                 .publish_batch_binary_inner(
@@ -226,13 +205,6 @@ impl Publisher {
                 )
                 .await
                 .map(|_| None);
-        }
-        // An acked keyed batch needs both modifier bits, so it also needs the
-        // broker to have advertised the acked frame.
-        if !self.supports_binary_ack() {
-            return self
-                .publish_batch_json_keyed(tenant_id, namespace, stream, payloads, Some(key), ack)
-                .await;
         }
         self.publish_batch_binary_acked_inner(
             Some(&key),
@@ -465,42 +437,24 @@ impl Publisher {
                     width,
                 )
                 .await?;
-            if self.supports_binary_idempotent_for(key) {
-                let response_rx = self
-                    .enqueue_idempotent_binary(
-                        &worker,
-                        tenant_id,
-                        namespace,
-                        stream,
-                        key,
-                        payloads,
-                        producer_id,
-                        sequence,
-                    )
-                    .await?;
-                let cancelled = CancelledAfterEnqueue::armed();
-                let answer = response_rx
-                    .await
-                    .context("idempotent binary batch response dropped")?;
-                cancelled.answered();
-                return answer.map(|acked| acked.offset);
-            }
-            let payloads = maybe_append_publish_ts_batch(payloads, self.inner.bench_embed_ts);
-            let request_id = worker.request_counter.fetch_add(1, Ordering::Relaxed);
-            let message = Message::PublishIdempotent {
-                tenant_id: tenant_id.to_string(),
-                namespace: namespace.to_string(),
-                stream: stream.to_string(),
-                payloads,
-                key: key.cloned(),
-                shard: None,
-                request_id,
-                producer_id,
-                sequence,
-            };
-            self.send_message(&worker, message, AckMode::PerBatch, Some(request_id))
+            let response_rx = self
+                .enqueue_idempotent_binary(
+                    &worker,
+                    tenant_id,
+                    namespace,
+                    stream,
+                    key,
+                    payloads,
+                    producer_id,
+                    sequence,
+                )
+                .await?;
+            let cancelled = CancelledAfterEnqueue::armed();
+            let answer = response_rx
                 .await
-                .map(|acked| acked.offset)
+                .context("idempotent binary batch response dropped")?;
+            cancelled.answered();
+            answer.map(|acked| acked.offset)
         }
         .await;
         self.forget_width_if_gone(
@@ -522,8 +476,7 @@ impl Publisher {
     /// one stream, whose answers come back in the order it carried them, so
     /// the failure reported is the earliest one and not a consequence of it.
     ///
-    /// Without a window, or against a broker that cannot take a binary
-    /// idempotent batch, this sends one batch at a time.
+    /// Without a window this sends one batch at a time.
     ///
     /// `shard` is the shard whose sequences these are: `key`'s, or 0 without
     /// one, under `width`. A publisher with shard streams sends them on that
@@ -555,11 +508,7 @@ impl Publisher {
             Ok(worker) => worker,
             Err(err) => return (Vec::new(), Err(err)),
         };
-        let window = if self.supports_binary_idempotent_for(key) {
-            (worker.publish_window as usize).min(IDEMPOTENT_PIPELINE_MAX)
-        } else {
-            0
-        };
+        let window = (worker.publish_window as usize).min(IDEMPOTENT_PIPELINE_MAX);
         let mut acked = Vec::with_capacity(batches.len());
         if window <= 1 {
             for (index, payloads) in batches.iter().enumerate() {
@@ -1045,15 +994,6 @@ pub(crate) struct Acked {
 
 /// What a publish learns from its answer: failure, or an [`Acked`].
 pub(crate) type AckOutcome = Result<Acked>;
-
-/// The refusal a write naming its shard gets from a broker that cannot honour
-/// the name, before anything is sent.
-pub(crate) fn explicit_shard_unsupported() -> anyhow::Error {
-    anyhow::anyhow!(
-        "this broker does not support writing to a named shard \
-         (it did not advertise FEATURE_EXPLICIT_SHARD); nothing was sent"
-    )
-}
 
 #[cfg(test)]
 mod tests;

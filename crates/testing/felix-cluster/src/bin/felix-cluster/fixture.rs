@@ -149,7 +149,7 @@ pub(crate) async fn client_fixture(args: &[String]) -> Result<()> {
 
     // Each broker wrote its own certificate; a client needs to trust all of
     // them, and a PEM bundle holding several is exactly how that is spelled.
-    // The broker that advertises no commits adds its own.
+    // The broker that advertises none of the baseline adds its own.
     let bare = bare_broker::BareBroker::start()?;
     // A second stub that only serves clients presenting a certificate.
     let (mtls, client_cert) = bare_broker::BareBroker::start_requiring_client_cert()?;

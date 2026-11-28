@@ -55,7 +55,7 @@ fn a_failed_metadata_heal_is_reported_with_the_inject_error() {
 #[test]
 fn an_unsatisfied_nemesis_keeps_the_run_going_up_to_twice_the_duration() {
     let secs = Duration::from_secs;
-    let mut campaign = Campaign::from_env(1, secs(75), Mode::Lease).expect("campaign");
+    let mut campaign = Campaign::from_env(1, secs(75)).expect("campaign");
     campaign.duration = secs(75);
     assert_eq!(campaign.round_at(secs(10), true), Round::Fault);
     assert_eq!(campaign.round_at(secs(10), false), Round::Fault);
