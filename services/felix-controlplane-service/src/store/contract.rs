@@ -26,5 +26,4 @@ pub(crate) mod revocations;
 pub(crate) mod root_sequences;
 pub(crate) mod shards;
 pub(crate) mod signing_keys;
-pub(crate) mod suspicions;
 pub(crate) mod switch;

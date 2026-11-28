@@ -220,39 +220,6 @@ async fn a_departed_node_is_heard_from_no_earlier_than_this_leader_began() {
     );
 }
 
-/// **A suspicion is the leader's soft state, like a heartbeat.** It is kept
-/// and listed for placement, stamped with the leader's clock, and writes
-/// nothing to the log.
-#[tokio::test]
-async fn a_suspicion_is_kept_by_the_leader_and_written_nowhere() {
-    let dir = tempfile::tempdir().expect("tempdir");
-    let store = single_node_store(dir.path()).await;
-    store
-        .register_node(registered("broker-b", 7002))
-        .await
-        .expect("register");
-    let before = applied(&store);
-
-    store
-        .record_suspicion(crate::model::NodeSuspicion {
-            node_id: "broker-b".to_string(),
-            incarnation: 0,
-            suspects: ["broker-a".to_string()].into_iter().collect(),
-            reported_at_millis: 0,
-        })
-        .await
-        .expect("record");
-
-    assert_eq!(applied(&store), before, "a suspicion became a log entry");
-    let held = store.list_suspicions().await.expect("list");
-    assert_eq!(held.len(), 1, "{held:?}");
-    assert!(held[0].suspects.contains("broker-a"));
-    assert!(
-        held[0].reported_at_millis > 0,
-        "the leader's clock stamps it"
-    );
-}
-
 /// Passes entries through to the metadata machine, holding every apply while
 /// paused.
 struct HeldApplies {
@@ -386,14 +353,12 @@ async fn a_lease_decided_in_one_term_is_not_taken_in_the_next() {
     let term = store.handle.current_term();
     // Through the blank barrier first, so the ask below stops only at the
     // judging slot.
-    soft.dispatch(LeaderRequest::Suspicion {
-        node_id: "broker-1".to_string(),
-        incarnation: 1,
-        suspects: Default::default(),
+    soft.dispatch(LeaderRequest::ReleasePlacementLease {
+        holder: "nobody".to_string(),
     })
     .await
     .expect("leading")
-    .expect("recorded");
+    .expect("answered");
 
     let slot = soft.serial.lock().await;
     let asker = std::sync::Arc::clone(&soft);
@@ -465,14 +430,12 @@ async fn a_heartbeat_that_waited_out_a_term_records_nothing() {
         .expect("register");
     let soft = std::sync::Arc::clone(&store.soft);
     let term = store.handle.current_term();
-    soft.dispatch(LeaderRequest::Suspicion {
-        node_id: "broker-1".to_string(),
-        incarnation: 1,
-        suspects: Default::default(),
+    soft.dispatch(LeaderRequest::ReleasePlacementLease {
+        holder: "nobody".to_string(),
     })
     .await
     .expect("leading")
-    .expect("recorded");
+    .expect("answered");
 
     let slot = soft.serial.lock().await;
     let asker = std::sync::Arc::clone(&soft);

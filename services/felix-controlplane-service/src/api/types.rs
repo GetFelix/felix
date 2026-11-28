@@ -348,10 +348,6 @@ pub struct NodeHeartbeatRequest {
     /// Carried so a heartbeat that was delayed past a restart is rejected
     /// rather than counted for the process that replaced it.
     pub incarnation: u64,
-    /// Leaders of shards this broker follows that have stopped answering its
-    /// pings. Absent from a broker that suspects nobody, or predates it.
-    #[serde(default, skip_serializing_if = "std::collections::BTreeSet::is_empty")]
-    pub suspects: std::collections::BTreeSet<String>,
     /// Asks for `assignment_seq` in the answer. Absent from a broker that
     /// does not need it, or predates it.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]

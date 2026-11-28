@@ -24,7 +24,7 @@ pub use namespace::{Namespace, NamespaceChange, NamespaceChangeOp, NamespaceKey}
 pub(crate) use node::validate_storage_id;
 pub use node::{
     DeclaredDead, Node, NodeCapacity, NodeChange, NodeChangeOp, NodeLifecycle, NodePatchRequest,
-    NodeSpec, NodeStatus, NodeSuspicion, NodeValidationError, PlacementAck, RootSequence,
+    NodeSpec, NodeStatus, NodeValidationError, PlacementAck, RootSequence,
 };
 pub use shard::AbandonEpochStart;
 pub(crate) use shard::AbandonError;

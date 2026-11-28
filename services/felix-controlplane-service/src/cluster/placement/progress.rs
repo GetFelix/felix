@@ -26,9 +26,6 @@ pub(super) struct CopyProgress {
     /// Pending replica sets, by shard and the generation that wrote them:
     /// when this instance first saw each.
     pendings: HashMap<(ShardKey, u64), u64>,
-    /// Fresh suspicions, by follower and the leader it suspects: when this
-    /// instance first saw each.
-    suspicions: HashMap<(String, String), u64>,
     /// Moves given up at the fence in a row, by shard: the leader they left
     /// in place, how many, and when the last was. Forgotten once the shard
     /// has another leader, which a cut-over gives it.
@@ -187,27 +184,6 @@ impl CopyProgress {
         self.opened.keys().cloned().collect()
     }
 
-    /// Note every fresh suspicion in `positions`, and answer since when this
-    /// instance has seen each without a break. One that lapsed is forgotten,
-    /// so it starts again when it is next held.
-    pub(super) fn observe_suspicions(
-        &mut self,
-        positions: &super::ReplicaPositions,
-    ) -> HashMap<(String, String), u64> {
-        let Some(now) = positions.as_of_millis() else {
-            return HashMap::default();
-        };
-        self.suspicions = positions
-            .suspicions()
-            .map(|(follower, leader)| {
-                let id = (follower.to_string(), leader.to_string());
-                let since = self.suspicions.get(&id).copied().unwrap_or(now);
-                (id, since)
-            })
-            .collect();
-        self.suspicions.clone()
-    }
-
     /// Note every pending set in `existing`, and answer when this instance
     /// first saw each. Sets no longer pending are forgotten.
     pub(super) fn observe_pending(
@@ -290,8 +266,8 @@ impl CopyProgress {
     /// a majority's position moving. Without a `bound` nothing is watched.
     ///
     /// The clock starts again whenever the shard's leader, generation or the
-    /// leader's incarnation changes, while its broker is down, a follower
-    /// suspects it, or a move, fence or set change is under way: each of
+    /// leader's incarnation changes, while its broker is down, or a move,
+    /// fence or set change is under way: each of
     /// those has its own path, and a restarted leader gets a whole bound to
     /// open. A leader whose broker has reported on no shard within `bound` is
     /// not judged by its silence: that is the broker's stall, or the control
@@ -317,7 +293,6 @@ impl CopyProgress {
                 *at = (*at).max(report.reported_at_millis);
             }
         }
-        let suspected: HashSet<(&str, &str)> = positions.suspicions().collect();
         let mut watched = HashMap::default();
         let mut stuck = HashMap::default();
         for assignment in existing {
@@ -327,10 +302,6 @@ impl CopyProgress {
                 || assignment.joining.is_some()
                 || assignment.pending_set.is_some()
                 || assignment.state == ShardState::Draining
-                || assignment
-                    .replicas
-                    .iter()
-                    .any(|follower| suspected.contains(&(follower.as_str(), leader)))
             {
                 continue;
             }

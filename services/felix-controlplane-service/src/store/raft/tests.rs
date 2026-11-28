@@ -70,7 +70,6 @@ async fn satisfies_the_node_store_contract() {
     crate::store::contract::nodes::run_node_contract(store.clone()).await;
     crate::store::contract::nodes::run_node_concurrency_contract(store.clone()).await;
     crate::store::contract::nodes::run_fleet_contract(store.clone()).await;
-    crate::store::contract::suspicions::run_suspicion_contract(store.clone()).await;
     crate::store::contract::root_sequences::run_root_sequence_contract(store).await;
 }
 

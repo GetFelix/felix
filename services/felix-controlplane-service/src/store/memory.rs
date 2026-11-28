@@ -129,7 +129,6 @@ pub struct InMemoryStore {
     replica_reports: Arc<RwLock<HashMap<ShardKey, ReplicaReport>>>,
     /// What each broker last said about the leaders it cannot reach. As
     /// transient as the reports, and not exported for the same reason.
-    suspicions: Arc<RwLock<HashMap<String, crate::model::NodeSuspicion>>>,
     /// Bounded change log for tenant changes.
     ///
     /// `next_seq` is per-entity-type (not a global sequence across all entities).
@@ -481,7 +480,6 @@ impl InMemoryStore {
                 written: Arc::new(tokio::sync::watch::Sender::new(0)),
             })),
             replica_reports: Arc::new(RwLock::new(HashMap::default())),
-            suspicions: Arc::new(RwLock::new(HashMap::default())),
             tenant_changes: Arc::new(RwLock::new(ChangeLog::new(capacity))),
             namespace_changes: Arc::new(RwLock::new(ChangeLog::new(capacity))),
             stream_changes: Arc::new(RwLock::new(ChangeLog::new(capacity))),
@@ -1038,18 +1036,6 @@ impl ControlPlaneStore for InMemoryStore {
 
     async fn get_replica_report(&self, key: &ShardKey) -> StoreResult<Option<ReplicaReport>> {
         Ok(self.replica_reports.read().await.get(key).cloned())
-    }
-
-    async fn record_suspicion(&self, suspicion: crate::model::NodeSuspicion) -> StoreResult<()> {
-        self.suspicions
-            .write()
-            .await
-            .insert(suspicion.node_id.clone(), suspicion);
-        Ok(())
-    }
-
-    async fn list_suspicions(&self) -> StoreResult<Vec<crate::model::NodeSuspicion>> {
-        Ok(self.suspicions.read().await.values().cloned().collect())
     }
 
     async fn root_sequence(

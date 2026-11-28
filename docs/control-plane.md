@@ -150,16 +150,8 @@ leads). The broker serves again only on routes built from the feed at or past
 it, so its renewal cannot bring back shards that moved while it was away. A
 Raft leader that predates the field leaves it out.
 
-A broker that cannot reach the leader of a shard it follows also sends
-`"suspects": ["broker-2"]`, the leaders that have not answered its pings for
-the hybrid's suspicion timeout (`FELIX_LEADER_SUSPECT_AFTER_MS`, retired; no broker sends suspicion now). The control plane keeps the list as soft
-state for two heartbeat intervals and asks for a placement pass; a broker
-suspecting nobody leaves the field out. Placement promotes on it only for a
-durable `Quorum` stream once `generation_start`, `majority_ack` and
-`lease_free_reads` are all finalized, and only against a leader whose own
-latest report says `by_round` (`docs/replication-design.md`, "Failover on the
-followers' word").
-A record that cannot be stored is logged and does not fail the heartbeat.
+The control plane no longer reads a `"suspects"` list: a Raft group notices a
+dead leader by its own election timeout.
 
 A broker whose per-shard Raft data root is open also sends
 `"root": {"storage_id": "...", "sequence": 42}`, the root's storage id and
@@ -2355,13 +2347,6 @@ only: the copy it replaces is not named in the assignment, so naming the
 joining copy leader could not drop that copy from the set. The replacement
 goes on under the old leader. An adoption that loses to another write is not retried; the
 elected leader's next report tries again.
-
-Placement's promotion on the followers' word stays as the fallback. Under
-`replica_election`, on a shard whose replicas elect, a follower's suspicion
-counts only once the instance running placement has seen it held for
-`shard_election_hold_ms` (2×S at the brokers' default S of 5 s), so it does
-not race an election. The clock is the instance's own and starts again when the
-lease changes hands. Promotion on a lapsed lease is unchanged.
 
 Under Raft adoption needs metadata level 21, like the pending set. Below it
 the write is refused before it reaches the log, so every member keeps the

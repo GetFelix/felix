@@ -186,7 +186,6 @@ fn shard_moves_from_env() -> crate::cluster::placement::MovePolicy {
         },
         fence_timeout_millis: defaults.fence_timeout_millis,
         pending_set_timeout_millis: defaults.pending_set_timeout_millis,
-        election_hold_millis: defaults.election_hold_millis,
         // Zero never replaces a lost follower.
         restore_after_millis: match parse("FELIX_SHARD_RESTORE_AFTER_MS") {
             Some(0) => None,

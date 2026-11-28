@@ -72,10 +72,7 @@ use felix_common::membership::RefusedGeneration;
 
 use crate::cluster::placement::CaughtUp;
 use crate::config::NodeLivenessConfig;
-use crate::model::{
-    HaltedCopy, Node, NodeLifecycle, NodeSuspicion, ReplicaReport, ShardAssignment, ShardKey,
-    ShardKind,
-};
+use crate::model::{HaltedCopy, Node, NodeLifecycle, ReplicaReport, ShardAssignment, ShardKey};
 
 /// Believe a report for twice the expiry timeout plus one heartbeat.
 ///
@@ -100,13 +97,6 @@ pub(crate) fn report_ttl_millis(liveness: &NodeLivenessConfig) -> u64 {
     liveness.expiry_timeout_ms * 2 + liveness.heartbeat_interval_ms
 }
 
-/// Believe a suspicion for two heartbeats. A broker that still suspects
-/// says so on every heartbeat, and one that has stopped says nothing, so
-/// this is how long a cleared suspicion outlives the clearing.
-pub(crate) fn suspicion_ttl_millis(liveness: &NodeLivenessConfig) -> u64 {
-    liveness.heartbeat_interval_ms * 2
-}
-
 /// The store's reports, read as of one instant.
 ///
 /// A snapshot rather than a live view, so every shard in one planning pass is
@@ -119,15 +109,6 @@ pub struct ReplicaPositions {
     reports: HashMap<ShardKey, ReplicaReport>,
     ttl_millis: u64,
     now_millis: u64,
-    /// The fresh suspicions, by the broker that holds them.
-    suspicions: HashMap<String, NodeSuspicion>,
-    /// Each node's current incarnation, which a leader's `by_round` must
-    /// have been reported from.
-    incarnations: HashMap<String, u64>,
-    /// The fleet acknowledges `Quorum` stream writes by their followers and
-    /// confirms `Quorum` reads by a round, so a deposed stream leader is
-    /// kept out without its lease running out.
-    followers_decide: bool,
     /// When this instance last saw each restore's new copy move; see
     /// `progress`.
     progressed: HashMap<(ShardKey, String), u64>,
@@ -137,9 +118,6 @@ pub struct ReplicaPositions {
     /// When this instance first saw each shard's pending set, by the
     /// generation that wrote it.
     pending: HashMap<(ShardKey, u64), u64>,
-    /// When this instance first saw each fresh suspicion, by follower and
-    /// the leader it suspects.
-    suspected_since: HashMap<(String, String), u64>,
     /// Moves given up at the fence in a row, by shard, and when the last was.
     give_ups: HashMap<ShardKey, (u32, u64)>,
     /// Leaders this instance has watched show no progress, by shard and
@@ -205,13 +183,9 @@ impl ReplicaPositions {
                 .collect(),
             ttl_millis: report_ttl_millis(liveness),
             now_millis,
-            suspicions: HashMap::default(),
-            incarnations: HashMap::default(),
-            followers_decide: false,
             progressed: HashMap::default(),
             fenced: HashMap::default(),
             pending: HashMap::default(),
-            suspected_since: HashMap::default(),
             give_ups: HashMap::default(),
             stuck: HashMap::default(),
             nodes: HashMap::default(),
@@ -281,40 +255,6 @@ impl ReplicaPositions {
         self
     }
 
-    /// With what brokers said about the leaders they cannot reach, and the
-    /// fleet features that decide whether that may move a shard.
-    ///
-    /// All three of what brokers need to serve without the lease
-    /// (`generation_start`, `majority_ack`, `lease_free_reads`): short of any
-    /// of them a deposed leader still acknowledges or serves reads on its
-    /// lease, and replacing it before that runs out would let it hand out
-    /// what its successor has since overwritten.
-    ///
-    /// `incarnations` is each node's current incarnation, from the same read.
-    pub fn with_suspicions(
-        mut self,
-        suspicions: Vec<NodeSuspicion>,
-        incarnations: HashMap<String, u64>,
-        liveness: &NodeLivenessConfig,
-        enabled: &BTreeSet<String>,
-    ) -> Self {
-        self.incarnations = incarnations;
-        let ttl = suspicion_ttl_millis(liveness);
-        self.suspicions = suspicions
-            .into_iter()
-            .filter(|suspicion| self.now_millis.saturating_sub(suspicion.reported_at_millis) <= ttl)
-            .map(|suspicion| (suspicion.node_id.clone(), suspicion))
-            .collect();
-        self.followers_decide = [
-            felix_common::fleet::GENERATION_START,
-            felix_common::fleet::MAJORITY_ACK,
-            felix_common::fleet::LEASE_FREE_READS,
-        ]
-        .iter()
-        .all(|feature| enabled.contains(feature.name()));
-        self
-    }
-
     /// With when this instance last saw each restore's new copy move.
     pub(super) fn set_progress(&mut self, progressed: HashMap<(ShardKey, String), u64>) {
         self.progressed = progressed;
@@ -328,22 +268,6 @@ impl ReplicaPositions {
     /// Note when this instance first saw each shard fenced.
     pub(super) fn set_fences(&mut self, fenced: HashMap<(ShardKey, u64), u64>) {
         self.fenced = fenced;
-    }
-
-    /// Every fresh suspicion, as the follower that holds it and the leader
-    /// it names.
-    pub(super) fn suspicions(&self) -> impl Iterator<Item = (&str, &str)> {
-        self.suspicions.values().flat_map(|suspicion| {
-            suspicion
-                .suspects
-                .iter()
-                .map(|leader| (suspicion.node_id.as_str(), leader.as_str()))
-        })
-    }
-
-    /// Note when this instance first saw each fresh suspicion.
-    pub(super) fn set_suspected_since(&mut self, since: HashMap<(String, String), u64>) {
-        self.suspected_since = since;
     }
 
     /// Note when this instance first saw each shard's pending set.
@@ -558,30 +482,6 @@ impl ReplicaPositions {
 }
 
 impl CaughtUp for ReplicaPositions {
-    fn suspects(&self, key: &ShardKey, generation: u64, follower: &str, leader: &str) -> bool {
-        // Streams only for now. A `Quorum` cache would also need
-        // `fenced_caches`, and still fails over on the lease.
-        //
-        // The enabled set says what brokers may do, not what this leader
-        // does: it may not have heard of the finalize yet, and one that has
-        // not reported by round at this generation may still serve on its
-        // lease. Its report is held only from the assignment's leader. A
-        // report from before the leader last registered speaks for a process
-        // that is gone: the new one serves on its lease until its first pass.
-        self.followers_decide
-            && key.kind == ShardKind::Stream
-            && self.fresh(key).is_some_and(|report| {
-                report.generation == generation
-                    && report.by_round
-                    && report.leader_incarnation.is_some()
-                    && report.leader_incarnation == self.incarnations.get(leader).copied()
-            })
-            && self
-                .suspicions
-                .get(follower)
-                .is_some_and(|suspicion| suspicion.suspects.contains(leader))
-    }
-
     fn leader_replaced(&self, key: &ShardKey, leader: &str) -> bool {
         // Whoever made the report: the leader names its own identity, and a
         // predecessor's report names it as a follower.
@@ -755,12 +655,6 @@ impl CaughtUp for ReplicaPositions {
 
     fn pending_since_millis(&self, key: &ShardKey, generation: u64) -> Option<u64> {
         self.pending.get(&(key.clone(), generation)).copied()
-    }
-
-    fn suspected_since_millis(&self, follower: &str, leader: &str) -> Option<u64> {
-        self.suspected_since
-            .get(&(follower.to_string(), leader.to_string()))
-            .copied()
     }
 
     fn fenced_at_millis(&self, key: &ShardKey, generation: u64) -> Option<u64> {
