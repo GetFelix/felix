@@ -231,6 +231,13 @@ def failover_max_ms(text):
     return float(match.group(1)) * UNITS[match.group(2)]
 
 
+def failover_skip(text):
+    """The harness's skip line, if the test skipped itself instead of measuring."""
+    # The test name and reason share a line with libtest's `test ... ` prefix.
+    match = re.search(r"(\S+: skipped on Raft\b.*)$", text, re.MULTILINE)
+    return match.group(1) if match else None
+
+
 def main(argv):
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     sub = parser.add_subparsers(dest="command", required=True)
@@ -253,8 +260,12 @@ def main(argv):
 
     if args.command == "failover-max":
         with open(args.output, encoding="utf-8") as handle:
-            value = failover_max_ms(handle.read())
+            text = handle.read()
+        value = failover_max_ms(text)
         if value is None:
+            skip = failover_skip(text)
+            if skip:
+                sys.exit(f"the test skipped itself and measured nothing: {skip}")
             sys.exit("no `failover heal: outage:` line with a max in the output")
         print(f"{value:.1f}")
         return 0
