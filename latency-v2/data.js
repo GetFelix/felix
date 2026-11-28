@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795832225448,
+  "lastUpdate": 1795832664674,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -94842,6 +94842,72 @@ window.BENCHMARK_DATA = {
             "range": "435.03",
             "unit": "us",
             "extra": "trials: 5\nmedian: 970.00\nmean: 890.40\nstdev: 435.03\ncv: 48.86%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "53a712ef7a8621767b15e810d5485cdd7d26beac",
+          "message": "feat(wire)!: a mandatory 0.8 baseline feature set; the predates fallbacks go (#3362) (#3397)\n\n* wire: 0.8 baseline feature set; drop predates fallbacks (WIP, tests not yet compiling)\n\nSpec-Unaffected: client wire negotiation is not TLA-modelled\n\n* test(broker): broker unit tests offer the 0.8 baseline; tests of the removed fallbacks are deleted\n\nSpec-Unaffected: client wire negotiation is not TLA-modelled\n\n* test: integration tests, conformance suite and SDK scenarios offer the 0.8 baseline; add the below_baseline refusal tests\n\nSpec-Unaffected: client wire negotiation is not TLA-modelled\n\n* docs: the 0.8 baseline replaces the capability degrade table; below_baseline in the error code tables\n\nSpec-Unaffected: client wire negotiation is not TLA-modelled\n\n* docs: every subscription ends at its first drop, and the baseline answers auth, in the docs and comments\n\nSpec-Unaffected: docs only\n\n* docs: history checker notes a dropped subscription ends at its first drop\n\nSpec-Unaffected: docs only\n\n* test(dotnet): a broker below the 0.8 baseline is refused at connect\n\nReplaces the two tests that expected a below-baseline broker to be\nrefused per call as unsupported.\n\nSpec-Unaffected: SDK tests only\n\n* test(broker-service): a reused sequence's first publish is answered with its offset\n\nSpec-Unaffected: tests only",
+          "timestamp": "2026-11-27T18:10:57-08:00",
+          "tree_id": "7a0faa88208f7d79f673f0e06cc1a1f3fbba96c3",
+          "url": "https://github.com/GetFelix/felix/commit/53a712ef7a8621767b15e810d5485cdd7d26beac"
+        },
+        "date": 1795832645764,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 109,
+            "range": "5.15",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 109.00\nmean: 108.00\nstdev: 5.15\ncv: 4.77%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 157,
+            "range": "11.34",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 157.00\nmean: 155.00\nstdev: 11.34\ncv: 7.31%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 211,
+            "range": "793.12",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 211.00\nmean: 555.40\nstdev: 793.12\ncv: 142.80%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 131,
+            "range": "1.14",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 131.00\nmean: 130.60\nstdev: 1.14\ncv: 0.87%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 290,
+            "range": "9.77",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 290.00\nmean: 288.00\nstdev: 9.77\ncv: 3.39%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 875,
+            "range": "311.07",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 875.00\nmean: 896.40\nstdev: 311.07\ncv: 34.70%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
