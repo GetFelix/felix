@@ -206,7 +206,7 @@ jobs:
           # (#2272); it is skipped until that is understood. The unified-fence
           # test starts a broker from its control-plane view, which needs
           # replica_election finalized; a release broker never reports it and
-          # ignores FELIX_TEST_FLEET_FEATURES, so only debug CI can run it.
+          # ignores FELIX_TEST_FLEET_FEATURES (#3420). The skip ends when #3420 lands.
           "$exe" --nocapture --test-threads 1 "replica_election::" \
             --skip two_followers_stand_at_once_and_one_opens \
             --skip a_broker_restarted_while_the_control_plane_is_down_waits_for_it_under_the_unified_fence \
@@ -278,7 +278,7 @@ jobs:
             echo
             if [ -f outputs/failover.md ]; then cat outputs/failover.md; else echo "No failover table."; fi
             echo
-            echo "Control plane down: \`replica_election::\` tests on this commit, except \`two_followers_stand_at_once_and_one_opens\`, which fails in a release build (#2272), and \`a_broker_restarted_while_the_control_plane_is_down_waits_for_it_under_the_unified_fence\`, which needs a debug broker's test fleet features and runs in CI."
+            echo "Control plane down: \`replica_election::\` tests on this commit, except \`two_followers_stand_at_once_and_one_opens\`, which fails in a release build (#2272), and \`a_broker_restarted_while_the_control_plane_is_down_waits_for_it_under_the_unified_fence\`, which a release broker cannot start yet (#3420); the skip ends when #3420 lands."
             if [ -f outputs/cpdown.txt ]; then echo; echo '```'; grep -E '^test .* \.\.\. |^test result' outputs/cpdown.txt | head -40; echo '```'; fi
           } > "$out/section.md"
           cat "$out/section.md" >> "$GITHUB_STEP_SUMMARY"
