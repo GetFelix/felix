@@ -52,6 +52,25 @@ On update:
 - Brokers reconnect and resume watching from the latest committed version.
 - Metadata snapshots allow new control plane nodes to catch up quickly.
 
+## The 0.8 API baseline
+
+0.8 starts fresh, with no upgrade from 0.7, so the control plane and its
+brokers no longer carry branches for a peer that predates a field or route of
+the 0.8 API. A broker without durable storage no longer checks that the
+control plane will keep durable shards off it (the `storage_placement` field is
+gone), and the migration switches below are retired: set, each is reported at
+start and changes nothing.
+
+| Variable | What always applies now |
+| --- | --- |
+| `FELIX_CONTROLPLANE_ACCEPT_BROKER_AUDIENCE` | The API takes only `aud: felix-controlplane` tokens. |
+| `FELIX_CONTROLPLANE_LEGACY_UNSCOPED_GROUPS` | IdP groups are linked only under their issuer-scoped name. |
+| `FELIX_CONTROLPLANE_DELEGATE_UNBOUND_TOKENS` | `/token/delegate` refuses a subject token with no `may_act`. |
+
+Metadata levels between control-plane members (`raft/version.rs`) are a
+different mechanism and stay: they gate what one member proposes until every
+member can apply it.
+
 ## API Sketch (Control Plane)
 - `GetSnapshot()` -> full metadata view + version.
 - `WatchUpdates(from_version)` -> stream of incremental updates.
@@ -1643,9 +1662,7 @@ map that tries to set or change it.
 
 A broker without storage registers only once every control-plane member can
 apply the label (metadata level 54); until then the registration is refused
-with 409, and so is a restore carrying such a node. The broker also refuses a
-control plane whose registration answer has no `storage_placement`: that
-control plane predates these brokers and would place durable shards on it.
+with 409, and so is a restore carrying such a node.
 
 The cluster-wide floor matters when many shards arrive at once, for example
 from an application that creates a stream per job. With only the ceiling as
@@ -2942,17 +2959,15 @@ page an immediate request would have. Without `wait_ms` (or with `0`) the
 request never waits.
 
 Brokers ask to wait 20 s, so a fence or a cut-over reaches them as it is
-written. A control plane that predates `wait_ms` ignores it and answers at
-once; the broker then waits out `FELIX_CONTROLPLANE_SYNC_INTERVAL_MS` between
-empty answers, as it did before.
+written.
 
-A waiting request holds no store connection: it re-reads the store every 50 ms,
-each read taking a connection only for itself, which is how it sees a write by
-another instance. A write by the instance serving the request (its own
-placement pass) wakes it at once rather than at the next re-check. Each
-waiting request costs about 20 small reads a second while it waits. A waiting
-request answers as soon as the instance begins to drain, so long-polls never
-hold a shutdown open.
+A waiting request holds no store connection and does not re-read the store
+while it waits. Every change recorded in the store wakes it. Under Raft a
+member's store is written only by applying committed entries, a snapshot
+install included, so a write made through another member wakes a request
+waiting here as soon as this member applies it. A waiting request answers as
+soon as the instance begins to drain, so long-polls never hold a shutdown
+open.
 
 Three things can break that, and a broker has to notice each rather than carry
 on from a checkpoint the control plane can no longer honour:
@@ -3575,10 +3590,10 @@ After the hold-off, in-flight requests are given
 every subsystem. Anything still running when it expires is aborted, and that is
 reported rather than logged as a clean drain.
 
-No control-plane handler long-polls: the `changes` feeds return immediately
-with whatever is committed past `since`, and waiting is the caller's loop. That
-is a shutdown property as much as an API one: a drain only has to outlast
-requests in service, never a watcher parked on a hanging poll.
+The only handler that long-polls is the shard-assignment `changes` feed, and a
+drain ends its wait at once. The other `changes` feeds return immediately with
+whatever is committed past `since`, and waiting is the caller's loop. A drain
+only has to outlast requests in service, never a watcher parked on a poll.
 
 What a drain looks like on the metrics endpoint, which outlives it:
 

@@ -311,7 +311,6 @@ async fn abandon_on_raft(
             StoreError::NotFound(_) => refused(Refused::UnknownShard),
             ref other => api_internal("abandon a Raft shard's log", other),
         })?;
-    state.placement_wakes.assignment_written();
     state.placement_wakes.request_pass();
     Ok(Some(Json(response(OperatorStep {
         step: MoveStep::Discard { from, to },

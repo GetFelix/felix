@@ -1,5 +1,6 @@
 //! Exporting and importing the whole store, for Raft snapshots and `migrate`.
 use felix_common::random::HashMap;
+use std::sync::Arc;
 
 use super::{InMemoryStore, NodeState, PlacementState, ShardState};
 use crate::model::{
@@ -219,7 +220,9 @@ impl InMemoryStore {
                 holder: state.placement_holder,
                 expires_at_millis: 0,
             },
+            written: Arc::clone(&shards.written),
         };
+        shards.wake();
         // Under the shard lock, so a reader that sees the restored records
         // also sees the raised incarnation: the feed stamps a target with
         // the incarnation it reads around them.

@@ -149,31 +149,23 @@ pub fn now_secs() -> i64 {
 /// The recorded group claims a refresh still honours.
 ///
 /// Only names scoped by an issuer the tenant still trusts: removing an IdP
-/// takes its groups with it at the next refresh, and a record from before
-/// groups were scoped carries bare names, which are dropped unless the
-/// legacy switch is on.
+/// takes its groups with it at the next refresh, and a bare, unscoped name
+/// is dropped.
 pub(crate) fn refreshable_groups(
     recorded: &[String],
     issuers: &[crate::auth::idp_registry::IdpIssuerConfig],
-    legacy: bool,
 ) -> Vec<String> {
-    let mut honoured = Vec::new();
-    for group in recorded {
-        let trusted = issuers.iter().any(|issuer| {
-            group
-                .strip_prefix(issuer.issuer.as_str())
-                .is_some_and(|rest| rest.starts_with('#'))
-        });
-        if trusted {
-            honoured.extend(crate::auth::exchange::with_legacy_names(
-                std::slice::from_ref(group),
-                legacy,
-            ));
-        } else if legacy {
-            honoured.push(group.clone());
-        }
-    }
-    honoured
+    recorded
+        .iter()
+        .filter(|group| {
+            issuers.iter().any(|issuer| {
+                group
+                    .strip_prefix(issuer.issuer.as_str())
+                    .is_some_and(|rest| rest.starts_with('#'))
+            })
+        })
+        .cloned()
+        .collect()
 }
 
 #[utoipa::path(
@@ -314,11 +306,7 @@ pub async fn refresh_token_handler(
     crate::auth::exchange::add_group_claim_groupings(
         &mut groupings,
         &found.principal_id,
-        &refreshable_groups(
-            &found.groups,
-            &rules.issuers,
-            crate::auth::exchange::legacy_unscoped_groups(),
-        ),
+        &refreshable_groups(&found.groups, &rules.issuers),
     );
     let enforcer = build_enforcer(&rules.policies, &groupings, &tenant_id)
         .await

@@ -124,7 +124,6 @@ pub(crate) async fn register_node(
         heartbeat_interval_ms: state.node_liveness.heartbeat_interval_ms,
         expiry_timeout_ms: state.node_liveness.expiry_timeout_ms,
         fleet_features,
-        storage_placement: true,
     }))
 }
 
