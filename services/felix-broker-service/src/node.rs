@@ -116,6 +116,73 @@ where
     served
 }
 
+/// A broker's durable shards run as Raft groups of one, from
+/// [`start_standalone_engine`].
+#[cfg(feature = "raft")]
+pub struct StandaloneEngine {
+    /// The engine to serve the shards with, as
+    /// [`ClusterContext::engine`](crate::serving::quic::ClusterContext).
+    pub engine: Arc<shard_routing::StreamEngine>,
+    shards: Arc<dyn shard_routing::EngineShards>,
+}
+
+#[cfg(feature = "raft")]
+impl StandaloneEngine {
+    /// Close every member's log, so the data directory can be opened again.
+    /// Call it once the groups' feed is stopped. False if a member did not
+    /// close cleanly.
+    pub async fn shutdown(&self) -> bool {
+        self.shards.shutdown().await
+    }
+}
+
+/// Run `broker`'s durable streams and caches as a broker with durable storage
+/// and no node id does: each shard a Raft group of one, opened off the
+/// broker's own registrations.
+///
+/// For a broker built in process, as the integration tests build one. Call it
+/// before any stream or cache registers. Until a shard's group opens and
+/// leads, its operations are refused as retryable, as at a broker's start.
+/// The groups' feed stops when `stop` is cancelled, and `writers` tracks the
+/// tasks that write under the root. The groups take the `FELIX_SHARD_RAFT_*`
+/// settings from the environment, as the binary does, except that
+/// `cache_snapshot_every`, when given, replaces how many entries a cache
+/// shard commits between snapshots.
+///
+/// # Errors
+/// When `broker` has no durable storage, a cache store that keeps no logs,
+/// a root whose storage id cannot be read, or a Raft setting in the
+/// environment that does not parse.
+#[cfg(feature = "raft")]
+pub fn start_standalone_engine(
+    broker: &Arc<felix_broker::Broker>,
+    cache_snapshot_every: Option<u64>,
+    stop: &CancellationToken,
+    writers: &TaskTracker,
+) -> Result<StandaloneEngine> {
+    startup::refuse_logless_cache(crate::config::ShardEngine::Raft, broker)?;
+    shard_routing::leave_stores_to_engines(broker);
+    let fleet = Arc::new(crate::shards::raft::standalone::fleet_of_one());
+    let engine = Arc::new(shard_routing::StreamEngine::new(None).with_fleet(Arc::clone(&fleet)));
+    let root = broker
+        .durable_storage()
+        .context("a standalone broker runs Raft shards only on durable storage")?
+        .root()
+        .to_path_buf();
+    let storage_id = storage::storage_id(Some(&root))?;
+    let mut settings = crate::config::shard_raft_settings()?;
+    if cache_snapshot_every.is_some() {
+        settings.cache_snapshot_every = cache_snapshot_every;
+    }
+    let started = cluster::start_standalone_raft_shards(
+        settings, broker, &engine, &fleet, storage_id, stop, writers,
+    )?;
+    let shards = started
+        .engine_shards
+        .context("a standalone start has engine shards")?;
+    Ok(StandaloneEngine { engine, shards })
+}
+
 /// The rest of [`run_with_shutdown`], under the lock `run` holds. Whatever
 /// it starts that writes under the root is handed to `run`, so an early
 /// return here stops it before the lock goes.
