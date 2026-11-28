@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795839811827,
+  "lastUpdate": 1795842505739,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -74880,6 +74880,58 @@ window.BENCHMARK_DATA = {
             "range": "46977.59",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 717136.85\nmean: 698481.11\nstdev: 46977.59\ncv: 6.73%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "58ac17d3a5463c895fa11eb621af6448c11ae9ae",
+          "message": "tla: a non-batch re-form starts at or above every earlier epoch's first index (#3410) (#3414)\n\nThe code already holds this: plan_reform_as takes the highest earlier\nbase's first index (raft_copy/vouch.rs) and start_reformed_epoch refuses a\nfirst index at or below one. The model left it out of Pad and\nReformKept. EarlierBound adds it; FelixRaftReformAbandonEarlier checks it\nwith three writes and FelixRaftReformAbandonNoEarlier pins the reuse\nwithout it.",
+          "timestamp": "2026-11-28T05:01:14Z",
+          "tree_id": "78b6765ced6d8497ba25fe59793230e411154fd5",
+          "url": "https://github.com/GetFelix/felix/commit/58ac17d3a5463c895fa11eb621af6448c11ae9ae"
+        },
+        "date": 1795842505210,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 495071.38,
+            "range": "47142.57",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 495071.38\nmean: 518527.39\nstdev: 47142.57\ncv: 9.09%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 495071.38,
+            "range": "47142.57",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 495071.38\nmean: 518527.39\nstdev: 47142.57\ncv: 9.09%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 121809.45,
+            "range": "1110.03",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 121809.45\nmean: 121293.70\nstdev: 1110.03\ncv: 0.92%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1218094.55,
+            "range": "11100.30",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1218094.55\nmean: 1212937.02\nstdev: 11100.30\ncv: 0.92%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
