@@ -1003,26 +1003,14 @@ Spec == Init /\ [][Next]_vars
 
 \* The scope of the DirectTerms configurations, an ACTION_CONSTRAINT: the
 \* control plane asks for no membership report and dooms no copy, so no
-\* directory is deleted. Reports and dooms have configurations of their
+\* directory is deleted, and a term has one candidate, the first broker to
+\* reach it. Reports, dooms and split votes have configurations of their
 \* own; these check the direct entry and the barrier over three terms.
 DirectScope ==
     /\ rep' = rep
     /\ doomed' = doomed
-
-OneCandidateScope ==
-    \A c \in Brokers : (term'[c] > term[c] /\ role'[c] = "candidate")
+    /\ \A c \in Brokers : (term'[c] > term[c] /\ role'[c] = "candidate")
         => \A s \in Brokers \ {c} : term[s] < term'[c]
-
-\* DirectScope with one candidate per term.
-DirectOneCandidateScope == DirectScope /\ OneCandidateScope
-
-DirectTightScope ==
-    /\ DirectOneCandidateScope
-    /\ ~\E i, j \in Brokers : Heartbeat(i, j) \/ LearnCommit(i, j) \/ Probe(i, j)
-
-DirectEarlyTargetsScope ==
-    /\ DirectTightScope
-    /\ used'.targets > used.targets => \A s \in Brokers : term[s] < MaxTerm
 
 ----------------------------------------------------------------------------
 

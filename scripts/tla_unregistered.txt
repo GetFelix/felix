@@ -6,7 +6,6 @@
 FelixHeadTrim  runs past a CI runner's six hours
 FelixRaftLeaseAckWide  measuring in dispatch 44384289786
 FelixRaftLeaseRestoreTransferThreeTermsWrite  about ten hours on a CI runner; a box run checks it
-FelixRaftPlacementDirectTerms  runs past a CI runner's six hours
 FelixRaftPlacementMoveWipeFailover  measuring in dispatch 44384289786
 FelixRaftPlacementMoveWipeFull  measuring in dispatch 44384289786
 FelixRaftPlacementMoveWipeTwoMoves  runs past a CI runner's six hours
