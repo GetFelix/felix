@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795819777287,
+  "lastUpdate": 1795824582918,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -74412,6 +74412,58 @@ window.BENCHMARK_DATA = {
             "range": "3294.50",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 817096.90\nmean: 817181.76\nstdev: 3294.50\ncv: 0.40%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "e9c8edccc9bfee4417d7b11b419d674ca8ab2179",
+          "message": "fix(replication): release brokers no longer carry peer-partition injection (#3386) (#3390)\n\nPeer-partition injection (`peer/partition.rs`, FELIX_PEER_PARTITION_FILE)\nis now compiled only under `any(debug_assertions, test, feature =\n\"fault-injection\")`, like the storage and clock faults. felix-replication\nand felix-broker-service gain a `fault-injection` feature, and the\nregistry lists the variable only in those builds, so a release broker\nwarns that it ignores it.\n\nEvery harness broker build in CI and Taskfile passes\n`--features fault-injection`, and the broker-service self dev-dependency\nenables it for `cargo test`. The harness refuses to write a partition\nfor a broker binary without the partition code, so a partition test\ncannot pass against a broker that severed nothing.\n\n`task check:no-fault-injection` (run in CI's checks job) builds the\nbroker without debug assertions or features and fails if it contains\nthe variable name or the partition refusal; the release archives run\nthe same check on the shipped binary.\n\nSpec-Unaffected: build gating of a test-only fault hook; no protocol or replication behaviour changes in builds that have it",
+          "timestamp": "2026-11-28T00:01:46Z",
+          "tree_id": "3c1d6cf72bb4376afa401cedb78947db6c8d8c4c",
+          "url": "https://github.com/GetFelix/felix/commit/e9c8edccc9bfee4417d7b11b419d674ca8ab2179"
+        },
+        "date": 1795824582230,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 520419.84,
+            "range": "5641.86",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 520419.84\nmean: 520834.12\nstdev: 5641.86\ncv: 1.08%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 520419.84,
+            "range": "5641.86",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 520419.84\nmean: 520834.12\nstdev: 5641.86\ncv: 1.08%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 118021.02,
+            "range": "7703.35",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 118021.02\nmean: 114689.40\nstdev: 7703.35\ncv: 6.72%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1180210.21,
+            "range": "77033.48",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1180210.21\nmean: 1146894.02\nstdev: 77033.48\ncv: 6.72%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
