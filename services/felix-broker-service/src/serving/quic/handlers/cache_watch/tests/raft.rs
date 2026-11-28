@@ -829,6 +829,75 @@ async fn a_replay_that_outlasts_the_live_queue_is_resnapshotted() -> Result<()> 
     Ok(())
 }
 
+/// **A leader that cannot confirm it still leads answers a resume past its
+/// log with a retryable refusal, not "in the future".** Cut off, it may have
+/// been deposed while another leader committed past its log, so the offset
+/// may exist; only a read-index round makes its log's end authoritative.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_cut_off_leader_does_not_call_a_resume_in_the_future() -> Result<()> {
+    use crate::shards::raft::tests::{BROKERS, Loopback, Member};
+    let net = Arc::new(Loopback::default());
+    let sessions = ShardKey {
+        stream: "sessions".to_string(),
+        ..cache_key()
+    };
+    let mut placed = fixture::assigned(sessions.clone(), fixture::INCARNATION);
+    placed.replicas = BROKERS.iter().map(|name| name.to_string()).collect();
+    let mut members = Vec::new();
+    for name in BROKERS {
+        members.push(Member::start_cache(&net, name).await);
+    }
+    let all: Vec<_> = members.iter().map(|member| &member.shards).collect();
+    fixture::form_on(&all, placed).await;
+    let mut leader = 0;
+    fixture::until("a member serves its term", || {
+        members
+            .iter()
+            .position(|member| member.shards.leading(&sessions).is_some())
+            .map(|at| leader = at)
+            .is_some()
+    })
+    .await;
+    let leader = &members[leader];
+    let edge = leader
+        .engine
+        .raft(&sessions)
+        .expect("a member here")
+        .cache_watch_point(&sessions, &|_| false)
+        .expect("a cache group")
+        .tail;
+
+    crate::shards::raft::tests::isolate(&net, leader.name);
+    assert!(
+        leader.engine.raft_term(&sessions).is_some(),
+        "the cut-off leader must still believe it leads for this to test anything"
+    );
+    let (refused, events) = open_watch(
+        &leader.broker,
+        &leader.engine,
+        "sessions",
+        false,
+        Some(edge + 5),
+        0,
+        None,
+    )
+    .await?;
+    assert!(events.is_none());
+    assert!(
+        matches!(
+            refused,
+            Message::Error {
+                code: Some(felix_wire::ErrorCode::ShardUnavailable),
+                retry: Some(felix_wire::RetryClass::Retry),
+                ..
+            }
+        ),
+        "{refused:?}"
+    );
+    crate::shards::raft::tests::stop(&members).await;
+    Ok(())
+}
+
 /// **A resume the snapshot covers is resnapshotted, and passes the read
 /// barrier first**, as a retained join does: a follower's applied edge can
 /// trail a put its leader acknowledged. A follower that took a snapshot

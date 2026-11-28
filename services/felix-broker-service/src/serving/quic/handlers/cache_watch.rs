@@ -353,7 +353,13 @@ pub(crate) async fn handle_cache_watch_message(
             // as in the future.
             if let (false, Some(from)) = (request.retained, request.from_offset)
                 && from > tail
-                && !raft_never_reaches(&publish_ctx.engine, &shard_key, from)
+                && !raft_never_reaches(
+                    &publish_ctx.engine,
+                    &shard_key,
+                    from,
+                    publish_ctx.quorum_timeout,
+                )
+                .await
             {
                 if !raft_reaches(
                     &publish_ctx.engine,
@@ -674,26 +680,38 @@ async fn raft_reaches(
 }
 
 /// Whether no member of `key`'s Raft group ever gave out `from`: this one
-/// leads, and a leader's log holds every committed entry, so an offset past
-/// its log's end was never a version or an edge anywhere.
-fn raft_never_reaches(
+/// confirmed by a read-index round, within `timeout`, that it still leads its
+/// term, and a current leader's log holds every committed entry, so an offset
+/// past its log's end was never a version or an edge anywhere. A leader that
+/// cannot confirm may be deposed and behind, so it answers false.
+///
+/// `from` is compared with log indexes because a cache shard's versions are
+/// the indexes of the entries that wrote them, and its edge is one past the
+/// last applied index.
+async fn raft_never_reaches(
     engine: &crate::shards::routing::StreamEngine,
     key: &crate::shards::ShardKey,
     from: u64,
+    timeout: std::time::Duration,
 ) -> bool {
     #[cfg(feature = "raft")]
     {
-        if engine.raft_term(key).is_none() {
+        let (Some(term), Some(raft)) = (engine.raft_term(key), engine.raft(key)) else {
+            return false;
+        };
+        if !matches!(
+            tokio::time::timeout(timeout, raft.confirm_read(key, term)).await,
+            Ok(Ok(()))
+        ) {
             return false;
         }
-        engine
-            .raft(key)
-            .and_then(|raft| raft.status(key))
+        // Read after the round, so it covers every entry committed before it.
+        raft.status(key)
             .is_some_and(|status| from > status.last_index.map_or(0, |last| last + 1))
     }
     #[cfg(not(feature = "raft"))]
     {
-        let _ = (engine, key, from);
+        let _ = (engine, key, from, timeout);
         false
     }
 }
