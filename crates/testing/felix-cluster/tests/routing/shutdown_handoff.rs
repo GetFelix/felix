@@ -1198,8 +1198,10 @@ fn assert_each_once(owed: &[Vec<u8>], read: &[ShardRecords]) {
 /// **A Raft broker whose handoff times out loses no `Quorum` record.** The
 /// Raft half of [`a_handoff_that_times_out_loses_no_acknowledged_record`].
 /// Sixteen `Quorum` shards, three copies each, on four brokers fsyncing on
-/// commit. The broker leading the most shards gets 1.5 s to hand off while
-/// placement runs one move at a time, so it exits still leading some; each of
+/// commit. The broker leading the most shards gets 1.5 s to hand off, and
+/// no placement pass runs in that time: on Raft a pass renames leaders in
+/// placement at once, so a few passes hand everything off. With none, the
+/// handoff gives up with every shard it led, and the broker exits; each of
 /// those groups elects one of the two members left. Every shard then takes a
 /// write again, and each shard's whole replay from its leader holds every
 /// acknowledged record once, nothing twice, with offsets that account for
@@ -1261,17 +1263,15 @@ async fn a_raft_handoff_that_times_out_loses_no_quorum_record() {
     let signalled = Instant::now();
     cluster.terminate_node(&stopping).expect("SIGTERM");
 
-    let mut moved = 0usize;
+    // The harness runs no placement timer, so nothing moves the shards
+    // while the handoff waits and it has to give up.
     while !timed_out() {
-        moved += cluster.place_shards_moving(1).await.moved;
         assert!(
             signalled.elapsed() < EXIT_WITHIN,
-            "the handoff did not time out ({moved} move steps)"
+            "the handoff did not time out"
         );
-        tokio::time::sleep(Duration::from_millis(300)).await;
+        tokio::time::sleep(Duration::from_millis(100)).await;
     }
-    // No placement while it drains, so what it still leads stays led by it
-    // until it exits.
     let status = cluster
         .wait_for_exit(&stopping, EXIT_WITHIN)
         .await
@@ -1284,12 +1284,9 @@ async fn a_raft_handoff_that_times_out_loses_no_quorum_record() {
         .values()
         .filter(|owner| **owner == stopping)
         .count();
-    // A Raft seat move takes several group steps, so how many finish in the
-    // window depends on the runner; the case this test is for is the rest.
-    println!("{moved} move steps before the handoff gave up; {still_led} of {led} still led");
-    assert!(
-        still_led > 0,
-        "the handoff should give up with shards still led: {moved} move steps, none left"
+    assert_eq!(
+        still_led, led,
+        "with no placement pass, every shard it led should still be led at exit"
     );
 
     // Their groups elect among the members left, and placement swaps the
