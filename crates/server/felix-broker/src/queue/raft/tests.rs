@@ -957,3 +957,30 @@ async fn only_a_write_refused_before_its_proposal_is_not_unsettled() {
         "a write whose commit wait ran out answered {waited:?}"
     );
 }
+
+/// **An acknowledged ack is not handed out again after a change of leader**,
+/// even when it was above a gap: here 1 is acked while 0 is still out. The
+/// ack is answered from the tracker alone and the table keeps 1's claim, so
+/// the next leader restores that claim and hands 1 out again once it lapses.
+/// This is what `a_raft_hand_over_keeps_every_kind_of_acknowledged_write`
+/// caught as "offset 186 was handed out again after an acknowledged ack".
+#[tokio::test]
+#[ignore = "acks above a gap are leader memory; needs a durable settle entry"]
+async fn an_ack_above_a_gap_survives_a_change_of_leader() {
+    let fx = fixture(5);
+    publish(&fx.log, 3).await;
+    let worker = GroupConsumer::new("svc", "w", 1, false);
+    assert_eq!(
+        fx.poll_as(2, Instant::now(), &worker).await.expect("poll"),
+        [(0, 1), (1, 1)]
+    );
+    fx.groups.ack(&key(G), 1, later()).await.expect("ack");
+    fx.fake().new_term();
+    let lapsed = Instant::now() + VIS * 3;
+    let other = GroupConsumer::new("svc", "other", 1, false);
+    let handed = fx.poll_as(3, lapsed, &other).await.expect("poll");
+    assert!(
+        handed.iter().all(|(offset, _)| *offset != 1),
+        "1 was handed out again after its ack was answered: {handed:?}"
+    );
+}
