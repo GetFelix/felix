@@ -26,18 +26,12 @@ pub(super) const DEFAULT_PUBLISH_QUEUE_WAIT_TIMEOUT_MS: u64 = 2000;
 /// costs a publish the broker cannot vouch for even though the record is on its
 /// disk and about to reach a majority.
 pub(super) const DEFAULT_PUBLISH_QUORUM_TIMEOUT_MS: u64 = 5_000;
-// One at a time: the cautious reading of "under a policy".
-pub(super) const DEFAULT_REPLICATION_REBUILD_MAX_CONCURRENT: usize = 1;
-pub(super) const DEFAULT_REPLICATION_REBUILD_BYTES_PER_SEC: u64 = 0;
 /// Two seconds: a switch-over takes milliseconds, so a write held this long is
 /// waiting on a move that is stuck, and the client is better off told.
 pub(super) const DEFAULT_SHARD_MOVE_HOLD_MS: u64 = 2_000;
 /// A held write is one message or batch on one client stream, so this is
 /// room for a thousand streams to be caught by a move at once.
 pub(super) const DEFAULT_SHARD_MOVE_HOLD_MAX: usize = 1_024;
-/// Unlimited: a move finishes as fast as the network allows unless an
-/// operator trades speed for headroom.
-pub(super) const DEFAULT_SHARD_MOVE_BYTES_PER_SEC: u64 = 0;
 pub(super) const DEFAULT_ACK_WAIT_TIMEOUT_MS: u64 = 2000;
 /// Thirty seconds. Long enough that ordinary work finishes inside it, short
 /// enough that a dead consumer does not hold its records for minutes.

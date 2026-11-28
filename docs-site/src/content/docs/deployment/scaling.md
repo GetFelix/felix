@@ -299,7 +299,7 @@ cannot undo each other's steps. A conflict is skipped and re-planned on the
 next pass; an occasional one is normal with several instances.
 
 `felix_shard_moves_waiting` sitting above zero for longer than a couple of
-placement intervals means a successor is not catching up (check `/replication/halted` on the leader), a fenced
+placement intervals means a successor is not catching up (run `felixctl inspect shard` on the leader), a fenced
 leader is not reporting drained (a write stuck inside its fence, or the broker
 lost its control-plane connection), or a drain is queued behind a move
 limit.
@@ -378,7 +378,7 @@ interval.
 
 | Symptom | Likely cause |
 | --- | --- |
-| A drain never finishes; `felix_shard_moves_waiting` is `1` | The successor is not catching up. Look at the leader's `/replication/halted` and replication lag. |
+| A drain never finishes; `felix_shard_moves_waiting` is `1` | The successor is not catching up. Run `felixctl inspect shard` on the leader and look at its members' states. |
 | `felix_shard_moves_timed_out_total` keeps rising | A destination the leader cannot reach, or a copy slower than the timeout allows: check peer connectivity, `FELIX_SHARD_MOVE_BYTES_PER_SEC`, and the timeout against the shard's size. |
 | A drain never finishes; no successor is ever staged | No live broker under its share has capacity (`max_shards`), or `FELIX_SHARD_MOVES_MAX_CONCURRENT` is `0`. |
 | Shards moved, then moved back | The drained broker was put back to `live`, or restarted (which registers it `live`), while under its share. Drain it again. |

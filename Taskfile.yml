@@ -118,7 +118,10 @@ tasks:
   # Runs each Raft group seed twice in one process and fails on the first
   # event that differs, then the pinned seeds (`raft_seed_*`) and the other
   # tests of tests/raft_seeds.rs. FELIX_SIM_SEEDS and FELIX_SIM_SEED_START
-  # pick the seeds the replay check runs.
+  # pick the seeds the replay check runs. It then runs seed
+  # FELIX_SIM_REPLAY_SEED (default 1) in two separate processes and compares
+  # the trace hash and event count each prints, which catches anything that
+  # differs from process to process but not between two runs in one.
   sim:determinism:
     env:
       RUSTFLAGS: "--cfg tokio_unstable"
@@ -126,6 +129,17 @@ tasks:
       - |
         CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-target}/tokio-unstable" \
           cargo test -p felix-sim --release --test raft_seeds -- --nocapture
+      - |
+        out="$(mktemp -d)"
+        for run in 1 2; do
+          FELIX_SIM_SEED_START="${FELIX_SIM_REPLAY_SEED:-1}" FELIX_SIM_SEEDS=1 \
+          CARGO_TARGET_DIR="${CARGO_TARGET_DIR:-target}/tokio-unstable" \
+            cargo test -p felix-sim --release --test raft_seeds -- --exact each_raft_seed_runs_the_same_twice --nocapture > "$out/run$run.txt"
+          grep -h "the same twice, trace" "$out/run$run.txt" > "$out/trace$run.txt"
+          test -s "$out/trace$run.txt"
+        done
+        diff "$out/trace1.txt" "$out/trace2.txt"
+        cat "$out/trace1.txt"
 
   coverage:
     cmds:

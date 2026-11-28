@@ -925,10 +925,9 @@ For a release that changes none of the versions above (the ordinary case):
    hold while it is away. Under the Raft backend, restarting the *leader* pauses
    metadata writes for one election (about 1.2s).
 2. **Brokers**, one at a time, waiting for each to report ready and for its
-   shards to be back in their replica sets before the next. `GET
-   /replication/halted` on the metrics port should be empty before continuing.
-   A replica that halted during the previous restart is one that will not be
-   there for the next.
+   shards to be back in their replica sets before the next. `felix_broker_raft_shards_stopped_on_storage_error` on the metrics port should
+   be `0` before continuing. A copy that stopped during the previous restart is
+   one that will not be there for the next.
 3. **Clients**, whenever. The protocol negotiates.
 
 If the release changes `INTERNAL_VERSION`, step 2 is not rolling: stop every
@@ -1025,8 +1024,8 @@ removing a broker have their own page:
 The two observable checks available during any upgrade:
 
 ```bash
-# Which replicas replication has stopped for. Empty before you continue.
-curl -s http://broker:8080/replication/halted | jq
+# Copies stopped by a storage error. Zero before you continue.
+curl -s http://broker:8080/metrics | grep felix_broker_raft_shards_stopped
 
 # What a broker would actually run with, without starting it.
 felix-broker --print-config

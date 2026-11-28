@@ -329,7 +329,7 @@ Shard placement and moves, run by the instance holding the placement lease.
 | `felix_shards_under_replicated` | gauge | - | Shards with fewer copies on serving brokers than their replication factor. |
 | `felix_shards_zone_unspread` | gauge | - | Shards whose copies share a zone although live brokers in other zones could hold them. |
 | `felix_shard_replicas_missing` | gauge | - | Copies that under-replicated shards are missing between them. |
-| `felix_shard_replicas_halted` | gauge | - | Copies whose leader has stopped shipping to them. Placement keeps new copies off those nodes. |
+| `felix_shard_replicas_halted` | gauge | - | Not reported on Raft: no Raft path fills it, so it stays 0. Watch `felix_broker_raft_shards_stopped_on_storage_error` for copies that stopped. |
 | `felix_shard_moves_waiting` | gauge | - | Moves that could not advance in the last pass. |
 | `felix_shards_on_internal_nodes` | gauge | - | Shards with a copy on an internal node and no live node to move it to, as of the last placement pass. |
 | `felix_shard_moves_timed_out_total` | counter | - | Moves and follower replacements given up because they did not get close enough to the leader within the move timeout. |

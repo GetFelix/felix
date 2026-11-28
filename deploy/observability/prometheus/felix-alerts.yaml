@@ -179,15 +179,6 @@ groups:
           summary: "{{ $value }} shards have fewer copies than their replication factor"
           description: "Run felixctl placement replication to see which shards and where copies are going."
           runbook_url: "https://docs.getfelix.dev/features/observability/#under-replicated-shards"
-      - alert: FelixShardReplicasHalted
-        expr: felix_shard_replicas_halted > 0
-        for: 15m
-        labels:
-          severity: warning
-        annotations:
-          summary: "{{ $value }} replicas have been halted by their leaders"
-          description: "A halted copy is in no quorum. Placement replaces it after the restore delay."
-          runbook_url: "https://docs.getfelix.dev/deployment/diagnosing/#a-follower-is-lagging-or-halted"
       - alert: FelixShardsUnplaceable
         expr: felix_shards_unplaceable > 0
         for: 10m
@@ -246,5 +237,5 @@ groups:
           severity: warning
         annotations:
           summary: "{{ $value }} shard moves cannot advance"
-          description: "A successor is not catching up. Look at the leader's replication lag and /replication/halted."
+          description: "A successor is not catching up. Run felixctl inspect shard on the leader and look at its members' states."
           runbook_url: "https://docs.getfelix.dev/deployment/scaling/"

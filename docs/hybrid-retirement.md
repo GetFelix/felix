@@ -56,7 +56,7 @@ confirmed when stream shards on Raft (#2233) lands.
 | `controlplane_link.rs` | 340 | Part | Registration, heartbeats and the assignment watch stay. Reports, suspicions and confirmed reads go |
 | `metrics.rs` | 239 | Part | See "Metrics" |
 | `rebuild.rs`, `throttle.rs` | 371 | Kept | A snapshot install copies a record range the way a rebuild does, under the same bandwidth limit |
-| `halted.rs`, `status.rs` | 406 | Kept | Operator listings. A stopped group is reported here |
+| `halted.rs`, `status.rs` | 406 | Kept for PR 6 | `HaltedReplicas` is never published on Raft, so `/replication/halted` is always empty and `felix_shard_replicas_halted` stays 0. Both go with the control plane's `halted` replica report and the cluster harness's halted checks in PR 6. A stopped Raft group is reported by `felix_broker_raft_shards_stopped_on_storage_error` and `shard_inspect` |
 | `shard.rs`, `incarnation.rs` | 178 | Kept | Shard identity and the incarnation a request names |
 | `peer/` | 3,824 | Kept | The broker-to-broker transport |
 
@@ -561,7 +561,7 @@ so the Raft engine (`raft/`) is included.
 | Broker service: lifecycle and fence | 3,281 | reported | Under half, including the lease gate and reader watch in-memory shards keep | Service `src` 65,744 non-test and 82,021 test lines before, 63,399 and 76,369 after (11 files gone). The lifecycle and fence are cut down in PR 5 |
 | Shard protocol specs | 7,994 lines, 8 specs, 426 configs | all | `FelixRaft` and its configs, reported | Not yet: PR 8 |
 | Hybrid cluster tests | about 7,800 lines, 16 files | all, some ported | Reported | Not yet: PR 9. They build without the hybrid and skip on Raft |
-| Environment variables | 11 hybrid | 11 | 0 | Done in PR 3. `FELIX_REPLICATION_REBUILD_*` and `FELIX_SHARD_MOVE_BYTES_PER_SEC` are now read by nothing; PR 5 wires them to Raft snapshot sends or retires them |
+| Environment variables | 11 hybrid | 11 | 0 | Done in PR 3. `FELIX_REPLICATION_REBUILD_*` and `FELIX_SHARD_MOVE_BYTES_PER_SEC` are retired in PR 4: read by nothing, listed in `RETIRED_VARS` |
 | Fleet features an operator must finalize for replication | 6 | 6 | 0 | Not yet: PR 6 |
 | Internal message kinds | 56 | 34 | 20 to 22, plus Raft's own behind one capability | Not yet: PR 7 |
 | `docs/replication-design.md` | 5,873 lines | replaced | Under 1,000 | 18 lines in PR 4, pointing at the v0.7.0 page. The one-engine page is track 7 |

@@ -1073,8 +1073,8 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "felix_shard_replicas_halted",
-          "legendFormat": "copies halted"
+          "expr": "sum(felix_broker_raft_shards_stopped_on_storage_error)",
+          "legendFormat": "copies stopped"
         },
         {
           "refId": "D",
