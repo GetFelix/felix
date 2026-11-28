@@ -247,10 +247,17 @@ impl GroupTable {
 }
 
 const TABLE_VERSION: u8 = 3;
-/// A table from before acks above the cursor were replicated.
-const TABLE_VERSION_NO_ACKS: u8 = 2;
-/// A table from before claims were replicated either.
-const TABLE_VERSION_NO_CLAIMS: u8 = 1;
+
+/// Why [`GroupTable::decode`] refused a table.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum TableRefused {
+    #[error("the group table does not parse")]
+    Damaged,
+    /// Versions 1 and 2 hold no acks above the cursor. No release wrote
+    /// them, and loading one as "no acks" would redeliver acked records.
+    #[error("group table version {0} is not supported; only version {TABLE_VERSION} is read")]
+    Version(u8),
+}
 const BY_HYDRATE: u8 = 0;
 const BY_SEEK: u8 = 1;
 
@@ -275,9 +282,7 @@ impl GroupTable {
     ///     u32 principal length, principal, u32 name length, name   (if named)
     /// ```
     ///
-    /// Version 2 is the same without acks, version 1 without acks or claims;
-    /// each decodes with none. Version 3 changes bytes on disk, so it lands
-    /// before the format v9 freeze.
+    /// Versions 1 and 2, which lacked acks (and claims), are refused.
     pub fn encode(&self) -> Bytes {
         let mut out = BytesMut::new();
         out.put_u8(TABLE_VERSION);
@@ -320,17 +325,19 @@ impl GroupTable {
         out.freeze()
     }
 
-    /// `None` when `bytes` are not what [`Self::encode`] writes, including
+    /// Refused when `bytes` are not what [`Self::encode`] writes, including
     /// names or offsets out of order: a member must not load a table that
     /// differs from the one the sender folded.
-    pub fn decode(bytes: &[u8]) -> Option<Self> {
+    pub fn decode(bytes: &[u8]) -> Result<Self, TableRefused> {
+        match bytes.first() {
+            Some(&TABLE_VERSION) => Self::decode_body(&bytes[1..]).ok_or(TableRefused::Damaged),
+            Some(&version) => Err(TableRefused::Version(version)),
+            None => Err(TableRefused::Damaged),
+        }
+    }
+
+    fn decode_body(bytes: &[u8]) -> Option<Self> {
         let mut buf = bytes;
-        let (with_acks, with_claims) = match take(&mut buf, 1)?.get_u8() {
-            TABLE_VERSION => (true, true),
-            TABLE_VERSION_NO_ACKS => (false, true),
-            TABLE_VERSION_NO_CLAIMS => (false, false),
-            _ => return None,
-        };
         let applied = take(&mut buf, 8)?.get_u64();
         let last_delete = take(&mut buf, 8)?.get_u64();
         let count = take(&mut buf, 4)?.get_u32();
@@ -354,16 +361,8 @@ impl GroupTable {
             let cursor = take(&mut buf, 8)?.get_u64();
             let dead = offsets(&mut buf)?;
             let redriven = offsets(&mut buf)?;
-            let acked = if with_acks {
-                offsets(&mut buf)?
-            } else {
-                BTreeSet::new()
-            };
-            let claims = if with_claims {
-                claims(&mut buf)?
-            } else {
-                BTreeMap::new()
-            };
+            let acked = offsets(&mut buf)?;
+            let claims = claims(&mut buf)?;
             groups.insert(
                 name.clone(),
                 GroupState {

@@ -1770,11 +1770,27 @@ tombstones: the data does not parse.
 ```
 
 The group table is the shard's consumer groups as of the snapshot's last
-entry (`felix-broker`, `GroupTable::encode`): a version byte (1), the last
-group entry applied and the latest delete (`u64` each), then per group in
-name order its name, creation token, cursor, and its dead letters and
-redriven records in ascending order. A reader refuses names or offsets out
-of order, so one table has one encoding.
+entry (`felix-broker`, `GroupTable::encode`). A reader refuses names or
+offsets out of order, so one table has one encoding. It reads version 3
+only: versions 1 and 2 carried no acks above the cursor, and no release
+wrote them.
+
+```text
+u8   version (3)
+u64  last group entry applied
+u64  latest delete
+u32  groups, then per group in name order:
+  u32  name length, then the name (UTF-8)
+  u64  term, u64 index, u8 by (0 hydrate, 1 seek)    creation token
+  u64  cursor
+  u32  dead letters, then each u64, ascending
+  u32  redriven, then each u64, ascending
+  u32  acked above the cursor, then each u64, ascending
+  u32  claims, then each ascending by offset:
+    u64  offset, u32 attempts, u64 visibility in milliseconds
+    u8   1 if a named member holds it, else 0
+    u32  principal length, principal, u32 name length, name   (if named)
+```
 
 ## `member`: a metadata store's member file
 

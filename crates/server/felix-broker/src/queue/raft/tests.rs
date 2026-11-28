@@ -21,6 +21,9 @@ const VIS: Duration = Duration::from_secs(30);
 struct Fake {
     groups: Arc<RwLock<ShardGroups>>,
     state: parking_lot::Mutex<FakeState>,
+    /// While closed, every wait for an entry blocks.
+    closed: std::sync::atomic::AtomicBool,
+    opened: tokio::sync::Notify,
 }
 
 #[derive(Default)]
@@ -140,6 +143,13 @@ impl GroupConsensus for Fake {
     }
 
     async fn applied(&self, _key: &GroupKey, proposed: Proposed, _deadline: Instant) -> Result<()> {
+        loop {
+            let opened = self.opened.notified();
+            if !self.closed.load(std::sync::atomic::Ordering::SeqCst) {
+                break;
+            }
+            opened.await;
+        }
         let mut state = self.state.lock();
         if state.lost.contains(&proposed) {
             return Err(BrokerError::StateNotReadable(NotReadable::Refused));
@@ -540,6 +550,7 @@ async fn if_new_on_an_existing_group_proposes_nothing() {
                 next_index: applied,
                 ..FakeState::default()
             }),
+            ..Fake::default()
         },
         VIS,
         5,
@@ -1025,4 +1036,94 @@ async fn a_redriven_ack_above_the_tables_cursor_survives_a_change_of_leader() {
         handed.iter().all(|(offset, _)| *offset != 0),
         "0 was handed out again after its ack was answered: {handed:?}"
     );
+}
+
+/// Two out-of-order acks on one group: the second proposes while the first
+/// still waits for its commit, and both are in the table once answered.
+#[tokio::test]
+async fn out_of_order_acks_commit_together() {
+    use std::sync::atomic::Ordering;
+    let fx = fixture(5);
+    publish(&fx.log, 3).await;
+    assert_eq!(fx.poll(G, 3).await.expect("poll"), vec![0, 1, 2]);
+    // A read index taken now covers neither ack, and nothing commits.
+    fx.set(|state| state.lag_reads = true);
+    fx.fake().closed.store(true, Ordering::SeqCst);
+    let pending_acks = || {
+        fx.fake()
+            .state
+            .lock()
+            .pending
+            .iter()
+            .filter(|(_, entry)| matches!(entry.op, GroupOp::Ack { .. }))
+            .count()
+    };
+    let both_proposed = async {
+        let proposed = tokio::time::timeout(Duration::from_secs(2), async {
+            while pending_acks() < 2 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .is_ok();
+        fx.fake().closed.store(false, Ordering::SeqCst);
+        fx.fake().opened.notify_waiters();
+        proposed
+    };
+    let k = key(G);
+    let (two, one, proposed) = tokio::join!(
+        fx.groups.ack(&k, 2, later()),
+        fx.groups.ack(&k, 1, later()),
+        both_proposed,
+    );
+    assert!(
+        proposed,
+        "the second ack waited for the first's commit before proposing"
+    );
+    two.expect("ack 2");
+    one.expect("ack 1");
+    let acked: Vec<u64> = fx
+        .fake()
+        .groups
+        .read()
+        .table()
+        .group(G)
+        .map(|s| s.acked.iter().copied().collect())
+        .unwrap_or_default();
+    assert_eq!(acked, vec![1, 2]);
+}
+
+/// Acks waiting outside the slot are cut by a new leader: neither is
+/// answered OK, and the table holds neither.
+#[tokio::test]
+async fn out_of_order_acks_cut_by_a_new_term_fail() {
+    use std::sync::atomic::Ordering;
+    let fx = fixture(5);
+    publish(&fx.log, 3).await;
+    assert_eq!(fx.poll(G, 3).await.expect("poll"), vec![0, 1, 2]);
+    fx.set(|state| state.lag_reads = true);
+    fx.fake().closed.store(true, Ordering::SeqCst);
+    let cut = async {
+        while fx.fake().state.lock().pending.len() < 2 {
+            tokio::task::yield_now().await;
+        }
+        fx.fake().new_term();
+        fx.fake().closed.store(false, Ordering::SeqCst);
+        fx.fake().opened.notify_waiters();
+    };
+    let k = key(G);
+    let (two, one, ()) = tokio::join!(
+        fx.groups.ack(&k, 2, later()),
+        fx.groups.ack(&k, 1, later()),
+        cut,
+    );
+    assert!(two.is_err() && one.is_err(), "a cut ack answered OK");
+    let acked = fx
+        .fake()
+        .groups
+        .read()
+        .table()
+        .group(G)
+        .map(|s| s.acked.len());
+    assert_eq!(acked, Some(0), "the table holds a cut ack");
 }

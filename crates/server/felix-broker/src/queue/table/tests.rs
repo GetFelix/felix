@@ -448,73 +448,17 @@ fn a_stale_or_orphan_claim_changes_nothing() {
     );
 }
 
-/// A table written before claims were replicated still loads, with none.
+/// Versions 1 and 2 held no acks above the cursor and no release wrote
+/// them: they are refused, never loaded as a table without acks.
 #[test]
-fn a_table_without_claims_loads() {
-    let mut table = busy_table();
-    table.groups.values_mut().for_each(|state| {
-        state.claims.clear();
-        state.acked.clear();
-    });
-    assert_eq!(GroupTable::decode(&older(&table, 1)), Some(table));
-}
-
-/// A table written before acks above the cursor were replicated still
-/// loads, with none.
-#[test]
-fn a_table_without_acks_loads() {
-    let mut table = busy_table();
-    table
-        .groups
-        .values_mut()
-        .for_each(|state| state.acked.clear());
-    assert_eq!(GroupTable::decode(&older(&table, 2)), Some(table));
-}
-
-/// `table`, whose acks (and for version 1 claims) are empty, as `version`
-/// encoded it.
-fn older(table: &GroupTable, version: u8) -> Vec<u8> {
-    let full = table.encode();
-    let mut rest = &full[1..];
-    let mut bytes = vec![version];
-    bytes.extend_from_slice(&rest[..20]);
-    rest = &rest[20..];
-    for _ in 0..table.groups.len() {
-        let name = u32::from_be_bytes(rest[..4].try_into().unwrap()) as usize;
-        let mut len = 4 + name + 17 + 8;
-        for _ in 0..2 {
-            let count = u32::from_be_bytes(rest[len..len + 4].try_into().unwrap()) as usize;
-            len += 4 + 8 * count;
-        }
-        bytes.extend_from_slice(&rest[..len]);
-        // Skip the (empty) acks count.
-        assert_eq!(rest[len..len + 4], [0; 4]);
-        rest = &rest[len + 4..];
-        let claims = claims_len(rest);
-        if version > 1 {
-            bytes.extend_from_slice(&rest[..claims]);
-        } else {
-            assert_eq!(claims, 4, "version 1 has no claims");
-        }
-        rest = &rest[claims..];
+fn tables_before_version_3_are_refused() {
+    let mut bytes = busy_table().encode().to_vec();
+    for version in [1, 2] {
+        bytes[0] = version;
+        let refused = GroupTable::decode(&bytes).expect_err("an old table loaded");
+        assert_eq!(refused, TableRefused::Version(version));
+        assert!(refused.to_string().contains(&format!("version {version}")));
     }
-    assert!(rest.is_empty());
-    bytes
-}
-
-/// The length of the claims section `bytes` starts with.
-fn claims_len(bytes: &[u8]) -> usize {
-    let u32_at = |at: usize| u32::from_be_bytes(bytes[at..at + 4].try_into().unwrap()) as usize;
-    let mut len = 4;
-    for _ in 0..u32_at(0) {
-        len += 8 + 4 + 8 + 1;
-        if bytes[len - 1] == 1 {
-            for _ in 0..2 {
-                len += 4 + u32_at(len);
-            }
-        }
-    }
-    len
 }
 
 /// A table folded from every kind of write.
@@ -546,9 +490,9 @@ fn busy_table() -> GroupTable {
 #[test]
 fn a_table_round_trips() {
     let table = busy_table();
-    assert_eq!(GroupTable::decode(&table.encode()), Some(table.clone()));
+    assert_eq!(GroupTable::decode(&table.encode()), Ok(table.clone()));
     let empty = GroupTable::default();
-    assert_eq!(GroupTable::decode(&empty.encode()), Some(empty));
+    assert_eq!(GroupTable::decode(&empty.encode()), Ok(empty));
     assert_eq!(table.last_delete(), 10);
     assert_eq!(table.applied(), 11);
     assert_eq!(table.group("a").expect("a").claims.len(), 2);
@@ -561,24 +505,24 @@ fn a_table_round_trips() {
 fn a_damaged_table_is_refused() {
     let bytes = busy_table().encode();
     for len in 0..bytes.len() {
-        assert_eq!(GroupTable::decode(&bytes[..len]), None, "at {len}");
+        assert!(GroupTable::decode(&bytes[..len]).is_err(), "at {len}");
     }
     let mut long = bytes.to_vec();
     long.push(0);
-    assert_eq!(GroupTable::decode(&long), None);
+    assert!(GroupTable::decode(&long).is_err());
     let mut version = bytes.to_vec();
     version[0] = 4;
-    assert_eq!(GroupTable::decode(&version), None);
+    assert!(GroupTable::decode(&version).is_err());
     // Group "a": header 21, name 4 + 1, token 17 (kind last).
     let mut by = bytes.to_vec();
     by[21 + 5 + 16] = 2;
-    assert_eq!(GroupTable::decode(&by), None);
+    assert!(GroupTable::decode(&by).is_err());
     // Its dead letters 5 and 6, swapped.
     let dead = 21 + 5 + 17 + 8 + 4;
     let mut unordered = bytes.to_vec();
     unordered[dead + 7] = 6;
     unordered[dead + 15] = 5;
-    assert_eq!(GroupTable::decode(&unordered), None);
+    assert!(GroupTable::decode(&unordered).is_err());
 }
 
 /// **An ack above the cursor is part of the folded state** until the cursor

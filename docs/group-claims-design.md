@@ -39,8 +39,8 @@ replaces it, or a seek voids it (`queue/table.rs:33`, `:196`). Nacks are not
 written, so their records stay in the table as claims. A new leader rebuilds every table claim as held for its full
 visibility from the moment it hydrates (`queue/raft.rs:876`), with its attempt
 count, on connection 0 so a named member's `reclaim` takes it back
-(`queue/tracker.rs:501`). The snapshot carries the claims (table version 2,
-`queue/table.rs:229`).
+(`queue/tracker.rs:501`). The snapshot carries the claims and the acks (table version 3,
+`queue/table.rs:286`).
 
 Nacks and delayed nacks are leader memory already (`queue/raft.rs:402`).
 An ack is not: every ack answered OK is durable, so it is never handed out
@@ -48,8 +48,17 @@ again, even after a change of leader. An ack that closes a run writes the
 `Advance`; one that closes no run and is at or above the table's cursor (an
 ack above a gap, or of a redriven dead letter there) writes a `GroupOp::Ack`
 (op 8) of its own, which the table keeps until the cursor passes it and a new
-leader takes as settled (`queue/raft.rs:727`, `queue/table.rs:223`,
-`queue/raft.rs:895`). The ack is answered only after that entry has applied.
+leader takes as settled (`queue/raft.rs:762`, `queue/table.rs:223`,
+`queue/raft.rs:987`). The ack is answered only after that entry has applied.
+
+The ack proposes its entries while it holds the group's slot and waits for
+them after releasing it (`queue/raft.rs:393`), so acks on one group commit
+together instead of one commit apart. Apply is in log order, and an entry of
+a term commits only with every earlier one, so once the ack's last entry has
+applied, everything the leader proposed before it has too; an entry a new
+leader cuts fails the wait (`queue/raft.rs:829`). The next ack on a current
+tracker skips the wait for the leader's earlier entries for the same reason;
+a hydrate still waits for all of them, since it reads the table.
 
 ### The issue's claims
 
