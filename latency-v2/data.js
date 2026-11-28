@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795829694798,
+  "lastUpdate": 1795830584034,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -94710,6 +94710,72 @@ window.BENCHMARK_DATA = {
             "range": "1232.01",
             "unit": "us",
             "extra": "trials: 5\nmedian: 1768.00\nmean: 2128.20\nstdev: 1232.01\ncv: 57.89%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "810c7dce633ac1e4b85384dfb1241bb5af050a49",
+          "message": "test(raft): placement keeps internal brokers out, zones spread and voters in region (#2992) (#3404)\n\n* test(placement): Raft seats keep the internal, zone and region rules (#2992)\n\nEvery way a Raft set gains a member (the first full placement, a top-up,\nthe swap for a lost voter, and that swap in a re-formed group) is shown\nin placement unit tests to skip internal brokers, refill the zone the\nset lost, and stay inside the stream's region or a region bridged from\nit.\n\nThree cluster tests check the same on running brokers, on every\nplacement pass: an internal broker is never seated through formation, a\ndrain, and a lost voter it is the only spare for; a lost voter is\nreplaced by the other broker in its zone; and an eu stream's lost voter\nwaits with no bridge out of eu, then goes to us across eu>us and never\nto ap.\n\nSpec-Unaffected: tests only; placement code is unchanged.\n\n* ci: the affected-crates fixture knows felix-cluster's felix-router dev-dependency (#2992)\n\nSpec-Unaffected: CI fixture",
+          "timestamp": "2026-11-28T01:44:01Z",
+          "tree_id": "55f2fbf974be426ab0cf78bb24e34a568c1fc349",
+          "url": "https://github.com/GetFelix/felix/commit/810c7dce633ac1e4b85384dfb1241bb5af050a49"
+        },
+        "date": 1795830570276,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 92,
+            "range": "0.84",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 92.00\nmean: 92.20\nstdev: 0.84\ncv: 0.91%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 124,
+            "range": "1.92",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 124.00\nmean: 123.80\nstdev: 1.92\ncv: 1.55%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 159,
+            "range": "5.72",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 159.00\nmean: 157.80\nstdev: 5.72\ncv: 3.62%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 109,
+            "range": "2.70",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 109.00\nmean: 109.60\nstdev: 2.70\ncv: 2.47%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 234,
+            "range": "10.83",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 234.00\nmean: 235.60\nstdev: 10.83\ncv: 4.60%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 369,
+            "range": "786.74",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 369.00\nmean: 706.40\nstdev: 786.74\ncv: 111.37%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
