@@ -111,8 +111,8 @@ fn hybrid_shard_dir(root: &std::path::Path) {
     std::fs::write(dir.join("00000000000000000000.log"), b"x").expect("segment");
 }
 
-/// **A standalone broker on Raft refuses a root the hybrid wrote**, naming the
-/// way to keep serving it, rather than starting with every shard refused.
+/// **A standalone broker refuses a root the hybrid wrote**, saying to start on
+/// an empty directory, rather than starting with every shard refused.
 #[cfg(feature = "raft")]
 #[test]
 fn a_hybrid_data_root_is_refused_on_raft() {
@@ -120,8 +120,9 @@ fn a_hybrid_data_root_is_refused_on_raft() {
     hybrid_shard_dir(root.path());
     let err = refuse_hybrid_data(root.path()).expect_err("refused");
     let text = err.to_string();
-    assert!(text.contains("FELIX_SHARD_ENGINE=hybrid"), "{text}");
+    assert!(text.contains("an empty directory"), "{text}");
     assert!(text.contains("does not migrate"), "{text}");
+    assert!(!text.contains("FELIX_SHARD_ENGINE"), "{text}");
 }
 
 /// **Hybrid data in any of the other stores' roots is refused too**: a
@@ -145,23 +146,6 @@ fn an_empty_data_root_starts_on_raft() {
     let root = tempfile::tempdir().expect("tempdir");
     refuse_hybrid_data(root.path()).expect("empty root");
     refuse_hybrid_data(&root.path().join("missing")).expect("missing root");
-}
-
-/// **With the hybrid selected the same root is served**: the engine resolves
-/// to hybrid, so the check does not apply.
-#[cfg(feature = "raft")]
-#[test]
-fn the_hybrid_engine_keeps_a_hybrid_root() {
-    let prerequisites = crate::config::RaftPrerequisites {
-        compiled: true,
-        membership: false,
-        peer_transport: false,
-        durable_storage: true,
-    };
-    let engine = prerequisites
-        .resolve(Some(crate::config::ShardEngine::Hybrid))
-        .expect("resolve");
-    assert_eq!(engine, crate::config::ShardEngine::Hybrid);
 }
 
 /// **A data directory that cannot be locked fails the start**, before
@@ -224,14 +208,12 @@ fn a_logless_cache_beside_durable_storage_is_refused() {
         felix_broker::DurableStorage::open(root.path(), Default::default()).expect("storage");
     let logless = felix_broker::Broker::new(felix_storage::EphemeralCache::new().into())
         .with_durable_storage(storage);
-    use crate::config::ShardEngine::{Hybrid, Raft};
+    use crate::config::ShardEngine::Raft;
     let err = refuse_logless_cache(Raft, &logless).expect_err("refused");
     assert!(
         err.to_string().contains("FELIX_DURABLE_STORAGE_DIR"),
         "{err}"
     );
-
-    refuse_logless_cache(Hybrid, &logless).expect("the hybrid engine is not refused");
 
     let diskless = felix_broker::Broker::new(felix_storage::EphemeralCache::new().into());
     refuse_logless_cache(Raft, &diskless).expect("a broker with no disk starts");

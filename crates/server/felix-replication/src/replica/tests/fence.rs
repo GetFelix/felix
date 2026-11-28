@@ -2829,7 +2829,7 @@ async fn a_given_up_copy_of_a_set_of_two_answers_untrusted() {
 }
 
 /// **Over the wire, a crashed leader's copy refuses a caller that does not
-/// offer `UNIFIED_FENCE`**, as `FELIX_UNIFIED_FENCE=0` leaves it. Its answer
+/// offer `UNIFIED_FENCE`**, as an older broker does. Its answer
 /// in place of a refusal is safe only facing a leader that counts by the
 /// attestation.
 #[tokio::test]

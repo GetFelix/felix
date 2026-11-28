@@ -142,9 +142,9 @@ pub struct PeerTransportConfig {
     pub handshake_timeout: Duration,
     /// Test-only: a file naming peers this broker must not exchange with.
     ///
-    /// `None` in every deployment that does not set `FELIX_PEER_PARTITION_FILE`,
-    /// which is the only way to turn it on, and the check costs one `Option`
-    /// test when it is off.
+    /// Present only in debug builds and builds with the `fault-injection`
+    /// feature. There it is `None` unless `FELIX_PEER_PARTITION_FILE` is set,
+    /// which is the only way to turn it on.
     ///
     /// A partition is the one failure this harness cannot produce from the
     /// outside: killing, stopping and freezing a broker are all a signal away,
@@ -153,20 +153,21 @@ pub struct PeerTransportConfig {
     /// combination -- a leader that looks healthy to the control plane and
     /// cannot reach its followers -- is exactly where a replication design is
     /// most likely to be wrong, so it is worth a hook.
+    #[cfg(any(debug_assertions, test, feature = "fault-injection"))]
     pub partition_file: Option<std::path::PathBuf>,
-    /// `FELIX_INTERNAL_FENCE`: whether this broker offers the promotion fence
+    /// Whether this broker offers the promotion fence
     /// to its peers and answers it, and keeps ballots. On by default. Off, it
     /// is spoken to as a broker that predates the fence, and every shard it
     /// replicates keeps the lease alone.
     pub fence: bool,
-    /// `FELIX_INTERNAL_ELECTION`: whether this broker offers `ELECTION` and
+    /// Whether this broker offers `ELECTION` and
     /// checks the replica set on fences and batches that carry one. Off by
     /// default, and only takes effect with `fence`. On, the broker reports
     /// `peer_election`, `joint_fence` and `replica_election`, so it is the
     /// operator's opt-in to replica election: turn it on on every broker
     /// before finalizing `joint_fence` and `replica_election`.
     pub election: bool,
-    /// `FELIX_UNIFIED_FENCE`: whether this broker offers `UNIFIED_FENCE`
+    /// Whether this broker offers `UNIFIED_FENCE`
     /// when it dials, and so counts a promotion fence's answers by what each
     /// copy attests: promises from copies that kept their ballots, coverage
     /// from copies that hold what they acknowledged. On unless set to `0`.
@@ -212,6 +213,7 @@ impl Default for PeerTransportConfig {
             reconnect_base: Duration::from_millis(DEFAULT_RECONNECT_BASE_MS),
             reconnect_max: Duration::from_millis(DEFAULT_RECONNECT_MAX_MS),
             handshake_timeout: Duration::from_millis(DEFAULT_HANDSHAKE_TIMEOUT_MS),
+            #[cfg(any(debug_assertions, test, feature = "fault-injection"))]
             partition_file: None,
             fence: true,
             election: false,
@@ -368,42 +370,21 @@ impl PeerTransportConfig {
                 ));
             }
         };
-        config.fence = match std::env::var("FELIX_INTERNAL_FENCE")
-            .ok()
-            .map(|value| value.trim().to_ascii_lowercase())
-            .as_deref()
+        // `FELIX_INTERNAL_FENCE`, `FELIX_INTERNAL_ELECTION` and
+        // `FELIX_UNIFIED_FENCE` are retired with the hybrid engine
+        // (`docs/hybrid-retirement.md`): set, they are reported at start and
+        // read by nothing. The fields keep the defaults those settings had,
+        // so peers see the same capabilities, until #2260 deletes them.
+        config.fence = true;
+        config.election = false;
+        config.unified_fence = true;
+        #[cfg(any(debug_assertions, test, feature = "fault-injection"))]
         {
-            None | Some("" | "1" | "true" | "yes") => true,
-            Some("0" | "false" | "no") => false,
-            Some(other) => {
-                return Err(std::io::Error::new(
-                    ErrorKind::InvalidInput,
-                    format!("FELIX_INTERNAL_FENCE must be true or false, not {other:?}"),
-                ));
-            }
-        };
-        config.election = match std::env::var("FELIX_INTERNAL_ELECTION")
-            .ok()
-            .map(|value| value.trim().to_ascii_lowercase())
-            .as_deref()
-        {
-            None | Some("" | "0" | "false" | "no") => false,
-            Some("1" | "true" | "yes") => true,
-            Some(other) => {
-                return Err(std::io::Error::new(
-                    ErrorKind::InvalidInput,
-                    format!("FELIX_INTERNAL_ELECTION must be true or false, not {other:?}"),
-                ));
-            }
-        };
-        // A kill switch: anything but `0` keeps it on.
-        config.unified_fence = std::env::var("FELIX_UNIFIED_FENCE")
-            .map(|value| value.trim() != "0")
-            .unwrap_or(true);
-        config.partition_file = std::env::var("FELIX_PEER_PARTITION_FILE")
-            .ok()
-            .filter(|value| !value.trim().is_empty())
-            .map(std::path::PathBuf::from);
+            config.partition_file = std::env::var("FELIX_PEER_PARTITION_FILE")
+                .ok()
+                .filter(|value| !value.trim().is_empty())
+                .map(std::path::PathBuf::from);
+        }
         if let Some(value) = env_usize("FELIX_INTERNAL_CONNS_PER_PEER").filter(|v| *v > 0) {
             config.conns_per_peer = value;
         }

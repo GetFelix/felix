@@ -82,9 +82,7 @@ async fn an_in_memory_stream_is_served_by_its_owner_through_any_broker() {
         assert_eq!(next_payload(&mut subscription).await, Some(payload));
     }
 
-    // A hybrid broker runs no groups and exports no gauge to check.
-    let on_raft = std::env::var("FELIX_TEST_SHARD_ENGINE").as_deref() != Ok("hybrid");
-    for node in cluster.node_ids().into_iter().filter(|_| on_raft) {
+    for node in cluster.node_ids() {
         let led = cluster
             .metric(&node, "felix_broker_raft_shards_led")
             .await

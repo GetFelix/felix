@@ -179,16 +179,18 @@ impl ClusterConfig {
     }
 }
 
-/// The shard engine brokers start with unless a test names one, from
-/// `FELIX_TEST_SHARD_ENGINE` (`raft` or `hybrid`). Raft when unset; CI sets
-/// `hybrid` for the fallback runs that stay until the hybrid is deleted.
+/// The shard engine brokers start with: Raft, the only one. A suite run with
+/// `FELIX_TEST_SHARD_ENGINE=hybrid` stops here instead of passing on Raft as a
+/// hybrid run: the hybrid engine was removed, and brokers refuse it.
 pub(crate) fn default_engine() -> &'static str {
     engine_named(std::env::var("FELIX_TEST_SHARD_ENGINE").ok().as_deref())
 }
 
 fn engine_named(value: Option<&str>) -> &'static str {
     match value {
-        Some("hybrid") => "hybrid",
+        Some("hybrid") => {
+            panic!("FELIX_TEST_SHARD_ENGINE=hybrid: the hybrid shard engine was removed; unset it")
+        }
         _ => "raft",
     }
 }

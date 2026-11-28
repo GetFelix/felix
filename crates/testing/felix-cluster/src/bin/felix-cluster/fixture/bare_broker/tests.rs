@@ -6,68 +6,23 @@ use bytes::Bytes;
 use felix_wire::Message;
 use rustls::pki_types::{CertificateDer, pem::PemObject};
 
-use felix_client::{CommitError, CommitOp};
-
 use super::BareBroker;
 
-/// A client refuses commit and state_get against a broker that advertised
-/// nothing, and the broker is sent neither.
+/// A client refuses a broker that advertised none of the baseline, so no
+/// commit, state read or trim can reach it.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_client_sends_no_commit_to_a_broker_that_advertised_none() {
+async fn a_client_refuses_a_broker_below_the_baseline() {
     let bare = BareBroker::start().expect("start the bare broker");
-    let client = tokio::time::timeout(
+    let refused = tokio::time::timeout(
         Duration::from_secs(10),
         felix_cluster::client::connect(bare.addr, "t1", "token"),
     )
     .await
-    .expect("connect timed out")
-    .expect("connect");
-
-    let commit = tokio::time::timeout(
-        Duration::from_secs(5),
-        client.commit("t1", "default", b"k", vec![CommitOp::publish("s", "e")]),
-    )
-    .await
-    .expect("a commit must be refused at the call, not left waiting")
-    .expect_err("commit must be refused");
+    .expect("connect timed out");
     assert!(
-        matches!(
-            commit.downcast_ref::<CommitError>(),
-            Some(CommitError::Unsupported)
-        ),
-        "commit gave {commit:?}"
+        refused.is_err(),
+        "a broker below the baseline must be refused at connect"
     );
-
-    let state = tokio::time::timeout(
-        Duration::from_secs(5),
-        client.state_get("t1", "default", "s", b"k", "k"),
-    )
-    .await
-    .expect("a state read must be refused at the call, not left waiting")
-    .expect_err("state_get must be refused");
-    assert!(
-        matches!(
-            state.downcast_ref::<CommitError>(),
-            Some(CommitError::Unsupported)
-        ),
-        "state_get gave {state:?}"
-    );
-
-    let trim = tokio::time::timeout(
-        Duration::from_secs(5),
-        client.trim_before("t1", "default", "s", 0, 1, 1, None),
-    )
-    .await
-    .expect("a trim must be refused at the call, not left waiting")
-    .expect_err("trim_before must be refused");
-    assert!(
-        matches!(
-            trim.downcast_ref::<felix_client::TrimError>(),
-            Some(felix_client::TrimError::Unsupported)
-        ),
-        "trim_before gave {trim:?}"
-    );
-
     assert_eq!(bare.requests.load(Ordering::SeqCst), 0);
 }
 

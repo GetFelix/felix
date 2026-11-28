@@ -292,11 +292,10 @@ question for config.
 **`Quorum` reads depend on a fleet feature.** By default a `Quorum` read
 confirms leadership with the owner's lease, which trusts clocks. After an
 operator finalizes the `lease_free_reads` fleet feature it uses a round of
-confirmations from a majority instead. Failover is decided by the control plane,
-so with it down a dead leader is not replaced until it returns, unless an operator has
-turned on replica election (off by default: `FELIX_INTERNAL_ELECTION=true` on every
-broker, then `joint_fence` and `replica_election` finalized) and the shard is a
-`Quorum` one: then its replicas elect a new leader. See [Failover without the control plane](/deployment/failover-without-control-plane/).
+confirmations from a majority instead. Each shard is a Raft group, so
+its members elect a new leader themselves and a dead leader is replaced
+with the control plane down. The replica election this page used to describe was the
+hybrid's and is retired; see [Failover without the control plane](/deployment/failover-without-control-plane/).
 
 **A cache keeps the latest value, not a history.** It discards superseded values
 when it compacts. Use a durable stream when you need every edit. An in-memory

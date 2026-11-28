@@ -19,11 +19,15 @@ pub mod pool;
 pub mod server;
 pub mod tls;
 
+// Test-only, like the storage and clock faults: a release broker without the
+// feature has no way to be told to drop its peers.
+#[cfg(any(debug_assertions, test, feature = "fault-injection"))]
 mod partition;
 
 pub use capabilities::KnownCapabilities;
 pub use config::PeerTransportConfig;
 pub(crate) use identity::{Incarnation, PeerIdentity};
+#[cfg(any(debug_assertions, test, feature = "fault-injection"))]
 pub(crate) use partition::PartitionInjector;
 pub use pool::{PeerError, PeerPool, PeerRequester, RaftOffer};
 pub use server::{PeerRequestHandler, PeerServer, RaftHandler, UnavailableHandler};

@@ -82,7 +82,7 @@ paused.
 | Layer | What exists | When it runs |
 | --- | --- | --- |
 | TLA+ | 13 modules, 476 configurations. 370 are registered for the per-push check: 174 must pass and 196 must fail, 25 of those for a liveness property. A further 25 are random walks: 15 must pass and 10 must fail. | A pull request that touches the specs runs the quick configurations and any it changes. Main runs all registered ones. Walks and the largest exhaustive configurations run nightly. |
-| Simulator | 120 s of virtual time per seed, in four modes: default, clock skew, placement faults, power loss. | Per pull request: 4 seeds in their own job, and seeds 1 to 20 run twice each to check determinism, which blocks merging. Nightly: 2000 seeds, plus 250 each in the other three modes. Release gate: 2000 seeds in every mode, 8000 runs. |
+| Simulator | 120 s of virtual time per seed, in modes for default, skewed timers, disk faults and power loss. | Per pull request: 4 seeds in their own job, and seeds 1 to 20 run twice each to check determinism, which blocks merging. Nightly: 2000 Raft seeds, plus 250 each in the other Raft modes (skewed timers, disk faults, power loss). Release gate: 2000 seeds in every Raft mode. |
 | History checker | 21 rules. Campaigns: single faults, compound faults on four brokers, election with the control plane down. | Per pull request, each with a fixed seed: 45 s of single faults, 75 s that injects every fault family, 150 s of compound faults, and 90 s of the election campaign. Nightly: 20 minutes each of the single-fault and the compound campaign, each with a random seed. The election campaign also runs on dispatch, as the gate does. |
 | Scale and failover | Lease canary at 600 streams (debug build) and 1500 streams (release build). Failover variant, two tests (election on and off). felixd at 1000 workloads, about 2010 replicated streams. | Per pull request: the 600-stream canary. Nightly: the 1500-stream canary. Failover and felixd runs are dispatched and are part of the gate. |
 
@@ -191,7 +191,7 @@ Run the history campaigns:
 ```bash
 gh workflow run history.yml -R GetFelix/felix -f nemesis=election -f duration_secs=1200
 cargo build -p felix-broker-service --bin felix-broker
-FELIX_HISTORY_SEED=<seed> FELIX_HISTORY_MODE=lease-free FELIX_HISTORY_NEMESIS=adversarial \
+FELIX_HISTORY_SEED=<seed> FELIX_HISTORY_NEMESIS=adversarial \
     FELIX_HISTORY_DURATION_SECS=1200 cargo test -p felix-cluster --test history -- --nocapture
 ```
 

@@ -95,7 +95,7 @@ impl TokenCheckingServer {
             let _ = send.finish();
             return Ok(());
         }
-        write_message(&mut send, Message::Ok).await?;
+        write_message(&mut send, felix_wire::baseline_auth_ok()).await?;
         while let Some(message) = read_message(&mut recv, &mut scratch).await? {
             if let Message::Subscribe { .. } = message {
                 write_message(

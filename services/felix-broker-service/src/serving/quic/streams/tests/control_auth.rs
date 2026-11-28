@@ -20,7 +20,7 @@ async fn control_loop_rejects_second_auth() -> Result<()> {
     assert!(!result);
     assert!(matches!(
         messages.first(),
-        Some(Outgoing::Message(Message::Ok))
+        Some(Outgoing::Message(Message::AuthOk { .. }))
     ));
     assert!(messages.iter().any(|message| matches!(
         message,
@@ -33,16 +33,9 @@ async fn control_loop_rejects_second_auth() -> Result<()> {
 async fn control_loop_rejects_auth_failed() -> Result<()> {
     let broker = Arc::new(Broker::new(EphemeralCache::new().into()));
     let auth = auth_fixture("t1", default_perms());
-    let frames = vec![Ok(Some(frame_from_message(Message::Auth {
-        tenant_id: "t1".to_string(),
-        token: "invalid".to_string(),
-        // Legacy handshake: no capabilities offered, so the broker
-        // answers with a plain `Ok`.
-        client_flags: None,
-        client_features: None,
-        client_features_hi: None,
-        client_flags_ext: None,
-    })))];
+    let frames = vec![Ok(Some(frame_from_message(felix_wire::baseline_auth(
+        "t1", "invalid",
+    ))))];
     let (result, messages) = run_control_loop_with_frames(
         broker,
         Arc::clone(&auth.auth),
@@ -396,18 +389,11 @@ async fn control_loop_cache_put_rejects_tenant_mismatch() -> Result<()> {
     Ok(())
 }
 
-/// The `AuthOk` a client gets for `client_features` and `client_features_hi`.
-async fn auth_ok_for(client_features: u32, client_features_hi: Option<u32>) -> Result<Message> {
+/// The `AuthOk` the broker answers `auth_message` with.
+async fn auth_ok_for(auth_message: Message) -> Result<Message> {
     let broker = Arc::new(Broker::new(EphemeralCache::new().into()));
     let auth = auth_fixture("t1", default_perms());
-    let frames = vec![Ok(Some(frame_from_message(Message::Auth {
-        tenant_id: auth.tenant_id.clone(),
-        token: auth.token.clone(),
-        client_flags: Some(felix_wire::KNOWN_FLAGS),
-        client_features: Some(client_features),
-        client_features_hi,
-        client_flags_ext: None,
-    })))];
+    let frames = vec![Ok(Some(frame_from_message(auth_message)))];
     let (_, messages) = run_control_loop_with_frames(
         broker,
         Arc::clone(&auth.auth),
@@ -424,36 +410,15 @@ async fn auth_ok_for(client_features: u32, client_features_hi: Option<u32>) -> R
         .ok_or_else(|| anyhow::anyhow!("no auth_ok"))
 }
 
-/// A client that does not set the marker gets the `auth_ok` it always got:
-/// no marker, no `server_features_hi`. One that does learns the extended
-/// features, inspection among them.
+/// A client learns the extended features, inspection among them.
 #[tokio::test]
-async fn only_an_extended_offer_hears_the_extended_word() -> Result<()> {
-    let plain = auth_ok_for(felix_wire::KNOWN_FEATURES, None).await?;
+async fn a_client_hears_the_extended_word() -> Result<()> {
+    let auth = auth_fixture("t1", default_perms());
     let Message::AuthOk {
         server_features,
         server_features_hi,
         ..
-    } = plain
-    else {
-        unreachable!()
-    };
-    assert_eq!(server_features_hi, None);
-    assert!(!felix_wire::supports_feature(
-        server_features.unwrap_or(0),
-        felix_wire::FEATURE_EXTENDED
-    ));
-
-    let extended = auth_ok_for(
-        felix_wire::KNOWN_FEATURES | felix_wire::FEATURE_EXTENDED,
-        Some(felix_wire::KNOWN_FEATURES_HI),
-    )
-    .await?;
-    let Message::AuthOk {
-        server_features,
-        server_features_hi,
-        ..
-    } = extended
+    } = auth_ok_for(felix_wire::baseline_auth(&auth.tenant_id, &auth.token)).await?
     else {
         unreachable!()
     };

@@ -41,6 +41,9 @@ reqwest = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 tempfile = { workspace = true }
+# Finds the partition code in the broker binary before a partition fault, so
+# a broker built without it fails the test instead of passing it.
+memchr = "2.8"
 # The link proxy sizes its UDP buffers to forward whatever a broker sends.
 socket2 = { workspace = true }
 # `io-util` for the control-plane link proxy, which copies TCP streams.
@@ -59,6 +62,9 @@ libc = { workspace = true }
 felix-storage = { path = "../../server/felix-storage", version = "0.8.0-preview.2" }
 
 [dev-dependencies]
+# The region tests plan with the bridge allowlist `FELIX_REGION_BRIDGES` gives
+# a control plane.
+felix-router = { path = "../../server/felix-router" }
 # The replica set test speaks to brokers over the peer transport as one of them.
 felix-replication = { path = "../../server/felix-replication" }
 # The Kafka produce test speaks the protocol itself, to re-send on purpose.

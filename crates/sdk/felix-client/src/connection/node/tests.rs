@@ -97,9 +97,13 @@ async fn answer(
     while let Some(message) = read_message_with_limit(&mut recv, &mut scratch, MAX_FRAME).await? {
         let reply = match message {
             Message::Auth { .. } => Message::AuthOk {
-                server_flags: felix_wire::KNOWN_FLAGS,
-                server_features: Some(server_features),
-                server_features_hi: None,
+                server_flags: felix_wire::BROKER_BASELINE_FLAGS,
+                server_features: Some(
+                    server_features
+                        | felix_wire::BROKER_BASELINE_FEATURES
+                        | felix_wire::FEATURE_EXTENDED,
+                ),
+                server_features_hi: Some(felix_wire::BROKER_BASELINE_FEATURES_HI),
                 server_flags_ext: None,
                 listener_ports: None,
                 publish_window,
@@ -387,13 +391,5 @@ async fn a_per_stream_window_is_not_shared_with_the_connection() -> Result<()> {
         slots_left_beside_a_full_window(felix_wire::FEATURE_STREAM_PUBLISH_WINDOW).await?,
         2
     );
-    Ok(())
-}
-
-/// Any other broker counts the window per connection, so its streams share
-/// one and the client never sends more than that broker reads.
-#[tokio::test]
-async fn a_connection_window_is_shared_by_its_streams() -> Result<()> {
-    assert_eq!(slots_left_beside_a_full_window(0).await?, 0);
     Ok(())
 }

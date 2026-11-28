@@ -90,6 +90,89 @@ async fn every_component_holds_the_one_engine() {
     assert!(engine.set_replica(replica).is_err(), "replica");
 }
 
+/// Dials nobody: the shard tasks below never get as far as a peer.
+struct NoPeers;
+
+impl PeerRequester for NoPeers {
+    async fn request(
+        &self,
+        node_id: &str,
+        _addr: std::net::SocketAddr,
+        _message: felix_wire::internal::InternalMessage,
+    ) -> Result<felix_wire::internal::InternalMessage, replication::peer::pool::PeerError> {
+        panic!("dialled {node_id}");
+    }
+}
+
+/// The shard tasks of a cluster member with a peer transport, on `raft` or
+/// on the simulator's hybrid.
+fn shard_tasks(raft: bool) -> ShardTasks {
+    let config = BrokerConfig {
+        membership: Some(MembershipConfig {
+            node_id: "broker-a".to_string(),
+            advertise_addr: "127.0.0.1:7001".to_string(),
+            client_advertise_addr: None,
+            kafka_advertise_addr: None,
+            region: "local".to_string(),
+            zone: None,
+            internal: false,
+            durable_storage: false,
+            region_bridges: Vec::new(),
+            features: Default::default(),
+        }),
+        ..BrokerConfig::default()
+    };
+    let cluster = shard_state(&config);
+    let (_, ingress, _, _) = cluster.as_ref().expect("shard state");
+    let marks = Arc::new(QuorumMarks::new());
+    let engine = Arc::new(shard_routing::StreamEngine::new(
+        Some(Arc::clone(&marks)),
+        Some(Arc::clone(ingress)),
+    ));
+    let shutdown = CancellationToken::new();
+    let tasks = spawn_shard_tasks(ShardTaskDeps {
+        config: &config,
+        cluster: &cluster,
+        durable_storage: &None,
+        link: &Some(crate::test_support::fake_link::FakeLink::default()),
+        credential: &None,
+        client_endpoints: &Arc::new(ClientEndpoints::new()),
+        peers: &Some(Arc::new(NoPeers)),
+        broker: &Arc::new(Broker::new(EphemeralCache::new().into())),
+        engine: &engine,
+        quorum_marks: &marks,
+        halted_replicas: &Arc::new(HaltedReplicas::new()),
+        shard_status: &Arc::new(replication::status::ShardStatusBoard::new()),
+        fleet: &Arc::new(felix_common::fleet::FleetGate::new(
+            std::collections::BTreeSet::<String>::new(),
+        )),
+        suspects: &Arc::new(replication::suspicion::Suspects::default()),
+        incarnation: &Arc::new(std::sync::atomic::AtomicU64::new(0)),
+        storage_id: None,
+        unclean: &None,
+        prefetch: None,
+        nodes: Default::default(),
+        reports_held: None,
+        leads_after: None,
+        engine_shards: None,
+        raft,
+        sync_shutdown: &shutdown,
+    })
+    .expect("a cluster member runs shard tasks");
+    shutdown.cancel();
+    tasks
+}
+
+/// **A Raft broker starts none of the hybrid's replication**: no driver, no
+/// suspicion heartbeat, no election driver. Its groups replicate and elect
+/// for themselves, so nothing on a broker reaches the hybrid's tasks. Only
+/// the simulator's hybrid clusters still start them, until #2260.
+#[tokio::test]
+async fn a_raft_broker_starts_no_hybrid_replication() {
+    assert!(shard_tasks(true).replication.is_none());
+    assert!(shard_tasks(false).replication.is_some());
+}
+
 /// **The restore gate runs only after the start's restore check has
 /// answered, and its result reaches the members, the heartbeat and the
 /// feed.** That check may rotate the storage id, which removes the mark log,

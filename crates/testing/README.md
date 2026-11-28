@@ -7,7 +7,9 @@ publishable, because `felixctl bench` links it.
   machine: an in-process control plane and several `felix-broker` processes. It
   is both a library for the cluster integration tests and a CLI
   (`task cluster:up`). It runs the *prebuilt* broker binary, so build that first
-  (`cargo build -p felix-broker-service --bin felix-broker`).
+  (`cargo build -p felix-broker-service --bin felix-broker --features fault-injection`).
+  Without the feature an optimised broker has no partition code, and the
+  harness refuses to partition it.
 - [`felix-conformance`](felix-conformance) is the client conformance kit: the
   scenario catalogue and the verifier that checks a client's results against
   it. AGPL-3.0-only.

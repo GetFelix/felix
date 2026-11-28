@@ -59,8 +59,7 @@ async fn handle_connection_returns_ok_on_closed_connection() -> Result<()> {
     Ok(())
 }
 
-/// A control stream opened while the connection drains is told `draining` when
-/// its client offered error codes, and left unanswered otherwise, as before.
+/// A control stream opened while the connection drains is told `draining`.
 #[tokio::test]
 async fn a_new_stream_during_drain_is_told_draining() -> Result<()> {
     use felix_wire::{ErrorCode, Message, RetryClass};
@@ -112,28 +111,16 @@ async fn a_new_stream_during_drain_is_told_draining() -> Result<()> {
     shutdown.cancel();
     tokio::time::sleep(Duration::from_millis(50)).await;
 
-    let auth_offering = |features| Message::Auth {
-        tenant_id: "t1".to_string(),
-        token: "token".to_string(),
-        client_flags: Some(felix_wire::KNOWN_FLAGS),
-        client_features: features,
-        client_features_hi: None,
-        client_flags_ext: None,
-    };
     let mut scratch = crate::serving::quic::FrameScratch::new();
 
     let (mut send, mut recv) = connection.open_bi().await?;
-    super::super::codec::write_message(
-        &mut send,
-        auth_offering(Some(felix_wire::FEATURE_ERROR_CODES)),
-    )
-    .await?;
+    super::super::codec::write_message(&mut send, felix_wire::baseline_auth("t1", "token")).await?;
     let answer = tokio::time::timeout(
         Duration::from_secs(2),
         super::super::codec::read_message_limited(&mut recv, 64 * 1024, &mut scratch),
     )
     .await
-    .context("a negotiated client is answered")??;
+    .context("the client is answered")??;
     match answer {
         Some(Message::Error { code, retry, .. }) => {
             assert_eq!(code, Some(ErrorCode::Draining));
@@ -141,18 +128,6 @@ async fn a_new_stream_during_drain_is_told_draining() -> Result<()> {
         }
         other => panic!("expected draining, got {other:?}"),
     }
-
-    let (mut send, mut recv) = connection.open_bi().await?;
-    super::super::codec::write_message(&mut send, auth_offering(None)).await?;
-    let silent = tokio::time::timeout(
-        Duration::from_millis(300),
-        super::super::codec::read_message_limited(&mut recv, 64 * 1024, &mut scratch),
-    )
-    .await;
-    assert!(
-        silent.is_err(),
-        "an old client must not be answered: {silent:?}"
-    );
 
     drop(held);
     let result = tokio::time::timeout(Duration::from_secs(10), server_task)
@@ -216,20 +191,9 @@ async fn a_held_stream_does_not_outlast_the_drain_deadline() -> Result<()> {
     shutdown.cancel();
     tokio::time::sleep(Duration::from_millis(50)).await;
 
-    // An old client's stream: held, never answered, never closed by it.
+    // A stream whose client never closes it.
     let (mut held, mut held_recv) = connection.open_bi().await?;
-    super::super::codec::write_message(
-        &mut held,
-        felix_wire::Message::Auth {
-            tenant_id: "t1".to_string(),
-            token: "token".to_string(),
-            client_flags: None,
-            client_features: None,
-            client_features_hi: None,
-            client_flags_ext: None,
-        },
-    )
-    .await?;
+    super::super::codec::write_message(&mut held, felix_wire::baseline_auth("t1", "token")).await?;
 
     let started = std::time::Instant::now();
     let result = tokio::time::timeout(Duration::from_secs(3), server_task)
@@ -241,15 +205,25 @@ async fn a_held_stream_does_not_outlast_the_drain_deadline() -> Result<()> {
         "drain took {:?}",
         started.elapsed()
     );
-    // The held stream ends with the connection rather than being answered.
+    // The stream is told to go elsewhere, unless the connection closed first.
     let mut scratch = crate::serving::quic::FrameScratch::new();
     let read = tokio::time::timeout(
         Duration::from_secs(2),
         super::super::codec::read_message_limited(&mut held_recv, 64 * 1024, &mut scratch),
     )
     .await
-    .context("the held stream is closed")?;
-    assert!(read.is_err(), "expected a closed connection, got {read:?}");
+    .context("the held stream is answered or closed")?;
+    assert!(
+        matches!(
+            read,
+            Err(_)
+                | Ok(Some(felix_wire::Message::Error {
+                    code: Some(felix_wire::ErrorCode::Draining),
+                    ..
+                }))
+        ),
+        "expected a draining refusal or a closed connection, got {read:?}"
+    );
     Ok(())
 }
 

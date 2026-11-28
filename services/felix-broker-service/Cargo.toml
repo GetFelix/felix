@@ -128,8 +128,10 @@ tokio = { workspace = true, features = ["process", "test-util"] }
 serial_test = { workspace = true }
 rcgen = { workspace = true }
 rustls = { workspace = true }
-# The tests use the demo signing key; see the `demo` feature.
-felix-broker-service = { path = ".", version = "0.8.0-preview.2", features = ["demo", "raft"] }
+# The tests use the demo signing key; see the `demo` feature. The broker a
+# `cargo test` builds is the one the cluster harness spawns, so it gets the
+# fault hooks in every profile, not only through `debug_assertions`.
+felix-broker-service = { path = ".", version = "0.8.0-preview.2", features = ["demo", "raft", "fault-injection"] }
 felix-broker = { path = "../../crates/server/felix-broker", version = "0.8.0-preview.2", features = ["fault-injection", "test-support"] }
 # Some unit tests slow the fsync through `felix_storage::fault`, which a
 # release build (`cargo bench`) only has with this feature.
@@ -164,6 +166,10 @@ sim = []
 raft = ["felix-replication/raft"]
 telemetry = ["felix-client/telemetry", "felix-broker/telemetry"]
 perf_debug = ["felix-broker/perf_debug"]
+# Peer-partition, storage and clock fault injection in an optimised broker, for
+# the cluster harness. Debug builds have them regardless. Never in a release
+# artifact: `scripts/check_no_fault_injection.sh` refuses one that has them.
+fault-injection = ["felix-replication/fault-injection", "felix-storage/fault-injection", "felix-common/fault-injection"]
 
 [lints]
 workspace = true

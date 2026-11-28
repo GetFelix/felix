@@ -242,26 +242,19 @@ public class CommitFixtureTests
     }
 
     /// <summary>
-    /// A client sends a commit or a state read only to a broker that advertised atomic commits. Against
-    /// a stub that advertised nothing both fail at the call with <see cref="FelixStatus.Unsupported"/>,
-    /// and the stub's own counter shows nothing reached it.
+    /// A client refuses a broker that does not advertise the 0.8 baseline, which includes atomic commits
+    /// and head trims. Connecting to a stub that advertised nothing fails, and nothing reaches it.
     /// </summary>
     [NoCommitFixtureFact]
-    [Scenario("commit.negotiated")]
-    public async Task ACommitAndAStateReadAreRefusedByABrokerThatAdvertisedNoCommits()
+    [Scenario("commit.negotiated", "head_trim.negotiated")]
+    public async Task ABrokerBelowTheBaselineIsRefusedAtConnectAndSentNothing()
     {
         var f = FaultFixture.Load();
-        var entity = $"cn-{Run()}";
-        await using (var client = await f.ConnectAsync(f.NoCommitAddrs))
+        var error = await Assert.ThrowsAsync<FelixException>(async () =>
         {
-            var commit = await Assert.ThrowsAsync<FelixException>(() =>
-                client.CommitAsync(f.Tenant, f.Namespace, Bytes(entity), [CommitOp.Publish(f.Stream, Bytes("x"))]));
-            Assert.Equal(FelixStatus.Unsupported, commit.Status);
-
-            var state = await Assert.ThrowsAsync<FelixException>(() =>
-                client.GetStateAsync(f.Tenant, f.Namespace, f.Stream, entity, Bytes(entity)));
-            Assert.Equal(FelixStatus.Unsupported, state.Status);
-        }
+            await using var client = await f.ConnectAsync(f.NoCommitAddrs);
+        });
+        Assert.Contains("0.8 baseline", error.Message);
 
         using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(10) };
         var sent = await http.GetStringAsync(f.ControlUrl + "/no-commit/requests");
@@ -350,28 +343,6 @@ public class CommitFixtureTests
         var error = await Assert.ThrowsAsync<FelixException>(() =>
             client.TrimBeforeAsync(f.Tenant, f.Namespace, f.TrimStream!, 0, 0, long.MaxValue));
         Assert.Equal(FelixStatus.Auth, error.Status);
-    }
-
-    /// <summary>
-    /// A client sends a trim only to a broker that advertised head trims. Against a stub that advertised
-    /// nothing it fails at the call with <see cref="FelixStatus.Unsupported"/>, and the stub's counter
-    /// shows nothing reached it.
-    /// </summary>
-    [NoCommitFixtureFact]
-    [Scenario("head_trim.negotiated")]
-    public async Task ATrimIsRefusedByABrokerThatAdvertisedNoHeadTrims()
-    {
-        var f = FaultFixture.Load();
-        await using (var client = await f.ConnectAsync(f.NoCommitAddrs))
-        {
-            var error = await Assert.ThrowsAsync<FelixException>(() =>
-                client.TrimBeforeAsync(f.Tenant, f.Namespace, f.Stream, 0, 0, 0));
-            Assert.Equal(FelixStatus.Unsupported, error.Status);
-        }
-
-        using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(10) };
-        var sent = await http.GetStringAsync(f.ControlUrl + "/no-commit/requests");
-        Assert.Equal(0, int.Parse(sent.Trim(), System.Globalization.CultureInfo.InvariantCulture));
     }
 
     [FixtureFact]

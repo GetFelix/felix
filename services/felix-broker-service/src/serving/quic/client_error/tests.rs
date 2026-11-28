@@ -1,6 +1,6 @@
 use felix_wire::{ErrorCode, Message, RetryClass};
 
-use super::{CACHE_FULL_REASON, ClientError, ErrorCodeSupport, MOVING_RETRY_AFTER_MS};
+use super::{CACHE_FULL_REASON, ClientError, MOVING_RETRY_AFTER_MS};
 use crate::serving::forward::ForwardError;
 use crate::shards::routing::Reason;
 use felix_replication::quorum::QuorumError;
@@ -156,27 +156,6 @@ fn an_unavailable_shard_names_its_reason() {
 }
 
 #[test]
-fn codes_reach_only_a_client_that_offered_them() {
-    let coded = ClientError::forbidden("forbidden").into_publish_error(3);
-
-    let silent = ErrorCodeSupport::default();
-    silent.negotiate(0, felix_wire::KNOWN_FLAGS);
-    assert_eq!(
-        silent.shape(coded.clone()),
-        Message::publish_error(3, "forbidden")
-    );
-    assert!(silent.binary_ack());
-
-    let asked = ErrorCodeSupport::default();
-    asked.negotiate(
-        felix_wire::FEATURE_ERROR_CODES,
-        felix_wire::ORIGINAL_V1_FLAGS,
-    );
-    assert_eq!(asked.shape(coded.clone()), coded);
-    assert!(!asked.binary_ack());
-}
-
-#[test]
 fn a_write_refused_by_the_fence_is_fenced_and_retryable() {
     use crate::shards::lifecycle::fence::Fenced;
 
@@ -211,20 +190,6 @@ fn a_moving_shard_is_a_retry_with_a_pause() {
     let detail = detail.expect("detail");
     assert_eq!(detail.reason.as_deref(), Some("moving"));
     assert_eq!(detail.retry_after_ms, Some(MOVING_RETRY_AFTER_MS));
-}
-
-/// The detail bit is negotiated on its own: a client that took only the code
-/// bit must not be sent a layout it cannot parse.
-#[test]
-fn ack_detail_reaches_only_a_client_that_offered_it() {
-    let code_only = ErrorCodeSupport::default();
-    code_only.negotiate(0, felix_wire::FLAG_BINARY_PUBLISH_ACK_CODE);
-    assert!(code_only.binary_ack());
-    assert!(!code_only.binary_ack_detail());
-
-    let both = ErrorCodeSupport::default();
-    both.negotiate(0, felix_wire::KNOWN_FLAGS);
-    assert!(both.binary_ack_detail());
 }
 
 /// Each way a head trim is refused has a code a client can act on, not a
@@ -284,32 +249,6 @@ fn every_trim_refusal_has_its_own_code() {
             reason(trim_reason::NOT_DURABLE)
         )
     );
-}
-
-/// A cursor error's trim headers reach only a client that offered
-/// `FEATURE_HEAD_TRIM`; any other client gets the frame it always got.
-#[test]
-fn trim_headers_reach_only_a_client_that_offered_head_trim() {
-    let refused = Message::SubscribeCursorError {
-        reason: felix_wire::CursorErrorReason::TooOld,
-        requested: 0,
-        available: 5,
-        trim_headers: Some(bytes::Bytes::from_static(b"holder-2")),
-    };
-    let old = ErrorCodeSupport::default();
-    old.negotiate(0, felix_wire::ORIGINAL_V1_FLAGS);
-    let shaped = old.shape(refused.clone());
-    assert_eq!(shaped, refused.clone().without_trim_headers());
-    let json = String::from_utf8(shaped.encode().expect("encode").payload.to_vec()).expect("utf8");
-    assert_eq!(
-        json,
-        r#"{"type":"subscribe_cursor_error","reason":"too_old","requested":0,"available":5}"#
-    );
-
-    let new = ErrorCodeSupport::default();
-    new.negotiate(0, felix_wire::ORIGINAL_V1_FLAGS);
-    new.negotiate_hi(felix_wire::FEATURE_HEAD_TRIM);
-    assert_eq!(new.shape(refused.clone()), refused);
 }
 
 /// On Raft, a write the engine took and could not settle is outcome unknown

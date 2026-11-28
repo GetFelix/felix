@@ -564,7 +564,7 @@ jobs:
   # (Taskfile.yml, test:cluster). One cluster per runner, as before: they are
   # load-sensitive, and sharing a runner would make them flaky.
   cluster:
-    name: Cluster tests (${{ matrix.suite }}${{ matrix.engine == 'hybrid' && ', hybrid' || '' }})
+    name: Cluster tests (${{ matrix.suite }})
     needs: changes
     if: needs.changes.outputs.cluster == 'true' && github.event_name != 'workflow_dispatch'
     runs-on: ${{ github.event_name != 'pull_request' && vars.FELIX_SELF_HOSTED_RUNNERS != 'false' && fromJSON('["self-hosted","felix-azure"]') || vars.FELIX_LARGE_RUNNER || 'ubuntu-latest' }}
@@ -575,10 +575,6 @@ jobs:
       fail-fast: false
       matrix:
         suite: [routing, failures, history, rest]
-        # The shard engine a suite runs on (FELIX_TEST_SHARD_ENGINE). Raft
-        # gates; the hybrid runs report only, until the hybrid is deleted.
-        engine: [raft, hybrid]
-    continue-on-error: ${{ matrix.engine == 'hybrid' }}
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -624,7 +620,6 @@ jobs:
       - name: Test
         env:
           FELIX_TEST_TIMEOUT_SCALE: "3"
-          FELIX_TEST_SHARD_ENGINE: ${{ matrix.engine }}
           # Every cluster test copies its broker logs here at teardown; the
           # steps below upload the failing tests' share.
           FELIX_TEST_CLUSTER_LOG_DIR: ${{ runner.temp }}/cluster-logs
@@ -663,7 +658,7 @@ jobs:
         if: failure()
         uses: actions/upload-artifact@v7
         with:
-          name: failed-cluster-logs-${{ matrix.suite }}-${{ matrix.engine }}-${{ github.run_attempt }}
+          name: failed-cluster-logs-${{ matrix.suite }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/failed-cluster-logs.tar.gz
           if-no-files-found: ignore
           retention-days: 7
@@ -699,7 +694,7 @@ jobs:
         uses: swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
 
       - name: Build the broker with Raft shards
-        run: cargo build --locked -p felix-broker-service --bin felix-broker --features raft
+        run: cargo build --locked -p felix-broker-service --bin felix-broker --features raft,fault-injection
 
       - name: Test
         env:
@@ -759,6 +754,12 @@ jobs:
 
       - name: Lint
         run: task lint
+
+      # Peer-partition injection is for the cluster harness. A broker built
+      # without debug assertions or `fault-injection`, as a release is, must
+      # not read FELIX_PEER_PARTITION_FILE.
+      - name: A release broker carries no fault injection
+        run: task check:no-fault-injection
 
       - name: cargo-deny
         run: task deny
@@ -923,7 +924,7 @@ jobs:
       - name: Build the broker and cluster harness
         id: harness
         run: |
-          cargo build --locked -p felix-broker-service --bin felix-broker
+          cargo build --locked -p felix-broker-service --bin felix-broker --features fault-injection
           cargo build --locked -p felix-cluster --bin felix-cluster
 
       # Same installation the release job uses, so the two cannot drift.
@@ -1010,7 +1011,7 @@ jobs:
       # The suite starts these.
       - name: Build the broker and cluster harness
         run: |
-          cargo build --locked -p felix-broker-service --bin felix-broker
+          cargo build --locked -p felix-broker-service --bin felix-broker --features fault-injection
           cargo build --locked -p felix-cluster --bin felix-cluster
 
       # No napi CLI: `napi build` is mostly a rename of this cdylib, and the
@@ -1147,7 +1148,7 @@ jobs:
       - name: Build the broker and cluster harness
         if: matrix.os == 'ubuntu-latest'
         run: |
-          cargo build --locked -p felix-broker-service --bin felix-broker
+          cargo build --locked -p felix-broker-service --bin felix-broker --features fault-injection
           cargo build --locked -p felix-cluster --bin felix-cluster
 
       - name: Scenarios against the fixture

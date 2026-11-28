@@ -14,7 +14,7 @@ on:
       engine:
         description: "Replication engine under test"
         type: choice
-        options: [hybrid, raft]
+        options: [raft]
         default: raft
       members:
         description: "Idle Raft members on one broker"

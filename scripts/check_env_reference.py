@@ -39,7 +39,6 @@ NOT_OPERATIONAL = {
     # The history-checker campaign's seed, length, mode and nemesis.
     # Documented in `docs/history-checker.md`.
     "FELIX_HISTORY_DURATION_SECS",
-    "FELIX_HISTORY_MODE",
     "FELIX_HISTORY_NEMESIS",
     "FELIX_HISTORY_SEED",
     "FELIX_LATENCY_DEMO_FAST",
@@ -47,6 +46,7 @@ NOT_OPERATIONAL = {
     # deliberately not advertised as a production setting.
     "FELIX_BROKER_WRAPPER",
     "FELIX_CLOCK_FAULT_FILE",
+    # Debug and `fault-injection` builds only; a release broker ignores it.
     "FELIX_PEER_PARTITION_FILE",
     "FELIX_STORAGE_BOOT_ID_FILE",
     "FELIX_STORAGE_FAULT_FILE",

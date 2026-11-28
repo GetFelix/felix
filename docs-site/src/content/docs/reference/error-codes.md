@@ -7,7 +7,7 @@ A broker that refuses a request says why with a code and says what the client ma
 
 ## How errors reach a client
 
-Codes are sent only to a client that offered `FEATURE_ERROR_CODES` when it authenticated. Every official client does. Without the feature the broker sends the same failures as plain text and the client falls back to reading the message, which is why a missing code does not mean success.
+Every 0.8 client offers `FEATURE_ERROR_CODES` when it authenticates, and every 0.8 broker sends codes, so a failure always arrives with a code and a retry class. A broker refuses a client that does not offer the whole 0.8 baseline with `below_baseline`.
 
 The code and the retry class travel separately. A client that does not know a code still knows from the class whether sending again is safe, so an unknown code never fails the frame. Act on the class first and on the code second. A broker may send a class other than the default for a code when it knows better, and the class it sends is the one that counts.
 
@@ -50,6 +50,7 @@ The class is the default the broker sends. `Number` is the `u16` a binary publis
 | `stale_width` | 17 | `retry` | The keyed batch was routed by a width the stream does not have on this broker. Nothing was written. | The stream was deleted and created again with a different shard count after the client last asked for its width. | Ask `stream_shards` again, then retry. Only a client that sent `publish_width` gets it. |
 | `feature_not_enabled` | 18 | `fatal` | The request needs a fleet feature that has not been finalized. `detail.reason` names it. Nothing was applied. | A head trim on a cluster that has not finalized `head_trim` (`detail.reason` `head_trim`), or a publish with record headers to a single broker run with `FELIX_RECORD_HEADERS=false` (`detail.reason` `record_headers`). A publish with headers forwarded to an owner that predates them, or that has not yet seen the finalize, is refused the same way. | For a head trim, finalize the feature (`felixctl features finalize head_trim`) once every broker is upgraded. It keeps failing until then. |
 | `stream_has_commits` | 19 | `fatal` | The stream holds atomic commits, whose state lives in the records a trim would remove. Nothing was written. | A head trim on a stream that has taken a `commit`. | Do not trim that stream. Retention still applies to it. |
+| `below_baseline` | 20 | `fatal` | The `auth` did not offer the whole 0.8 baseline. Nothing was applied and the stream is closed. | A client or SDK built for 0.7 or earlier, or one that offers no capabilities. | Upgrade the client to 0.8. The message names the missing bits. |
 
 A code this client does not know is kept as an unknown code with its retry class. `0` is never sent as a number.
 
@@ -142,6 +143,7 @@ All clients pick the exception class from the code, except that an `outcome_unkn
 | `stale_width` | `BrokerError` | `FelixError` | `FelixError` | `FELIX_STATUS_ERROR` (`Error`) |
 | `feature_not_enabled` | `BrokerError` | `FelixError` | `FelixError` | `FELIX_STATUS_ERROR` (`Error`) |
 | `stream_has_commits` | `BrokerError` | `FelixError` | `FelixError` | `FELIX_STATUS_ERROR` (`Error`) |
+| `below_baseline` | `BrokerError` | `FelixError` | `FelixError` | `FELIX_STATUS_ERROR` (`Error`) |
 
 A few errors come from the client rather than the broker and have no code:
 

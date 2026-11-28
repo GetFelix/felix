@@ -49,14 +49,14 @@
 #   RESUME_SPAN=100 RESUME_WORKERS=4 TAIL_SUBS=4 RESUME_HISTORY=20000
 #                 records per resume, resume loops, follower subscribers, records prefilled
 #                 before a resume cell measures (offsets are drawn from them)
-#   SIDES="hybrid raft"   the engines to run, per cell and round. Add "baseline" to measure
-#                 the release build too (needs `BASELINE_REF=v0.7.2 build.sh` first): the
+#   SIDES="raft baseline"   the sides to run, per cell and round. "baseline" measures
+#                 the release build (needs `BASELINE_REF=v0.7.2 build.sh` first): the
 #                 release's broker and control plane, hybrid by construction, with the current
 #                 loadgen. The order of the sides rotates by round, so ROUNDS a multiple of 6
 #                 balances it for two sides or three.
 #   BASELINE_REF=v0.7.2   the tag build.sh built, named in the results (default v0.7.2)
 #   BASELINE_NA="..."   cell ids the baseline cannot run; recorded as n/a, not failed (default none)
-#   ONLY_SIDE=hybrid|raft|baseline   one engine only (a harness check, not a comparison)
+#   ONLY_SIDE=raft|baseline   one engine only (a harness check, not a comparison)
 #   IDLE_GROUPS=2000 IDLE_SHARDS=10 IDLE_BATCH=200 IDLE_BATCH_WAIT_SECS=180 IDLE_SETTLE_SECS=30
 #                 rf3-idle-tput: groups (shards) created on the same brokers that no publisher
 #                 touches, IDLE_SHARDS per stream, created IDLE_BATCH groups at a time. Each batch
@@ -84,7 +84,7 @@ fi
 : "${KEYS:=$((SHARDS * 8))}" "${FANOUT:=4}" "${FANOUT_TOTAL:=200000}"
 : "${KAFKA_RECORDS:=1000000}" "${MQTT_CONNS:=8}" "${MQTT_WINDOW:=64}"
 : "${TAIL_SECS:=30}" "${TAIL_PUBLISHERS:=4}" "${TAIL_IN_FLIGHT:=4}" "${KAFKA_TAIL_RATE:=15000}" "${MQTT_TAIL_RATE:=15000}" "${RESUME_HISTORY:=20000}" "${RESUME_SPAN:=100}" "${RESUME_WORKERS:=4}" "${TAIL_SUBS:=4}"
-: "${SIDES:=hybrid raft}" "${BASELINE_REF:=v0.7.2}" "${BASELINE_NA:=}"
+: "${SIDES:=raft baseline}" "${BASELINE_REF:=v0.7.2}" "${BASELINE_NA:=}"
 : "${SLOT_WAIT_SECS:=3600}" "${QUIET_WAIT_SECS:=300}" "${SETTLE_SECS:=10}" "${REPL_WAIT_SECS:=180}" "${RAFT_OPEN_WAIT_SECS:=30}"
 : "${IDLE_GROUPS:=2000}" "${IDLE_SHARDS:=10}" "${IDLE_BATCH:=200}" "${IDLE_BATCH_WAIT_SECS:=180}" "${IDLE_SETTLE_SECS:=30}"
 for v in IDLE_GROUPS IDLE_SHARDS IDLE_BATCH IDLE_BATCH_WAIT_SECS IDLE_SETTLE_SECS; do
@@ -109,7 +109,13 @@ read -ra BOXES <<< "$BOXES"
 read -ra SIDE_LIST <<< "${ONLY_SIDE:-$SIDES}"
 WANT_BASELINE=0
 for sd in "${SIDE_LIST[@]}"; do
-  case "$sd" in hybrid|raft) ;; baseline) WANT_BASELINE=1 ;; *) echo "!! unknown side $sd" >&2; exit 2 ;; esac
+  case "$sd" in
+    raft) ;;
+    baseline) WANT_BASELINE=1 ;;
+    # The hybrid was removed: this tree's broker refuses FELIX_SHARD_ENGINE=hybrid.
+    hybrid) echo "!! side hybrid: the hybrid engine was removed; compare raft with baseline" >&2; exit 2 ;;
+    *) echo "!! unknown side $sd" >&2; exit 2 ;;
+  esac
 done
 CP_BOX=${BOXES[0]}
 log() { printf '%s %s\n' "$(date -u +%H:%M:%S)" "$*"; }

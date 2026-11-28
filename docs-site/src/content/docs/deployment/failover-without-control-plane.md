@@ -3,6 +3,15 @@ title: "Failover without the control plane"
 description: "How a shard's replicas elect a new leader themselves when its leader dies while the control plane is down, what you see when it happens, its limits, and how to turn it on."
 ---
 
+:::caution
+This page describes the replica election of the hybrid engine in 0.7.0. The
+hybrid is retired: Raft is the only shard engine, a Raft group elects its own
+leader, and the settings below (`FELIX_INTERNAL_ELECTION`, `FELIX_INTERNAL_FENCE`,
+`FELIX_UNIFIED_FENCE`, the suspicion and election timers) are ignored and
+reported at start. See [Retired variables](/reference/environment-variables/#retired-variables).
+Nothing on this page needs doing on a current broker.
+:::
+
 Normally the control plane decides every failover. When a shard's leader dies,
 the control plane picks a follower and names it the new leader. If the control
 plane is down at that moment, nobody can name one, and the shard stops taking
@@ -187,24 +196,18 @@ the outage began.
 Set
 [`FELIX_START_WITHOUT_CONTROLPLANE=true`](/reference/environment-variables/#felix_start_without_controlplane)
 to let it rejoin. It then starts from what the control plane last told it,
-kept in its data directory, votes, and follows its shards' leaders. With the unified fence on, the default, that vote does not
+kept in its data directory, votes, and follows its shards' leaders. The unified fence is always on, so that vote does not
 count toward a promotion: the broker attests nothing until it reaches the
 control plane and its restore check has run. A failover that needs its vote
-waits for the control plane. `FELIX_UNIFIED_FENCE=0` restores the older rule,
-where the restarted broker's vote counts during the outage. Until the
+waits for the control plane. Until the
 control plane is back and it registers, it serves no client and does not stand
 for election. It does not answer pings either, so followers of a shard it led
 treat it as down and elect one of themselves. It starts this way only if the
 control plane is down rather than refusing it, and only from the data
 directory the control plane last registered.
 
-Under `FELIX_SHARD_ENGINE=raft` the two settings mean the same. With the
-unified fence the restarted broker opens no Raft member until the control
-plane answers. With `FELIX_UNIFIED_FENCE=0` its members vote during the
-outage and do not lead until it registers. That trusts the run witness in
-place of the control plane's check of the directory, so do not start a copy
-of a live data directory on a second machine under the same node id without
-`felix-broker rotate-storage-id` first.
+On Raft the restarted broker opens no Raft member, and so does not vote,
+until the control plane answers.
 
 It also starts this way only after a restart that keeps `/dev/shm`: the broker
 process restarting on the same Linux machine without a reboot, or its

@@ -92,18 +92,18 @@ def test_a_trim_without_the_grant_is_an_authorization_failure(client, fixture):
 
 
 @pytest.mark.scenario("head_trim.negotiated")
-def test_a_trim_is_refused_by_a_broker_that_advertised_none(fixture):
+def test_a_broker_below_the_baseline_is_refused_and_sent_no_trim(fixture):
     addrs = fixture.get("no_commit_addrs")
     control_url = fixture.get("control_url")
     if not addrs or not control_url:
         pytest.skip("the fixture file has no no_commit_addrs or control_url")
-    with felix.Client(
-        addrs,
-        tenant_id=fixture["tenant_id"],
-        token=fixture["token"],
-        ca_file=fixture["ca_file"],
-    ) as bare:
-        with pytest.raises(felix.TrimError):
+    with pytest.raises(felix.FelixError):
+        with felix.Client(
+            addrs,
+            tenant_id=fixture["tenant_id"],
+            token=fixture["token"],
+            ca_file=fixture["ca_file"],
+        ) as bare:
             bare.trim_before(
                 fixture["tenant_id"], fixture["namespace"], fixture["durable_stream"], 0, 0, 0
             )

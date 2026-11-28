@@ -16,6 +16,8 @@ use felix_cluster::{Cluster, ClusterConfig, Fault, StreamSpec};
 use felix_wire::{AckMode, ErrorCode, RetryClass};
 use serial_test::serial;
 
+#[path = "raft_shards/cancel.rs"]
+mod cancel;
 #[path = "raft_shards/moves.rs"]
 mod moves;
 #[path = "raft_shards/reform.rs"]
@@ -1685,16 +1687,16 @@ async fn metric(cluster: &Cluster, node: &str, series: &str) -> f64 {
         .sum()
 }
 
-/// **A broker on another engine is refused at start.** One of three Raft
-/// brokers comes back on the hybrid engine with an empty disk, as a
-/// replaced broker would. The control plane's identity names Raft, so the
-/// broker exits before it opens anything and says why, and the Raft pair
-/// keeps serving the shard. (Brokers that got past that check, under a
-/// control plane with no identity route, refuse each other instead:
+/// **A broker asked for the hybrid is refused at start.** One of three Raft
+/// brokers comes back with `FELIX_SHARD_ENGINE=hybrid` and an empty disk, as
+/// an old manifest would start a replaced broker. The hybrid was removed, so
+/// the broker exits before it opens anything and says why, and the Raft pair
+/// keeps serving the shard. (Brokers of an older build, under a control plane
+/// with no identity route, refuse each other instead:
 /// `shards/engine_match.rs`.)
 #[tokio::test]
 #[serial]
-async fn a_broker_on_another_engine_is_refused_at_start() {
+async fn a_broker_asked_for_the_hybrid_is_refused_at_start() {
     if !opted_in() {
         return;
     }
@@ -1717,10 +1719,10 @@ async fn a_broker_on_another_engine_is_refused_at_start() {
     cluster
         .restart_node(&hybrid)
         .await
-        .expect_err("a hybrid broker started under a Raft control plane");
+        .expect_err("a broker started on the hybrid");
     let said = std::fs::read_to_string(&log).unwrap_or_default();
     assert!(
-        said.contains("runs shard engine hybrid but the cluster was formed with raft"),
+        said.contains("FELIX_SHARD_ENGINE=hybrid is refused"),
         "the refused broker does not say why: {said}"
     );
 
@@ -2635,8 +2637,9 @@ async fn voters_become(cluster: &Cluster, want: &[String], within: Duration) {
 }
 
 /// **An operator move outside a Raft shard's set swaps the leader's seat.**
-/// The destination joins as a learner, the voters change through joint
-/// consensus, the old leader hands its leadership on before it leaves, and
+/// The destination joins as a learner, the voters change one at a time
+/// (openraft 0.10 writes no joint entry for a single-voter change, #3402),
+/// the old leader hands its leadership on before it leaves, and
 /// the new broker ends up leading with every acknowledged record, including
 /// those published during the change.
 #[tokio::test]
@@ -3793,324 +3796,6 @@ async fn a_raft_hand_over_keeps_every_kind_of_acknowledged_write() {
         .await
         .leader;
     assert_holds_acknowledged(&cluster, &leader, &jobs).await;
-    cluster.shutdown().await;
-}
-
-/// What a subscriber read: each event, and where it subscribed again.
-#[derive(Debug, Clone)]
-enum Read {
-    /// Subscribed again from this offset after its subscription ended.
-    From(u64),
-    Event {
-        offset: u64,
-        skipped_before: u64,
-        payload: Vec<u8>,
-    },
-}
-
-/// Checks that `read` names every offset once and in order, and that every
-/// jump between events is one the broker said holds no event. Returns each
-/// event's offset and payload.
-fn read_in_order(read: &[Read]) -> Vec<(u64, Vec<u8>)> {
-    let mut next = 0u64;
-    let mut events = Vec::new();
-    for step in read {
-        match step {
-            Read::From(at) => assert_eq!(*at, next, "subscribed again from {at}, not {next}"),
-            Read::Event {
-                offset,
-                skipped_before,
-                payload,
-            } => {
-                assert_eq!(
-                    *offset,
-                    next + skipped_before,
-                    "after {next} the subscriber saw {offset} with {skipped_before} \
-                     skipped before it: a gap no one was told of, or an offset again"
-                );
-                next = offset + 1;
-                events.push((*offset, payload.clone()));
-            }
-        }
-    }
-    events
-}
-
-#[test]
-fn a_gap_no_one_was_told_of_fails_the_read_check() {
-    let event = |offset, skipped_before| Read::Event {
-        offset,
-        skipped_before,
-        payload: Vec::new(),
-    };
-    let told = [event(1, 1), event(2, 0), Read::From(3), event(5, 2)];
-    assert_eq!(read_in_order(&told).len(), 3);
-    for wrong in [
-        vec![event(0, 0), event(2, 0)],
-        vec![event(0, 0), event(0, 0)],
-        vec![event(0, 0), Read::From(0), event(0, 0)],
-    ] {
-        let caught = std::panic::catch_unwind(|| read_in_order(&wrong));
-        assert!(caught.is_err(), "{wrong:?} passed");
-    }
-}
-
-/// **A Raft move undone after the voters changed loses no acknowledged
-/// write, and its subscriber sees every offset once, in order.** Four
-/// brokers, one three-copy shard. A publisher and a subscriber from offset 0
-/// run throughout an operator move to the broker outside the set, which
-/// runs until the group reports the new voters, and a move back that
-/// undoes it. Each blank and membership entry of those changes takes a
-/// stream offset, as the offset is the Raft index, so the subscriber must
-/// be told of each (`skipped_before`) and must see no other gap. The final
-/// set holds every acknowledged record at its offset, and every record the
-/// subscriber saw is the one the log holds there. The Raft half of
-/// `routing/operator_moves.rs`'s `cancelling_a_fenced_move_loses_no_acknowledged_write`.
-#[tokio::test]
-#[serial]
-async fn a_raft_move_cancelled_after_the_voters_changed_loses_no_acknowledged_write() {
-    use std::sync::atomic::{AtomicBool, Ordering};
-    use std::sync::{Arc, Mutex};
-
-    if !opted_in() {
-        return;
-    }
-    let converged_within = Duration::from_secs(180);
-    let cluster = Cluster::start(four_broker_raft_cluster())
-        .await
-        .expect("start cluster");
-    allow_follower_reads(&cluster).await;
-    let (old, followers, _) = stored_set(&cluster).await;
-    let mut members = followers.clone();
-    members.push(old.clone());
-    voters_become(&cluster, &members, converged_within).await;
-    let outsider = cluster
-        .node_ids()
-        .into_iter()
-        .find(|node| !members.contains(node))
-        .expect("a broker outside the set");
-    let mut before = Sent::default();
-    for n in 0..10 {
-        publish_tried(&cluster, &followers[0], &format!("before-{n}"), &mut before).await;
-    }
-
-    let (addrs, token) = (cluster.broker_addrs(), cluster.client_token());
-    let connect = || felix_cluster::client::connect_cluster(&addrs, &cluster.tenant_id, &token);
-    let stop = Arc::new(AtomicBool::new(false));
-    let done_reading = Arc::new(AtomicBool::new(false));
-    let read: Arc<Mutex<Vec<Read>>> = Arc::default();
-    let reader = Arc::new(connect().await.expect("reader"));
-    let subscriber = {
-        let (read, done) = (Arc::clone(&read), Arc::clone(&done_reading));
-        let (tenant, namespace) = (cluster.tenant_id.clone(), cluster.namespace.clone());
-        tokio::spawn(async move {
-            let subscribe = |from| {
-                let (reader, tenant, namespace) = (&reader, &tenant, &namespace);
-                async move {
-                    reader
-                        .subscribe_from(
-                            tenant,
-                            namespace,
-                            STREAM,
-                            Some(felix_client::StartPosition::Offset(from)),
-                        )
-                        .await
-                }
-            };
-            let mut subscription = subscribe(0).await.expect("subscribe");
-            let mut next = 0u64;
-            while !done.load(Ordering::Relaxed) {
-                let step =
-                    tokio::time::timeout(Duration::from_secs(1), subscription.next_event()).await;
-                match step {
-                    Ok(Ok(Some(event))) => {
-                        let offset = event.offset.expect("a durable stream carries offsets");
-                        next = offset + 1;
-                        read.lock().expect("read").push(Read::Event {
-                            offset,
-                            skipped_before: event.skipped_before,
-                            payload: event.payload.to_vec(),
-                        });
-                    }
-                    // Quiet, not ended.
-                    Err(_) => {}
-                    // The subscription follows the shard itself; one that
-                    // still ends resumes where it stopped.
-                    Ok(Ok(None) | Err(_)) => loop {
-                        if done.load(Ordering::Relaxed) {
-                            break;
-                        }
-                        if let Ok(resumed) = subscribe(next).await {
-                            read.lock().expect("read").push(Read::From(next));
-                            subscription = resumed;
-                            break;
-                        }
-                        tokio::time::sleep(Duration::from_millis(200)).await;
-                    },
-                }
-            }
-        })
-    };
-
-    let during: Arc<Mutex<Sent>> = Arc::default();
-    let writer = connect().await.expect("writer");
-    let publisher = {
-        let (during, stop) = (Arc::clone(&during), Arc::clone(&stop));
-        let (tenant, namespace) = (cluster.tenant_id.clone(), cluster.namespace.clone());
-        tokio::spawn(async move {
-            let mut i = 0usize;
-            while !stop.load(Ordering::Relaxed) {
-                let payload = format!("during-{i}").into_bytes();
-                i += 1;
-                let published = writer
-                    .publish(
-                        &tenant,
-                        &namespace,
-                        STREAM,
-                        payload.clone(),
-                        AckMode::PerMessage,
-                    )
-                    .await;
-                {
-                    let mut sent = during.lock().expect("sent");
-                    match published {
-                        Ok(offset) => sent.acked.push((
-                            offset.expect("a durable stream acknowledges with an offset"),
-                            payload,
-                        )),
-                        Err(err) => sent.failed(payload, &err),
-                    }
-                }
-                tokio::time::sleep(Duration::from_millis(5)).await;
-            }
-        })
-    };
-    let acked_so_far = || during.lock().expect("sent").acked.len();
-
-    tokio::time::sleep(Duration::from_millis(300)).await;
-    let step = cluster
-        .start_move(STREAM, 0, &outsider)
-        .await
-        .expect("a move outside the set is taken");
-    assert_eq!(step, "raft_replace");
-    let mut moved = followers.clone();
-    moved.push(outsider.clone());
-    voters_become(&cluster, &moved, converged_within).await;
-
-    // Undone by a move back. The old leader is outside the set now, so this
-    // is a seat move of its own.
-    let step = felix_cluster::wait::until_some(
-        Duration::from_secs(60),
-        "the move back to be taken",
-        || async { cluster.start_move(STREAM, 0, &old).await.ok() },
-    )
-    .await
-    .unwrap_or_else(|err| {
-        panic!("the move back to {old} was never taken: {err:#}");
-    });
-    assert_eq!(step, "raft_replace");
-    voters_become(&cluster, &members, converged_within).await;
-    felix_cluster::wait::until(converged_within, "the old leader to lead again", || async {
-        cluster
-            .metric(&old, "felix_broker_raft_shards_led")
-            .await
-            .ok()
-            .flatten()
-            .is_some_and(|led| led >= 1.0)
-    })
-    .await
-    .expect("leadership follows placement back");
-    let back_at = acked_so_far();
-    felix_cluster::wait::until(
-        Duration::from_secs(60),
-        "publishes acknowledged after the move back",
-        || async { acked_so_far() >= back_at + 10 },
-    )
-    .await
-    .expect("the shard takes writes once it is back");
-    stop.store(true, Ordering::Relaxed);
-    publisher.await.expect("publisher");
-
-    let mut sent = before;
-    {
-        let during = during.lock().expect("sent");
-        sent.acked.extend(during.acked.iter().cloned());
-        sent.in_doubt.extend(during.in_doubt.iter().cloned());
-        sent.refused.extend(during.refused.iter().cloned());
-    }
-    let owed: Vec<Vec<u8>> = sent.acked.iter().map(|(_, p)| p.clone()).collect();
-    felix_cluster::wait::until(
-        Duration::from_secs(60),
-        "the subscriber to see every acknowledged record",
-        || async {
-            let read = read.lock().expect("read");
-            let seen: std::collections::HashSet<&[u8]> = read
-                .iter()
-                .filter_map(|step| match step {
-                    Read::Event { payload, .. } => Some(payload.as_slice()),
-                    Read::From(_) => None,
-                })
-                .collect();
-            owed.iter().all(|payload| seen.contains(payload.as_slice()))
-        },
-    )
-    .await
-    .expect("the subscriber gets every acknowledged record");
-    done_reading.store(true, Ordering::Relaxed);
-    subscriber.await.expect("subscriber");
-
-    let read = read.lock().expect("read").clone();
-    let seen: BTreeMap<u64, Vec<u8>> = read_in_order(&read).into_iter().collect();
-    let skipped: u64 = read
-        .iter()
-        .map(|step| match step {
-            Read::Event { skipped_before, .. } => *skipped_before,
-            Read::From(_) => 0,
-        })
-        .sum();
-    println!(
-        "{} records seen, {skipped} offsets skipped as not events, {} acknowledged",
-        seen.len(),
-        sent.acked.len()
-    );
-    for (offset, payload) in &sent.acked {
-        assert_eq!(
-            seen.get(offset),
-            Some(payload),
-            "the subscriber did not see {:?} at its acknowledged offset {offset}",
-            String::from_utf8_lossy(payload)
-        );
-    }
-    for node in &members {
-        let held: BTreeMap<u64, Vec<u8>> = replay_at(&cluster, node, &owed)
-            .await
-            .into_iter()
-            .map(|(offset, payload)| (offset.expect("a durable stream carries offsets"), payload))
-            .collect();
-        for (offset, payload) in &sent.acked {
-            assert_eq!(
-                held.get(offset),
-                Some(payload),
-                "{node} does not hold {:?} at its acknowledged offset {offset}",
-                String::from_utf8_lossy(payload)
-            );
-        }
-        // The replay reads to the last acknowledged record, so compare up to
-        // there: what the subscriber saw past it may not be replayed yet.
-        let last = held.keys().next_back().copied().unwrap_or(0);
-        for (offset, payload) in seen.range(..=last) {
-            assert_eq!(
-                held.get(offset),
-                Some(payload),
-                "the subscriber saw {:?} at {offset}, which {node} does not hold there",
-                String::from_utf8_lossy(payload)
-            );
-        }
-        let payloads: Vec<Vec<u8>> = held.into_values().collect();
-        if let Err(wrong) = sent.check(node, &payloads) {
-            panic!("{wrong}");
-        }
-    }
     cluster.shutdown().await;
 }
 

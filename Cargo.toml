@@ -54,6 +54,14 @@ debug = "line-tables-only"
 [profile.dev.package."*"]
 debug = false
 
+# A debug build with `debug_assertions` off, so test-only code gated on them is
+# compiled out as in a release build, without the release profile's LTO.
+# `task check:no-fault-injection` builds the broker this way.
+[profile.no-debug-assertions]
+inherits = "dev"
+debug-assertions = false
+debug = false
+
 [profile.release]
 # The hot path spans crate boundaries — felix-wire encode/decode, felix-broker
 # fanout, and the broker service's QUIC handlers are separate crates — so

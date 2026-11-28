@@ -250,10 +250,6 @@ pub(super) async fn cache_get(
         return Ok(Step::Next);
     }
     let lookup_start = t_now_if(sample);
-    // Only a client that offered the bit is sent a version, so any other
-    // client's answer is byte-identical to what it always was.
-    let versioned =
-        felix_wire::supports_feature(session.peer_features, felix_wire::FEATURE_CACHE_CONDITIONAL);
     let read = crate::serving::cache_routing::apply_cache_request(
         broker,
         (&publish_ctx.engine, publish_ctx.quorum_timeout),
@@ -268,11 +264,7 @@ pub(super) async fn cache_get(
         &namespace,
         &cache,
         &key,
-        if versioned {
-            crate::serving::forward::CacheRequest::GetVersioned
-        } else {
-            crate::serving::forward::CacheRequest::Get
-        },
+        crate::serving::forward::CacheRequest::GetVersioned,
         None,
     )
     .await;
