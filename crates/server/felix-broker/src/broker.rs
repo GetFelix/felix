@@ -651,30 +651,6 @@ impl Broker {
         Ok(())
     }
 
-    /// Put the head-trim marker on disk before a replicated batch holding a
-    /// trim record is stored here: a follower, a promoted leader taking
-    /// records, and a shard's new copy all store trims without going through
-    /// [`Broker::trim_before_at`]. Once the marker is down this is one atomic
-    /// load; before, a scan of the batch's marks.
-    pub async fn mark_head_trimmed_for(
-        &self,
-        marks: &[felix_wire::internal::ProducerMark],
-    ) -> Result<()> {
-        if self
-            .head_trim_marked
-            .load(std::sync::atomic::Ordering::Acquire)
-        {
-            return Ok(());
-        }
-        if marks
-            .iter()
-            .any(|mark| matches!(mark, felix_wire::internal::ProducerMark::Trim { .. }))
-        {
-            self.mark_head_trimmed().await?;
-        }
-        Ok(())
-    }
-
     /// Put the data directory's record-headers marker on disk before a
     /// record with a key or headers block is stored, so the node can refuse
     /// a fleet that has not finalized `record_headers`
@@ -700,20 +676,6 @@ impl Broker {
         .map_err(|err| BrokerError::Storage(format!("record the record-headers marker: {err}")))?
         .map_err(BrokerError::from)?;
         self.headers_marked.store(true, Ordering::Release);
-        Ok(())
-    }
-
-    /// Put the record-headers marker on disk before a replicated batch whose
-    /// records carry header blocks is stored here, as a follower, a promoted
-    /// leader catching up or a shard's new copy all do without going through
-    /// [`Broker::claim_publish`].
-    pub async fn mark_headers_stored_for(
-        &self,
-        headers: Option<&[Option<bytes::Bytes>]>,
-    ) -> Result<()> {
-        if headers.is_some_and(|headers| headers.iter().any(Option::is_some)) {
-            self.mark_headers_stored().await?;
-        }
         Ok(())
     }
 

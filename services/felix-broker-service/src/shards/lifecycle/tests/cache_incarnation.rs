@@ -130,7 +130,7 @@ async fn a_cache_assignment_opens_only_its_own_incarnation() {
     let store = store(&broker);
 
     store
-        .open(&cache_key(), 4, 7, true)
+        .open(&cache_key(), 4, 7)
         .await
         .expect_err("opened another incarnation's log");
 

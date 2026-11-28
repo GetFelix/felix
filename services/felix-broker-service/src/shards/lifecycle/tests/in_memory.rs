@@ -95,10 +95,7 @@ async fn place(store: &DurableShardStore, shard: u32, generation: u64) {
         .may_lead(&key(shard), generation, 0, true)
         .await
         .expect("may lead");
-    store
-        .open(&key(shard), generation, 0, true)
-        .await
-        .expect("open");
+    store.open(&key(shard), generation, 0).await.expect("open");
 }
 
 async fn place_and_release(store: &DurableShardStore, generation: u64) {

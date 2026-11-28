@@ -11,10 +11,7 @@ use crate::serving::quic::client_error::ClientError;
 ///
 /// A shard this broker owns but whose lease has lapsed is refused like a
 /// write: another broker may be leading it, and a reader here would follow a
-/// log that one has moved past. The refusal is retryable. A shard whose
-/// readers need no lease ([`ShardFence::sessions_lease_free`]) is served
-/// anyway: they only ever see its committed mark. A shard this broker learned
-/// has a newer leader is refused too.
+/// log that one has moved past. The refusal is retryable.
 ///
 /// A Raft shard is served on its leader once the term is open there, and on
 /// a follower that knows its leader, from the log up to what it committed.
@@ -25,8 +22,6 @@ use crate::serving::quic::client_error::ClientError;
 /// This is checked before a reader registers, so it cannot see an ending that
 /// lands between it and the registration. [`stopped_serving`] is the check
 /// that can, made once the reader is registered.
-///
-/// [`ShardFence::sessions_lease_free`]: crate::shards::lifecycle::fence::ShardFence::sessions_lease_free
 ///
 /// A redirect needs the owner's *client-facing* address, which is a different
 /// listener from the one brokers forward to each other on and is known only
@@ -101,11 +96,11 @@ pub(crate) fn redirect_for(
         dispatched => dispatched,
     };
     // A shard another engine runs is held by that engine's term. This
-    // broker's lease and the hybrid's fence say nothing about it.
-    if let crate::shards::routing::Dispatch::Local { generation } = dispatched
+    // broker's lease says nothing about it.
+    if let crate::shards::routing::Dispatch::Local { .. } = dispatched
         && let Some(ingress) = ingress
         && ingress.engine_dispatch(&key).is_none()
-        && let Some(refusal) = read_refusal(ingress.fence(), &key, generation)
+        && let Some(refusal) = read_refusal(ingress.fence())
     {
         return Some(refusal);
     }
@@ -164,25 +159,15 @@ pub(crate) fn stopped_serving(
         return Some(moved_away(key));
     }
     match ingress.dispatch(key) {
-        crate::shards::routing::Dispatch::Local { generation } => {
-            read_refusal(fence, key, generation)
-        }
+        crate::shards::routing::Dispatch::Local { .. } => read_refusal(fence),
         // The routes trail the fence, which already answered for a release.
         _ => None,
     }
 }
 
-/// Why reads of `key`, served here at `generation`, must be refused, if they
-/// must.
-fn read_refusal(
-    fence: &crate::shards::lifecycle::fence::ShardFence,
-    key: &crate::shards::ShardKey,
-    generation: u64,
-) -> Option<Message> {
-    if fence.is_deposed(key, generation) {
-        return Some(moved_away(key));
-    }
-    if !fence.lease_valid() && !fence.sessions_lease_free(key, generation) {
+/// Why reads of a shard served here must be refused, if they must.
+fn read_refusal(fence: &crate::shards::lifecycle::fence::ShardFence) -> Option<Message> {
+    if !fence.lease_valid() {
         use crate::cluster::lease::metrics;
         metrics::record_refusal(metrics::BOUNDARY_READ);
         return Some(

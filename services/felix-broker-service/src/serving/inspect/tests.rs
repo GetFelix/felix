@@ -79,7 +79,6 @@ fn each_phase_that_does_not_serve_says_why() {
     for (at, reason) in [
         (Phase::Unassigned, "opening"),
         (Phase::Opening, "opening"),
-        (Phase::Fencing, "fencing"),
         (Phase::Failed, "failed"),
         (Phase::Draining, "draining"),
         (Phase::Closed, "draining"),
@@ -98,15 +97,13 @@ fn a_failed_open_carries_its_error() {
 }
 
 #[test]
-fn a_lapsed_lease_stops_an_active_leader_unless_its_followers_decide() {
+fn a_lapsed_lease_stops_an_active_leader() {
     let mut observed = leading(Phase::Active);
     observed.lease = Some(Lease {
         valid: false,
         remaining: Duration::ZERO,
     });
-    assert_eq!(why(&build(observed.clone())), (false, Some("lease_lapsed")));
-    observed.lease_free = true;
-    assert_eq!(why(&build(observed)), (true, None));
+    assert_eq!(why(&build(observed)), (false, Some("lease_lapsed")));
 }
 
 #[test]
