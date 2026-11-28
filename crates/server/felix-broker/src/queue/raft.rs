@@ -380,7 +380,8 @@ impl<C: GroupConsensus> RaftGroups<C> {
     pub async fn ack(&self, key: &GroupKey, offset: u64, deadline: Instant) -> Result<()> {
         let (_fresh, mut guard) = self.current(key, deadline).await?;
         check_handed_out(&guard.as_ref().expect("current hydrates").tracker, offset)?;
-        self.settle(key, &mut guard, offset, deadline).await
+        self.settle(key, &mut guard, offset, Settled::Acked, deadline)
+            .await
     }
 
     /// See [`GroupReader::inherit_below`](super::GroupReader::inherit_below).
@@ -687,23 +688,34 @@ impl<C: GroupConsensus> RaftGroups<C> {
             .expect("applied")
             .tracker
             .take_redriven(offset);
-        self.settle(key, guard, offset, deadline).await
+        self.settle(key, guard, offset, Settled::Dead, deadline)
+            .await
     }
 
-    /// Settle `offset` in the tracker, then write what that closed.
+    /// Settle `offset` in the tracker, then write what that closed. Every
+    /// write has applied before this returns, so an ack answered OK is in
+    /// the table and no later leader hands the record out again.
     async fn settle(
         &self,
         key: &GroupKey,
         guard: &mut OwnedMutexGuard<Option<Tracked>>,
         offset: u64,
+        how: Settled,
         deadline: Instant,
     ) -> Result<()> {
         let held = guard.as_mut().expect("hydrated");
+        // Above the cursor an ack closes no run, so no advance records it.
+        // A dead letter is on disk already.
+        let ahead = how == Settled::Acked && offset > held.tracker.committed();
         let advanced = held.tracker.ack(offset);
         let redriven = held.tracker.take_redriven(offset);
         let cre = held.cre;
         if redriven {
             let entry = GroupOp::FinishRedrive { cre, offset };
+            self.write_held(key, guard, entry, offset, deadline).await?;
+        }
+        if ahead {
+            let entry = GroupOp::Ack { cre, offset };
             self.write_held(key, guard, entry, offset, deadline).await?;
         }
         if let Some(to) = advanced {
@@ -863,10 +875,15 @@ impl<C: GroupConsensus> RaftGroups<C> {
             } else {
                 GroupTracker::moved_to(cursor, self.max_attempts)
             };
-            // A dead letter above the cursor is settled: the advance over it
-            // may not have been written before the leader changed.
+            // A dead letter or an ack above the cursor is settled: the
+            // advance over it may not have been written before the leader
+            // changed.
             if let Some(state) = table.group(&key.group) {
-                for &offset in state.dead.range(cursor..) {
+                for &offset in state
+                    .dead
+                    .range(cursor..)
+                    .chain(state.acked.range(cursor..))
+                {
                     tracker.ack(offset);
                 }
             }
@@ -990,6 +1007,13 @@ impl<C: GroupConsensus> RaftGroups<C> {
             fresh.groups.write().untrack(&key.group);
         }
     }
+}
+
+/// How [`RaftGroups::settle`] came to settle a record.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Settled {
+    Acked,
+    Dead,
 }
 
 fn shard_id(key: &GroupKey) -> ShardId {

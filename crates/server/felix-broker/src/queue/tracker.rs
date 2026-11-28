@@ -56,7 +56,7 @@ pub(crate) struct GroupTracker {
     /// counting an attempt. Cleared with the claim.
     reclaimed: BTreeSet<u64>,
     /// Claims rebuilt from a Raft shard's table and still standing. Many may
-    /// be acks ahead of the cursor that were never written, so they do not
+    /// be held by consumers that went with the old leader, so they do not
     /// count against `max_in_flight`: a new leader would otherwise answer
     /// every poll empty until they lapse. Cleared with the claim.
     restored: BTreeSet<u64>,

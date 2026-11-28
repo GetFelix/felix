@@ -966,8 +966,8 @@ fn a_restored_claim_below_the_cursor_counts_only_on_a_redrive() {
     assert_eq!(group.claim(6, 5, now, VIS).offsets, [5]);
 }
 
-/// Restored claims do not count against the in-flight cap: many may be acks
-/// ahead of the cursor that were never written, and a new leader must not
+/// Restored claims do not count against the in-flight cap: many may be held
+/// by consumers that went with the old leader, and a new leader must not
 /// answer every poll empty until they lapse.
 #[test]
 fn restored_claims_leave_the_in_flight_cap_free() {

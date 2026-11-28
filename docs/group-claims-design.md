@@ -35,16 +35,20 @@ answers only once that entry has applied (`queue/raft.rs:351`). An extension wri
 a one-record `Claim` the same way (`queue/raft.rs:437`).
 
 The table keeps every standing claim until the cursor passes it, a dead letter
-replaces it, or a seek voids it (`queue/table.rs:33`, `:196`). Acks ahead of the
-cursor and nacks are not written, so their records stay in the table as
-claims. A new leader rebuilds every table claim as held for its full
+replaces it, or a seek voids it (`queue/table.rs:33`, `:196`). Nacks are not
+written, so their records stay in the table as claims. A new leader rebuilds every table claim as held for its full
 visibility from the moment it hydrates (`queue/raft.rs:876`), with its attempt
 count, on connection 0 so a named member's `reclaim` takes it back
 (`queue/tracker.rs:501`). The snapshot carries the claims (table version 2,
 `queue/table.rs:229`).
 
-Nacks, delayed nacks and acks above a gap are leader memory already
-(`queue/raft.rs:402`, `queue/tracker.rs:47`).
+Nacks and delayed nacks are leader memory already (`queue/raft.rs:402`).
+An ack is not: every ack answered OK is durable, so it is never handed out
+again, even after a change of leader. An ack that closes a run writes the
+`Advance`; one above a gap writes a `GroupOp::Ack` (op 8) of its own, which
+the table keeps until the cursor passes it and a new leader takes as settled
+(`queue/raft.rs:717`, `queue/table.rs:223`, `queue/raft.rs:885`). The ack is
+answered only after that entry has applied.
 
 ### The issue's claims
 
@@ -109,9 +113,8 @@ holds today, and each needs a rule or a line in the docs.
    refused as `group_claim_lapsed` on the new one. The consumer stops or
    polls again.
 
-Two things get better. A nacked record is owed again at once on the new
-leader, where today the table holds it as claimed for a full visibility. An
-ack above a gap is redelivered at once rather than after a visibility.
+One thing gets better. A nacked record is owed again at once on the new
+leader, where today the table holds it as claimed for a full visibility.
 
 ## Design
 
@@ -155,9 +158,9 @@ differently depending on which broker won the election.
 Two new operations in the `GroupEntry` payload (`queue/entry.rs`):
 
 ```text
-op 8 configure
+op 9 configure
   u8   claims: 0 leader, 1 durable
-op 9 attempts                                     (creation token, as ops 0 to 4)
+op 10 attempts                                    (creation token, as ops 0 to 4)
   u32  records, then per record ascending: u64 offset, u32 attempts
 ```
 
@@ -175,10 +178,10 @@ counts for redeliveries only (see "Poll"). The fold keeps them in a new
 per-group `attempts: BTreeMap<u64, u32>`, pruned like claims at every
 advance, dead letter and seek.
 
-The table moves to version 3: per group, the `attempts` map after the
+The table moves to version 4: per group, the `attempts` map after the
 claims, and after the groups the `settings` map in name order. No released build writes group entries (they are 0.8
 only, and 0.8 starts fresh with no upgrade from 0.7), so the change drops
-version 1 and 2 decoding along with it.
+versions 1 to 3 decoding along with it.
 
 `Claim` (op 7) stays, and is written only for `durable` groups and by the
 hand-over below.
@@ -211,9 +214,9 @@ answered only while it led. `durable`: today's one-record `Claim`.
 
 ### Ack, nack, dead letter, redrive, discard, seek, delete
 
-Unchanged in both modes. An ack writes the `Advance` it closes (and
-`FinishRedrive` for a redriven record) and answers once applied, so an
-acknowledged advance is never lost. Nacks stay leader memory. A dead letter
+Unchanged in both modes. An ack writes the `Advance` it closes, or an `Ack`
+when it is above a gap (and `FinishRedrive` for a redriven record), and
+answers once applied, so an acknowledged ack is never handed out again. Nacks stay leader memory. A dead letter
 is written before the advance over it. Seek and delete are durable and void
 every claim, leader-held or durable.
 
@@ -475,7 +478,7 @@ so group entries stop using up stream offsets. Three consequences here:
 1. **Spec.** `FelixRaftGroups.tla` with claims, lapse, the setting, the new
    properties and failing knobs; `FelixRaftSessions.tla` comment and config.
    TLC in Actions. No code.
-2. **Format.** `Configure` and `Attempts` ops, table version 3,
+2. **Format.** `Configure` and `Attempts` ops, table version 4,
    round-trip and fold tests. Every group still writes
    claims, so no behaviour changes. Tests include the snapshot-build fold
    (`raft/machine.rs:817`): a snapshot built over `Configure` and `Attempts`

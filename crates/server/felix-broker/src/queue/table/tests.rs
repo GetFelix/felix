@@ -452,17 +452,32 @@ fn a_stale_or_orphan_claim_changes_nothing() {
 #[test]
 fn a_table_without_claims_loads() {
     let mut table = busy_table();
+    table.groups.values_mut().for_each(|state| {
+        state.claims.clear();
+        state.acked.clear();
+    });
+    assert_eq!(GroupTable::decode(&older(&table, 1)), Some(table));
+}
+
+/// A table written before acks above the cursor were replicated still
+/// loads, with none.
+#[test]
+fn a_table_without_acks_loads() {
+    let mut table = busy_table();
     table
         .groups
         .values_mut()
-        .for_each(|state| state.claims.clear());
-    let mut bytes = Vec::new();
-    bytes.push(1);
+        .for_each(|state| state.acked.clear());
+    assert_eq!(GroupTable::decode(&older(&table, 2)), Some(table));
+}
+
+/// `table`, whose acks (and for version 1 claims) are empty, as `version`
+/// encoded it.
+fn older(table: &GroupTable, version: u8) -> Vec<u8> {
     let full = table.encode();
     let mut rest = &full[1..];
-    // Rewrite each group without its (empty) claims count.
-    let mut body = Vec::new();
-    body.extend_from_slice(&rest[..20]);
+    let mut bytes = vec![version];
+    bytes.extend_from_slice(&rest[..20]);
     rest = &rest[20..];
     for _ in 0..table.groups.len() {
         let name = u32::from_be_bytes(rest[..4].try_into().unwrap()) as usize;
@@ -471,11 +486,35 @@ fn a_table_without_claims_loads() {
             let count = u32::from_be_bytes(rest[len..len + 4].try_into().unwrap()) as usize;
             len += 4 + 8 * count;
         }
-        body.extend_from_slice(&rest[..len]);
+        bytes.extend_from_slice(&rest[..len]);
+        // Skip the (empty) acks count.
+        assert_eq!(rest[len..len + 4], [0; 4]);
         rest = &rest[len + 4..];
+        let claims = claims_len(rest);
+        if version > 1 {
+            bytes.extend_from_slice(&rest[..claims]);
+        } else {
+            assert_eq!(claims, 4, "version 1 has no claims");
+        }
+        rest = &rest[claims..];
     }
-    bytes.extend_from_slice(&body);
-    assert_eq!(GroupTable::decode(&bytes), Some(table));
+    assert!(rest.is_empty());
+    bytes
+}
+
+/// The length of the claims section `bytes` starts with.
+fn claims_len(bytes: &[u8]) -> usize {
+    let u32_at = |at: usize| u32::from_be_bytes(bytes[at..at + 4].try_into().unwrap()) as usize;
+    let mut len = 4;
+    for _ in 0..u32_at(0) {
+        len += 8 + 4 + 8 + 1;
+        if bytes[len - 1] == 1 {
+            for _ in 0..2 {
+                len += 4 + u32_at(len);
+            }
+        }
+    }
+    len
 }
 
 /// A table folded from every kind of write.
@@ -489,6 +528,7 @@ fn busy_table() -> GroupTable {
     log.apply("a", GroupOp::Redrive { cre, offset: 3 });
     log.apply("a", GroupOp::Advance { cre, to: 7 });
     log.apply("a", claim(cre, Some("w"), &[(8, 1), (9, 2)]));
+    log.apply("a", GroupOp::Ack { cre, offset: 11 });
     log.apply("b", GroupOp::Advance { cre, to: 1 });
     log.apply("b", GroupOp::Delete);
     log.apply(
@@ -509,9 +549,10 @@ fn a_table_round_trips() {
     assert_eq!(GroupTable::decode(&table.encode()), Some(table.clone()));
     let empty = GroupTable::default();
     assert_eq!(GroupTable::decode(&empty.encode()), Some(empty));
-    assert_eq!(table.last_delete(), 9);
-    assert_eq!(table.applied(), 10);
+    assert_eq!(table.last_delete(), 10);
+    assert_eq!(table.applied(), 11);
     assert_eq!(table.group("a").expect("a").claims.len(), 2);
+    assert_eq!(table.group("a").expect("a").acked.len(), 1);
 }
 
 /// Every prefix, a trailing byte, an unknown version or creation kind, and
@@ -526,7 +567,7 @@ fn a_damaged_table_is_refused() {
     long.push(0);
     assert_eq!(GroupTable::decode(&long), None);
     let mut version = bytes.to_vec();
-    version[0] = 3;
+    version[0] = 4;
     assert_eq!(GroupTable::decode(&version), None);
     // Group "a": header 21, name 4 + 1, token 17 (kind last).
     let mut by = bytes.to_vec();
@@ -538,4 +579,46 @@ fn a_damaged_table_is_refused() {
     unordered[dead + 7] = 6;
     unordered[dead + 15] = 5;
     assert_eq!(GroupTable::decode(&unordered), None);
+}
+
+/// **An ack above the cursor is part of the folded state** until the cursor
+/// passes it, and it ends the record's claim, so a new leader takes the
+/// record as settled. A seek voids it; a late one below the cursor and one
+/// from a gone incarnation change nothing.
+#[test]
+fn acks_above_the_cursor_fold_until_the_cursor_passes() {
+    let cre = hydrated(0);
+    let mut log = Log::new();
+    log.apply("g", GroupOp::Advance { cre, to: 0 });
+    log.apply("g", claim(cre, Some("a"), &[(0, 1), (1, 1), (2, 1)]));
+    log.apply("g", GroupOp::Ack { cre, offset: 2 });
+    log.apply("g", GroupOp::Ack { cre, offset: 1 });
+    let state = log.state("g").expect("group");
+    assert_eq!(state.acked, BTreeSet::from([1, 2]));
+    assert_eq!(state.claims.keys().copied().collect::<Vec<_>>(), [0]);
+    // A claim never stands on an acked record.
+    log.apply("g", claim(cre, None, &[(2, 2)]));
+    assert!(!log.state("g").expect("group").claims.contains_key(&2));
+
+    log.apply("g", GroupOp::Advance { cre, to: 2 });
+    assert_eq!(log.state("g").expect("group").acked, BTreeSet::from([2]));
+    log.apply("g", GroupOp::Ack { cre, offset: 1 });
+    assert_eq!(log.state("g").expect("group").acked, BTreeSet::from([2]));
+
+    log.apply(
+        "g",
+        GroupOp::Seek {
+            to: 0,
+            if_new: false,
+        },
+    );
+    assert!(log.state("g").expect("group").acked.is_empty());
+    // From before the seek: dropped.
+    assert_eq!(
+        log.apply("g", GroupOp::Ack { cre, offset: 4 }),
+        Folded::Dropped {
+            tracker_dropped: false
+        }
+    );
+    assert!(log.state("g").expect("group").acked.is_empty());
 }

@@ -590,20 +590,20 @@ mark.
 
 Bits 31, 30 and 29 mark a consumer group's write on a Raft stream shard: a
 cursor advance, a dead letter, a redrive or its finish, a discard, a seek, a
-delete or a claim. The record has no tag, so the step to the next record is still
+delete, a claim, or an ack above the cursor. The record has no tag, so the step to the next record is still
 `36 + payload_len`. The body is the broker's group entry (`GroupEntry` in
 `felix-broker`):
 
 ```text
 u8   version (1)
 u8   op: 0 advance, 1 dead letter, 2 redrive, 3 finish redrive,
-         4 discard, 5 seek, 6 delete, 7 claim
+         4 discard, 5 seek, 6 delete, 7 claim, 8 ack
 u32  group name length, then the name (UTF-8, never empty)
-creation token                                    (ops 0 to 4, 7)
+creation token                                    (ops 0 to 4, 7, 8)
   u64  term
   u64  index
   u8   by: 0 hydrate, 1 seek
-u64  offset: the advance's or seek's target, or the record (ops 0 to 5)
+u64  offset: the advance's or seek's target, or the record (ops 0 to 5, 8)
 u8   flags: bit 0 if_new                          (op 5 only)
 claim                                             (op 7 only)
   u64  visibility in milliseconds
