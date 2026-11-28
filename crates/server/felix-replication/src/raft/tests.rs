@@ -198,6 +198,8 @@ struct Net {
     written_reports: parking_lot::Mutex<Vec<String>>,
     /// Every message handed to the transport.
     sent: std::sync::atomic::AtomicU64,
+    /// Heartbeats sent on their own because a read waited on them.
+    alone_beats: std::sync::atomic::AtomicU64,
     /// A cut broker that comes back just after the next heartbeat to it is
     /// refused, and when it did.
     heal_after_beat: parking_lot::Mutex<Option<String>>,
@@ -274,6 +276,9 @@ impl RaftTransport for Net {
     async fn send(&self, mut request: RaftRequest) -> Result<RaftReply, Refused> {
         use std::sync::atomic::Ordering::Relaxed;
         self.sent.fetch_add(1, Relaxed);
+        if request.beat.alone {
+            self.alone_beats.fetch_add(1, Relaxed);
+        }
         if let Request::Written { from, .. } = &request.body {
             self.written_reports.lock().push(from.broker.to_string());
         }

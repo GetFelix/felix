@@ -213,23 +213,23 @@ impl ClientError {
             if let Some(broker) = cause.downcast_ref::<felix_broker::BrokerError>() {
                 return Self::classify_broker(broker, message);
             }
-            if let Some(quorum) = cause.downcast_ref::<felix_replication::quorum::QuorumError>() {
+            if let Some(quorum) = cause.downcast_ref::<felix_replication::engine::CommitError>() {
                 let code = match quorum {
-                    felix_replication::quorum::QuorumError::TimedOut { .. } => {
+                    felix_replication::engine::CommitError::TimedOut { .. } => {
                         ErrorCode::QuorumTimeout
                     }
-                    felix_replication::quorum::QuorumError::LeadershipLost { .. } => {
+                    felix_replication::engine::CommitError::LeadershipLost { .. } => {
                         ErrorCode::LeadershipLost
                     }
                     // Refused before anything was appended: sent again, it
                     // cannot be written twice.
-                    felix_replication::quorum::QuorumError::NotAppended { .. } => {
+                    felix_replication::engine::CommitError::NotAppended { .. } => {
                         return Self::new(ErrorCode::ShardUnavailable, message)
                             .with_reason(felix_wire::shard_unavailable_reason::NOT_READY);
                     }
                     // A known refusal, as the hybrid's is.
-                    felix_replication::quorum::QuorumError::OffsetMismatch { .. }
-                    | felix_replication::quorum::QuorumError::TooLarge { .. } => {
+                    felix_replication::engine::CommitError::OffsetMismatch { .. }
+                    | felix_replication::engine::CommitError::TooLarge { .. } => {
                         return Self::invalid(message).with_retry(RetryClass::Fatal);
                     }
                 };

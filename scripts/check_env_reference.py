@@ -56,9 +56,6 @@ NOT_OPERATIONAL = {
     # Debug builds only: the fleet features a broker reports, so a cluster
     # test can run one broker as an older or newer build.
     "FELIX_TEST_FLEET_FEATURES",
-    # Debug builds only: a file that holds a candidate's pre-vote while it
-    # exists, so a test can start two candidates' rounds together.
-    "FELIX_TEST_PRE_VOTE_GATE",
     # Overrides the Raft election timeout's upper bound (which is also how
     # long a leader's write lease lasts) for the client conformance fixture.
     "FELIX_TEST_RAFT_ELECTION_MAX_MS",

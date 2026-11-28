@@ -24,8 +24,7 @@ use anyhow::Context;
 use felix_broker::{Broker, StreamLog};
 use felix_common::fleet::{self, FleetGate};
 use felix_common::random::{HashMap, HashSet};
-use felix_replication::driver::WriteFence;
-use felix_replication::quorum::ShardServing;
+use felix_replication::engine::WriteFence;
 use felix_replication::raft::{
     GroupId, GroupRuntime, MemberId, NotBlank, OpenError, RaftEngine, Target, TargetVersion,
 };
@@ -324,7 +323,7 @@ impl RaftShards {
             #[cfg(test)]
             stall_ends: tokio::sync::watch::Sender::new(false),
         });
-        runtime.report_to(Arc::clone(&leading), Arc::clone(&leading));
+        runtime.report_to(Arc::clone(&leading));
         if let Some(hub) = broker.cache_watches() {
             runtime.report_cache_changes(Arc::clone(hub) as Arc<dyn felix_storage::CacheObserver>);
         }
@@ -2458,13 +2457,8 @@ impl Leading {
     fn forget(&self, key: &ShardKey) {
         self.terms.lock().remove(key);
     }
-}
 
-impl ShardServing for Leading {
-    fn replicated(&self, _key: &ShardKey) -> bool {
-        true
-    }
-
+    /// The term this broker leads `key` in and serves, if it does.
     fn generation(&self, key: &ShardKey) -> Option<u64> {
         self.terms
             .lock()
@@ -2472,13 +2466,6 @@ impl ShardServing for Leading {
             .filter(|lead| lead.open)
             .map(|lead| lead.term)
     }
-
-    /// A Raft leader's hold on a shard is its term, not this broker's lease.
-    fn lease_valid(&self) -> bool {
-        true
-    }
-
-    fn record_ack_refusal(&self) {}
 }
 
 impl WriteFence for Leading {

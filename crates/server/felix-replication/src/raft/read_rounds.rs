@@ -28,6 +28,35 @@ struct State<A> {
     pending: Option<watch::Sender<Option<A>>>,
 }
 
+/// How many reads of a group are waiting on a read-index round. While one
+/// is, the group's heartbeats go on their own: in a batch, a member that
+/// answers its heartbeat later than the batch's straggler wait is counted as
+/// not answered, and the round then waits out the whole lease for a majority
+/// (`docs/per-shard-raft.md`, "Reads").
+#[derive(Default)]
+pub(crate) struct Reading(AtomicU64);
+
+/// One read counted in [`Reading`] until dropped.
+pub(crate) struct Waiting(Arc<Reading>);
+
+impl Reading {
+    /// Count a read as waiting until the guard is dropped.
+    pub(crate) fn enter(self: &Arc<Self>) -> Waiting {
+        self.0.fetch_add(1, Ordering::AcqRel);
+        Waiting(Arc::clone(self))
+    }
+
+    pub(crate) fn waiting(&self) -> bool {
+        self.0.load(Ordering::Acquire) > 0
+    }
+}
+
+impl Drop for Waiting {
+    fn drop(&mut self) {
+        self.0.0.fetch_sub(1, Ordering::AcqRel);
+    }
+}
+
 /// A read's place in a round asked after [`ReadRounds::enter`] returned.
 pub(crate) struct Entered<A> {
     answer: watch::Receiver<Option<A>>,

@@ -27,7 +27,7 @@
 use std::io;
 
 use bytes::{BufMut, Bytes, BytesMut};
-use felix_broker::GroupTable;
+use felix_broker::{GroupTable, TableRefused};
 use felix_storage::disk_log::{CarriedFloor, ForgottenCuts};
 
 use super::codec::invalid;
@@ -129,7 +129,7 @@ impl StreamSnapshot {
         } else {
             decode_cuts(cuts)?
         };
-        let groups = GroupTable::decode(&body[4 + len..]).ok_or_else(damaged)?;
+        let groups = GroupTable::decode(&body[4 + len..]).map_err(refused)?;
         // `encode` writes an empty table in the older layout, so one state
         // has one encoding.
         if groups == GroupTable::default() {
@@ -167,7 +167,7 @@ fn decode_purge(data: &[u8]) -> io::Result<StreamSnapshot> {
     let floor = u64_of(take(8)?);
     let len = u32_of(take(4)?);
     let headers = Bytes::copy_from_slice(take(len)?);
-    let groups = GroupTable::decode(body).ok_or_else(damaged)?;
+    let groups = GroupTable::decode(body).map_err(refused)?;
     Ok(StreamSnapshot {
         cuts,
         groups,
@@ -182,6 +182,10 @@ fn decode_purge(data: &[u8]) -> io::Result<StreamSnapshot> {
 fn decode_cuts(data: &[u8]) -> io::Result<ForgottenCuts> {
     ForgottenCuts::decode(data)
         .ok_or_else(|| invalid("a stream snapshot's forgotten cut batches do not parse".into()))
+}
+
+fn refused(err: TableRefused) -> io::Error {
+    invalid(format!("a stream snapshot's group table is refused: {err}"))
 }
 
 fn damaged() -> io::Error {

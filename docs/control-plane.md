@@ -2707,7 +2707,7 @@ after the fence.
 | `felix_shard_move_steps_total{step}` | move steps written: `stage`, `fence`, `cut_over`, `abandon`, `halted` (the destination halted), `timed_out`, `stalled` (a restore's copy stopped moving), `reseat`, `restore`, `seat`, `take_pending_set` (a pending replica set taken on the leader's report), `pending_set_timed_out`, `pending_set_dropped`, `pending_set_cancelled`, `pending_set_member_replaced` (one dropped), `readmit` (a replaced copy named by its new storage id and held as a learner), `election_refused` (a leader named again above a generation promised to an elected broker), `set_unknown` (a leader named again above a generation whose set before it could not learn, or that a newer ballot holds), `raft_leader` (a Raft shard's leader named another member), `raft_leader_landed` and `raft_leader_timed_out` (an operator's move of a Raft shard's leader within its set landed, or was given up after two minutes), `raft_top_up` (a member added to a Raft shard's set short of its factor), `raft_fill` (a Raft shard placed short, whose group never formed, written in full), `raft_move_dropped` (a hybrid move left on a Raft shard dropped), and an operator's `cancel`, `retake`, `discard` and `owner_replaced` (an in-memory shard given a new owner) |
 | `felix_shards_under_replicated` | shards with fewer copies on serving brokers than their replication factor (for a Raft shard, copies its group reports voting); non-zero for longer than the restore delay plus a copy means no broker can take the copy, or placement is paused |
 | `felix_shard_replicas_missing` | the copies those shards are missing between them |
-| `felix_shard_replicas_halted` | copies whose leader reports it has stopped shipping to them; counted as missing, kept out of placement, and replaced after the restore delay |
+| `felix_shard_replicas_halted` | not reported on Raft, so it stays 0: no Raft path fills `ReplicaReport.halted`. Watch `felix_broker_raft_shards_stopped_on_storage_error` on the broker |
 | `felix_shard_moves_timed_out_total` | moves and follower replacements abandoned at the move timeout, operator leader moves on Raft shards given up (`raft_leader_timed_out`), and restores dropped as `stalled`; a steady count means a copy that cannot finish |
 | `felix_shard_moves_waiting` | moves that could not advance in the last pass: a destination not catching up, a leader not reporting drained, a move limit holding a drain back, or a move for balance held while the cluster recovers |
 | `felix_shards_on_internal_nodes` | shards with a copy on an internal node and no live node outside the set to take its place |
@@ -3311,7 +3311,7 @@ Control plane:
 | `felix_shards_zone_unspread` | shards whose copies share a zone although brokers in other zones could hold them; non-zero means a zone is out of room or a spreading move is waiting for a slot |
 | `felix_shards_under_replicated` | shards with fewer copies on serving brokers than their replication factor |
 | `felix_shard_replicas_missing` | the copies under-replicated shards are missing between them |
-| `felix_shard_replicas_halted` | copies whose leader has stopped shipping to them |
+| `felix_shard_replicas_halted` | not reported on Raft; stays 0 |
 | `felix_shard_move_steps_total{step}` | planned-move steps written |
 | `felix_shard_moves_timed_out_total` | moves and follower replacements abandoned at the move timeout, and restores dropped as `stalled` |
 | `felix_shard_moves_waiting` | moves that could not advance in the last pass |
@@ -3343,7 +3343,6 @@ Broker side:
 | `felix_broker_shard_watch_resyncs_total{reason}` | forced resnapshots: `gap_in_history` or `sequence_reset` |
 | `felix_broker_shard_watch_failures_total` | polls that failed outright |
 | `felix_broker_shard_watch_withheld_rereads_total` | snapshots taken to read again a Raft target withheld from a shard with none held |
-| `felix_broker_shard_confirmed_reads_total{outcome}` | confirmed assignment reads for a copy with no promise: `assigned`, `unassigned`, `not_served` (the routing view decides alone) or `unavailable` |
 | `felix_broker_shard_move_seconds` | histogram: a move toward this broker, from being named its destination to serving the shard |
 | `felix_broker_shard_switchover_seconds` | histogram: a move toward this broker, from the fence to serving the shard |
 | `felix_broker_shard_move_held_total` | publishes held for a move's cut-over instead of refused |

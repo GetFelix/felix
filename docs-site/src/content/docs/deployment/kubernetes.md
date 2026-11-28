@@ -70,7 +70,7 @@ cosign verify ghcr.io/getfelix/felix-broker:0.7.3 \
 | Component | Runs as | Listens on | Reached by |
 | --- | --- | --- | --- |
 | Control plane | StatefulSet of 3+ under Raft | `8443` TCP (REST API), `8080` TCP (metrics, `/ready`), `9095` TCP (bootstrap, only while enabled) | Brokers and operators on `8443`; under Raft, members reach each other on `8444`, token-authenticated, which nothing else needs |
-| Broker | StatefulSet, one volume per pod | `5000` UDP (client QUIC, `ports.listeners` consecutive ports from there), `5001` UDP (internal QUIC), `8080` TCP (metrics, `/ready`, `/replication/halted`) | Clients on `5000`; other brokers on `5001`; Prometheus on `8080` |
+| Broker | StatefulSet, one volume per pod | `5000` UDP (client QUIC, `ports.listeners` consecutive ports from there), `5001` UDP (internal QUIC), `8080` TCP (metrics, `/ready`) | Clients on `5000`; other brokers on `5001`; Prometheus on `8080` |
 
 The `8080` metrics ports have no authentication. They expose names of tenants,
 streams and brokers, so keep them reachable from Prometheus and operators only,
@@ -412,11 +412,11 @@ helm upgrade felix deploy/helm/felix -n felix --reuse-values \
   --set controlplane.image.digest=sha256:... --set broker.image.digest=sha256:...
 kubectl -n felix rollout status statefulset/felix-controlplane
 kubectl -n felix rollout status statefulset/felix-broker
-# Between brokers, and after: nothing halted.
-kubectl -n felix exec felix-broker-0 -- wget -qO- http://127.0.0.1:8080/replication/halted
+# Between brokers, and after: no copy stopped on a storage error.
+kubectl -n felix exec felix-broker-0 -- wget -qO- http://127.0.0.1:8080/metrics | grep felix_broker_raft_shards_stopped
 ```
 
-`[]` is the answer to want. A release that changes `INTERNAL_VERSION` is not
+`0` is the answer to want. A release that changes `INTERNAL_VERSION` is not
 rolling: scale brokers to zero, upgrade, scale back.
 
 From 0.7 to 0.8 nothing rolls. A 0.8 control-plane pod refuses its 0.7
@@ -461,13 +461,12 @@ kubectl -n felix delete pvc data-felix-broker-2 --wait=false
 kubectl -n felix delete pod felix-broker-2
 ```
 
-It is done when the replacement is ready, `felix_broker_replication_lag_records`
-on each leader it follows has fallen to where it was before, and
-`/replication/halted` is empty on every broker:
+It is done when the replacement is ready and
+`felix_broker_raft_shards_stopped_on_storage_error` is `0` on every broker:
 
 ```bash
 for i in 0 1 2; do
-  kubectl -n felix exec felix-broker-$i -- wget -qO- http://127.0.0.1:8080/replication/halted
+  kubectl -n felix exec felix-broker-$i -- wget -qO- http://127.0.0.1:8080/metrics | grep felix_broker_raft_shards_stopped
 done
 ```
 

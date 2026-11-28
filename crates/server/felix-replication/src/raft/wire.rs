@@ -315,6 +315,7 @@ pub(crate) fn decode_request(mut buf: Bytes) -> io::Result<RaftRequest> {
     let beat = Beat {
         gap: take_u64(&mut buf)?,
         seq: take_u64(&mut buf)?,
+        alone: false,
     };
     let report = match take_u8(&mut buf)? {
         0 => Ask::Nothing,

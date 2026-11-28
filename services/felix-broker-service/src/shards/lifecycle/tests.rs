@@ -2,15 +2,9 @@
 use super::*;
 
 mod cache_incarnation;
-mod dropped_hold;
-mod every_change;
 mod held_open;
 mod in_memory;
 mod off_runtime;
-mod promotion;
-mod refused;
-mod unclean;
-mod unheard;
 
 fn key(shard: u32) -> ShardKey {
     ShardKey {
@@ -700,38 +694,6 @@ mod driver {
         let own = own.lock().await;
         assert_eq!(own.phase(&key(0)), Phase::Failed);
         assert!(!own.may_serve(&key(0)));
-    }
-
-    /// **A failed open is reported refused, naming no node, once** (#1914).
-    /// The same assignment never retries it, so unreported the shard stays
-    /// down on a live leader until something else changes the assignment.
-    #[tokio::test]
-    async fn a_failed_open_is_reported_refused() {
-        use felix_replication::driver::WriteFence;
-        let own = Mutex::new(lifecycle());
-        let store = RecordingStore::default();
-        store.fail_open.store(true, Ordering::Release);
-
-        reconcile(&own, &store, &assignments(&[(0, "broker-a", 1)])).await;
-
-        {
-            let own = own.lock().await;
-            assert_eq!(own.phase(&key(0)), Phase::Failed);
-            assert_eq!(
-                own.fence().refused_at(&key(0)),
-                Some(felix_common::membership::RefusedGeneration::set_unknown(1)),
-            );
-        }
-
-        // Named one up and failing again, it is not reported again: a fault
-        // that lasts would otherwise bump the generation every placement pass.
-        reconcile(&own, &store, &assignments(&[(0, "broker-a", 2)])).await;
-        let own = own.lock().await;
-        assert_eq!(own.phase(&key(0)), Phase::Failed);
-        assert_eq!(
-            own.fence().refused_at(&key(0)),
-            Some(felix_common::membership::RefusedGeneration::set_unknown(1)),
-        );
     }
 
     #[tokio::test]

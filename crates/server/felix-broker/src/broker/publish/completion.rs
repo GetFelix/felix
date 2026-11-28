@@ -757,11 +757,15 @@ pub(crate) async fn deliver_from_log(handle: &StreamHandle) -> Result<LogDeliver
         return Ok(LogDelivery::CaughtUp);
     }
     // A jump left out of `generation_start_run` the records just below `next`
-    // that hold no event, so the first batch counts them from the log.
+    // that hold no event, so the first batch counts them from the log. The
+    // mark stays until a batch carries the count: a pass whose bound covers
+    // only entries holding no record (a new term's blank, a membership
+    // change) delivers nothing, and the next pass must count from the log
+    // again.
     let mut skip_from = next;
-    if next < bound && state.jumped() {
+    let mut jumped = next < bound && state.jumped();
+    if jumped {
         skip_from = log.event_end(0, next).await?;
-        state.clear_jumped();
     }
     while next < bound {
         #[cfg(test)]
@@ -829,6 +833,9 @@ pub(crate) async fn deliver_from_log(handle: &StreamHandle) -> Result<LogDeliver
             skip_from = next;
             let mut completion = Completion::released(handle.clone(), batch, log_capacity);
             if completion.append().is_ok() {
+                if std::mem::take(&mut jumped) {
+                    state.clear_jumped();
+                }
                 completion.deliver_unless_led().await;
             }
         }

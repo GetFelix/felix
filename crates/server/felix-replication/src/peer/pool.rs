@@ -237,13 +237,6 @@ impl PeerPool {
         Ok(self.connection(node_id, addr).await?.identity())
     }
 
-    /// Whether this broker offers the promotion fence to its peers.
-    pub(crate) fn offers_fence(&self) -> bool {
-        self.config
-            .capabilities()
-            .contains(crate::promotion::REQUIRED)
-    }
-
     /// What each peer said in its latest handshake with this broker, in
     /// either direction. Hand it to the listener so inbound handshakes count.
     pub fn known_capabilities(&self) -> &KnownCapabilities {
@@ -648,18 +641,6 @@ pub trait PeerRequester: Sync {
         self.capabilities(node_id, addr)
     }
 
-    /// Whether this broker offers `ELECTION`, so may send set fields to a
-    /// peer that offered it too. A requester that cannot tell does not.
-    fn offers_election(&self) -> bool {
-        false
-    }
-
-    /// Whether this broker offers the promotion fence to its peers. A
-    /// requester that cannot tell does not.
-    fn offers_fence(&self) -> bool {
-        false
-    }
-
     /// The storage identity and incarnation `node_id` gave in its
     /// handshake, reaching it if need be. A peer that gave neither cannot be
     /// told apart from a wiped copy of itself.
@@ -736,14 +717,6 @@ impl<T: PeerRequester + Send> PeerRequester for std::sync::Arc<T> {
         T::probe_capabilities(self, node_id, addr)
     }
 
-    fn offers_election(&self) -> bool {
-        T::offers_election(self)
-    }
-
-    fn offers_fence(&self) -> bool {
-        T::offers_fence(self)
-    }
-
     fn identity(
         &self,
         node_id: &str,
@@ -805,16 +778,6 @@ impl PeerRequester for PeerPool {
         addr: SocketAddr,
     ) -> std::result::Result<PeerCapabilities, PeerError> {
         PeerPool::probe_capabilities(self, node_id, addr).await
-    }
-
-    fn offers_election(&self) -> bool {
-        self.config
-            .capabilities()
-            .contains(PeerCapabilities::ELECTION)
-    }
-
-    fn offers_fence(&self) -> bool {
-        PeerPool::offers_fence(self)
     }
 
     async fn identity(

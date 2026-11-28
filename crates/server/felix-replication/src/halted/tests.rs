@@ -40,22 +40,3 @@ fn a_pass_replaces_the_listing_rather_than_adding_to_it() {
     halted.publish(Vec::new());
     assert!(halted.snapshot().is_empty());
 }
-
-#[test]
-fn every_halt_names_a_remedy_and_a_stable_reason() {
-    // The reason is what a runbook keys off, so it is asserted literally; the
-    // enum's Display is prose and may be reworded.
-    for (halt, expected) in [
-        (Halt::Diverged, "diverged"),
-        (Halt::Fenced, "fenced"),
-        (Halt::NeedsBootstrap, "needs_bootstrap"),
-    ] {
-        let (reason, remedy) = describe(halt);
-        assert_eq!(reason, expected);
-        assert!(
-            remedy.len() > 40,
-            "{reason} has no remedy worth reading, which leaves the operator \
-             exactly where the bare count did",
-        );
-    }
-}

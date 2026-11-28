@@ -225,17 +225,14 @@ again after the heal.
 Run a batch of seeds, or replay one:
 
 ```bash
-cargo test -p felix-sim --test seeds -- --ignored --exact seeds
-FELIX_SIM_SEED=<n> task sim:replay
+cargo test -p felix-sim --test raft_seeds -- --ignored --exact raft_seeds
+FELIX_SIM_SEED=<n> task sim:raft-replay
 ```
 
 `FELIX_SIM_SEEDS` sets how many seeds the batch runs (default 4) and
-`FELIX_SIM_SEED_START` the first (default 1). `FELIX_SIM_HISTORY=<file>` writes
-a run's trace, one event per line, so two runs can be diffed. A failing seed prints the replay
-command. Each seed takes one to ten seconds of real time in a release build
-and longer in a debug one, because starting 50 to 200 shards on every broker
-is CPU work no virtual clock skips, so run them one at a time on a busy
-machine. A run that stops making progress ends
+`FELIX_SIM_SEED_START` the first (default 1). A failing seed prints the replay
+command. Each seed takes a few seconds of real time in a release build and
+longer in a debug one, so run them one at a time on a busy machine. A run that stops making progress ends
 with a `stalled` finding instead of hanging.
 
 A nightly workflow, `dst-nightly.yml`, runs 2000 Raft seeds, and 250 more with each of
@@ -246,18 +243,18 @@ hand with 2000 seeds in each of the Raft modes, which is how the release gate ru
 `docs/simulation.md` has the inputs.
 
 A replay injects the same faults at the same virtual times and sends the same
-client operations. `task sim:replay` builds with
+client operations. `task sim:raft-replay` builds with
 `RUSTFLAGS="--cfg tokio_unstable"`, which lets tokio seed `select!`, so the
 replay is the same run event for event. A plain `cargo test` build leaves
 `select!` unseeded and the brokers' interleaving can differ, so a failure may
 take a few replays to show again. CI runs `task sim:determinism` on every pull
-request: seeds 1 to 20 run twice each in one process, seed 1 is replayed in two
-separate processes, and the job fails on the first event that differs. It
-blocks merging. The `seeds` test, seeds 1 to 4, is ignored in the workspace
-tests and runs in its own job, which does not block merging until the open
-liveness bugs it finds are fixed.
-Seeds that expose a bug are pinned as ignored tests named after their issue,
-and [`docs/simulation.md`](https://github.com/GetFelix/felix/blob/main/docs/simulation.md)
+request: seeds 1 to 20 run twice each in one process, seed 1 is run in two
+separate processes and their trace hashes compared, and the job fails on the first
+difference. It
+blocks merging. The `raft_seeds` batch is ignored in the workspace tests and
+runs in its own CI job.
+Seeds that expose a bug are pinned as tests, and
+[`docs/simulation.md`](https://github.com/GetFelix/felix/blob/main/docs/simulation.md)
 lists the ones that fail today.
 
 ## The cluster harness

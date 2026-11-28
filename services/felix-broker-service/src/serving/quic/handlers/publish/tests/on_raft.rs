@@ -45,7 +45,7 @@ async fn leader_of(
     let assigned = fixture::assigned(orders.clone(), fixture::INCARNATION);
     fixture::take_formed(&shards, assigned).await;
     fixture::until("the term is served", || shards.leading(&orders).is_some()).await;
-    let engine = Arc::new(StreamEngine::new(None, Some(fixture::ingress(&shards))));
+    let engine = Arc::new(StreamEngine::new(Some(fixture::ingress(&shards))));
     engine.set_raft(Arc::clone(&shards));
     let config = BrokerConfig {
         pub_workers_per_conn: 1,

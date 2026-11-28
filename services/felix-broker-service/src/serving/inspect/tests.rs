@@ -1,6 +1,5 @@
 use std::time::Duration;
 
-use felix_replication::status::{FenceStatus, FollowerStatus, ShardStatus};
 use felix_router::{NodeRef, Route};
 
 use super::*;
@@ -141,128 +140,6 @@ fn a_follower_or_a_stranger_is_not_assigned_here() {
     assert_eq!(why(&view), (false, Some("not_assigned_here")));
 }
 
-/// The case the design calls out: a promoted leader none of whose replicas
-/// takes the fence.
-#[test]
-fn a_leader_stuck_fencing_names_who_took_it() {
-    let mut observed = leading(Phase::Fencing);
-    observed.status = Some(ShardStatus {
-        generation: 42,
-        tail: None,
-        followers: vec![],
-        fence: Some(FenceStatus {
-            took: vec![],
-            pending: vec!["broker-b".to_string(), "broker-c".to_string()],
-            attempts: 4,
-            retry_at: None,
-            why: Some("0 of 2 replicas took the fence".to_string()),
-        }),
-        drain_pending: false,
-        behind: false,
-    });
-    observed.fence_retry_in = Some(Duration::from_secs(2));
-    let view = build(observed);
-    assert_eq!(why(&view), (false, Some("fencing")));
-    assert_eq!(
-        view.detail.as_deref(),
-        Some("0 of 2 replicas took the fence")
-    );
-    let fence = view.fence.expect("fence");
-    assert_eq!(fence.attempts, 4);
-    assert_eq!(fence.retry_in_ms, Some(2000));
-    assert_eq!(fence.pending, ["broker-b", "broker-c"]);
-    let states: Vec<_> = view
-        .replicas
-        .iter()
-        .map(|r| (r.node_id.as_str(), r.fence, r.state.as_str()))
-        .collect();
-    assert_eq!(
-        states,
-        [
-            ("broker-b", Some(false), "fencing"),
-            ("broker-c", Some(false), "fencing")
-        ]
-    );
-}
-
-/// A fence recorded for an earlier promotion is not this one's.
-#[test]
-fn a_fence_from_another_generation_is_not_reported() {
-    let mut observed = leading(Phase::Fencing);
-    observed.status = Some(ShardStatus {
-        generation: 40,
-        tail: None,
-        followers: vec![],
-        fence: Some(FenceStatus {
-            took: vec!["broker-b".to_string()],
-            pending: vec![],
-            attempts: 1,
-            retry_at: None,
-            why: None,
-        }),
-        drain_pending: false,
-        behind: false,
-    });
-    let view = build(observed);
-    assert_eq!(view.fence, None);
-    assert_eq!(
-        view.detail.as_deref(),
-        Some("waiting for the first fence attempt to finish")
-    );
-}
-
-#[test]
-fn an_active_leader_lists_its_followers() {
-    let mut observed = leading(Phase::Active);
-    observed.committed = Some(1_048_510);
-    observed.status = Some(ShardStatus {
-        generation: 42,
-        tail: Some(1_048_576),
-        followers: vec![
-            FollowerStatus {
-                node_id: "broker-b".to_string(),
-                learner: false,
-                next_offset: 1_048_510,
-                confirmed: 1_048_510,
-                busy: false,
-                busy_at: None,
-                lag: Some(66),
-                state: "shipping",
-                halted: None,
-            },
-            FollowerStatus {
-                node_id: "broker-c".to_string(),
-                learner: true,
-                next_offset: 901_223,
-                confirmed: 901_223,
-                busy: false,
-                busy_at: None,
-                lag: Some(147_353),
-                state: "copying",
-                halted: None,
-            },
-        ],
-        fence: None,
-        drain_pending: false,
-        behind: false,
-    });
-    let view = build(observed);
-    assert_eq!(view.tail, Some(1_048_576));
-    assert_eq!(view.committed, Some(1_048_510));
-    let rows: Vec<_> = view
-        .replicas
-        .iter()
-        .map(|r| (r.role.as_str(), r.lag, r.state.as_str()))
-        .collect();
-    assert_eq!(
-        rows,
-        [
-            ("follower", Some(66), "shipping"),
-            ("learner", Some(147_353), "copying")
-        ]
-    );
-}
-
 #[test]
 fn a_single_broker_leads_what_it_knows() {
     let known = build(Observed {
@@ -275,62 +152,6 @@ fn a_single_broker_leads_what_it_knows() {
     );
     let unknown = build(Observed::default());
     assert_eq!(why(&unknown), (false, Some("not_assigned_here")));
-}
-
-/// An attempt that stopped for something other than missing answers says so.
-#[test]
-fn a_fence_stopped_by_a_newer_generation_says_why() {
-    let mut observed = leading(Phase::Fencing);
-    observed.status = Some(ShardStatus {
-        generation: 42,
-        tail: None,
-        followers: vec![],
-        fence: Some(FenceStatus {
-            took: vec![],
-            pending: vec!["broker-b".to_string(), "broker-c".to_string()],
-            attempts: 1,
-            retry_at: None,
-            why: Some("broker-b has accepted a newer generation: 43".to_string()),
-        }),
-        drain_pending: false,
-        behind: false,
-    });
-    assert_eq!(
-        build(observed).detail.as_deref(),
-        Some("0 of 2 replicas took the fence; broker-b has accepted a newer generation: 43")
-    );
-}
-
-/// A replica's refusal that follows the attempt's count reaches the reason,
-/// as the staged successor of #1635 and `abandon` do.
-#[test]
-fn a_fence_refused_by_a_replica_says_why() {
-    let mut observed = leading(Phase::Fencing);
-    observed.status = Some(ShardStatus {
-        generation: 42,
-        tail: None,
-        followers: vec![],
-        fence: Some(FenceStatus {
-            took: vec![],
-            pending: vec!["broker-b".to_string(), "broker-c".to_string()],
-            attempts: 3,
-            retry_at: None,
-            why: Some(
-                "0 of 2 replicas took the fence on the Stream log, 1 needed with this broker; \
-                 broker-b refused: the fence ids also name broker-c; see `felixctl placement abandon`"
-                    .to_string(),
-            ),
-        }),
-        drain_pending: false,
-        behind: false,
-    });
-    assert_eq!(
-        build(observed).detail.as_deref(),
-        Some(
-            "0 of 2 replicas took the fence; broker-b refused: the fence ids also name broker-c; \
-             see `felixctl placement abandon`"
-        )
-    );
 }
 
 fn raft_member(role: &str, leader: &str) -> felix_wire::InspectedRaft {

@@ -1132,7 +1132,7 @@ specified in [`docs/protocol.md`](https://github.com/GetFelix/felix/blob/main/do
 
 Besides QUIC, each broker serves plain HTTP on its metrics listener
 (`FELIX_BROKER_METRICS_BIND`, `0.0.0.0:8080` by default): `/metrics`, `/live`,
-`/ready`, `/replication/halted` (see
+`/ready` (see
 [Observability](/features/observability/)) and the one below. The
 listener has no authentication, so everything on it is read-only.
 

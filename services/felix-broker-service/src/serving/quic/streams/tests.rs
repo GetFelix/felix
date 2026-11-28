@@ -218,7 +218,6 @@ async fn build_publish_context(broker: Arc<Broker>) -> PublishContext {
         }
     });
     PublishContext {
-        shard_status: None,
         ingress: None,
         client_endpoints: None,
         peers: None,

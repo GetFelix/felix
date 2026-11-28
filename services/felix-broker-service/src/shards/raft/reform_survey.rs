@@ -18,8 +18,8 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::time::Duration;
 
+use crate::cluster::credential::NodeCredential;
 use felix_replication::controlplane_link::ControlPlaneLink;
-use felix_replication::reporter::Credential;
 use felix_storage::raft_copy::{WireReport, WireStart};
 use serde::{Deserialize, Serialize};
 use tokio_util::sync::CancellationToken;
@@ -338,7 +338,7 @@ pub(crate) async fn run<L: ControlPlaneLink>(
     shards: Arc<RaftShards>,
     link: L,
     node_id: String,
-    credential: Option<Arc<dyn Credential>>,
+    credential: Option<NodeCredential>,
     stop: CancellationToken,
 ) {
     let mut every = tokio::time::interval(INTERVAL);

@@ -398,8 +398,11 @@ fn credits(
     names && bound_to(rotation.bound, registered)
 }
 
-/// What a start found its directory kept of the ballots it took.
+/// What a start found its directory kept of the ballots it took. Only
+/// `promises` is read outside tests: the rest fed the hybrid's fence answers,
+/// and goes with the records `start_run` keeps for them (#2263).
 #[derive(Debug, Clone, Copy, Default)]
+#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) struct Kept {
     /// An unclean start whose crash kept every ballot: the flag
     /// [`start_run`]'s documentation describes.
@@ -433,6 +436,7 @@ pub(crate) struct Kept {
     pub(crate) deferred: bool,
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
 impl Kept {
     /// What a fence answer may attest as kept, or readmitted. A start from the view has not
     /// checked the directory against the control plane, and a restored one
@@ -611,13 +615,8 @@ pub(crate) fn this_boot() -> Option<felix_storage::run_state::BootId> {
     felix_storage::run_state::this_boot()
 }
 
-/// The boot the machine holding `root` is in. A simulated directory has its
-/// own, which changes when a simulated power cut is rebooted.
+/// The boot the machine holding `root` is in.
 pub(crate) fn this_boot_of(root: &Path) -> Option<felix_storage::run_state::BootId> {
-    #[cfg(feature = "sim")]
-    if let Ok(boot) = felix_storage::sim_fs::boot_id(root) {
-        return Some(boot);
-    }
     let _ = root;
     this_boot()
 }

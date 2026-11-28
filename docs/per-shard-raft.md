@@ -3287,15 +3287,18 @@ carries entries never waits.
   each heartbeat on its own, the bytes it always read, and so is a batch of
   one.
 - **One group cannot hold up the rest.** The receiver hands every
-  heartbeat to its member at once. Once one has answered, a member still
-  silent a quarter of the heartbeat (50 ms by default) after that first answer
-  is answered *slow*, which the leader counts as not answered, with the broker
-  up. A failure for one group's heartbeat is that group's alone. The wait is
+  heartbeat to its member at once. A member still silent a quarter of the
+  heartbeat (50 ms by default) after the first answer is answered *slow*,
+  which the leader counts as not answered, with the broker up. The wait is
   that long because a stalled broker's members come back a few milliseconds
-  apart. Answered slow, each would fail its heartbeat, and a read-index round
-  that needed it would find no quorum and start again. The sender puts the
-  wait in the message. The wait also ends one wait before the batch's
+  apart, and answered slow, each would fail a read-index round. The sender
+  puts the wait in the message, and it ends one wait before the batch's
   deadline, so a late first answer still gets back in time.
+- **Not while a read waits.** While a read of the group waits on a
+  read-index round, its heartbeats go alone (`Reading` in
+  `raft/read_rounds.rs`, `Beat::alone`), answered whenever the member
+  answers. In a batch, members answering 200 to 800 ms late under bulk shard
+  creation counted as not answered, and lease reads took 2 to 3 s (#3032).
 - **Off.** `beat_window` zero sends each heartbeat on its own. It must be
   shorter than `heartbeat`; the runtime refuses a config where it is not.
 
@@ -3946,52 +3949,45 @@ consistency level. Subscriber fanout, cursor replay, Kafka fetch and cache
 watch all take it. The engine publishes each commit index advance into the
 table the commit hold already waits on.
 
-**As built.** Each group's state machine keeps what it has applied: the
-last entry, and where each recent term starts. It publishes that once per
-run of applied entries, into a watch channel the group holds. This is the
-commit table. Nothing reads openraft's metrics for it: they change on every
-heartbeat answer, and every waiter would wake. An entry is applied only
-after it is committed, so `RaftEngine::read_bound`, the last applied index
-plus one, can trail the commit index and never passes it. A follower has a
-bound too, from what it has applied. While the applied entries end inside a
-conditional batch, the bound stays at the batch's first piece ("Conditional
-publishes", below); waits on an applied index use the applied index itself.
+**As built.** Each group's state machine publishes what it has applied (the
+last entry, and where each recent term starts) once per run of applied
+entries, into a watch channel: the commit table. openraft's metrics change on
+every heartbeat answer and would wake every waiter. An entry is applied only
+after it commits, so `RaftEngine::read_bound`, the last applied index plus
+one, can trail the commit index and never passes it, on a follower too.
+Inside a conditional batch the bound stays at the batch's first piece
+("Conditional publishes"); waits on an applied index use the index itself.
 
 > `crates/server/felix-replication/src/raft/tests/commit.rs`,
 > `the_read_bound_never_passes_the_commit_index` and
 > `an_undecided_batch_holds_the_read_bound_until_it_is_whole`.
 
-The commit index to compare the bound with is the one the Raft core holds.
-`status(shard).committed` is not: it comes from openraft's metrics, which
-the core publishes once per turn of its loop, after it has told its
-followers about the commit and handed the entries on to be applied. So a
-status read just after a bound can show a lower commit index, on the leader
-as well as on a follower. That is a late report, not a bound past the
-commit index.
+The commit index to compare the bound with is the Raft core's.
+`status(shard).committed` comes from openraft's metrics, published once per
+turn of the core's loop after the entries are handed on, so a status read
+just after a bound can show a lower commit index: a late report, not a bound
+past the commit index.
 
 `confirm_read` is a read-index round (`Raft::get_read_log_id` with
-`ReadPolicy::ReadIndex`). As built, a reader takes `RaftEngine::open_term`
-first, then calls `RaftEngine::confirm_read` with that term, then takes its
-value. The read is confirmed only if the shard is still open in that term,
-the round's answer is for it, this broker has applied the read index
-before the same deadline, and the shard is still open in that term after
-the apply. A broker deposed during the wait still applies the index as a
-follower, so the apply alone does not show it still leads. The value comes after that wait, because a write
-can be answered before the leader applies it. A value taken from the read
-bound before the wait could miss a write whose client already has its
-answer. The term open at confirm time is not
-enough. A broker that was deposed and elected again after the read is open
-in a later term, and the value it read can miss a record the leader in
-between committed. A member that does not lead is refused as leadership lost. A majority that does not
-answer within the longest election timeout is a timeout, not a lost
-leadership. A read-index round does not use the leader's lease: the pinned
-openraft always asks the core for a fresh quorum confirmation for
-`ReadPolicy::ReadIndex` (`Raft::get_local_read_linearizer` in
-`openraft/src/raft/mod.rs`), so a lapsed lease costs a read that round and
-nothing more. A round that has not answered within the longest election
-timeout is dropped and the next one is asked. openraft reports a lapsed lease to writes only. If a later openraft
-reports one to a read, the engine asks for a heartbeat, waits for a majority
-to answer and asks again within the same bound.
+`ReadPolicy::ReadIndex`). A reader takes `RaftEngine::open_term`, calls
+`RaftEngine::confirm_read` with that term, then takes its value. The read is
+confirmed only if the shard is still open in that term, the round's answer
+is for it, this broker has applied the read index before the same deadline,
+and the shard is still open in that term after the apply: a broker deposed
+during the wait still applies the index as a follower. The value comes after
+the wait, because a write can be answered before the leader applies it. The
+term open at confirm time is not enough: a broker deposed and elected again
+is open in a later term, and its value can miss a record the leader in
+between committed. A member that does not lead is refused as leadership
+lost; a majority that does not answer in time is a timeout. A round does not
+use the leader's lease: the pinned openraft always asks for a fresh quorum
+confirmation for `ReadPolicy::ReadIndex` (`Raft::get_local_read_linearizer`
+in `openraft/src/raft/mod.rs`). A round no majority answers within a lease
+reports no quorum, and the engine asks for a heartbeat and a fresh round,
+which needs a majority of its own, until the bound or one peer deadline
+past the first round: a heartbeat answered late does not end the read, and
+a cut-off leader still refuses early. A lapsed lease, which openraft reports
+to writes only, is retried the same way up to the bound.
 
 > `crates/server/felix-replication/src/raft/tests/commit.rs`,
 > `a_lapsed_lease_and_an_unconfirmed_read_do_not_close_the_shard` and
@@ -4013,25 +4009,29 @@ was answered:
 So a read never misses a write that committed before the read began,
 whatever answered it.
 
-A consumer-group poll is such a read. The group reader runs `confirm_read`,
-which also waits for the furthest entry answered on the lease or on a written
-majority, and takes the poll's bound (`read_bound`) only after it. A poll that
-starts after a publish's answer therefore hands the record out, and never one
-above the commit. A seek to `latest` and a describe take their end after the
-same wait.
+A consumer-group poll is such a read: it takes its bound (`read_bound`) only
+after `confirm_read`, so a poll that starts after a publish's answer hands the
+record out, and never one above the commit. A seek to `latest` and a
+describe take their end after the same wait.
 
 Reads of one shard share rounds. A group asks one round at a time, and a
 round confirms every read that arrived before it was asked. A read that
-arrives while a round is out waits for the next one, which is asked when
-the current one ends: the round out may have been asked before the reader
-took its value, and its answer would not cover that value. So a burst of
-reads costs two rounds at most, not one each, and a read waits at most the
-rest of one round and one more. The bound above is on that whole wait.
+arrives while a round is out waits for the next one: the round out may
+predate the reader's value. So a burst of reads costs two rounds at most,
+and the bound above is on that whole wait.
 
-> `crates/server/felix-replication/src/raft/read_rounds/tests.rs`,
-> `a_read_that_arrives_during_a_round_waits_for_the_next_one`, and
+A round's heartbeats go alone while a read waits on it ("Heartbeats sent
+together").
+
 > `crates/server/felix-replication/src/raft/tests/read.rs`,
-> `reads_that_arrive_together_share_read_index_rounds`.
+> `reads_that_arrive_together_share_read_index_rounds`,
+> `heartbeats_go_alone_only_while_a_read_waits`,
+> `a_read_asks_again_after_a_round_without_a_majority` and
+> `a_read_with_no_majority_fails_at_its_bound`;
+> `crates/server/felix-replication/src/raft/read_rounds/tests.rs`,
+> `a_read_that_arrives_during_a_round_waits_for_the_next_one`;
+> `crates/server/felix-replication/src/raft/beats/tests.rs`,
+> `a_heartbeat_a_read_waits_on_is_not_cut_short_by_the_others`.
 
 Raft lease reads (`get_local_read_linearizer`) would save that round. They
 stay off until they are measured and the model covers the lease (engine

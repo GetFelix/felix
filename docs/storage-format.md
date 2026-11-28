@@ -582,28 +582,27 @@ fleet reads v9. Recovery treats them like any other record: one cut short is a
 torn tail, and a damaged one in the middle of a log stops the open.
 
 Replication does not carry them yet either. A leader holds a follower before
-the first such record (`kind_unsupported` in
-`felix_broker_replication_shipped_total`) rather than send it under another
+the first such record rather than send it under another
 mark.
 
 ### Group records
 
 Bits 31, 30 and 29 mark a consumer group's write on a Raft stream shard: a
 cursor advance, a dead letter, a redrive or its finish, a discard, a seek, a
-delete or a claim. The record has no tag, so the step to the next record is still
+delete, a claim, or an ack above the cursor. The record has no tag, so the step to the next record is still
 `36 + payload_len`. The body is the broker's group entry (`GroupEntry` in
 `felix-broker`):
 
 ```text
 u8   version (1)
 u8   op: 0 advance, 1 dead letter, 2 redrive, 3 finish redrive,
-         4 discard, 5 seek, 6 delete, 7 claim
+         4 discard, 5 seek, 6 delete, 7 claim, 8 ack
 u32  group name length, then the name (UTF-8, never empty)
-creation token                                    (ops 0 to 4, 7)
+creation token                                    (ops 0 to 4, 7, 8)
   u64  term
   u64  index
   u8   by: 0 hydrate, 1 seek
-u64  offset: the advance's or seek's target, or the record (ops 0 to 5)
+u64  offset: the advance's or seek's target, or the record (ops 0 to 5, 8)
 u8   flags: bit 0 if_new                          (op 5 only)
 claim                                             (op 7 only)
   u64  visibility in milliseconds
@@ -876,8 +875,7 @@ does for `head_trim`.
 
 A follower from an older build cannot read the block, so the leader holds
 shipping at the first record that has one rather than send it bare, logs the
-stall, and counts it as `headers_unsupported` in
-`felix_broker_replication_shipped_total`. That follower catches up once it is
+stall. That follower catches up once it is
 upgraded.
 
 ## Index file
@@ -1770,11 +1768,29 @@ tombstones: the data does not parse.
 ```
 
 The group table is the shard's consumer groups as of the snapshot's last
-entry (`felix-broker`, `GroupTable::encode`): a version byte (1), the last
-group entry applied and the latest delete (`u64` each), then per group in
-name order its name, creation token, cursor, and its dead letters and
-redriven records in ascending order. A reader refuses names or offsets out
-of order, so one table has one encoding.
+entry (`felix-broker`, `GroupTable::encode`). A reader refuses names or
+offsets out of order, so one table has one encoding. It reads version 3
+only. Versions 1 and 2 carried no acks above the cursor, so reading one as
+"no acks" could redeliver acked records. 0.8 starts fresh, so a snapshot
+with an older table, such as one v0.8.0-preview.1 wrote, is refused and the
+shard must be recreated.
+
+```text
+u8   version (3)
+u64  last group entry applied
+u64  latest delete
+u32  groups, then per group in name order:
+  u32  name length, then the name (UTF-8)
+  u64  term, u64 index, u8 by (0 hydrate, 1 seek)    creation token
+  u64  cursor
+  u32  dead letters, then each u64, ascending
+  u32  redriven, then each u64, ascending
+  u32  acked above the cursor, then each u64, ascending
+  u32  claims, then each ascending by offset:
+    u64  offset, u32 attempts, u64 visibility in milliseconds
+    u8   1 if a named member holds it, else 0
+    u32  principal length, principal, u32 name length, name   (if named)
+```
 
 ## `member`: a metadata store's member file
 

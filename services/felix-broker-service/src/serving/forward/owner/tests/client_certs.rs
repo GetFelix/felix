@@ -123,7 +123,7 @@ impl Owner {
                 .with_client_verifier(Some(ca.verifier()))
                 .with_lease_tokens(Some(Arc::new(lease))),
         );
-        let handler = handler_with(Arc::clone(&broker), None, Duration::from_secs(1), auth);
+        let handler = handler_with(Arc::clone(&broker), Duration::from_secs(1), auth);
         Self {
             handler,
             broker,

@@ -283,57 +283,6 @@
     },
     {
       "type": "timeseries",
-      "title": "p99 Quorum wait",
-      "id": 6,
-      "datasource": {
-        "type": "prometheus",
-        "uid": "${datasource}"
-      },
-      "description": "How long a Quorum publish waited for its majority. A tail near the replication tick is a missed wake.",
-      "gridPos": {
-        "h": 8,
-        "w": 8,
-        "x": 8,
-        "y": 9
-      },
-      "fieldConfig": {
-        "defaults": {
-          "unit": "s",
-          "custom": {
-            "lineWidth": 1,
-            "fillOpacity": 10,
-            "stacking": {
-              "mode": "none"
-            },
-            "showPoints": "never"
-          }
-        },
-        "overrides": []
-      },
-      "options": {
-        "legend": {
-          "displayMode": "list",
-          "placement": "bottom"
-        },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "desc"
-        }
-      },
-      "targets": [
-        {
-          "refId": "A",
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${datasource}"
-          },
-          "expr": "max by (instance) (felix_broker_publish_quorum_wait_seconds{quantile=\"0.99\",instance=~\"$instance\"})",
-          "legendFormat": "{{instance}}"
-        }
-      ]
-    },
-    {
-      "type": "timeseries",
       "title": "p99 append and flush",
       "id": 7,
       "datasource": {
@@ -951,13 +900,13 @@
     },
     {
       "type": "timeseries",
-      "title": "Halted and rebuilding replicas",
+      "title": "Stopped and stuck Raft shards",
       "id": 21,
       "datasource": {
         "type": "prometheus",
         "uid": "${datasource}"
       },
-      "description": "Replicas whose leader stopped shipping to them. GET /replication/halted on the broker names them.",
+      "description": "Copies stopped on a storage error, and groups whose membership step is not going through. shard_inspect on the broker names them.",
       "gridPos": {
         "h": 8,
         "w": 8,
@@ -995,8 +944,8 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "felix_broker_replication_halted{instance=~\"$instance\"}",
-          "legendFormat": "halted {{instance}}"
+          "expr": "felix_broker_raft_shards_stopped_on_storage_error{instance=~\"$instance\"}",
+          "legendFormat": "stopped {{instance}}"
         },
         {
           "refId": "B",
@@ -1004,20 +953,20 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "felix_broker_replication_rebuilding{instance=~\"$instance\"}",
-          "legendFormat": "rebuilding {{instance}}"
+          "expr": "felix_broker_raft_membership_stuck{instance=~\"$instance\"}",
+          "legendFormat": "membership stuck {{instance}}"
         }
       ]
     },
     {
       "type": "timeseries",
-      "title": "Replication lag",
+      "title": "Raft shards led",
       "id": 22,
       "datasource": {
         "type": "prometheus",
         "uid": "${datasource}"
       },
-      "description": "Records the slowest follower is behind, per leading broker.",
+      "description": "Shards whose current term each broker leads. A shift between brokers is a leader change.",
       "gridPos": {
         "h": 8,
         "w": 8,
@@ -1055,7 +1004,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "max by (instance) (felix_broker_replication_lag_records{instance=~\"$instance\"})",
+          "expr": "felix_broker_raft_shards_led{instance=~\"$instance\"}",
           "legendFormat": "{{instance}}"
         }
       ]
@@ -1124,8 +1073,8 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "felix_shard_replicas_halted",
-          "legendFormat": "copies halted"
+          "expr": "sum(felix_broker_raft_shards_stopped_on_storage_error)",
+          "legendFormat": "copies stopped"
         },
         {
           "refId": "D",
@@ -1251,64 +1200,13 @@
     },
     {
       "type": "timeseries",
-      "title": "Quorum publish failures",
-      "id": 26,
-      "datasource": {
-        "type": "prometheus",
-        "uid": "${datasource}"
-      },
-      "description": "Quorum publishes that did not reach a majority: timed_out, or leadership moved first (not_leading).",
-      "gridPos": {
-        "h": 8,
-        "w": 8,
-        "x": 16,
-        "y": 53
-      },
-      "fieldConfig": {
-        "defaults": {
-          "unit": "ops",
-          "custom": {
-            "lineWidth": 1,
-            "fillOpacity": 10,
-            "stacking": {
-              "mode": "none"
-            },
-            "showPoints": "never"
-          }
-        },
-        "overrides": []
-      },
-      "options": {
-        "legend": {
-          "displayMode": "list",
-          "placement": "bottom"
-        },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "desc"
-        }
-      },
-      "targets": [
-        {
-          "refId": "A",
-          "datasource": {
-            "type": "prometheus",
-            "uid": "${datasource}"
-          },
-          "expr": "sum by (instance, reason) (rate(felix_broker_publish_quorum_failed_total{instance=~\"$instance\"}[5m]))",
-          "legendFormat": "{{reason}} {{instance}}"
-        }
-      ]
-    },
-    {
-      "type": "timeseries",
-      "title": "Leader changes",
+      "title": "Raft shards off placement",
       "id": 27,
       "datasource": {
         "type": "prometheus",
         "uid": "${datasource}"
       },
-      "description": "Shards opened for writes at a new leadership, by path. Truncated counts promotions that dropped records a replica's newer log superseded.",
+      "description": "Groups whose voters, or whose leader, are not the ones placement names. Both drop to zero once moves and hand-overs finish.",
       "gridPos": {
         "h": 8,
         "w": 8,
@@ -1346,8 +1244,8 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "sum by (instance, path) (increase(felix_broker_promotions_opened_total{instance=~\"$instance\"}[5m]))",
-          "legendFormat": "opened {{path}} {{instance}}"
+          "expr": "felix_broker_raft_shards_off_placement{instance=~\"$instance\"}",
+          "legendFormat": "voters {{instance}}"
         },
         {
           "refId": "B",
@@ -1355,8 +1253,8 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "sum by (instance) (increase(felix_broker_promotion_truncated_total{instance=~\"$instance\"}[5m]))",
-          "legendFormat": "truncated {{instance}}"
+          "expr": "felix_broker_raft_shards_led_off_placement{instance=~\"$instance\"}",
+          "legendFormat": "leader {{instance}}"
         }
       ]
     },

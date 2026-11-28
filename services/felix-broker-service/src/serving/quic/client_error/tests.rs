@@ -3,7 +3,7 @@ use felix_wire::{ErrorCode, Message, RetryClass};
 use super::{CACHE_FULL_REASON, ClientError, MOVING_RETRY_AFTER_MS};
 use crate::serving::forward::ForwardError;
 use crate::shards::routing::Reason;
-use felix_replication::quorum::QuorumError;
+use felix_replication::engine::CommitError;
 
 fn code_of(err: anyhow::Error) -> (ErrorCode, RetryClass) {
     let classified = ClientError::from_anyhow(&err);
@@ -17,7 +17,7 @@ fn code_of(err: anyhow::Error) -> (ErrorCode, RetryClass) {
 
 #[test]
 fn a_quorum_timeout_is_outcome_unknown_not_a_refusal() {
-    let timed_out = QuorumError::TimedOut {
+    let timed_out = CommitError::TimedOut {
         what: "batch",
         timeout: std::time::Duration::from_millis(5),
     };
@@ -29,7 +29,7 @@ fn a_quorum_timeout_is_outcome_unknown_not_a_refusal() {
         code_of(timed_out.into()),
         (ErrorCode::QuorumTimeout, RetryClass::OutcomeUnknown)
     );
-    let lost = QuorumError::LeadershipLost {
+    let lost = CommitError::LeadershipLost {
         what: "write",
         detail: "shard leadership moved",
     };
@@ -45,7 +45,7 @@ fn a_quorum_timeout_is_outcome_unknown_not_a_refusal() {
 
 #[test]
 fn a_write_refused_before_it_was_appended_is_retryable_not_unknown() {
-    let refused = QuorumError::NotAppended {
+    let refused = CommitError::NotAppended {
         what: "write",
         detail: "no majority has answered this leader lately, so nothing was written",
     };
@@ -60,7 +60,7 @@ fn a_write_refused_before_it_was_appended_is_retryable_not_unknown() {
 /// what decides.
 #[test]
 fn a_lost_leadership_saying_nothing_was_written_stays_outcome_unknown() {
-    let shaped = QuorumError::LeadershipLost {
+    let shaped = CommitError::LeadershipLost {
         what: "write",
         detail: "the records are not the rest of the producer's batch, so nothing was written",
     };

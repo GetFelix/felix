@@ -16,9 +16,9 @@ use crate::cluster::credential::NodeCredential;
 use crate::config::BrokerConfig;
 use crate::serving::auth::BrokerAuth;
 use crate::shards::{lifecycle as shard_lifecycle, routing as shard_routing, watch as shard_watch};
+use felix_replication as replication;
 use felix_replication::controlplane_link::ControlPlaneLink;
-use felix_replication::peer::{self, PeerPool, PeerRequester, tls::PeerTls};
-use felix_replication::{self as replication, halted::HaltedReplicas, quorum::QuorumMarks};
+use felix_replication::peer::{self, PeerPool, tls::PeerTls};
 
 /// The router, ingress router, shard lifecycle and ownership of a cluster member.
 pub(super) type ShardState = (
@@ -112,11 +112,9 @@ pub(super) struct Peers {
     pub(super) pool: Option<Arc<PeerPool>>,
 }
 
-/// The broker-internal listener's task, and what lets the routing feed start
-/// a copy's confirmed read early. Both absent outside a cluster.
+/// The broker-internal listener's task. Absent outside a cluster.
 pub(super) struct PeerListener {
     pub(super) task: Option<JoinHandle<()>>,
-    pub(super) prefetch: Option<replication::confirmed::Prefetch>,
 }
 
 /// The Raft shards a broker started with `FELIX_SHARD_ENGINE=raft` runs.
@@ -488,8 +486,6 @@ pub(super) fn report_raft_floors<L: ControlPlaneLink>(
     let (Some(members), Some(link)) = (shards.members.clone(), link) else {
         return;
     };
-    let credential = credential
-        .map(|credential| Arc::new(credential) as Arc<dyn replication::reporter::Credential>);
     writers.spawn(crate::shards::raft::floor::run(
         members, link, node_id, credential, stop,
     ));
@@ -511,8 +507,6 @@ pub(super) fn report_raft_copy_ids<L: ControlPlaneLink>(
     let (Some(members), Some(link)) = (shards.members.clone(), link) else {
         return;
     };
-    let credential = credential
-        .map(|credential| Arc::new(credential) as Arc<dyn replication::reporter::Credential>);
     writers.spawn(crate::shards::raft::copy_id::run(
         members,
         link,
@@ -538,8 +532,6 @@ pub(super) fn answer_reform_surveys<L: ControlPlaneLink>(
     let (Some(members), Some(link)) = (shards.members.clone(), link) else {
         return;
     };
-    let credential = credential
-        .map(|credential| Arc::new(credential) as Arc<dyn replication::reporter::Credential>);
     writers.spawn(crate::shards::raft::reform_survey::run(
         members, link, node_id, credential, stop,
     ));
@@ -557,8 +549,6 @@ pub(super) fn write_alone_reforms<L: ControlPlaneLink>(
     let (Some(members), Some(link)) = (shards.members.clone(), link) else {
         return;
     };
-    let credential = credential
-        .map(|credential| Arc::new(credential) as Arc<dyn replication::reporter::Credential>);
     members.set_alone_writer(Arc::new(crate::shards::raft::alone_cluster::LinkWriter {
         link,
         node_id,
@@ -607,14 +597,11 @@ pub(super) fn bind_peer_listener(
     cluster: &Option<ShardState>,
     engine: &Arc<shard_routing::StreamEngine>,
     broker: &Arc<Broker>,
-    quorum_marks: &Arc<QuorumMarks>,
     auth: &Arc<BrokerAuth>,
     peer_tls: &Option<Arc<PeerTls>>,
     known_capabilities: Option<peer::KnownCapabilities>,
     storage_id: felix_storage::StorageId,
     incarnation: tokio::sync::watch::Receiver<Option<u64>>,
-    unclean: Option<Arc<replication::unclean::UncleanStart>>,
-    controlplane: Option<(&reqwest::Client, &str, &Option<NodeCredential>)>,
     clients: Option<CancellationToken>,
     serving: Option<&CancellationToken>,
     raft: Option<Arc<dyn peer::RaftHandler>>,
@@ -623,26 +610,7 @@ pub(super) fn bind_peer_listener(
     Ok(
         match (&config.peer_transport, &config.membership, cluster) {
             (Some(peer_config), Some(membership_config), Some((router, _, _, _))) => {
-                let (handler, prefetch) = peer_handler(
-                    config,
-                    router,
-                    engine,
-                    broker,
-                    quorum_marks,
-                    auth,
-                    storage_id,
-                    unclean,
-                    controlplane.map(|(client, base_url, credential)| {
-                        Arc::new(crate::shards::ControlPlaneRoutes::new(
-                            replication::controlplane_link::HttpControlPlaneLink::new(
-                                client.clone(),
-                                base_url,
-                            ),
-                            credential.clone(),
-                        ))
-                            as Arc<dyn replication::confirmed::ConfirmedRoutes>
-                    }),
-                );
+                let handler = peer_handler(config, router, engine, broker, auth);
                 let handler = match clients {
                     Some(clients) => handler.serving_clients_after(clients),
                     None => handler,
@@ -687,55 +655,27 @@ pub(super) fn bind_peer_listener(
                 }
                 PeerListener {
                     task: Some(tokio::spawn(server.serve(peer_shutdown.clone()))),
-                    prefetch,
                 }
             }
-            _ => PeerListener {
-                task: None,
-                prefetch: None,
-            },
+            _ => PeerListener { task: None },
         },
     )
 }
 
-/// What answers every request a peer sends this broker, and the handle that
-/// starts a copy's confirmed read early. The listener and the simulator's
-/// in-memory network both serve this.
-#[allow(clippy::too_many_arguments)]
+/// What answers every request a peer sends this broker.
 pub(super) fn peer_handler(
     config: &BrokerConfig,
     router: &Arc<ShardRouter>,
     engine: &Arc<shard_routing::StreamEngine>,
     broker: &Arc<Broker>,
-    quorum_marks: &Arc<QuorumMarks>,
     auth: &Arc<BrokerAuth>,
-    storage_id: felix_storage::StorageId,
-    unclean: Option<Arc<replication::unclean::UncleanStart>>,
-    confirmed: Option<Arc<dyn replication::confirmed::ConfirmedRoutes>>,
-) -> (
-    peer_dispatch::BrokerPeerHandler<shard_routing::StreamEngine>,
-    Option<replication::confirmed::Prefetch>,
-) {
-    let replicas = replication::engine::replica_handler(
-        broker,
-        router,
-        quorum_marks,
-        storage_id,
-        unclean,
-        confirmed,
-        // A leader retries a copy that refused it on its driver tick.
-        Duration::from_millis(config.controlplane_sync_interval_ms),
-    );
-    engine
-        .set_replica(replicas)
-        .expect("the peer handler is built once per engine");
-    let prefetch = engine.confirmed_prefetch();
+) -> peer_dispatch::BrokerPeerHandler<shard_routing::StreamEngine> {
     let advertise_addr = config
         .membership
         .as_ref()
         .map(|membership| membership.advertise_addr.clone())
         .unwrap_or_default();
-    let handler = peer_dispatch::BrokerPeerHandler::new(
+    peer_dispatch::BrokerPeerHandler::new(
         crate::serving::forward::ForwardingHandler::new(
             Arc::clone(broker),
             Arc::clone(engine),
@@ -745,71 +685,39 @@ pub(super) fn peer_handler(
             Arc::clone(auth),
         ),
         Arc::clone(engine),
-    );
-    (handler, prefetch)
+    )
 }
 
-/// The shard watch, the routing feed, and shipping to followers.
+/// The shard watch and the routing feed.
 pub(super) struct ShardTasks {
     pub(super) watch: JoinHandle<()>,
     pub(super) feed: JoinHandle<()>,
-    /// Absent without a peer transport to ship over.
-    pub(super) replication: Option<replication::driver::Replication>,
 }
 
-/// What the shard tasks read and publish to. Generic over the peer transport
-/// so a simulator can run these tasks over an in-memory network; a broker
-/// passes its [`PeerPool`].
-pub(super) struct ShardTaskDeps<'a, R, L> {
+/// What the shard tasks read and publish to.
+pub(super) struct ShardTaskDeps<'a, L> {
     pub(super) config: &'a BrokerConfig,
     pub(super) cluster: &'a Option<ShardState>,
     pub(super) durable_storage: &'a Option<DurableStorage>,
-    /// The control plane, over HTTP in a broker and in-process in a simulator.
+    /// The control plane.
     pub(super) link: &'a Option<L>,
     pub(super) credential: &'a Option<NodeCredential>,
     pub(super) client_endpoints: &'a Arc<ClientEndpoints>,
-    pub(super) peers: &'a Option<Arc<R>>,
     pub(super) broker: &'a Arc<Broker>,
-    pub(super) engine: &'a Arc<shard_routing::StreamEngine>,
-    pub(super) quorum_marks: &'a Arc<QuorumMarks>,
-    pub(super) halted_replicas: &'a Arc<HaltedReplicas>,
-    pub(super) shard_status: &'a Arc<replication::status::ShardStatusBoard>,
     pub(super) fleet: &'a Arc<felix_common::fleet::FleetGate>,
-    pub(super) suspects: &'a Arc<replication::suspicion::Suspects>,
-    /// This process's node incarnation, which membership sets once it
-    /// registers. Reports carry it.
-    pub(super) incarnation: &'a Arc<std::sync::atomic::AtomicU64>,
-    /// This broker's storage id, with durable storage. Reports carry it.
-    pub(super) storage_id: Option<felix_storage::StorageId>,
-    /// Set after a start that rotated the storage id; see
-    /// `replication::unclean`.
-    pub(super) unclean: &'a Option<Arc<replication::unclean::UncleanStart>>,
-    /// Starts a copy's confirmed read when the routes first name it.
-    pub(super) prefetch: Option<replication::confirmed::Prefetch>,
     /// Node addresses from the control-plane view, routed by until the
     /// first node catalog read.
     pub(super) nodes: felix_common::random::HashMap<String, felix_router::NodeRef>,
-    /// After a start from the view, replica reports wait for the restore
-    /// check: they announce this directory's storage id as current.
-    pub(super) reports_held: Option<CancellationToken>,
-    /// After a start from the view: this broker stands for election only once
-    /// cancelled, since peers suspect it until it has registered.
-    pub(super) leads_after: Option<CancellationToken>,
-    /// Whoever runs the shards the hybrid does not.
+    /// Whoever runs the durable shards: the Raft engine.
     pub(super) engine_shards: Option<Arc<dyn shard_routing::EngineShards>>,
-    /// This broker runs its durable stream shards on Raft. Every broker does;
-    /// only the simulator's hybrid clusters pass `false`, until #2260
-    /// deletes them with the hybrid.
-    pub(super) raft: bool,
     pub(super) sync_shutdown: &'a CancellationToken,
 }
 
 /// Shard ownership: follow the control plane's assignments, and keep local
-/// state and the routing table in step with them. Also starts shipping to
-/// followers for the shards this broker leads.
-pub(super) fn spawn_shard_tasks<R, L>(deps: ShardTaskDeps<'_, R, L>) -> Option<ShardTasks>
+/// state and the routing table in step with them. The Raft engine takes the
+/// durable shards and `shards::memory` the in-memory ones.
+pub(super) fn spawn_shard_tasks<L>(deps: ShardTaskDeps<'_, L>) -> Option<ShardTasks>
 where
-    R: PeerRequester + Send + Sync + 'static,
     L: ControlPlaneLink + Clone,
 {
     let ShardTaskDeps {
@@ -819,113 +727,47 @@ where
         link,
         credential,
         client_endpoints,
-        peers,
         broker,
-        engine,
-        quorum_marks,
-        halted_replicas,
-        shard_status,
         fleet,
-        suspects,
-        incarnation,
-        storage_id,
-        unclean,
-        prefetch,
         nodes,
-        reports_held,
-        leads_after,
         engine_shards,
-        raft,
         sync_shutdown,
     } = deps;
     match (cluster, link, durable_storage) {
-        (Some((router, ingress, lifecycle, ownership)), Some(link), storage) => {
+        (Some((_, ingress, lifecycle, ownership)), Some(link), storage) => {
             let readers = shard_lifecycle::ShardReaders::new(Arc::clone(broker))
                 .with_endpoints(Arc::clone(client_endpoints));
-            // A Raft broker serves its in-memory stream shards on their own
-            // path, with no hybrid lifecycle or replication pass.
-            let memory = raft.then(|| {
-                let memory = Arc::new(crate::shards::memory::MemoryShards::new(
-                    ingress.local_node_id(),
-                    Arc::clone(broker),
-                    Arc::clone(ingress.fence()),
-                    readers.clone(),
-                ));
-                ingress.set_memory(Arc::clone(&memory));
-                memory
-            });
-            // Ends readers on a lapsed lease, or, where they need none, once
-            // this broker learns it was deposed.
-            let marks = Arc::clone(quorum_marks);
+            let memory = Arc::new(crate::shards::memory::MemoryShards::new(
+                ingress.local_node_id(),
+                Arc::clone(broker),
+                Arc::clone(ingress.fence()),
+                readers.clone(),
+            ));
+            ingress.set_memory(Arc::clone(&memory));
+            // Ends readers on a lapsed lease, or once this broker learns it
+            // was deposed.
             tokio::spawn(readers.clone().watch_leadership(
                 Arc::clone(ingress.fence()),
-                Some(Arc::new(move || marks.reads_by_round().cloned())),
                 Arc::clone(lifecycle),
-                memory.clone(),
+                Some(Arc::clone(&memory)),
                 sync_shutdown.clone(),
             ));
-            // A promoted shard waits for replication to fence its replicas,
-            // so only where replication runs: a peer transport to fence over,
-            // and durable logs to fence.
-            // A Raft broker opens no shard on a promotion: its groups elect.
-            let gate: Arc<dyn replication::promotion::PromotionGate> = match (peers, storage) {
-                _ if raft => Arc::new(replication::promotion::NoGate),
-                // A broker with the fence turned off is an older broker to its
-                // peers, and leads like one too.
-                (Some(pool), Some(storage)) if pool.offers_fence() => match lifecycle.try_lock() {
-                    Ok(mut guard) => {
-                        guard.fence_promotions();
-                        // A broker that checks sets fences the next
-                        // generation too, once `joint_fence` is finalized.
-                        if pool.offers_election() {
-                            guard.fence_next_generations(Arc::clone(fleet));
-                        }
-                        Arc::new(shard_lifecycle::promotion::LifecycleGate::new(
-                            Arc::clone(lifecycle),
-                            Arc::clone(ingress),
-                            Arc::new(storage.clone()),
-                            Arc::clone(broker),
-                            Arc::clone(fleet),
-                        ))
-                    }
-                    Err(_) => {
-                        tracing::warn!(
-                            "shard lifecycle busy at startup; promotions open on the lease"
-                        );
-                        Arc::new(replication::promotion::NoGate)
-                    }
-                },
-                _ => Arc::new(replication::promotion::NoGate),
-            };
             let store: Arc<dyn shard_lifecycle::ShardStore> = match storage {
-                Some(storage) => {
-                    let store = shard_lifecycle::DurableShardStore::new(Arc::new(storage.clone()))
+                Some(storage) => Arc::new(
+                    shard_lifecycle::DurableShardStore::new(Arc::new(storage.clone()))
                         .with_readers(readers)
                         .with_generation_starts(shard_lifecycle::GenerationStarts {
                             broker: Arc::clone(broker),
                             fleet: Arc::clone(fleet),
                         })
-                        .with_fence(Arc::clone(ingress.fence()));
-                    let store = match unclean {
-                        Some(unclean) => store.with_unclean_start(Arc::clone(unclean)),
-                        None => store,
-                    };
-                    // Ballots ride with the fence, as its peers are told
-                    // (`PeerCapabilities::BALLOTS`).
-                    Arc::new(match (&config.peer_transport, &config.membership) {
-                        (Some(peer), Some(membership)) if peer.fence && !raft => {
-                            store.with_ballots(membership.node_id.clone())
-                        }
-                        _ => store,
-                    })
-                }
+                        .with_fence(Arc::clone(ingress.fence())),
+                ),
                 // Without durable storage there is no log to open, so taking a
                 // shard is bookkeeping only.
                 None => Arc::new(shard_lifecycle::EphemeralShardStore::with_readers(readers)),
             };
-            // The watch wakes the feed, and the feed wakes replication, so a
-            // fence or a cut-over runs through all three as soon as it is
-            // written rather than a tick apart at each hop.
+            // The watch wakes the feed, so a cut-over runs through both as
+            // soon as it is written rather than a tick apart.
             let assignments_changed = Arc::new(tokio::sync::Notify::new());
             if let Some(engine_shards) = &engine_shards {
                 engine_shards.wake_with(Arc::clone(&assignments_changed));
@@ -933,15 +775,6 @@ where
                     engine_shards.follow_lease(Arc::clone(lease));
                 }
             }
-            let routes_changed = Arc::new(tokio::sync::Notify::new());
-            // Leaderships the replicas elect, only where this broker checks
-            // sets: the routing feed lays them over the control plane's.
-            let elections = replication::engine::elections(
-                !raft && peers.as_ref().is_some_and(|pool| pool.offers_election()),
-                router,
-                Arc::clone(&assignments_changed),
-                quorum_marks,
-            );
             let watch = tokio::spawn(shard_watch::run(
                 link.clone(),
                 // The assignment feed is cluster metadata, so it is read with
@@ -951,7 +784,7 @@ where
                 Arc::clone(&assignments_changed),
                 Duration::from_millis(config.controlplane_sync_interval_ms),
                 ingress.fence().lease().cloned(),
-                raft,
+                true,
                 sync_shutdown.clone(),
             ));
             let feed = shard_routing::spawn_feed(
@@ -962,13 +795,11 @@ where
                     ingress: Arc::clone(ingress),
                     client_endpoints: Some(Arc::clone(client_endpoints)),
                     assignments_changed,
-                    routes_changed: Arc::clone(&routes_changed),
+                    routes_changed: Arc::new(tokio::sync::Notify::new()),
                     joint_fence: Some(Arc::clone(fleet)),
-                    prefetch,
-                    elections,
                     nodes,
                     engine_shards,
-                    memory,
+                    memory: Some(memory),
                 },
                 Some(shard_routing::CatalogSource {
                     link: link.clone(),
@@ -977,67 +808,7 @@ where
                 Duration::from_millis(config.controlplane_sync_interval_ms),
                 sync_shutdown.clone(),
             );
-            // Shipping to followers, for the shards this broker leads, the
-            // suspicion heartbeat over the same pool and the election driver
-            // standing on it: the hybrid's, so never on a Raft broker, whose
-            // groups replicate and elect for themselves. Only when there is a
-            // peer transport: without one the replica set is a plan nobody
-            // can act on.
-            let replication = peers.as_ref().filter(|_| !raft).map(|pool| {
-                engine.wake_driver(Arc::clone(broker), Arc::clone(&routes_changed));
-                replication::engine::Hybrid::<shard_routing::IngressRouter>::start(
-                    replication::engine::StartDeps {
-                        requester: Arc::clone(pool),
-                        broker: Arc::clone(broker),
-                        router: Arc::clone(router),
-                        serving: Arc::clone(ingress),
-                        fence: Arc::clone(ingress.fence()),
-                        gate: Arc::clone(&gate),
-                        published: replication::driver::Published {
-                            marks: Arc::clone(quorum_marks),
-                            halted: Arc::clone(halted_replicas),
-                            status: Arc::clone(shard_status),
-                        },
-                        // Only a broker that is a cluster member reports: the
-                        // report is about shards the control plane assigned,
-                        // and a broker it has never registered leads none of
-                        // them. Reports from every shard in a pass share one
-                        // request; see `replication::reporter`.
-                        report: config.membership.as_ref().map(|membership| {
-                            replication::reporter::ReportTo {
-                                link: link.clone(),
-                                node_id: membership.node_id.clone(),
-                                token: credential.clone().map(|credential| {
-                                    Arc::new(credential)
-                                        as Arc<dyn replication::reporter::Credential>
-                                }),
-                                incarnation: Arc::clone(incarnation),
-                                storage_id,
-                                held: reports_held.clone(),
-                            }
-                        }),
-                        interval: Duration::from_millis(config.controlplane_sync_interval_ms),
-                        routes_changed,
-                        rebuild: replication::RebuildPolicy {
-                            max_concurrent: config.replication_rebuild_max_concurrent,
-                            bytes_per_sec: config.replication_rebuild_bytes_per_sec,
-                        },
-                        move_throttle: replication::MoveThrottle::new(
-                            config.shard_move_bytes_per_sec,
-                        ),
-                        suspects: Arc::clone(suspects),
-                        leads_after: leads_after.clone(),
-                        unclean: unclean.clone(),
-                        shutdown: sync_shutdown.clone(),
-                    },
-                )
-                .replication
-            });
-            Some(ShardTasks {
-                watch,
-                feed,
-                replication,
-            })
+            Some(ShardTasks { watch, feed })
         }
         _ => None,
     }

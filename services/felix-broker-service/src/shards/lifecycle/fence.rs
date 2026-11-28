@@ -27,7 +27,6 @@ use felix_common::random::HashMap;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering::SeqCst};
 use std::sync::{Arc, OnceLock};
 
-use felix_common::membership::RefusedGeneration;
 use parking_lot::RwLock;
 use tokio::sync::Notify;
 
@@ -68,10 +67,6 @@ pub struct ShardFence {
     /// Woken on every new routing view and every recorded open error, for
     /// writes held while their shard moves or opens.
     changed: Notify,
-    /// Set on a start after a crash that may have lost acknowledged records:
-    /// a shard this broker is routed as leading is withheld from replication
-    /// until its open has decided this process leads it there.
-    unclean: OnceLock<Arc<felix_replication::unclean::UncleanStart>>,
     /// Shards whose open was refused because this broker gave up the
     /// generation, and the generation.
     gave_up: RwLock<HashMap<ShardKey, u64>>,
@@ -92,12 +87,6 @@ impl ShardFence {
     /// at startup, before any shard is opened; a second call is ignored.
     pub fn bind_lease(&self, lease: Arc<LeaseState>) {
         let _ = self.lease.set(lease);
-    }
-
-    /// Withhold every shard from replication until its open says this
-    /// process leads it. Called once, at startup, before any shard is opened.
-    pub fn bind_unclean_start(&self, unclean: Arc<felix_replication::unclean::UncleanStart>) {
-        let _ = self.unclean.set(unclean);
     }
 
     /// `key`'s open at `generation` was refused: this broker gave the
@@ -162,11 +151,6 @@ impl ShardFence {
     /// Keep only the in-memory shards `keep` names.
     pub(crate) fn retain_in_memory(&self, keep: impl Fn(&ShardKey) -> bool) {
         self.in_memory.write().retain(|key| keep(key));
-    }
-
-    /// Whether [`crate::shards::memory`] serves `key`.
-    pub(crate) fn is_in_memory(&self, key: &ShardKey) -> bool {
-        self.in_memory.read().contains(key)
     }
 
     /// The lease bound with [`Self::bind_lease`], if any.
@@ -253,10 +237,6 @@ impl ShardFence {
     /// Let writes to `key` in, if they were admitted at `generation`.
     pub fn open(&self, key: &ShardKey, generation: u64) {
         let gate = Arc::clone(self.gates.write().entry(key.clone()).or_default());
-        // Silence ended the last term only until a majority answered, and the
-        // watch that would have heard it stopped tracking the closed shard.
-        // A deposal for a newer leader is evidence, and stays.
-        gate.unheard_at.store(CLOSED, SeqCst);
         gate.open_at.store(generation, SeqCst);
         gate.opened_below
             .fetch_max(generation.saturating_add(1), SeqCst);
@@ -368,58 +348,13 @@ impl ShardFence {
         self.deposal.notify_one();
     }
 
-    /// `key` at `generation` went a lease duration with no majority
-    /// answering while the lease was lapsed. Ends its readers as
-    /// [`Self::depose`] does, but only until [`Self::heard`]: silence is not
-    /// evidence of a newer leader.
-    pub(crate) fn unheard(&self, key: &ShardKey, generation: u64) {
-        let Some(gate) = self.gates.read().get(key).cloned() else {
-            return;
-        };
-        if gate.unheard_at.swap(generation, SeqCst) == generation
-            || gate.deposed_at.load(SeqCst) == generation
-        {
-            return;
-        }
-        self.deposals.lock().push((key.clone(), generation));
-        self.deposal.notify_one();
-    }
-
-    /// A majority answered `key` at `generation` again: clears
-    /// [`Self::unheard`] at that generation. A deposal for a newer leader
-    /// stays.
-    pub(crate) fn heard(&self, key: &ShardKey, generation: u64) {
-        if let Some(gate) = self.gates.read().get(key) {
-            let _ = gate
-                .unheard_at
-                .compare_exchange(generation, CLOSED, SeqCst, SeqCst);
-        }
-    }
-
     /// Whether `key` at `generation` must refuse readers: this broker learned
-    /// of a newer leader there ([`Self::depose`]), or no majority has
-    /// answered it since [`Self::unheard`].
+    /// of a newer leader there ([`Self::depose`]).
     pub fn is_deposed(&self, key: &ShardKey, generation: u64) -> bool {
-        self.gates.read().get(key).is_some_and(|gate| {
-            gate.deposed_at.load(SeqCst) == generation || gate.unheard_at.load(SeqCst) == generation
-        })
-    }
-
-    /// Whether this broker learned `key` has a newer leader than
-    /// `generation` ([`Self::depose`]).
-    pub(crate) fn names_newer_leader(&self, key: &ShardKey, generation: u64) -> bool {
         self.gates
             .read()
             .get(key)
             .is_some_and(|gate| gate.deposed_at.load(SeqCst) == generation)
-    }
-
-    /// Whether `key`'s fence is open at `generation`.
-    pub(crate) fn is_open_at(&self, key: &ShardKey, generation: u64) -> bool {
-        self.gates
-            .read()
-            .get(key)
-            .is_some_and(|gate| gate.open_at.load(SeqCst) == generation)
     }
 
     /// Resolves once a deposal is queued, or at once if one was queued with
@@ -467,77 +402,6 @@ impl ShardFence {
             }
             idle.await;
         }
-    }
-}
-
-impl felix_replication::driver::WriteFence for ShardFence {
-    fn quiesced(&self, key: &ShardKey) -> bool {
-        ShardFence::quiesced(self, key)
-    }
-
-    fn serve_without_lease(&self, key: &ShardKey, generation: u64) {
-        if let Some(gate) = self.gates.read().get(key) {
-            gate.lease_free_at.store(generation, SeqCst);
-        }
-    }
-
-    fn sessions_without_lease(&self, key: &ShardKey, generation: u64) {
-        if let Some(gate) = self.gates.read().get(key) {
-            gate.sessions_free_at.store(generation, SeqCst);
-        }
-    }
-
-    fn passed(&self, key: &ShardKey, generation: u64) {
-        if let Some(gate) = self.gates.read().get(key) {
-            gate.passed_at.store(generation, SeqCst);
-        }
-    }
-
-    fn deposed(&self, key: &ShardKey, generation: u64) {
-        self.depose(key, generation);
-    }
-
-    fn gave_up_at(&self, key: &ShardKey) -> Option<u64> {
-        self.gave_up.read().get(key).copied()
-    }
-
-    fn refused_at(&self, key: &ShardKey) -> Option<RefusedGeneration> {
-        self.refused
-            .read()
-            .get(key)
-            .map(|(generation, promised_to)| RefusedGeneration {
-                generation: *generation,
-                promised_to: promised_to.clone(),
-                ballot: 0,
-            })
-    }
-
-    fn probed(&self, key: &ShardKey, generation: u64, reclaimable: bool) {
-        if reclaimable {
-            self.reclaimable.write().insert(key.clone(), generation);
-        } else {
-            self.reclaimable.write().remove(key);
-        }
-    }
-
-    fn opened_since(&self, key: &ShardKey, generation: u64) -> bool {
-        self.gates
-            .read()
-            .get(key)
-            .is_some_and(|gate| gate.opened_below.load(SeqCst) > generation)
-    }
-
-    fn promoting(&self, key: &ShardKey, generation: u64) -> bool {
-        self.awaiting_promotion(key) == Some(generation)
-    }
-
-    fn withheld(&self, key: &ShardKey, generation: u64) -> bool {
-        self.is_in_memory(key)
-            || self.gave_up.read().get(key) == Some(&generation)
-            || self
-                .unclean
-                .get()
-                .is_some_and(|unclean| !unclean.leads_at(key, generation))
     }
 }
 
@@ -658,9 +522,6 @@ struct Gate {
     passed_at: AtomicU64,
     /// The generation this broker learned it was deposed at, or [`CLOSED`].
     deposed_at: AtomicU64,
-    /// The generation no majority answered at for a lease duration, or
-    /// [`CLOSED`]: see [`ShardFence::unheard`].
-    unheard_at: AtomicU64,
     /// One past the newest generation this process opened the shard at, or
     /// 0 if it never has. Closing leaves it.
     opened_below: AtomicU64,
@@ -676,7 +537,6 @@ impl Default for Gate {
             sessions_free_at: AtomicU64::new(CLOSED),
             passed_at: AtomicU64::new(CLOSED),
             deposed_at: AtomicU64::new(CLOSED),
-            unheard_at: AtomicU64::new(CLOSED),
             opened_below: AtomicU64::new(0),
             in_flight: AtomicUsize::new(0),
             idle: Notify::new(),

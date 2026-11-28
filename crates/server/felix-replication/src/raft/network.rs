@@ -30,6 +30,7 @@ use super::install::Unsendable;
 use super::lease::Lease;
 use super::machine::SnapshotData;
 use super::reach::{Reach, Refusals, Waits};
+use super::read_rounds::Reading;
 use super::types::{GroupId, MemberId, ShardTypes};
 use super::written::Reports;
 use crate::ShardKind;
@@ -63,6 +64,9 @@ pub struct RaftRequest {
 pub(crate) struct Beat {
     pub(crate) gap: u64,
     pub(crate) seq: u64,
+    /// A read waits on this heartbeat's answer, so it goes on its own
+    /// rather than in a batch (`raft/beats.rs`). Not on the wire.
+    pub(crate) alone: bool,
 }
 
 /// What a leader's append asks a follower for: a written report
@@ -335,6 +339,8 @@ pub(crate) struct Router {
     /// The broker of the one member this copy calls, when its retries may
     /// wait longer while that broker is down.
     to: Option<Arc<str>>,
+    /// Reads of this group waiting on a read-index round.
+    reading: Arc<Reading>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -365,7 +371,14 @@ impl Router {
             config,
             unsendable,
             to: None,
+            reading: Arc::default(),
         }
+    }
+
+    /// This router, sending its heartbeats on their own while `reading`
+    /// has a read waiting.
+    pub(crate) fn reading(self, reading: Arc<Reading>) -> Self {
+        Self { reading, ..self }
     }
 
     /// This router, for openraft's client to `target` in `group`. A cache
@@ -412,6 +425,8 @@ impl Router {
             },
         };
         let append = sent.sent.is_some();
+        let alone = matches!(&body, Request::Append(rpc) if rpc.entries.is_empty())
+            && self.reading.waiting();
         // The members that take this stop refusing votes, and the target
         // stands at once. The lease for the term ends before it leaves.
         if let Request::TransferLeader(transfer) = &body {
@@ -435,6 +450,7 @@ impl Router {
             beat: sent.sent.as_ref().map_or(Beat::default(), |sent| Beat {
                 gap: sent.gap,
                 seq: sent.seq,
+                alone,
             }),
             report,
             deadline,

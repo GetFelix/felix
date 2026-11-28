@@ -310,7 +310,6 @@ async fn heartbeats_keep_a_broker_live_past_its_expiry_window() {
     let serving = CancellationToken::new();
     serving.cancel();
     let shutdown = CancellationToken::new();
-    let incarnation = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
 
     let task = membership::spawn(
         cluster.link(),
@@ -322,8 +321,6 @@ async fn heartbeats_keep_a_broker_live_past_its_expiry_window() {
             Duration::from_secs(30),
         )),
         std::sync::Arc::new(felix_common::fleet::FleetGate::new(Vec::<String>::new())),
-        std::sync::Arc::default(),
-        std::sync::Arc::clone(&incarnation),
         tokio::sync::watch::channel(None).0,
         None,
         None,
@@ -353,12 +350,6 @@ async fn heartbeats_keep_a_broker_live_past_its_expiry_window() {
 
     assert_eq!(cluster.lifecycle("broker-a").await, NodeLifecycle::Live);
     assert_eq!(task.consecutive_failures.load(Ordering::Acquire), 0);
-    // What the replica reports carry, so `by_round` is kept from this process.
-    let registered = cluster.store.get_node("broker-a").await.expect("node");
-    assert_eq!(
-        incarnation.load(Ordering::Acquire),
-        registered.status.incarnation
-    );
 
     shutdown.cancel();
     let _ = task.handle.await;

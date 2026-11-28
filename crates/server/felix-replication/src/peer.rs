@@ -26,6 +26,7 @@ mod partition;
 
 pub use capabilities::KnownCapabilities;
 pub use config::PeerTransportConfig;
+#[cfg(test)]
 pub(crate) use identity::{Incarnation, PeerIdentity};
 #[cfg(any(debug_assertions, test, feature = "fault-injection"))]
 pub(crate) use partition::PartitionInjector;

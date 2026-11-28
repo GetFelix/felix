@@ -240,7 +240,6 @@ impl Owner {
             // No quorum marks: these exercise forwarding itself, and every
             // stream here is leader-acknowledged.
             Arc::new(felix_broker_service::shards::routing::StreamEngine::new(
-                None,
                 Some(Arc::clone(&self.ingress)),
             )),
             Arc::clone(&self.router),

@@ -327,6 +327,7 @@ expectations=(
   "FelixRaftGroupsStaleByHydrateIndex violates RedrivenOwed"
   "FelixRaftGroupsDeadAfterAdvance violates NoSkip"
   "FelixRaftGroupsNoRefreshOnDrop violates TrackerHeard"
+  "FelixRaftGroupsAckAheadInMemory violates AckedStaysSettled"
   "FelixRaftGroupsTwoChanges pass"
   "FelixRaftStreamPurgeSmall pass"
   "FelixRaftStreamPurgeLearnerSmall pass"
@@ -1104,6 +1105,8 @@ weights=(
   "FelixRaftSleepEnds 2"
   "FelixRaftSleepMidHandshake 87"
   "FelixRaftSleepWake 9"
+  "FelixRaftGroups 7"
+  "FelixRaftGroupsTwoChanges 20"
 )
 
 # Minutes a configuration took on a pull request's runner, from the `Finished

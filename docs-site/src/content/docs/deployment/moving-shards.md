@@ -106,8 +106,8 @@ full replication, as a test harness about to stop a broker would, poll
 
 A halted copy is replaced the same way once it has been halted for the restore
 delay. The wait gives its leader time to rebuild it, which usually clears the
-halt on its own; `GET /replication/halted` on the leader's metrics listener
-says what the leader is doing about it. Placement never picks a broker whose
+halt on its own; `felixctl inspect shard` on the leader says what state it
+sees each member in. Placement never picks a broker whose
 copy of the shard is halted as a destination, and a move whose destination
 halts is given up and started again elsewhere: `plan` and the logs show the
 step as `halted`. Moving a shard onto a halted copy by hand is refused with
