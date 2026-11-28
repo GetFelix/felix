@@ -39,7 +39,6 @@ NOT_OPERATIONAL = {
     # The history-checker campaign's seed, length, mode and nemesis.
     # Documented in `docs/history-checker.md`.
     "FELIX_HISTORY_DURATION_SECS",
-    "FELIX_HISTORY_MODE",
     "FELIX_HISTORY_NEMESIS",
     "FELIX_HISTORY_SEED",
     "FELIX_LATENCY_DEMO_FAST",

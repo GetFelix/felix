@@ -38,7 +38,7 @@ pub mod rng;
 mod subscriber;
 mod workload;
 
-pub use campaign::{Campaign, Mode};
+pub use campaign::Campaign;
 pub use checker::{Report, Rule, Violation, check, check_list_append};
 pub use model::History;
 pub use nemesis::{EveryFamily, Fault, FaultFamily, FaultKind, Nemesis, RandomNemesis};

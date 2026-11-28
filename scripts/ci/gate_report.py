@@ -83,7 +83,7 @@ def main(argv):
     parser = argparse.ArgumentParser()
     parser.add_argument("artifacts")
     parser.add_argument("repo")
-    parser.add_argument("--engine", default="hybrid")
+    parser.add_argument("--engine", default="raft")
     parser.add_argument("--sha", default="")
     parser.add_argument("--run-url", default="")
     parser.add_argument("--out", default="gate-report.md")

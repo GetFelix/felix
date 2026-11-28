@@ -35,7 +35,7 @@ pub fn replica_handler(
     // A replica refuses a candidate for as long as it would take to suspect
     // its leader, so the two windows agree.
     let handler = ReplicaHandler::new(Arc::clone(broker), Arc::clone(router))
-        .with_stickiness(SuspicionConfig::from_env().suspect_after)
+        .with_stickiness(SuspicionConfig::default().suspect_after)
         .with_fleet(Arc::clone(marks))
         .with_local_storage(storage_id)
         .with_replaced_storage(marks.replaced_storage());
@@ -62,7 +62,7 @@ pub fn elections(
     offers_election.then(|| {
         let elections = Arc::new(
             Elections::new(router.local_node_id(), changed)
-                .with_defer_for(SuspicionConfig::from_env().defer_for),
+                .with_defer_for(SuspicionConfig::default().defer_for),
         );
         marks.set_elections(Arc::clone(&elections));
         elections
@@ -169,7 +169,7 @@ impl<S: ShardServing + ?Sized + 'static> Hybrid<S> {
             Arc::clone(&requester),
             Arc::clone(&router),
             Arc::clone(&suspects),
-            SuspicionConfig::from_env(),
+            SuspicionConfig::default(),
             shutdown.clone(),
         ));
         spawned("election");
@@ -179,7 +179,7 @@ impl<S: ShardServing + ?Sized + 'static> Hybrid<S> {
             router,
             marks,
             suspects,
-            SuspicionConfig::from_env(),
+            SuspicionConfig::default(),
             leads_after,
             unclean,
             shutdown,

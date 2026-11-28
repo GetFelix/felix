@@ -51,8 +51,7 @@ pub(super) fn refuse_hybrid_data(root: &std::path::Path) -> Result<()> {
         if let Some(found) = felix_storage::raft_copy::hybrid_log_under(&dir)? {
             anyhow::bail!(
                 "{} holds data the hybrid engine wrote, and this standalone broker runs its \
-                 shards on Raft, which cannot open it and 0.8 does not migrate it. Start with \
-                 FELIX_SHARD_ENGINE=hybrid to keep serving this data, or point \
+                 shards on Raft, which cannot open it and 0.8 does not migrate it. Point \
                  FELIX_DURABLE_STORAGE_DIR at an empty directory",
                 found.display()
             );

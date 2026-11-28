@@ -1680,7 +1680,7 @@ leader that restarted all answer a re-send the way the leader that took it
 would have, and the producer carries on. A batch whose leader stopped partway
 through it is finished by the re-send rather than written twice.
 
-A stream shard run by a Raft group (`FELIX_SHARD_ENGINE=raft`) keeps the same
+A stream shard run by a Raft group keeps the same
 contract. The producer id and sequence are in each record's entry, so every
 member's log holds them and a leader elected later answers a re-send from its
 own log. The batch is written exactly once.
