@@ -3300,6 +3300,16 @@ carries entries never waits.
   that needed it would find no quorum and start again. The sender puts the
   wait in the message. The wait also ends one wait before the batch's
   deadline, so a late first answer still gets back in time.
+- **Not while a read waits.** While a read of the group waits on a
+  read-index round, the leader sends that group's heartbeats on their own
+  (`Reading` in `raft/read_rounds.rs`, `Beat::alone`). The round needs a
+  majority to answer a heartbeat sent after it was asked, and in a batch a
+  member that answers more than the wait after the first is counted as not
+  answered. Under bulk shard creation a member's core answered 200 to 800 ms
+  late, so a round lost its heartbeats this way, waited out the whole lease
+  and failed, and a lease read took 2 to 3 s (#3032). On its own, a heartbeat
+  is answered whenever its member answers. Groups with no read waiting still
+  batch, so idle groups cost what they did.
 - **Off.** `beat_window` zero sends each heartbeat on its own. It must be
   shorter than `heartbeat`; the runtime refuses a config where it is not.
 
@@ -4031,6 +4041,14 @@ the current one ends: the round out may have been asked before the reader
 took its value, and its answer would not cover that value. So a burst of
 reads costs two rounds at most, not one each, and a read waits at most the
 rest of one round and one more. The bound above is on that whole wait.
+
+A round's heartbeats go on their own while any read waits on it, never in
+a batch that could refuse a late answer ("Heartbeats sent together").
+
+> `crates/server/felix-replication/src/raft/tests/read.rs`,
+> `heartbeats_go_alone_only_while_a_read_waits`, and
+> `crates/server/felix-replication/src/raft/beats/tests.rs`,
+> `a_heartbeat_a_read_waits_on_is_not_cut_short_by_the_others`.
 
 > `crates/server/felix-replication/src/raft/read_rounds/tests.rs`,
 > `a_read_that_arrives_during_a_round_waits_for_the_next_one`, and

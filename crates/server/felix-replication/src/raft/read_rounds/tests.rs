@@ -220,3 +220,15 @@ async fn a_round_that_never_answers_is_dropped_and_later_reads_get_a_new_one() {
     answer.send(n).expect("waiting");
     assert_eq!(answered(later).await, Some(n));
 }
+
+#[test]
+fn a_read_counts_as_waiting_until_its_guard_drops() {
+    let reading = Arc::new(Reading::default());
+    assert!(!reading.waiting());
+    let first = reading.enter();
+    let second = reading.enter();
+    drop(first);
+    assert!(reading.waiting(), "one read still waits");
+    drop(second);
+    assert!(!reading.waiting());
+}

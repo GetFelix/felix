@@ -31,6 +31,37 @@ async fn reads_that_arrive_together_share_read_index_rounds() {
     led.cluster.stop().await;
 }
 
+/// While a read waits on a round, the leader's heartbeats go on their own,
+/// so no other group's answer cuts them short (#3032). With none waiting
+/// they go in batches again.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn heartbeats_go_alone_only_while_a_read_waits() {
+    let mut led = led().await;
+    let alone = || led.cluster.net.alone_beats.load(Relaxed);
+    let quiet = alone();
+    tokio::time::sleep(timers().heartbeat * 5).await;
+    assert_eq!(alone(), quiet, "heartbeats went alone with no read waiting");
+
+    led.cut_followers();
+    let key = shard(0);
+    let read = led.engine.confirm_read(&key, led.term);
+    let waited = async {
+        tokio::time::sleep(timers().heartbeat * 3).await;
+        alone()
+    };
+    let (_, during) = tokio::join!(read, waited);
+    led.heal();
+    assert!(
+        during > quiet,
+        "no heartbeat went alone while the read waited"
+    );
+
+    let after = alone();
+    tokio::time::sleep(timers().heartbeat * 5).await;
+    assert_eq!(alone(), after, "heartbeats stayed alone after the read");
+    led.cluster.stop().await;
+}
+
 /// 1 KiB records, written while one follower was cut off.
 const CATCH_UP_RECORD: usize = 1024;
 
