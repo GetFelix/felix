@@ -307,8 +307,9 @@ registered, run by a workflow, nor listed there.
 | `FelixRaftEntries.cfg` | batch entries (`ZeroTakesOffsetOff`, `MaxBatchTwo`): two terms, one write of one or two records, one crash, the subscriber reading | pass the same and `BatchWhole` (2.3M distinct states, 7 min) |
 | `FelixRaftEntriesFailover.cfg` | the same with two writes and no crash, the subscriber reading across a change of leader | pass the same (21.6M distinct states, 85 min) |
 | `FelixRaftEntriesSnapshot.cfg` | batch entries of one record, two writes, a snapshot and an install, no crash, no subscriber | pass the same (26.3M distinct states, 62 min) |
+| `FelixRaftEntriesSnapshotCrash.cfg` | the same with one write of one or two records and one crash: a broker restarts from its snapshot's next offset | pass the same (10.8M distinct states, depth 41, 25 min) |
 | `FelixRaftEntriesSnapNextIsLast.cfg` | the same with the snapshot carrying its last record's offset and followers that take the leader's stamp | violate `OffsetNeverReused` (depth 29) |
-| `FelixRaftEntriesSnapNextIsLastChecked.cfg` | the same bug with the follower's check: the group stops instead | violate `QuiescentServed` (depth 25) |
+| `FelixRaftEntriesSnapNextIsLastChecked.cfg` | the same bug with the follower's check: a follower refuses the leader's append, and the bounded run ends with that leader's record uncommitted | violate `QuiescentServed` (depth 25) |
 | `FelixRaftEntriesSplitBatch.cfg` | a batch appended as one entry per record | violate `BatchWhole` (depth 13) |
 | `FelixRaftAckBeforeFlush.cfg` | the flush callback fires before the fsync | violate `AckedSurvive` |
 | `FelixRaftRecoveredTailUnsynced.cfg` | entries found at the open are reported flushed without an fsync | violate `AckedSurvive` |
@@ -676,10 +677,14 @@ registered, run by a workflow, nor listed there.
 | `FelixRaftReformAloneClusterUnchecked.cfg` | the same with no placement check at all (`ReformBeforeAll` drops it from the plan and the write): the broker plans alone and the epoch is written although d is placed and holds a record the power-cut copy lost. A check from the plan's snapshot alone is not modelled | violate `LossNeedsLostDisk` |
 | `FelixRaftReformBatchAlone.cfg` | `FelixRaftReformAlone.cfg` with `Batch` and two records per entry | pass the same, `LossReported` and `ReservedCovers` (9.3M distinct states, 7 min) |
 | `FelixRaftReformBatchAloneIndexOne.cfg` | the same with one record per entry and step 4's rule (`OffsetBounds = "index"`) | pass the same (1.6M distinct states, 1 min) |
-| `FelixRaftReformBatchAloneBase.cfg` | step 4's relaxed-crash example: the epoch's offsets start at the base's next offset | violate `OffsetNeverReused` (depth 12) |
+| `FelixRaftReformBatchAloneBase.cfg` | step 4's relaxed-crash example: the epoch's offsets start at the base's next offset | violate `OffsetNeverReused` (depth 13) |
 | `FelixRaftReformBatchAloneIndex.cfg` | step 4's rule with two records per entry | violate `ReservedCovers` (depth 6) |
-| `FelixRaftReformBatchAloneIndexReuse.cfg` | the same, checked for reuse | violate `OffsetNeverReused` (depth 13) |
-| `FelixRaftReformBatchAloneLostNotReported.cfg` | the whole jump reported as skipped by re-form | violate `LossReported` (depth 10) |
+| `FelixRaftReformBatchAloneIndexReuse.cfg` | the same, checked for reuse | violate `OffsetNeverReused` (depth 14) |
+| `FelixRaftReformBatchAloneLostNotReported.cfg` | the whole jump reported as skipped by re-form | violate `LossReported` (depth 9) |
+| `FelixRaftReformBatchAloneTwoCuts.cfg` | `FelixRaftReformBatchAlone.cfg` with two power cuts, two re-forms, three plans, two writes and one term per epoch | pass the same (8.6M distinct states, depth 28, 7 min) |
+| `FelixRaftReformBatchKept.cfg` | `Batch` with three brokers and kept copies: one term, one write, one late append, one power cut, one re-form | pass the same as `FelixRaftReformBatchAlone.cfg` (34.9M distinct states, depth 32, 48 min on a CI runner) |
+| `FelixRaftReformBatchAbandon.cfg` | `FelixRaftReformAbandon.cfg` with `Batch` and two records per entry | pass the same and `LossReported` (54.1M distinct states, depth 27, 43 min on a CI runner) |
+| `FelixRaftReformBatchAbandonNoEarlier.cfg` | the same with an epoch's start not held above every earlier epoch's first index and first offset: a copy rotated back to its blank starts the group by itself at the floor's offset, below a record epoch 1 served | violate `OffsetNeverReused` (depth 15) |
 | `FelixRaftReformKeptOldKept.cfg` | `Kept`, epoch 0 writes (`OldKeptShape`) over two terms: its leader is declared dead with two committed records, returns in epoch 1 with its epoch-0 copy, and the second re-form reads that copy | pass the same as `...TrailingFloor.cfg` (12.07M distinct states, depth 32, 12 min on a CI runner) |
 | `FelixRaftReformKeptOldKeptCap.cfg` | witness: the epoch-1 cap lowers what the returned epoch-0 copy vouches for. It needs the second term: one dead voter of three does not mark epoch 0, so with one term the first re-form keeps everything the dead leader committed | violate `NeverCaps` (5.27M distinct states at the violation, depth 19, 6 min on a CI runner) |
 | `FelixRaftReformKeptTerms.cfg` | `Kept`, one re-form over two terms of epoch 0 and one power cut, the group unmarked | pass the same as `...TrailingFloor.cfg` (82.3M distinct states, depth 34, 56 min on a CI runner); not registered for pull requests, runs nightly (`tla-walk.yml`) |
@@ -700,11 +705,16 @@ registered, run by a workflow, nor listed there.
 | `FelixRaftRestoreRepeatedNoTime.cfg` | pins the old rule, flipping both `Line` (off) and `EndGap` (on): the first index at the backup's end plus the gap, no time line. `...EndGap.cfg` is the one-change twin | violate `OffsetNeverReused`: a second restore from one backup starts where the first did |
 | `FelixRaftRestoreRepeatedMinApart.cfg` | `...Repeated.cfg` with restores three ticks apart under a skew of one tick, below the four-times-skew boundary | violate `OffsetNeverReused`: a restore planned on a slow clock starts below an offset the earlier one gave out |
 | `FelixRaftRestoreRepeatedEndGap.cfg` | the same with the gap added past the backup's end as well as past the line | violate `OffsetNeverReused`: a backup of a restored epoch restores above the line, and an older backup restored after it starts below offsets it gave out |
-| `FelixRaftRestoreRepeatedBatch.cfg` | `Batch`: entries of one or two offsets, a bucket of one filled one per tick, one power cut, one backup, two restores eight ticks apart | pass `OffsetNeverReused` and `ReservedCovers` (6.3M distinct states, 26 seconds) |
-| `FelixRaftRestoreRepeatedBatchMinApart.cfg` | the same five ticks apart | violate `OffsetNeverReused` (depth 15) |
-| `FelixRaftRestoreRepeatedBatchNoBucket.cfg` | entries capped per tick, offsets not | violate `OffsetNeverReused` (depth 19) |
-| `FelixRaftRestoreRepeatedBatchStartsFull.cfg` | every new leader's bucket full | violate `OffsetNeverReused` (depth 28) |
-| `FelixRaftRestoreRepeatedBatchRaiseFromNext.cfg` | a reservation raise from the entry's start | violate `ReservedCovers` (depth 4) |
+| `FelixRaftRestoreRepeatedBatch.cfg` | `Batch`: entries of one or two offsets, a bucket of one filled one per tick, a new leader's bucket in debt by one entry, one power cut, two leader changes, one backup, two restores five ticks apart | pass `OffsetNeverReused` and `ReservedCovers` (106.9M distinct states, depth 42, 11 min) |
+| `FelixRaftRestoreRepeatedBatchMinApart.cfg` | the same four ticks apart | violate `OffsetNeverReused` (depth 18) |
+| `FelixRaftRestoreRepeatedBatchNoBucket.cfg` | entries capped per tick, offsets not | violate `OffsetNeverReused` (depth 17) |
+| `FelixRaftRestoreRepeatedBatchStartsFull.cfg` | every new leader's bucket full | violate `OffsetNeverReused` (depth 17) |
+| `FelixRaftRestoreRepeatedBatchStartsEmpty.cfg` | every new leader's bucket empty, no power cut, one leader change | violate `OffsetNeverReused` (depth 21); the same bounds with no leader change pass |
+| `FelixRaftRestoreRepeatedBatchRaiseFromNext.cfg` | a reservation raise from the entry's start | violate `ReservedCovers` (depth 5) |
+| `FelixRaftRestoreRepeatedBatchIssueBeforeRaise.cfg` | an entry counted before the raise that covers it | violate `ReservedCovers` (depth 4) |
+| `FelixRaftRestoreRepeatedBatchSkew.cfg` | the design's check in place of a spacing: each restore starts `Apart` = 6 above every earlier first index, planning clocks up to two ticks apart, one power cut, one leader change | pass `OffsetNeverReused` and `ReservedCovers` (16.8M distinct states, depth 35, 2 min) |
+| `FelixRaftRestoreRepeatedBatchSkewShort.cfg` | the same with `Apart` = 4: a restore on a fast clock, then one on a slow clock just past the check | violate `OffsetNeverReused` (depth 17) |
+| `FelixRaftRestoreRepeatedBatchSkewStep.cfg` | the same with `Step` = 3, the offsets a relaxed re-form skips | violate `OffsetNeverReused` (depth 17) |
 | `FelixRaftSwitch.cfg` | `FelixRaftSwitch.tla`: three copies that all hold the log up to `N`, one wipe at any step, two campaigns, one Raft write, every rule on | pass `LeaderCompleteness`, `StateMachineSafety`, `BaseAgree`, `OneBase`, `OneLeaderPerTerm` (2.3M distinct states) |
 | `FelixRaftSwitchLag.cfg` | b may lag: a and c acknowledge, b starts empty as a learner and is promoted; no wipe | pass the same (1.4M distinct states) |
 | `FelixRaftSwitchLagWipe.cfg` | the same with one wipe and no Raft write | pass the same (1.1M distinct states) |
@@ -2592,8 +2602,12 @@ In `FelixRaftReform.tla`, `Batch` adds the new leader's blank entry, makes
 blank, membership and gap entries take no offset, and lets a write hold up to
 `MaxBatch` records. The floor and every reservation carry an offset beside the
 index, and an epoch starts at a first index and a first offset, each the
-highest of its own bounds: the base, the floor, every reservation read and,
-for an abandon, the time line and every earlier epoch. A jump in offsets the
+highest of its own bounds: the base, the floor, every reservation read,
+every earlier epoch's first index and first offset and, for an abandon, the
+time line. Without `Batch` the model leaves the earlier epochs out of a
+plain or kept re-form; `FelixRaftReformBatchAbandon.cfg` found the reuse
+that omission allows once a blank entry takes no offset
+(`...AbandonNoEarlier.cfg`). A jump in offsets the
 index padding does not carry is one more gap entry; in the frame it is the
 epoch's first entry starting past the previous end. Each epoch record keeps
 the end of its lost range, and `LossReported` holds it to the floor.
