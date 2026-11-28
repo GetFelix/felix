@@ -97,10 +97,6 @@ struct RegistrationResponse {
     /// enables none.
     #[serde(default)]
     fleet_features: BTreeSet<String>,
-    /// Whether the control plane keeps durable shards off a node registered
-    /// without durable storage. Absent from one that predates such nodes.
-    #[serde(default)]
-    storage_placement: bool,
 }
 
 /// `GET /v1/nodes/{node_id}`.
@@ -451,18 +447,6 @@ pub async fn register(
         .json()
         .context("decode node registration response")
         .map_err(MembershipError::Unavailable)?;
-
-    // An older control plane would place a durable shard here, which this
-    // broker has no log to run.
-    if !config.durable_storage && !registered.storage_placement {
-        return Err(MembershipError::Rejected(format!(
-            "node {} has no durable storage (FELIX_DURABLE_STORAGE_DIR) and the control plane \
-             at {} predates brokers without it; upgrade the control plane or give the broker \
-             durable storage",
-            config.node_id,
-            link.endpoint()
-        )));
-    }
 
     mm::record_registration("registered");
     mm::record_membership_live(true);

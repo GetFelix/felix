@@ -80,9 +80,10 @@ def registered() -> set[str]:
 
 
 def retired() -> set[str]:
-    """Names retired with the hybrid. A literal in the code, so read by it, and
-    reported at start as retired rather than as unknown."""
-    return listing("RETIRED_VARS")
+    """Names retired with the hybrid or the 0.8 baseline. A literal in the
+    code, so read by it, and reported at start as retired rather than as
+    unknown."""
+    return listing("RETIRED_VARS") | listing("RETIRED_AT_BASELINE")
 
 
 def states_a_count() -> bool:

@@ -87,7 +87,6 @@ pub const KNOWN_VARS: &[&str] = &[
     "FELIX_CONNECT_TIMEOUT_MS",
     "FELIX_CONN_STATS_MS",
     "FELIX_CONTEXT",
-    "FELIX_CONTROLPLANE_ACCEPT_BROKER_AUDIENCE",
     "FELIX_CONTROLPLANE_API_UI",
     "FELIX_CONTROLPLANE_API_UI_PATH",
     "FELIX_CONTROLPLANE_BIND",
@@ -97,8 +96,6 @@ pub const KNOWN_VARS: &[&str] = &[
     "FELIX_CONTROLPLANE_CLIENT_CERT",
     "FELIX_CONTROLPLANE_CLIENT_KEY",
     "FELIX_CONTROLPLANE_CONFIG",
-    "FELIX_CONTROLPLANE_DELEGATE_UNBOUND_TOKENS",
-    "FELIX_CONTROLPLANE_LEGACY_UNSCOPED_GROUPS",
     "FELIX_CONTROLPLANE_METRICS_BIND",
     "FELIX_CONTROLPLANE_OIDC_ALLOWED_ALGORITHMS",
     "FELIX_CONTROLPLANE_OIDC_ALLOW_INSECURE_HTTP",
@@ -384,6 +381,16 @@ pub const RETIRED_VARS: &[&str] = &[
     "FELIX_UNIFIED_FENCE",
 ];
 
+/// Switches that kept a peer or caller from before the 0.8 baseline working,
+/// retired with it (`docs/control-plane.md`, "The 0.8 API baseline"). Set,
+/// each is reported at start by name and changes nothing: the secure
+/// behaviour it relaxed always applies.
+pub const RETIRED_AT_BASELINE: &[&str] = &[
+    "FELIX_CONTROLPLANE_ACCEPT_BROKER_AUDIENCE",
+    "FELIX_CONTROLPLANE_DELEGATE_UNBOUND_TOKENS",
+    "FELIX_CONTROLPLANE_LEGACY_UNSCOPED_GROUPS",
+];
+
 /// Known names worth suggesting for `name`, best first.
 ///
 /// Empty when nothing is close enough — suggesting the nearest arbitrary string
@@ -432,6 +439,7 @@ pub fn unrecognised() -> Vec<(String, Vec<&'static str>)> {
         .filter(|name| name.starts_with("FELIX_"))
         .filter(|name| !KNOWN_VARS.contains(&name.as_str()))
         .filter(|name| !RETIRED_VARS.contains(&name.as_str()))
+        .filter(|name| !RETIRED_AT_BASELINE.contains(&name.as_str()))
         .map(|name| {
             let suggestions = suggestions(&name);
             (name, suggestions)
@@ -447,12 +455,18 @@ pub fn unrecognised() -> Vec<(String, Vec<&'static str>)> {
 /// dependency so a library consumer that never runs a process does not pull
 /// one in, the same reason `lifecycle` is feature-gated. The binaries log.
 pub fn unrecognised_warnings() -> Vec<String> {
-    let retired = std::env::vars()
-        .map(|(name, _)| name)
-        .filter(|name| RETIRED_VARS.contains(&name.as_str()))
-        .map(|name| {
-            format!("{name} is retired with the hybrid shard engine and has no effect; unset it")
-        });
+    let retired = std::env::vars().filter_map(|(name, _)| {
+        let with = if RETIRED_VARS.contains(&name.as_str()) {
+            "the hybrid shard engine"
+        } else if RETIRED_AT_BASELINE.contains(&name.as_str()) {
+            "the 0.8 API baseline"
+        } else {
+            return None;
+        };
+        Some(format!(
+            "{name} is retired with {with} and has no effect; unset it"
+        ))
+    });
     let mut found: Vec<String> = retired.collect();
     found.sort();
     found.extend(unrecognised().into_iter().map(
