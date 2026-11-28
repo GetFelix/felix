@@ -617,9 +617,6 @@ fn from_env_reads_the_admission_group_and_move_limits() {
         ("FELIX_PUBLISH_QUORUM_TIMEOUT_MS", "2500"),
         ("FELIX_SHARD_MOVE_HOLD_MS", "0"),
         ("FELIX_SHARD_MOVE_HOLD_MAX", "33"),
-        ("FELIX_REPLICATION_REBUILD_MAX_CONCURRENT", "2"),
-        ("FELIX_REPLICATION_REBUILD_BYTES_PER_SEC", "1048576"),
-        ("FELIX_SHARD_MOVE_BYTES_PER_SEC", "2097152"),
     ];
     for (key, value) in vars {
         unsafe {
@@ -649,9 +646,6 @@ fn from_env_reads_the_admission_group_and_move_limits() {
     assert_eq!(config.publish_quorum_timeout_ms, 2500);
     assert_eq!(config.shard_move_hold_ms, 0);
     assert_eq!(config.shard_move_hold_max, 33);
-    assert_eq!(config.replication_rebuild_max_concurrent, 2);
-    assert_eq!(config.replication_rebuild_bytes_per_sec, 1_048_576);
-    assert_eq!(config.shard_move_bytes_per_sec, 2_097_152);
 }
 
 /// **A zero where zero would disable a limit falls back to the default**,

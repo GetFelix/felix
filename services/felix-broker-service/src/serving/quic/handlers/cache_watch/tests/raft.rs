@@ -141,13 +141,14 @@ impl RaftCache {
             retained,
             from_offset,
             peer_features,
+            None,
         )
         .await
     }
 }
 
-/// Open a watch of key `k` in `cache` on `broker` and return its
-/// confirmation and event stream.
+/// Open a watch of key `k` in `cache` on `broker`, as `owner` when given,
+/// and return its confirmation and event stream.
 async fn open_watch(
     broker: &Arc<felix_broker::Broker>,
     engine: &Arc<crate::shards::routing::StreamEngine>,
@@ -155,6 +156,7 @@ async fn open_watch(
     retained: bool,
     from_offset: Option<u64>,
     peer_features: u32,
+    owner: Option<&crate::serving::auth::AuthContext>,
 ) -> Result<(Message, Option<Events>)> {
     let (client, client_conn, connection) = connection().await?;
     let publish_ctx = build_publish_context(
@@ -198,7 +200,7 @@ async fn open_watch(
             subscription_id: Some(7),
         },
         peer_features,
-        None,
+        owner,
     )
     .await?;
     let Outgoing::Message(answer) = out_ack_rx.recv().await.context("ack missing")? else {
@@ -311,6 +313,61 @@ async fn a_raft_cache_shard_serves_a_watch() -> Result<()> {
     assert_eq!(events.change().await?, (Some(b"two".to_vec()), second));
     assert_eq!(events.change().await?, (None, gone));
     assert!(resume_offset <= second);
+    Ok(())
+}
+
+/// **A watch ends when the credential it was opened with is revoked**, and
+/// says so: an `error` with the `revoked` code is its last frame.
+#[tokio::test]
+async fn a_raft_cache_watch_ends_when_its_credential_is_revoked() -> Result<()> {
+    let cache = RaftCache::start().await;
+    let revocations = Arc::new(crate::serving::revocation::Revocations::default());
+    let owner = crate::serving::auth::AuthContext {
+        tenant_id: "t1".to_string(),
+        matcher: felix_authz::PermissionMatcher::from_strings(&[]).expect("matcher"),
+        token: "token".to_string(),
+        subject: "alice".to_string(),
+        actor: None,
+        publisher: None,
+        issued_at: 0,
+        expires_at: i64::MAX,
+        lease_token: false,
+        revocable: crate::serving::revocation::Revocable::new(
+            Arc::clone(&revocations),
+            "t1".to_string(),
+            "alice".to_string(),
+            None,
+            100,
+        ),
+        client_chain: None,
+    };
+    let (started, events) = open_watch(
+        &cache.broker,
+        &cache.engine,
+        ORDERS,
+        false,
+        None,
+        felix_wire::FEATURE_ERROR_CODES,
+        Some(&owner),
+    )
+    .await?;
+    assert!(
+        matches!(started, Message::CacheWatchStarted { .. }),
+        "{started:?}"
+    );
+    let mut events = events.expect("events");
+
+    revocations.revoke("t1", "alice", 100);
+    let last = loop {
+        let message = events.next().await?;
+        if let Message::Error { .. } = message {
+            break message;
+        }
+    };
+    let Message::Error { code, .. } = last else {
+        unreachable!()
+    };
+    assert_eq!(code, Some(felix_wire::ErrorCode::Revoked));
     Ok(())
 }
 
@@ -844,6 +901,7 @@ async fn a_resnapshotted_raft_resume_needs_the_read_barrier() -> Result<()> {
         false,
         Some(one),
         0,
+        None,
     )
     .await?;
     assert!(
@@ -869,6 +927,7 @@ async fn a_resnapshotted_raft_resume_needs_the_read_barrier() -> Result<()> {
         false,
         Some(one),
         0,
+        None,
     )
     .await?;
     assert!(

@@ -18,6 +18,7 @@ fn every_op() -> Vec<GroupOp> {
             GroupOp::Redrive { cre, offset: 7 },
             GroupOp::FinishRedrive { cre, offset: 7 },
             GroupOp::Discard { cre, offset: 7 },
+            GroupOp::Ack { cre, offset: 7 },
             GroupOp::Claim {
                 cre,
                 claims: Claims {
@@ -96,6 +97,20 @@ fn the_layout_is_the_documented_one() {
     want.push(1);
     assert_eq!(seek.encode()[..], want[..]);
 
+    let ack = GroupEntry {
+        group: "g".to_owned(),
+        op: GroupOp::Ack {
+            cre: token(CreatedBy::Hydrate),
+            offset: 7,
+        },
+    };
+    let mut want = vec![1, 8, 0, 0, 0, 1, b'g'];
+    want.extend(3u64.to_be_bytes());
+    want.extend(41u64.to_be_bytes());
+    want.push(0);
+    want.extend(7u64.to_be_bytes());
+    assert_eq!(ack.encode()[..], want[..]);
+
     let delete = GroupEntry {
         group: "g".to_owned(),
         op: GroupOp::Delete,
@@ -153,6 +168,7 @@ fn unknown_codes_are_refused() {
     };
     at(&advance, 0, 2);
     at(&advance, 1, 7);
+    at(&advance, 1, 9);
     at(&advance, 7 + 16, 2);
     at(&seek, seek.len() - 1, 2);
     at(&seek, seek.len() - 1, 0x81);

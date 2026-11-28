@@ -13,7 +13,6 @@ fn no_catalog() -> Option<CatalogSource<HttpControlPlaneLink>> {
 }
 
 mod hold;
-mod quorum;
 
 fn key(shard: u32) -> ShardKey {
     ShardKey {
@@ -430,8 +429,6 @@ mod feed {
                 assignments_changed: Arc::default(),
                 routes_changed: Arc::default(),
                 joint_fence: None,
-                prefetch: None,
-                elections: None,
                 nodes: HashMap::default(),
                 engine_shards: None,
                 memory: None,
@@ -1402,156 +1399,6 @@ async fn a_shard_whose_followers_have_no_address_is_still_replicated() {
     assert_eq!(followers, ["broker-b", "broker-c"]);
 }
 
-/// **The feed names a copy for an early confirmed read only when it is new
-/// (#1791):** a move's destination or a follower just added, not the routes
-/// a broker starts with, not a copy it already followed, and not a shard's
-/// creation, which skips the read.
-#[test]
-fn only_newly_named_followers_are_read_early() {
-    let map = |assignments: Vec<ShardAssignment>| {
-        assignments
-            .into_iter()
-            .map(|assignment| (assignment.key.clone(), assignment))
-            .collect::<HashMap<_, _>>()
-    };
-    let named = |before: &HashMap<_, _>, after: &HashMap<_, _>| {
-        let mut shards: Vec<u32> = newly_named(before, after, "broker-b")
-            .map(|(key, _)| key.shard)
-            .collect();
-        shards.sort_unstable();
-        shards
-    };
-    let staged = ShardAssignment {
-        successor: Some("broker-b".to_string()),
-        replicas: vec!["broker-b".to_string()],
-        ..assignment(0, "broker-a", 3)
-    };
-    let followed = ShardAssignment {
-        replicas: vec!["broker-b".to_string()],
-        ..assignment(1, "broker-a", 2)
-    };
-    let created = ShardAssignment {
-        replicas: vec!["broker-b".to_string()],
-        incarnation: 4,
-        member_storage_ids: [("broker-b".to_string(), "00".to_string())].into(),
-        ..assignment(2, "broker-a", 1)
-    };
-    let led = ShardAssignment {
-        replicas: vec!["broker-c".to_string()],
-        ..assignment(3, "broker-b", 1)
-    };
-    let joining = ShardAssignment {
-        replicas: vec!["broker-c".to_string()],
-        pending_set: Some(crate::shards::watch::PendingSet {
-            replicas: vec!["broker-b".to_string(), "broker-c".to_string()],
-            generation: 6,
-        }),
-        ..assignment(4, "broker-a", 5)
-    };
-    let before = map(vec![assignment(0, "broker-a", 2), followed.clone()]);
-    let after = map(vec![
-        staged.clone(),
-        followed.clone(),
-        created,
-        led,
-        joining,
-    ]);
-    assert_eq!(named(&before, &after), [0, 4]);
-    assert!(
-        named(&HashMap::default(), &after).is_empty(),
-        "the first view"
-    );
-    // A re-created stream is another log, so its copy is new again.
-    let recreated = ShardAssignment {
-        incarnation: 9,
-        ..followed
-    };
-    assert_eq!(named(&before, &map(vec![staged, recreated])), [0, 1]);
-}
-
-/// **An elected leadership is laid over the control plane's assignment**
-/// until the control plane names its generation: the elected leader at its
-/// generation, on the set it stood on, with nothing pending or moving. The
-/// control plane's own set is kept aside for a later candidate to compare
-/// with. One for a shard with no assignment is dropped.
-#[test]
-fn an_elected_leadership_is_laid_over_the_assignment_until_named() {
-    use felix_replication::election::{Elected, Elections};
-    use felix_storage::StorageId;
-    use felix_storage::disk_log::{Member, Membership};
-
-    let copy = StorageId::from_bytes([7; 16]);
-    let elections = Elections::new("broker-b", Arc::new(tokio::sync::Notify::new()));
-    let elected = || Elected {
-        leader: "broker-b".to_string(),
-        generation: 6,
-        set: Membership {
-            generation: 5,
-            members: ["broker-a", "broker-b", "broker-c"]
-                .into_iter()
-                .map(|node| Member {
-                    node: node.to_string(),
-                    storage: (node == "broker-a").then_some(copy),
-                    learner: false,
-                    wiped: false,
-                })
-                .collect(),
-        },
-        leaving: None,
-        incarnation: 0,
-    };
-    for shard in [0, 1] {
-        elections.record(to_router_key(&key(shard)), elected());
-    }
-    let mut named = assignment(0, "broker-a", 5);
-    named.replicas = vec!["broker-b".to_string(), "broker-c".to_string()];
-    named.successor = Some("broker-c".to_string());
-    named.fence_storage_ids = [("broker-c".to_string(), "00".to_string())].into();
-    let assignments: HashMap<ShardKey, ShardAssignment> = HashMap::from_iter([(key(0), named)]);
-
-    let laid = with_elected(assignments.clone(), &elections);
-    let route = &laid[&key(0)];
-    assert_eq!(route.leader, "broker-b");
-    assert_eq!(route.generation, 6);
-    assert_eq!(route.replicas, ["broker-a", "broker-c"]);
-    assert_eq!(
-        route.member_storage_ids,
-        [("broker-a".to_string(), copy.to_hex())].into()
-    );
-    assert!(route.fence_storage_ids.is_empty());
-    assert_eq!(route.successor, None);
-    assert_eq!(route.state, "active");
-    let recorded = elections
-        .recorded(&to_router_key(&key(0)))
-        .expect("the control plane's set");
-    assert_eq!(recorded.generation, 5);
-    assert_eq!(
-        recorded
-            .members
-            .keys()
-            .map(String::as_str)
-            .collect::<Vec<_>>(),
-        ["broker-a", "broker-b", "broker-c"]
-    );
-    assert!(
-        elections.get(&to_router_key(&key(1))).is_none(),
-        "no assignment"
-    );
-
-    // Named broker-a at the elected generation: the standing stays, so its
-    // reports can tell the control plane.
-    let mut collided = assignments;
-    collided.get_mut(&key(0)).expect("assigned").generation = 6;
-    let laid = with_elected(collided.clone(), &elections);
-    assert_eq!(laid[&key(0)].leader, "broker-b");
-
-    let mut caught_up = collided;
-    caught_up.get_mut(&key(0)).expect("assigned").generation = 7;
-    let laid = with_elected(caught_up, &elections);
-    assert_eq!(laid[&key(0)].leader, "broker-a");
-    assert!(elections.is_empty());
-}
-
 /// Another engine running `key(0)`, which places its leader on `leader` and
 /// holds a member here when `member` is set. Forwards like the Raft engine.
 struct PlacedOn {
@@ -1874,7 +1721,7 @@ fn kafka_placement(ingress: IngressRouter) -> felix_kafka::Placement {
         Arc::new(crate::serving::auth::BrokerAuth::new(
             "http://127.0.0.1:1".to_string(),
         )),
-        Arc::new(StreamEngine::new(None, Some(Arc::new(ingress)))),
+        Arc::new(StreamEngine::new(Some(Arc::new(ingress)))),
         None,
         "broker-a",
         "127.0.0.1:9092",

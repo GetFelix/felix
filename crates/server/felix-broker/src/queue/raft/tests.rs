@@ -21,6 +21,9 @@ const VIS: Duration = Duration::from_secs(30);
 struct Fake {
     groups: Arc<RwLock<ShardGroups>>,
     state: parking_lot::Mutex<FakeState>,
+    /// While closed, every wait for an entry blocks.
+    closed: std::sync::atomic::AtomicBool,
+    opened: tokio::sync::Notify,
 }
 
 #[derive(Default)]
@@ -140,6 +143,13 @@ impl GroupConsensus for Fake {
     }
 
     async fn applied(&self, _key: &GroupKey, proposed: Proposed, _deadline: Instant) -> Result<()> {
+        loop {
+            let opened = self.opened.notified();
+            if !self.closed.load(std::sync::atomic::Ordering::SeqCst) {
+                break;
+            }
+            opened.await;
+        }
         let mut state = self.state.lock();
         if state.lost.contains(&proposed) {
             return Err(BrokerError::StateNotReadable(NotReadable::Refused));
@@ -540,6 +550,7 @@ async fn if_new_on_an_existing_group_proposes_nothing() {
                 next_index: applied,
                 ..FakeState::default()
             }),
+            ..Fake::default()
         },
         VIS,
         5,
@@ -956,4 +967,211 @@ async fn only_a_write_refused_before_its_proposal_is_not_unsettled() {
         ),
         "a write whose commit wait ran out answered {waited:?}"
     );
+}
+
+/// **An acknowledged ack is not handed out again after a change of leader**,
+/// even when it was above a gap: here 1 is acked while 0 is still out. No
+/// advance covers 1, so the ack is answered only once its own entry has
+/// applied, and the next leader takes 1 as settled rather than restoring its
+/// claim. `a_raft_hand_over_keeps_every_kind_of_acknowledged_write` caught
+/// this as "offset 186 was handed out again after an acknowledged ack".
+#[tokio::test]
+async fn an_ack_above_a_gap_survives_a_change_of_leader() {
+    let fx = fixture(5);
+    publish(&fx.log, 3).await;
+    let worker = GroupConsumer::new("svc", "w", 1, false);
+    assert_eq!(
+        fx.poll_as(2, Instant::now(), &worker).await.expect("poll"),
+        [(0, 1), (1, 1)]
+    );
+    fx.groups.ack(&key(G), 1, later()).await.expect("ack");
+    fx.fake().new_term();
+    let lapsed = Instant::now() + VIS * 3;
+    let other = GroupConsumer::new("svc", "other", 1, false);
+    let handed = fx.poll_as(3, lapsed, &other).await.expect("poll");
+    assert!(
+        handed.iter().all(|(offset, _)| *offset != 1),
+        "1 was handed out again after its ack was answered: {handed:?}"
+    );
+}
+
+/// **A redriven dead letter's ack survives a change of leader** when the
+/// advance over the dead letter was lost: the rebuilt tracker settles the
+/// dead letter above the table's cursor, so the record's ack is below the
+/// tracker's position but not the table's, and only its own entry keeps it.
+#[tokio::test]
+async fn a_redriven_ack_above_the_tables_cursor_survives_a_change_of_leader() {
+    let fx = fixture(5);
+    publish(&fx.log, 2).await;
+    assert_eq!(fx.poll(G, 1).await.expect("poll"), vec![0]);
+    // 0's dead letter committed and the advance over it did not.
+    let cre = fx.fake().groups.read().table().group(G).expect("group").cre;
+    let index = {
+        let mut state = fx.fake().state.lock();
+        state.next_index += 1;
+        state.next_index
+    };
+    let dead = GroupEntry {
+        group: G.to_owned(),
+        op: GroupOp::DeadLetter { cre, offset: 0 },
+    };
+    fx.fake().groups.write().apply(TERM, index, &dead);
+    fx.fake().new_term();
+    assert!(
+        fx.groups
+            .redrive(&key(G), 0, later())
+            .await
+            .expect("redrive")
+    );
+    let worker = GroupConsumer::new("svc", "w", 1, false);
+    let handed = fx.poll_as(1, Instant::now(), &worker).await.expect("poll");
+    assert_eq!(handed.first().map(|(offset, _)| *offset), Some(0));
+    fx.groups.ack(&key(G), 0, later()).await.expect("ack");
+    assert_eq!(fx.cursor(G), Some(0));
+    fx.fake().new_term();
+    let lapsed = Instant::now() + VIS * 3;
+    let other = GroupConsumer::new("svc", "other", 1, false);
+    let handed = fx.poll_as(2, lapsed, &other).await.expect("poll");
+    assert!(
+        handed.iter().all(|(offset, _)| *offset != 0),
+        "0 was handed out again after its ack was answered: {handed:?}"
+    );
+}
+
+/// Two out-of-order acks on one group: the second proposes while the first
+/// still waits for its commit, and both are in the table once answered.
+#[tokio::test]
+async fn out_of_order_acks_commit_together() {
+    use std::sync::atomic::Ordering;
+    let fx = fixture(5);
+    publish(&fx.log, 3).await;
+    assert_eq!(fx.poll(G, 3).await.expect("poll"), vec![0, 1, 2]);
+    // A read index taken now covers neither ack, and nothing commits.
+    fx.set(|state| state.lag_reads = true);
+    fx.fake().closed.store(true, Ordering::SeqCst);
+    let pending_acks = || {
+        fx.fake()
+            .state
+            .lock()
+            .pending
+            .iter()
+            .filter(|(_, entry)| matches!(entry.op, GroupOp::Ack { .. }))
+            .count()
+    };
+    let both_proposed = async {
+        let proposed = tokio::time::timeout(Duration::from_secs(2), async {
+            while pending_acks() < 2 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .is_ok();
+        fx.fake().closed.store(false, Ordering::SeqCst);
+        fx.fake().opened.notify_waiters();
+        proposed
+    };
+    let k = key(G);
+    let (two, one, proposed) = tokio::join!(
+        fx.groups.ack(&k, 2, later()),
+        fx.groups.ack(&k, 1, later()),
+        both_proposed,
+    );
+    assert!(
+        proposed,
+        "the second ack waited for the first's commit before proposing"
+    );
+    two.expect("ack 2");
+    one.expect("ack 1");
+    let acked: Vec<u64> = fx
+        .fake()
+        .groups
+        .read()
+        .table()
+        .group(G)
+        .map(|s| s.acked.iter().copied().collect())
+        .unwrap_or_default();
+    assert_eq!(acked, vec![1, 2]);
+}
+
+/// Acks waiting outside the slot are cut by a new leader: neither is
+/// answered OK, and the table holds neither.
+#[tokio::test]
+async fn out_of_order_acks_cut_by_a_new_term_fail() {
+    use std::sync::atomic::Ordering;
+    let fx = fixture(5);
+    publish(&fx.log, 3).await;
+    assert_eq!(fx.poll(G, 3).await.expect("poll"), vec![0, 1, 2]);
+    fx.set(|state| state.lag_reads = true);
+    fx.fake().closed.store(true, Ordering::SeqCst);
+    let cut = async {
+        let proposed = both_pending(fx.fake()).await;
+        fx.fake().new_term();
+        open(fx.fake());
+        proposed
+    };
+    let k = key(G);
+    let (two, one, proposed) = tokio::join!(
+        fx.groups.ack(&k, 2, later()),
+        fx.groups.ack(&k, 1, later()),
+        cut,
+    );
+    assert!(proposed, "the second ack waited for the first's commit");
+    assert!(two.is_err() && one.is_err(), "a cut ack answered OK");
+    let acked = fx
+        .fake()
+        .groups
+        .read()
+        .table()
+        .group(G)
+        .map(|s| s.acked.len());
+    assert_eq!(acked, Some(0), "the table holds a cut ack");
+}
+
+/// Bounded: true once two entries wait, false after two seconds.
+async fn both_pending(fake: &Fake) -> bool {
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while fake.state.lock().pending.len() < 2 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .is_ok()
+}
+
+fn open(fake: &Fake) {
+    fake.closed
+        .store(false, std::sync::atomic::Ordering::SeqCst);
+    fake.opened.notify_waiters();
+}
+
+/// An ack waiting outside the slot whose entry applies after the apply path
+/// forgot its tracker is answered lapsed, not OK.
+#[tokio::test]
+async fn an_applied_ack_whose_tracker_was_forgotten_is_lapsed() {
+    let fx = fixture(5);
+    publish(&fx.log, 3).await;
+    assert_eq!(fx.poll(G, 3).await.expect("poll"), vec![0, 1, 2]);
+    fx.set(|state| state.lag_reads = true);
+    fx.fake()
+        .closed
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    let forget = async {
+        let proposed = both_pending(fx.fake()).await;
+        fx.fake().groups.write().untrack(G);
+        open(fx.fake());
+        proposed
+    };
+    let k = key(G);
+    let (two, one, proposed) = tokio::join!(
+        fx.groups.ack(&k, 2, later()),
+        fx.groups.ack(&k, 1, later()),
+        forget,
+    );
+    assert!(proposed, "the second ack waited for the first's commit");
+    for (offset, answer) in [(2, two), (1, one)] {
+        assert!(
+            matches!(answer, Err(BrokerError::GroupClaimLapsed { offset: o }) if o == offset),
+            "ack {offset}: {answer:?}"
+        );
+    }
 }

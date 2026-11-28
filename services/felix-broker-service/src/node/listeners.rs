@@ -62,7 +62,6 @@ pub(super) struct AcceptLoops<'a> {
     pub(super) engine: &'a Arc<crate::shards::routing::StreamEngine>,
     pub(super) peers: &'a Option<Arc<PeerPool>>,
     pub(super) lease: &'a Option<Arc<LeaseState>>,
-    pub(super) shard_status: &'a Arc<felix_replication::status::ShardStatusBoard>,
     pub(super) client_endpoints: &'a Arc<ClientEndpoints>,
     pub(super) limits: &'a Arc<ListenerLimits>,
 }
@@ -89,7 +88,6 @@ pub(super) fn spawn_accept_loops(
         engine,
         peers,
         lease,
-        shard_status,
         client_endpoints,
         limits,
     } = shared;
@@ -108,7 +106,6 @@ pub(super) fn spawn_accept_loops(
             let engine = Arc::clone(engine);
             let peers_for_accept = peers.clone();
             let lease_for_accept = lease.clone();
-            let status_for_accept = Arc::clone(shard_status);
             let endpoints_for_accept = Arc::clone(client_endpoints);
             let limits = Arc::clone(limits);
             tokio::spawn(async move {
@@ -142,7 +139,6 @@ pub(super) fn spawn_accept_loops(
                         peers: peers_for_accept,
                         lease: lease_for_accept,
                         client_endpoints: Some(Arc::clone(&endpoints_for_accept)),
-                        shard_status: Some(Arc::clone(&status_for_accept)),
                     },
                     limit,
                     limits,

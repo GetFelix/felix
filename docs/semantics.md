@@ -135,10 +135,6 @@ stream with more than 1024 answers owed refuses the next acked publish with a
 retryable `overloaded` (`publish queue full`) before queueing it, so a retry
 cannot write it twice.
 
-**The `Leader` loss window is bounded by replication lag**, exported as
-`felix_broker_replication_lag_records`. An operator choosing `Leader` is
-choosing that window, and a bound nobody can observe is not a bound.
-
 It opens at any failover, not only when the leader's disk is lost. A replica is
 promoted, writes at the next generation, and when the old leader comes back as
 its follower, the records it had acknowledged and not shipped are a previous
@@ -148,8 +144,7 @@ truncated so the follower can rejoin. The disk surviving does not save them.
 Under `Quorum` that cut has a floor. The leader ships its quorum mark with every
 batch, and a follower, or a deposed leader rejoining as one, refuses to
 truncate or rebuild below the mark it last learned: those records were
-acknowledged, so a newer leader disagreeing with them is a fault to stop on
-(`felix_broker_replicated_total{outcome="below_commit"}`), not a suffix to drop.
+acknowledged, so a newer leader disagreeing with them is a fault to stop on, not a suffix to drop.
 
 A majority is of the replica set, leader included: a set of three needs two, a
 set of five needs three, and a set of one needs one, which is why
@@ -157,24 +152,17 @@ set of five needs three, and a set of one needs one, which is why
 
 ## Failover
 
-A shard's leadership is a **time-bounded lease** issued by the control plane,
-with the assignment generation as its epoch. Per-shard Raft was considered and
-rejected; `docs/replication-design.md` records why.
+Each durable shard is a Raft group, and its leader is whichever member the
+group elected. A new leader holds every committed entry (Raft's leader
+completeness), and an acknowledged write is a committed one under `Quorum`, so
+a failover keeps every `Quorum` acknowledgement. Under `Leader` a write is
+acknowledged once the leader has it, before it is committed, so a leader lost
+with records no follower has yet loses them: the survivors keep a prefix of
+what was acknowledged. The control plane does not take part in the election.
 
-**Only a replica that holds every record the leader may have acknowledged can
-be promoted.** The catch-up bound is zero. A bound above zero would be a bound on
-how much a promotion may silently lose, and there is no honest non-zero value
-that is not a policy decision.
-
-Under `Leader` that is every record the leader held, since a write is
-acknowledged before it ships. Under `Quorum` it is every record up to the
-quorum mark: nothing past the mark has been acknowledged, and the mark moves
-only once the report naming who holds it has landed. A `Quorum` leader that dies
-holding records no follower has yet is therefore still replaced; those records
-were never acknowledged, and an idempotent producer sends them again.
-
-> `a_quorum_follower_holding_every_acknowledged_record_can_lead` and
-> `a_leader_stream_follower_missing_the_newest_record_cannot_lead`.
+> `a_followers_subscriber_keeps_every_acknowledged_record_when_the_leader_dies`,
+> `a_leader_stream_lost_with_its_leader_keeps_a_prefix_of_what_was_acknowledged`
+> and `a_leader_lost_with_the_control_plane_down_loses_nothing_acknowledged`.
 
 > `the_promoted_leader_is_one_of_the_replicas` and
 > `a_shard_with_no_caught_up_replica_does_not_fail_over_to_an_empty_broker`: a
@@ -214,19 +202,14 @@ majority then arrives.
 > `a_lapsed_lease_refuses_every_write_until_it_is_renewed`,
 > `cache_and_counter_reads_and_writes_after_the_lease_lapses_are_refused`,
 > `an_ack_after_the_lease_lapses_is_refused`,
-> `forwarded_writes_after_the_lease_lapses_are_refused`,
-> `a_quorum_ack_is_withheld_when_the_lease_lapses_while_it_waits`.
+> `forwarded_writes_after_the_lease_lapses_are_refused`.
 
-**A `Quorum` ack rests on a report the control plane stored.** The leader moves
-its quorum mark only for a shard whose replica report the control plane
-answered `accepted`. A report it refused (the broker no longer leads the shard,
-the report is from an older generation, or it is behind a report already held)
-holds the mark, so the publish waits or times out instead of being acknowledged
-on a report failover will never read. See `docs/replication-design.md`,
-"Replica reports". Once the fleet finalizes `majority_ack`, a `Quorum` stream
-acknowledges on its followers' answers at the leader's generation instead,
-with neither the report nor the lease in the condition: see
-`docs/replication-design.md`, "Acknowledging by the followers".
+**A cut-off leader acknowledges nothing the group loses.** A leader cut off
+from its peers stops serving once its leader lease runs out, which is before
+a new leader can be elected, so nothing it acknowledged is lost when the
+group moves on.
+
+> `a_cut_off_leader_acknowledges_nothing_the_group_loses_after_its_lease`.
 
 > `a_resumed_leader_does_not_acknowledge_writes_the_cluster_loses`.
 
@@ -482,10 +465,8 @@ throughput rather than correctness.
   the commit, and it is refused with a retryable error, not answered without
   the record, if the wait outlasts an election timeout.
 
-  > `a_quorum_group_poll_stops_at_the_quorum_mark`,
   > `a_fetch_reads_only_to_the_commit_point`, `latest_is_the_commit_point`,
   > `readers_stop_at_the_durable_offset_once_a_flush_poisons_the_log`,
-  > `a_promoted_leader_with_no_majority_yet_refuses_reads`,
   > `a_read_shows_a_committed_record_the_member_has_not_synced`,
   > `a_read_after_a_lease_answer_waits_for_that_entry`,
   > `a_read_confirmed_after_a_leader_answer_sees_the_write_or_is_refused`,

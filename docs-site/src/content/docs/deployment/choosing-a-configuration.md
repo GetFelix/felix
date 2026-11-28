@@ -53,8 +53,7 @@ whole log, and when it dies only a follower named in its last report can be
 promoted. Anything the leader acknowledged after that report is lost. Under
 steady writes a follower is usually a few records behind, so the report
 often names none, and the shard then waits for the old leader to come back
-with its disk. `felix_broker_replication_lag_records` shows how far behind
-the followers are.
+with its disk.
 
 `Quorum` also keeps working through a control-plane outage. A `Quorum` stream
 goes on acknowledging writes its followers hold, while a `Leader` stream

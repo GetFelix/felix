@@ -20,7 +20,7 @@ few seconds of real time in a release build (see [Running it](#running-it)).
 Run a batch of seeds:
 
 ```bash
-cargo test -p felix-sim --test seeds -- --ignored --exact seeds
+cargo test -p felix-sim --test raft_seeds -- --ignored --exact raft_seeds
 ```
 
 `FELIX_SIM_SEEDS` sets how many seeds (default 4) and `FELIX_SIM_SEED_START`
@@ -52,58 +52,51 @@ same way. `FELIX_SIM_POWER_LOSS=relaxed` cuts them under brokers that do not
 sync before they acknowledge. `FELIX_SIM_MAJORITY_CUT=1` and
 `FELIX_SIM_WIPE=1` add the faults in [Faults that change disks](#faults-that-change-disks).
 
-`FELIX_SIM_PLACEMENT=1` turns on placement faults (below) for `seeds`,
-`replay` and `each_seed_runs_the_same_twice`:
+When a seed fails, the summary prints the command that replays it:
 
 ```bash
-FELIX_SIM_PLACEMENT=1 FELIX_SIM_SEEDS=8 \
-  cargo test -p felix-sim --release --test seeds -- --ignored --exact seeds
+FELIX_SIM_SEED=<n> task sim:raft-replay
 ```
 
-When a seed fails, the test prints the command that replays it:
-
-```bash
-FELIX_SIM_SEED=<n> task sim:replay
-```
-
-A replay runs the same cluster, the same faults at the same virtual times and
+A replay runs the same members, the same faults at the same virtual times and
 the same client operations, and it is the same run, event for event.
-`task sim:replay` builds with `RUSTFLAGS="--cfg tokio_unstable"`, the only way
-tokio lets a runtime seed `select!`, in a target directory of its own, since
-the flag changes every crate's build. To diff two runs:
-
-```bash
-FELIX_SIM_SEED=<n> FELIX_SIM_HISTORY=run1.txt task sim:replay
-FELIX_SIM_SEED=<n> FELIX_SIM_HISTORY=run2.txt task sim:replay
-diff run1.txt run2.txt
-```
-
-`FELIX_SIM_HISTORY` writes the run's trace (every fault, operation, final
-read, opened generation and finding, one per line) to a file. A plain
-`cargo test -p felix-sim --test seeds replay` also works, but without the flag
-tokio picks among ready `select!` branches at random: the faults and
+`task sim:raft-replay` builds with `RUSTFLAGS="--cfg tokio_unstable"`, the only
+way tokio lets a runtime seed `select!`, in a target directory of its own,
+since the flag changes every crate's build. A plain
+`cargo test -p felix-sim --test raft_seeds` replay also works, but without the
+flag tokio picks among ready `select!` branches at random: the faults and
 operations still repeat, the interleaving under them does not, and a
-timing-sensitive failure may need a few replays to show again. Such a build
-refuses `FELIX_SIM_HISTORY`, since two of its histories differ wherever two
-branches raced.
+timing-sensitive failure may need a few replays to show again.
 
-To skew each node's clocks as well, set `FELIX_SIM_CLOCKS` to `bounded` or
-`unbounded` ([Clock skew](#clock-skew) says what each does). It needs the
-`tokio_unstable` build, so run it through `task sim:replay`:
+To see whether two runs match, run the in-process check on one seed. It prints
+a trace hash (one number over every fault, operation, delivery, final read and
+finding) and the event count, and fails on the first event that differs:
 
 ```bash
-FELIX_SIM_SEED=<n> FELIX_SIM_CLOCKS=bounded task sim:replay
+RUSTFLAGS="--cfg tokio_unstable" FELIX_SIM_SEED_START=<n> FELIX_SIM_SEEDS=1 \
+  cargo test -p felix-sim --release --test raft_seeds -- --exact each_raft_seed_runs_the_same_twice --nocapture
 ```
 
-A seed that fails with skew prints a replay command that includes it.
+To skew each member's timers as well, set `FELIX_SIM_CLOCKS=bounded` ([Clock
+skew](#clock-skew) says what it does). It needs the `tokio_unstable` build, so
+run it through `task sim:raft-replay`:
+
+```bash
+FELIX_SIM_SEED=<n> FELIX_SIM_CLOCKS=bounded task sim:raft-replay
+```
+
+The disk faults are chosen the same way: `FELIX_SIM_POWER_LOSS=1` or `relaxed`,
+`FELIX_SIM_MAJORITY_CUT=1`, `FELIX_SIM_WIPE=1` and `FELIX_SIM_RESTORE=1`
+(see [Raft groups](#raft-groups)).
 
 `task sim:determinism` checks that replay is exact. It runs each seed twice in
-one process and fails on the first event where the two traces differ, then
-replays seed 1 (`FELIX_SIM_REPLAY_SEED`) in two separate processes through
-`task sim:replay` and compares the two histories byte for byte. The second
-check runs the command a failing seed prints, and it catches anything that
-differs from process to process but not between two runs in one process. CI
-runs it on seeds 1 to 20 in the `Simulator determinism` job. A plain
+one process and fails on the first event where the two traces differ, runs the
+pinned seeds and the other tests of `tests/raft_seeds.rs`, then runs seed 1
+(`FELIX_SIM_REPLAY_SEED`) in two separate processes and compares the trace hash
+and event count each prints. The second check catches anything that differs
+from process to process but not between two runs in one process. It compares
+the hash, not a trace file: the Raft simulator does not write its trace to disk.
+CI runs it on seeds 1 to 20 in the `Simulator determinism` job. A plain
 `cargo test` skips the in-process test, because it cannot pass without the
 flag.
 
@@ -521,7 +514,7 @@ fixed, and the tests that pin them in `tests/seeds.rs` pass. Those pins check
 the one run their seed gives, so they run only with `--cfg tokio_unstable`, in
 `task sim:determinism`. The default batch of `seeds` (seeds 1 to 4) still hits
 liveness stalls (#2024, #2032, #2033), so it is ignored in the workspace tests
-and runs with `cargo test -p felix-sim --test seeds -- --ignored --exact seeds`.
+and runs with `cargo test -p felix-sim --test raft_seeds -- --ignored --exact raft_seeds`.
 It runs in its own CI job on every pull request, which does not block merging
 until those are fixed. A seed whose bug is still open is pinned with
 `#[ignore = "#<issue>"]`; none is pinned today.
@@ -882,7 +875,7 @@ read served by a member that has fallen behind another.
 
 `.github/workflows/dst-nightly.yml` runs 2000 seeds every night at 01:13
 Pacific, the same seeds each night, so a red night replays as it is. It builds
-the `raft_seeds` test once, in release with `--cfg tokio_unstable` as `task sim:replay`
+the `raft_seeds` test once, in release with `--cfg tokio_unstable` as `task sim:raft-replay`
 does, and hands it to shards that each run a range of seeds two at a time
 through `scripts/sim-sweep.sh`.
 
@@ -915,9 +908,7 @@ One stall is tracked inside a test. `seed_3_replicas_agree_on_who_wrote_each_rec
 
 Each line in the run summary gives the seed, its categories and the exact
 command that replays it, for example
-`FELIX_SIM_PLACEMENT=1 FELIX_SIM_SEED=412 task sim:replay`, or
-`FELIX_SIM_CLOCKS=bounded FELIX_SIM_SEED=412 task sim:raft-replay` for a Raft
-seed. A Raft seed's categories are `history`, `stalled`, `group` (any other
+`FELIX_SIM_CLOCKS=bounded FELIX_SIM_SEED=412 task sim:raft-replay`. A Raft seed's categories are `history`, `stalled`, `group` (any other
 group finding), `too-little` (it exercised too little to count) or `crash`.
 
 A real bug runs once more to say whether it repeats; a stall does not,

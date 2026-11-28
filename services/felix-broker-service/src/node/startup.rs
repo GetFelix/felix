@@ -1,13 +1,10 @@
-//! Opening the broker over its storage and wiring it to the cluster state,
-//! shared by the real node and the simulator's.
+//! Opening the broker over its storage and wiring it to the cluster state.
 
 use std::sync::Arc;
-use std::time::Duration;
 
 use anyhow::Result;
 use felix_broker::{Broker, DurableStorage};
-use felix_replication::peer::PeerRequester;
-use felix_replication::{self as replication, quorum::QuorumMarks};
+use felix_replication as replication;
 
 use super::cluster::ShardState;
 use super::storage;
@@ -19,8 +16,6 @@ pub(super) struct Opened {
     pub(super) broker: Arc<Broker>,
     pub(super) durable_storage: Option<DurableStorage>,
     pub(super) storage_id: felix_storage::StorageId,
-    /// Set after a start that may have cost acknowledged records.
-    pub(super) unclean: Option<Arc<replication::unclean::UncleanStart>>,
 }
 
 /// The broker over its opened storage, before it is wired to the fleet.
@@ -28,13 +23,6 @@ pub(super) struct Stored {
     pub(super) broker: Arc<Broker>,
     pub(super) durable_storage: Option<DurableStorage>,
     pub(super) storage_id: felix_storage::StorageId,
-    /// Set after a start that may have cost acknowledged records.
-    pub(super) unclean: bool,
-    /// Set when this start found the data directory older than the node's
-    /// last registration.
-    pub(super) replaced_storage: bool,
-    /// What the directory kept of the ballots it took.
-    pub(super) kept: storage::Kept,
 }
 
 /// Refuse a standalone start on Raft over a data root the hybrid engine
@@ -89,36 +77,16 @@ pub(super) fn open_storage(
     durable: Option<(DurableStorageConfig, &felix_storage::disk_log::RootLock)>,
     registered: Option<&Registered>,
 ) -> Result<Stored> {
-    let (broker, durable_storage, storage_id, unclean, replaced_storage, kept) =
+    let (broker, durable_storage, storage_id, ..) =
         storage::open_with(config, durable, registered)?;
     Ok(Stored {
         broker: Arc::new(broker),
         durable_storage,
         storage_id,
-        unclean,
-        replaced_storage,
-        kept,
     })
 }
 
-/// [`open_storage`] then [`wire_broker`], for a start that has nothing to
-/// decide in between.
-#[cfg(feature = "sim")]
-pub(super) async fn open_broker(
-    config: &BrokerConfig,
-    durable: Option<(DurableStorageConfig, &felix_storage::disk_log::RootLock)>,
-    registered: Option<&Registered>,
-    cluster: &Option<ShardState>,
-    fleet: &Arc<felix_common::fleet::FleetGate>,
-    quorum_marks: &Arc<QuorumMarks>,
-    engine: &Arc<crate::shards::routing::StreamEngine>,
-) -> Result<Opened> {
-    let stored = open_storage(config, durable, registered)?;
-    wire_broker(config, stored, cluster, fleet, quorum_marks, engine).await
-}
-
-/// Record this start in the quorum marks and the fence, and set the gates that
-/// depend on what the fleet has finalized.
+/// Set the gates that depend on what the fleet has finalized.
 ///
 /// The order is load-bearing; each step's comment says why.
 pub(super) async fn wire_broker(
@@ -126,70 +94,16 @@ pub(super) async fn wire_broker(
     stored: Stored,
     cluster: &Option<ShardState>,
     fleet: &Arc<felix_common::fleet::FleetGate>,
-    quorum_marks: &Arc<QuorumMarks>,
     engine: &Arc<crate::shards::routing::StreamEngine>,
 ) -> Result<Opened> {
     let Stored {
         broker,
         durable_storage,
         storage_id,
-        unclean,
-        replaced_storage,
-        kept,
     } = stored;
-    let root = durable_storage
-        .as_ref()
-        .map(|storage| storage.root().to_path_buf());
-    // Read after the run began, which distrusts every copy when it rotated
-    // the id. Live, so a rotation later in the run distrusts them here too.
-    let copy_trust = root
-        .as_ref()
-        .map(|root| felix_storage::run_state::copy_trust::CopyTrust::open_live(root))
-        .transpose()?;
-    // The ids this directory had before a crash rotated them away, keeping
-    // its ballots.
-    let rotated_ids = match &root {
-        Some(root) => felix_storage::run_state::rotated_ids(root)?,
-        None => Vec::new(),
-    };
     let ingress_router = cluster
         .as_ref()
         .map(|(_, ingress, _, _)| Arc::clone(ingress));
-    quorum_marks.set_local_storage(storage_id, replaced_storage);
-    quorum_marks.set_rotated_storage(rotated_ids);
-    // Left unset, which attests nothing, until a deferred restore check sets
-    // them.
-    if !kept.deferred {
-        super::membership::attest(quorum_marks, kept);
-    }
-    if let Some(trust) = &copy_trust {
-        quorum_marks.set_copy_trust(Arc::clone(trust));
-    }
-    quorum_marks.set_unified_fence(
-        durable_storage.is_some()
-            && config
-                .peer_transport
-                .as_ref()
-                .is_some_and(|peer| peer.fence && peer.unified_fence),
-    );
-    // Before anything can lead or answer a fence: a copy this broker led
-    // before a crash that may have cost it acknowledged records is not one it
-    // can lead from or vouch for (#1295).
-    let unclean = match (&config.membership, cluster) {
-        (Some(membership), Some((_, ingress, _, _))) if unclean => {
-            let mut start =
-                felix_replication::unclean::UncleanStart::new(membership.node_id.as_str())
-                    .with_kept_promises(kept.promises);
-            if let Some(trust) = copy_trust {
-                start = start.with_copy_trust(trust);
-            }
-            let unclean = Arc::new(start);
-            ingress.fence().bind_unclean_start(Arc::clone(&unclean));
-            quorum_marks.set_unclean_start(Arc::clone(&unclean));
-            Some(unclean)
-        }
-        _ => None,
-    };
     // A record with its publisher is storage format v6, which an older build
     // refuses to open, so a cluster waits for its fleet to finalize it and a
     // lone broker for its operator to ask.
@@ -300,35 +214,7 @@ pub(super) async fn wire_broker(
         broker,
         durable_storage,
         storage_id,
-        unclean,
     })
-}
-
-/// A `Quorum` read confirms leadership by a round of fences, over the same
-/// transport and to the same replicas a promotion fences. `reads_by_lease` is
-/// only asked when there is a fence to confirm over.
-pub(super) fn bind_read_check<R: PeerRequester + Send + Sync + 'static>(
-    config: &BrokerConfig,
-    cluster: &Option<ShardState>,
-    peers: &Option<Arc<R>>,
-    broker: &Arc<Broker>,
-    quorum_marks: &Arc<QuorumMarks>,
-    reads_by_lease: impl FnOnce() -> Result<bool>,
-) -> Result<()> {
-    if let (Some((router, ..)), Some(pool)) = (cluster, peers)
-        && pool.offers_fence()
-    {
-        let by_lease = reads_by_lease()?;
-        replication::engine::bind_read_rounds(
-            quorum_marks,
-            Arc::clone(pool),
-            Arc::clone(broker),
-            Arc::clone(router),
-            Duration::from_millis(config.publish_quorum_timeout_ms.max(1)),
-            by_lease,
-        );
-    }
-    Ok(())
 }
 
 #[cfg(test)]

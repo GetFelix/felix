@@ -14,7 +14,6 @@
 //! [`ShardKey`] and [`ShardKind`] are re-exported here because all three use
 //! them; they are defined in `felix-replication`, which keys on them too.
 
-mod confirmed;
 mod engine;
 pub(crate) mod engine_match;
 pub mod lifecycle;
@@ -23,7 +22,5 @@ pub(crate) mod memory;
 pub(crate) mod raft;
 pub mod routing;
 pub mod watch;
-
-pub(crate) use confirmed::ControlPlaneRoutes;
 
 pub use felix_replication::{ShardKey, ShardKind};

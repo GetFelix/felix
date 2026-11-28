@@ -13,7 +13,6 @@ use serde::Serialize;
 
 use crate::shards::routing::IngressRouter;
 use crate::shards::{ShardKey, ShardKind};
-use felix_replication::quorum::QuorumMarks;
 
 /// What the route reads from.
 #[derive(Clone)]
@@ -23,7 +22,6 @@ pub(crate) struct BackupOffsets {
     /// `None` on a broker with no cluster: it has no assignments, so it leads
     /// nothing a backup point could name.
     pub(crate) ingress: Option<Arc<IngressRouter>>,
-    pub(crate) marks: Arc<QuorumMarks>,
 }
 
 impl BackupOffsets {
@@ -130,20 +128,18 @@ impl BackupOffsets {
                 .await
                 == Some(ConsistencyLevel::Quorum)
             && ingress.replicated(key);
-        // Pinned to `generation`: a mark from any other leadership says
-        // nothing about this one. The re-check below catches a change after.
-        let bound = |kind: LogKind| {
-            let mark = match kind {
-                LogKind::Cache if quorum_cache => self.marks.offset(key, generation),
-                LogKind::Counters if quorum_cache => self.marks.counters().offset(key, generation),
-                // Group state has no quorum mark: it is acknowledged on the
-                // leader's own durability, which the acknowledged tail is.
-                _ => return ReadBound::Unbounded,
-            };
-            if !ingress.fence().lease_valid() {
-                return ReadBound::Refused;
+        // A replicated `Quorum` cache outside a Raft group has no engine to
+        // say what a majority holds. Group state is acknowledged on the
+        // leader's own durability, which the acknowledged tail is.
+        let bound = |kind: LogKind| match kind {
+            LogKind::Cache | LogKind::Counters if quorum_cache => {
+                if ingress.fence().lease_valid() {
+                    ReadBound::Settling
+                } else {
+                    ReadBound::Refused
+                }
             }
-            mark.map_or(ReadBound::Settling, ReadBound::Committed)
+            _ => ReadBound::Unbounded,
         };
         let records = match key.kind {
             ShardKind::Stream => LogKind::Stream,

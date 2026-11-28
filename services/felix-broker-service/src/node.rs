@@ -31,8 +31,6 @@ mod open_files;
 pub(crate) mod peer_dispatch;
 mod run_guard;
 mod shutdown;
-#[cfg(feature = "sim")]
-pub mod sim;
 mod startup;
 pub(crate) mod storage;
 mod sync;
@@ -223,9 +221,6 @@ where
     // metric is a bare count: a label per shard is a label per stream per
     // tenant, and a halt is useless to act on without knowing which replica.
     let halted_replicas = Arc::new(replication::halted::HaltedReplicas::new());
-    // Each led shard's cursors and fence as replication last left them, for an
-    // operator's `shard_inspect`.
-    let shard_status = Arc::new(replication::status::ShardStatusBoard::new());
     // Empty until the first catalog refresh fills it, which is the honest
     // answer in the meantime: this broker has not yet been told where any
     // client may connect.
@@ -356,14 +351,12 @@ where
         &membership_client,
         &group_refused,
     );
-    let mut stored =
+    let stored =
         startup::open_storage(&config, durable_config.zip(run.lock()), registered.as_ref())?;
     run.opened(
         &stored.broker,
         durable_root.clone().map(|root| (root, stored.storage_id)),
     );
-    let own_kept = stored.kept;
-    stored.kept = stored.kept.attested(view.is_some());
     let storage_id = stored.storage_id;
     // Beginning the run may have rotated the id the view was registered
     // under, and a new id registers before it acts: wait for the control
@@ -378,8 +371,7 @@ where
                 &link,
                 &credential,
             ) => {
-                let (view, replaced) = kept?;
-                stored.replaced_storage |= replaced;
+                let (view, _) = kept?;
                 view
             }
             () = shutdown.as_mut() => {
@@ -393,10 +385,6 @@ where
         },
         (view, _) => view,
     };
-    // A start that kept its view attests as kept only once its restore check
-    // has run against the control plane's record (`CountsForgotten`,
-    // `TrustsRegistered` in `docs/formal/FelixShardUnified.tla`).
-    stored.kept.deferred = view.is_some();
     // Which cross-broker features the whole fleet has, held by anything that
     // changes how brokers treat each other; membership keeps it current. A
     // broker outside a cluster has no fleet and enables nothing. A start
@@ -416,25 +404,16 @@ where
         None if standalone_raft => crate::shards::raft::standalone::fleet_of_one(),
         None => felix_common::fleet::FleetGate::new(reported),
     });
-    // Shared between the replication driver, which advances it, and the publish
-    // path, which waits on it for `Quorum` streams. The fleet decides how it
-    // counts: see `QuorumMarks::own_generation_only`.
-    let quorum_marks = Arc::new(replication::quorum::QuorumMarks::with_fleet(Arc::clone(
-        &fleet,
-    )));
     // One engine for every user: client listeners, the Kafka and MQTT writes,
-    // forwarded writes, the read bounds and the peer handler. Its replica is
-    // set when the peer listener binds.
-    let engine = Arc::new(shard_routing::StreamEngine::new(
-        Some(Arc::clone(&quorum_marks)),
-        ingress_router.clone(),
-    ));
+    // forwarded writes, the read bounds and the peer handler.
+    let engine = Arc::new(
+        shard_routing::StreamEngine::new(ingress_router.clone()).with_fleet(Arc::clone(&fleet)),
+    );
     let startup::Opened {
         broker,
         durable_storage,
         storage_id,
-        unclean,
-    } = startup::wire_broker(&config, stored, &cluster, &fleet, &quorum_marks, &engine).await?;
+    } = startup::wire_broker(&config, stored, &cluster, &fleet, &engine).await?;
     // Before the catalog, the view or a peer registers a stream: one
     // registered earlier would have its shard 0 opened by the broker itself,
     // beside the log its Raft member opens.
@@ -562,14 +541,6 @@ where
             credential.clone(),
         );
     }
-    startup::bind_read_check(
-        &config,
-        &cluster,
-        &peers,
-        &broker,
-        &quorum_marks,
-        crate::config::quorum_reads_by_lease,
-    )?;
     starting_probes.stop().await;
     let metrics_listener = tokio::net::TcpListener::from_std(metrics_listener)
         .context("serve the metrics listener")?;
@@ -584,7 +555,6 @@ where
                 node_id: config.membership.as_ref().map(|m| m.node_id.clone()),
                 broker: Arc::clone(&broker),
                 ingress: ingress_router.clone(),
-                marks: Arc::clone(&quorum_marks),
             },
             async move { metrics_shutdown.cancelled().await },
         ))
@@ -657,7 +627,6 @@ where
             engine: &engine,
             peers: &peers,
             lease: &lease,
-            shard_status: &shard_status,
             client_endpoints: &client_endpoints,
             limits: &limits,
         },
@@ -715,10 +684,6 @@ where
             .map(|_| (clients.clone(), registered_watch.clone())),
     );
 
-    // Filled by the shard tasks, carried by the heartbeat.
-    let suspects = Arc::new(felix_replication::suspicion::Suspects::default());
-    // Set at each registration, read by the replica reports.
-    let incarnation = Arc::new(std::sync::atomic::AtomicU64::new(0));
     // Its own client: the heartbeat runs on a runtime of its own, and a pooled
     // connection belongs to the runtime that opened it.
     let heartbeat_link = config
@@ -747,38 +712,29 @@ where
         &lease,
         &fleet,
         &credential,
-        &suspects,
-        &incarnation,
         registered,
         storage_id,
         durable_storage.as_ref().map(|storage| storage.root()),
         view_file.clone(),
-        view.as_ref().map(|_| {
-            membership::deferred_attest(&restore_checked, own_kept, Arc::clone(&quorum_marks))
-        }),
+        view.as_ref()
+            .map(|_| crate::cluster::membership::DeferredCheck::releasing(restore_checked.clone())),
         // Set once the Raft data root opens through the restore gate.
         root_sequence,
         &sync_shutdown,
     );
     // Its own token, so a stopping broker can stop taking forwarded writes
-    // while it still ships to followers over the pool.
+    // while it still sends over the pool.
     let peer_listener_shutdown = peer_shutdown.child_token();
     let peer_listener = cluster::bind_peer_listener(
         &config,
         &cluster,
         &engine,
         &broker,
-        &quorum_marks,
         &auth,
         &peer_tls,
         peers.as_ref().map(|pool| pool.known_capabilities().clone()),
         storage_id,
         registered_watch,
-        unclean.clone(),
-        config
-            .controlplane_url
-            .as_deref()
-            .map(|base_url| (&membership_client, base_url, &credential)),
         view.as_ref().map(|_| clients.clone()),
         // Peers suspect a broker that cannot serve clients yet, so they stand
         // for the shards it leads instead of waiting on it. After a start from
@@ -812,23 +768,10 @@ where
         link: &link,
         credential: &credential,
         client_endpoints: &client_endpoints,
-        peers: &peers,
         broker: &broker,
-        engine: &engine,
-        quorum_marks: &quorum_marks,
-        halted_replicas: &halted_replicas,
-        shard_status: &shard_status,
         fleet: &fleet,
-        suspects: &suspects,
-        incarnation: &incarnation,
-        storage_id: durable_storage.as_ref().map(|_| storage_id),
-        unclean: &unclean,
-        prefetch: peer_listener.prefetch,
         nodes: view.as_ref().map(from_view::nodes).unwrap_or_default(),
-        reports_held: view.as_ref().map(|_| restore_checked.clone()),
-        leads_after: view.as_ref().map(|_| clients.clone()),
         engine_shards: raft_shards.engine_shards.clone(),
-        raft: shard_engine == crate::config::ShardEngine::Raft,
         sync_shutdown: &sync_shutdown,
     });
 

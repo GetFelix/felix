@@ -16,7 +16,8 @@
 //!   of another group never voids a group still closing its first run.
 //! - A dead letter is written before the advance over it.
 //! - Hydrate and every operation first wait for the shard's last proposed
-//!   group entry, which a timed-out write leaves unanswered.
+//!   group entry, which a timed-out write leaves unanswered. An ack on a
+//!   current tracker does not: its own entries follow that one in the log.
 //! - A record that is not data is settled in the tracker alone. No entry is
 //!   proposed for it; the next advance over a data record covers it.
 //! - A poll answers only once a claim entry for what it hands out has
@@ -376,11 +377,29 @@ impl<C: GroupConsensus> RaftGroups<C> {
         Ok(claimed)
     }
 
-    /// Finish one record. Answered once the advance it closes has applied.
+    /// Finish one record. Answered once the entries it wrote have applied.
+    ///
+    /// The entries are proposed under the slot and awaited after it is
+    /// released, so acks on one group commit together rather than one commit
+    /// apart. Apply is in log order, and a later entry of a term commits only
+    /// with every earlier one, so this ack's last entry applied means all the
+    /// leader proposed before it did too. A cut entry fails the wait.
     pub async fn ack(&self, key: &GroupKey, offset: u64, deadline: Instant) -> Result<()> {
-        let (_fresh, mut guard) = self.current(key, deadline).await?;
+        let (_fresh, mut guard) = self.current_with(key, Await::Own, deadline).await?;
         check_handed_out(&guard.as_ref().expect("current hydrates").tracker, offset)?;
-        self.settle(key, &mut guard, offset, deadline).await
+        let pending = self
+            .propose_settled(key, &mut guard, offset, Settled::Acked)
+            .await?;
+        drop(guard);
+        let Some(pending) = pending else {
+            return Ok(());
+        };
+        if self.applied_kept(key, &pending, deadline).await? {
+            Ok(())
+        } else {
+            // The next operation's `locked` finds the tracker gone and drops it.
+            Err(BrokerError::GroupClaimLapsed { offset })
+        }
     }
 
     /// See [`GroupReader::inherit_below`](super::GroupReader::inherit_below).
@@ -687,30 +706,67 @@ impl<C: GroupConsensus> RaftGroups<C> {
             .expect("applied")
             .tracker
             .take_redriven(offset);
-        self.settle(key, guard, offset, deadline).await
+        self.settle(key, guard, offset, Settled::Dead, deadline)
+            .await
     }
 
-    /// Settle `offset` in the tracker, then write what that closed.
+    /// Settle `offset` in the tracker, then write what that closed. Every
+    /// write has applied before this returns, so an ack answered OK is in
+    /// the table and no later leader hands the record out again.
     async fn settle(
         &self,
         key: &GroupKey,
         guard: &mut OwnedMutexGuard<Option<Tracked>>,
         offset: u64,
+        how: Settled,
         deadline: Instant,
     ) -> Result<()> {
+        let Some(pending) = self.propose_settled(key, guard, offset, how).await? else {
+            return Ok(());
+        };
+        if !self.applied_kept(key, &pending, deadline).await? {
+            guard.take();
+            return Err(BrokerError::GroupClaimLapsed { offset });
+        }
+        Ok(())
+    }
+
+    /// Settle `offset` in the tracker and propose what that closed, without
+    /// waiting. `None` when nothing needed writing.
+    async fn propose_settled(
+        &self,
+        key: &GroupKey,
+        guard: &mut OwnedMutexGuard<Option<Tracked>>,
+        offset: u64,
+        how: Settled,
+    ) -> Result<Option<Pending>> {
         let held = guard.as_mut().expect("hydrated");
         let advanced = held.tracker.ack(offset);
         let redriven = held.tracker.take_redriven(offset);
         let cre = held.cre;
-        if redriven {
-            let entry = GroupOp::FinishRedrive { cre, offset };
-            self.write_held(key, guard, entry, offset, deadline).await?;
+        // An ack the table's cursor has not passed and no advance here
+        // covers is written on its own. The tracker's position is not enough:
+        // a rebuilt tracker settles a dead letter above the cursor without an
+        // advance, and a redrive of it is then below the tracker only. A dead
+        // letter is on disk already.
+        let cursor = held
+            .groups
+            .read()
+            .table()
+            .group(&key.group)
+            .map_or(0, |state| state.cursor);
+        let ahead =
+            how == Settled::Acked && offset >= cursor && advanced.is_none_or(|to| to <= offset);
+        let ops = [
+            redriven.then_some(GroupOp::FinishRedrive { cre, offset }),
+            ahead.then_some(GroupOp::Ack { cre, offset }),
+            advanced.map(|to| GroupOp::Advance { cre, to }),
+        ];
+        let mut last = None;
+        for op in ops.into_iter().flatten() {
+            last = Some(self.propose_held(key, guard, op).await?);
         }
-        if let Some(to) = advanced {
-            let entry = GroupOp::Advance { cre, to };
-            self.write_held(key, guard, entry, offset, deadline).await?;
-        }
-        Ok(())
+        Ok(last)
     }
 
     /// Write a tracker-decided entry. The tracker is forgotten when the
@@ -730,33 +786,57 @@ impl<C: GroupConsensus> RaftGroups<C> {
         offset: u64,
         deadline: Instant,
     ) -> Result<()> {
+        let pending = self.propose_held(key, guard, op).await?;
+        if !self.applied_kept(key, &pending, deadline).await? {
+            guard.take();
+            return Err(BrokerError::GroupClaimLapsed { offset });
+        }
+        Ok(())
+    }
+
+    /// Propose a tracker-decided entry. A refusal forgets the tracker.
+    async fn propose_held(
+        &self,
+        key: &GroupKey,
+        guard: &mut OwnedMutexGuard<Option<Tracked>>,
+        op: GroupOp,
+    ) -> Result<Pending> {
         let entry = GroupEntry {
             group: key.group.clone(),
             op,
         };
         let held = guard.as_ref().expect("hydrated");
         let (cre, term, groups) = (held.cre, held.term, Arc::clone(&held.groups));
-        let proposed = match self.propose(key, term, &entry).await {
-            Ok(proposed) => proposed,
+        match self.propose(key, term, &entry).await {
+            Ok(proposed) => Ok(Pending {
+                proposed,
+                cre,
+                groups,
+            }),
             // Nothing was appended, or this member no longer leads `term`
             // (see `GroupConsensus::propose`): either way no entry of ours
             // is left for a later hydrate to miss.
             Err(err) => {
                 guard.take();
-                return Err(err);
+                Err(err)
             }
-        };
+        }
+    }
+
+    /// Wait for `pending` to apply. False when the apply path forgot the
+    /// tracker that decided it: the table takes none of its writes, so none
+    /// of its claims stands.
+    async fn applied_kept(
+        &self,
+        key: &GroupKey,
+        pending: &Pending,
+        deadline: Instant,
+    ) -> Result<bool> {
         self.consensus
-            .applied(key, proposed, deadline)
+            .applied(key, pending.proposed, deadline)
             .await
             .map_err(unsettled)?;
-        if groups.read().tracker(&key.group) != Some(cre) {
-            // The apply path forgot the tracker: the table will take none of
-            // its writes, so none of its claims stands.
-            guard.take();
-            return Err(BrokerError::GroupClaimLapsed { offset });
-        }
-        Ok(())
+        Ok(pending.groups.read().tracker(&key.group) == Some(pending.cre))
     }
 
     async fn write(
@@ -784,15 +864,21 @@ impl<C: GroupConsensus> RaftGroups<C> {
     /// The shard fresh, and this leader's own last proposed entry applied.
     async fn ready(&self, key: &GroupKey, deadline: Instant) -> Result<FreshGroups> {
         let fresh = self.consensus.fresh(key, deadline).await?;
+        self.own_applied(key, fresh.term, deadline).await?;
+        Ok(fresh)
+    }
+
+    /// This leader's last proposed entry of `term` applied.
+    async fn own_applied(&self, key: &GroupKey, term: u64, deadline: Instant) -> Result<()> {
         let last = self.last_proposed.lock().get(&shard_id(key)).copied();
         // An older term's entry is either committed, and so under the read
         // index, or never will be from here.
         if let Some(last) = last
-            && last.term == fresh.term
+            && last.term == term
         {
             self.consensus.applied(key, last, deadline).await?;
         }
-        Ok(fresh)
+        Ok(())
     }
 
     /// The group's slot locked, the shard ready, and a tracker kept only if
@@ -800,6 +886,18 @@ impl<C: GroupConsensus> RaftGroups<C> {
     async fn locked(
         &self,
         key: &GroupKey,
+        deadline: Instant,
+    ) -> Result<(FreshGroups, OwnedMutexGuard<Option<Tracked>>)> {
+        self.locked_with(key, Await::All, deadline).await
+    }
+
+    /// [`Self::locked`]. With [`Await::Own`], a tracker that is current skips
+    /// the wait for this leader's earlier entries: what it decides next is
+    /// proposed after them, so it cannot apply without them.
+    async fn locked_with(
+        &self,
+        key: &GroupKey,
+        wait: Await,
         deadline: Instant,
     ) -> Result<(FreshGroups, OwnedMutexGuard<Option<Tracked>>)> {
         let now = Instant::now();
@@ -819,12 +917,19 @@ impl<C: GroupConsensus> RaftGroups<C> {
             self.evict_idle(now);
         }
         let mut guard = slot.lock_owned().await;
-        let fresh = self.ready(key, deadline).await?;
+        let fresh = self.consensus.fresh(key, deadline).await?;
+        let current = |guard: &Option<Tracked>| {
+            guard.as_ref().is_some_and(|held| {
+                held.term == fresh.term && fresh.groups.read().tracker(&key.group) == Some(held.cre)
+            })
+        };
+        // A hydrate always waits: it reads the table, which must hold every
+        // entry this leader may already have answered from its tracker.
+        if wait == Await::All || !current(&guard) {
+            self.own_applied(key, fresh.term, deadline).await?;
+        }
         self.saw_term(key, fresh.term);
-        let current = guard.as_ref().is_some_and(|held| {
-            held.term == fresh.term && fresh.groups.read().tracker(&key.group) == Some(held.cre)
-        });
-        if !current {
+        if !current(&guard) {
             *guard = None;
         }
         Ok((fresh, guard))
@@ -836,7 +941,16 @@ impl<C: GroupConsensus> RaftGroups<C> {
         key: &GroupKey,
         deadline: Instant,
     ) -> Result<(FreshGroups, OwnedMutexGuard<Option<Tracked>>)> {
-        let (fresh, mut guard) = self.locked(key, deadline).await?;
+        self.current_with(key, Await::All, deadline).await
+    }
+
+    async fn current_with(
+        &self,
+        key: &GroupKey,
+        wait: Await,
+        deadline: Instant,
+    ) -> Result<(FreshGroups, OwnedMutexGuard<Option<Tracked>>)> {
+        let (fresh, mut guard) = self.locked_with(key, wait, deadline).await?;
         if guard.is_none() {
             let mut groups = fresh.groups.write();
             let table = groups.table();
@@ -863,10 +977,15 @@ impl<C: GroupConsensus> RaftGroups<C> {
             } else {
                 GroupTracker::moved_to(cursor, self.max_attempts)
             };
-            // A dead letter above the cursor is settled: the advance over it
-            // may not have been written before the leader changed.
+            // A dead letter or an ack above the cursor is settled: the
+            // advance over it may not have been written before the leader
+            // changed.
             if let Some(state) = table.group(&key.group) {
-                for &offset in state.dead.range(cursor..) {
+                for &offset in state
+                    .dead
+                    .range(cursor..)
+                    .chain(state.acked.range(cursor..))
+                {
                     tracker.ack(offset);
                 }
             }
@@ -990,6 +1109,30 @@ impl<C: GroupConsensus> RaftGroups<C> {
             fresh.groups.write().untrack(&key.group);
         }
     }
+}
+
+/// What [`RaftGroups::locked_with`] waits for before it reads the tracker.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Await {
+    /// Every entry this leader proposed in the term.
+    All,
+    /// None if the tracker is current, which already holds them; all of
+    /// them before a hydrate.
+    Own,
+}
+
+/// A proposed entry and the tracker that decided it.
+struct Pending {
+    proposed: Proposed,
+    cre: CreationToken,
+    groups: Arc<RwLock<ShardGroups>>,
+}
+
+/// How [`RaftGroups::settle`] came to settle a record.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Settled {
+    Acked,
+    Dead,
 }
 
 fn shard_id(key: &GroupKey) -> ShardId {

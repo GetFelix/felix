@@ -3,8 +3,9 @@
 //!
 //! The fold is `Step` in `docs/formal/FelixRaftGroups.tla`, for every group
 //! of the shard at once. A group's state is its creation token, its cursor,
-//! its dead letters, the dead letters redriven and not yet settled, and the
-//! records handed out and not yet passed (claims are not in the model). The
+//! its dead letters, the dead letters redriven and not yet settled, the acks
+//! above the cursor, and the records handed out and not yet passed (claims
+//! are not in the model). The
 //! shard keeps one more number, the index of its latest delete of any group,
 //! and nothing per deleted name.
 //!
@@ -30,10 +31,13 @@ pub struct GroupState {
     pub dead: BTreeSet<u64>,
     /// Dead letters put back, owed to the group until settled.
     pub redriven: BTreeSet<u64>,
-    /// Records handed out and not yet passed by the cursor, dead-lettered
-    /// or finished, so a new leader keeps each holder's claim. An ack ahead
-    /// of the cursor and a nack are not written, so they stay here until
-    /// the cursor passes them.
+    /// Acknowledged above the cursor. Settled for a new leader too, so an
+    /// answered ack is never handed out again. Pruned as the cursor passes.
+    pub acked: BTreeSet<u64>,
+    /// Records handed out and not yet passed by the cursor, acknowledged,
+    /// dead-lettered or finished, so a new leader keeps each holder's claim.
+    /// A nack is not written, so its record stays here until the cursor
+    /// passes it.
     pub claims: BTreeMap<u64, ClaimState>,
 }
 
@@ -125,8 +129,9 @@ impl GroupTable {
                         // A seek delivers everything from `to` again, dead
                         // letters included. Redriven ones are still owed.
                         state.dead.split_off(&to);
-                        // Every claim made before the seek is void.
+                        // Every claim and ack made before the seek is void.
                         state.claims.clear();
+                        state.acked.clear();
                     }
                     None => {
                         self.groups.insert(group.clone(), fresh(cre, to));
@@ -160,6 +165,7 @@ impl GroupTable {
                 state
                     .claims
                     .retain(|offset, _| *offset >= cursor || redriven.contains(offset));
+                state.acked = state.acked.split_off(&cursor);
             }
             GroupOp::DeadLetter { offset, .. } => {
                 // A group's first write is the advance to where it starts, so
@@ -171,6 +177,7 @@ impl GroupTable {
                     .or_insert_with(|| fresh(cre, 0));
                 state.dead.insert(offset);
                 state.redriven.remove(&offset);
+                state.acked.remove(&offset);
                 state.claims.remove(&offset);
             }
             GroupOp::Redrive { offset, .. } => {
@@ -198,7 +205,9 @@ impl GroupTable {
                 // group. Below the cursor only a redriven record is in play.
                 if let Some(state) = self.groups.get_mut(group) {
                     for &(offset, attempts) in &claims.records {
-                        if offset >= state.cursor || state.redriven.contains(&offset) {
+                        if (offset >= state.cursor && !state.acked.contains(&offset))
+                            || state.redriven.contains(&offset)
+                        {
                             state.claims.insert(
                                 offset,
                                 ClaimState {
@@ -210,6 +219,17 @@ impl GroupTable {
                         }
                     }
                 }
+            }
+            GroupOp::Ack { offset, .. } => {
+                // Like a dead letter, written only after the creation advance.
+                let state = self
+                    .groups
+                    .entry(group.clone())
+                    .or_insert_with(|| fresh(cre, 0));
+                if offset >= state.cursor {
+                    state.acked.insert(offset);
+                }
+                state.claims.remove(&offset);
             }
             GroupOp::Seek { .. } | GroupOp::Delete => unreachable!("applied above"),
         }
@@ -226,9 +246,20 @@ impl GroupTable {
     }
 }
 
-const TABLE_VERSION: u8 = 2;
-/// A table from before claims were replicated: the same, without them.
-const TABLE_VERSION_NO_CLAIMS: u8 = 1;
+const TABLE_VERSION: u8 = 3;
+
+/// Why [`GroupTable::decode`] refused a table.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum TableRefused {
+    #[error("the group table does not parse")]
+    Damaged,
+    /// Versions 1 and 2 hold no acks above the cursor, so loading one as
+    /// "no acks" could redeliver acked records. 0.8 starts fresh: a
+    /// preview's snapshot with an older table is refused, and the shard
+    /// must be recreated.
+    #[error("group table version {0} is not supported; only version {TABLE_VERSION} is read")]
+    Version(u8),
+}
 const BY_HYDRATE: u8 = 0;
 const BY_SEEK: u8 = 1;
 
@@ -238,7 +269,7 @@ impl GroupTable {
     /// it learns of them. One table always encodes to the same bytes.
     ///
     /// ```text
-    /// u8   version (2)
+    /// u8   version (3)
     /// u64  applied, u64 last_delete
     /// u32  groups, then per group in name order:
     ///   u32 name length, name (UTF-8)
@@ -246,13 +277,14 @@ impl GroupTable {
     ///   u64 cursor
     ///   u32 dead letters, then each (u64, ascending)
     ///   u32 redriven, then each (u64, ascending)
+    ///   u32 acked above the cursor, then each (u64, ascending)
     ///   u32 claims, then each ascending by offset:
     ///     u64 offset, u32 attempts, u64 visibility in milliseconds
     ///     u8 1 if a named member holds it, else 0
     ///     u32 principal length, principal, u32 name length, name   (if named)
     /// ```
     ///
-    /// Version 1 is the same without claims, and decodes with none.
+    /// Versions 1 and 2, which lacked acks (and claims), are refused.
     pub fn encode(&self) -> Bytes {
         let mut out = BytesMut::new();
         out.put_u8(TABLE_VERSION);
@@ -269,7 +301,7 @@ impl GroupTable {
                 CreatedBy::Seek => BY_SEEK,
             });
             out.put_u64(state.cursor);
-            for set in [&state.dead, &state.redriven] {
+            for set in [&state.dead, &state.redriven, &state.acked] {
                 out.put_u32(set.len() as u32);
                 for offset in set {
                     out.put_u64(*offset);
@@ -295,16 +327,19 @@ impl GroupTable {
         out.freeze()
     }
 
-    /// `None` when `bytes` are not what [`Self::encode`] writes, including
+    /// Refused when `bytes` are not what [`Self::encode`] writes, including
     /// names or offsets out of order: a member must not load a table that
     /// differs from the one the sender folded.
-    pub fn decode(bytes: &[u8]) -> Option<Self> {
+    pub fn decode(bytes: &[u8]) -> Result<Self, TableRefused> {
+        match bytes.first() {
+            Some(&TABLE_VERSION) => Self::decode_body(&bytes[1..]).ok_or(TableRefused::Damaged),
+            Some(&version) => Err(TableRefused::Version(version)),
+            None => Err(TableRefused::Damaged),
+        }
+    }
+
+    fn decode_body(bytes: &[u8]) -> Option<Self> {
         let mut buf = bytes;
-        let with_claims = match take(&mut buf, 1)?.get_u8() {
-            TABLE_VERSION => true,
-            TABLE_VERSION_NO_CLAIMS => false,
-            _ => return None,
-        };
         let applied = take(&mut buf, 8)?.get_u64();
         let last_delete = take(&mut buf, 8)?.get_u64();
         let count = take(&mut buf, 4)?.get_u32();
@@ -328,11 +363,8 @@ impl GroupTable {
             let cursor = take(&mut buf, 8)?.get_u64();
             let dead = offsets(&mut buf)?;
             let redriven = offsets(&mut buf)?;
-            let claims = if with_claims {
-                claims(&mut buf)?
-            } else {
-                BTreeMap::new()
-            };
+            let acked = offsets(&mut buf)?;
+            let claims = claims(&mut buf)?;
             groups.insert(
                 name.clone(),
                 GroupState {
@@ -340,6 +372,7 @@ impl GroupTable {
                     cursor,
                     dead,
                     redriven,
+                    acked,
                     claims,
                 },
             );
@@ -424,6 +457,7 @@ fn fresh(cre: CreationToken, cursor: u64) -> GroupState {
         cursor,
         dead: BTreeSet::new(),
         redriven: BTreeSet::new(),
+        acked: BTreeSet::new(),
         claims: BTreeMap::new(),
     }
 }

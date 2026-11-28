@@ -75,8 +75,6 @@ pub(super) fn spawn<L: ControlPlaneLink + Clone>(
     lease: &Option<Arc<LeaseState>>,
     fleet: &Arc<felix_common::fleet::FleetGate>,
     credential: &Option<NodeCredential>,
-    suspects: &Arc<felix_replication::suspicion::Suspects>,
-    incarnation: &Arc<std::sync::atomic::AtomicU64>,
     registered: tokio::sync::watch::Sender<Option<u64>>,
     storage_id: felix_storage::StorageId,
     data_dir: Option<&std::path::Path>,
@@ -112,8 +110,6 @@ pub(super) fn spawn<L: ControlPlaneLink + Clone>(
                 sync_shutdown.clone(),
                 lease,
                 Arc::clone(fleet),
-                Arc::clone(suspects),
-                Arc::clone(incarnation),
                 registered,
                 Some(storage_id),
                 data_dir.map(std::path::Path::to_path_buf),
@@ -255,39 +251,6 @@ pub(super) async fn keep_view_if_opened_under(
     super::storage::note_lost_copy(root, Some(&view.storage_id), restored, registered.as_ref())?;
     let replaced = super::storage::note_replaced(root, storage_id, registered.as_ref())?;
     Ok((None, replaced))
-}
-
-/// The restore check a start from the view deferred: once it passes, `attest`
-/// is told what a start that asked first would attest from `own_kept`, the
-/// run's own [`super::storage::Kept`], and `checked` is cancelled. A failed
-/// check tells it nothing, so the copy never attests.
-pub(super) fn deferred_check(
-    checked: &CancellationToken,
-    own_kept: super::storage::Kept,
-    attest: impl FnOnce(super::storage::Kept) + Send + 'static,
-) -> membership::DeferredCheck {
-    membership::DeferredCheck {
-        checked: checked.clone(),
-        passed: Box::new(move |registered| attest(own_kept.checked(registered))),
-    }
-}
-
-/// [`deferred_check`] attesting on `marks` ([`attest`]).
-pub(super) fn deferred_attest(
-    checked: &CancellationToken,
-    own_kept: super::storage::Kept,
-    marks: Arc<felix_replication::quorum::QuorumMarks>,
-) -> membership::DeferredCheck {
-    deferred_check(checked, own_kept, move |kept| attest(&marks, kept))
-}
-
-/// Set on `marks` what a start attests as kept.
-pub(super) fn attest(marks: &felix_replication::quorum::QuorumMarks, kept: super::storage::Kept) {
-    // Readmits first: setting kept is what lets a readmission count
-    // (`QuorumMarks::knows_kept_ballots`).
-    marks.set_readmits(kept.readmits);
-    marks.set_minted_storage(kept.minted);
-    marks.set_kept_ballots(kept.ballots);
 }
 
 /// Whether this start's Raft members open, and vote, before its restore

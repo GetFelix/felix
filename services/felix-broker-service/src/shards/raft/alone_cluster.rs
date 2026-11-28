@@ -13,10 +13,10 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 
+use crate::cluster::credential::NodeCredential;
 use felix_common::fleet;
 use felix_replication::controlplane_link::{ControlPlaneLink, LinkResponse};
 use felix_replication::raft::{GapSnapshot, GroupId, MemberId, mark_name, reform_report};
-use felix_replication::reporter::Credential;
 use felix_storage::log::LogConfig;
 use felix_storage::raft_copy::{
     Alone, AlonePlan, CopyRoot, EpochBase, GapFold, LocalRecord, WireReport,
@@ -40,7 +40,7 @@ pub(crate) trait AloneWriter: Send + Sync {
 pub(crate) struct LinkWriter<L> {
     pub(crate) link: L,
     pub(crate) node_id: String,
-    pub(crate) credential: Option<Arc<dyn Credential>>,
+    pub(crate) credential: Option<NodeCredential>,
 }
 
 #[async_trait::async_trait]
