@@ -37,15 +37,22 @@
 (*                 leader's token bucket is positive. It takes its count   *)
 (*                 and may leave the bucket in debt by up to one entry.    *)
 (*                 The bucket fills at Rate per tick up to Capacity. A new *)
-(*                 leader's starts empty (the first leader's starts full,  *)
-(*                 which only lets the shard give out more).               *)
-(*   The entry is counted before it is synced (relaxed fsync). A           *)
-(*   reservation that is synced first covers it: a raise covers the entry  *)
-(*   and Step offsets past its end.                                        *)
+(*                 leader's starts in debt by one maximum entry, MaxBatch  *)
+(*                 (the first leader's starts full, which only lets the    *)
+(*                 shard give out more).                                   *)
+(*   Raise      -- the entry is counted before it is synced (relaxed       *)
+(*                 fsync), so an entry past the reservation waits for a    *)
+(*                 raise that is synced first: it covers the entry and     *)
+(*                 Step offsets past its end.                              *)
 (*   PowerCut   -- a power cut takes what was not synced, and the shard    *)
 (*                 re-forms at the higher of its synced end and its        *)
 (*                 reservation, under a new leader.                        *)
 (*   Elect      -- a leader change, with nothing lost.                     *)
+(*                                                                         *)
+(* With Apart above 0 a restore is also refused unless its first index is  *)
+(* at least Apart above every earlier epoch's (docs/per-shard-raft.md: the  *)
+(* 2^32 + (2^40 - gap) check, where every restore here has the same gap).  *)
+(* The floor is left out of that check: it trails the running epoch.       *)
 (*                                                                         *)
 (* Checked as well:                                                        *)
 (*                                                                         *)
@@ -55,8 +62,10 @@
 (*                                                                         *)
 (* Each knob removes one rule: NoBucket caps entries per tick (Rate of     *)
 (* them) and not offsets; BucketStartsFull gives each new leader a full    *)
-(* bucket; RaiseFromNext raises the reservation Step past the entry's      *)
-(* start instead of its end.                                               *)
+(* bucket and BucketStartsEmpty an empty one, not one in debt;             *)
+(* RaiseFromNext raises the reservation Step past the entry's start        *)
+(* instead of its end; IssueBeforeRaise counts an entry before the raise   *)
+(* that covers it.                                                         *)
 (***************************************************************************)
 EXTENDS Integers, FiniteSets
 
@@ -79,10 +88,13 @@ CONSTANTS
     MaxLeaders,   \* leader changes at most
     NoBucket,
     BucketStartsFull,
-    RaiseFromNext
+    RaiseFromNext,
+    BucketStartsEmpty,
+    IssueBeforeRaise,
+    Apart         \* how far above every earlier first index a restore starts (0: unchecked)
 
 ASSUME Rate >= 1 /\ TimeRate >= 0 /\ Gap \in Nat /\ Skew \in Nat
-ASSUME MaxBatch >= 1 /\ Capacity >= 1 /\ Step \in Nat
+ASSUME MaxBatch >= 1 /\ Capacity >= 1 /\ Step \in Nat /\ Apart \in Nat
 
 VARIABLES
     now,         \* true time
@@ -97,17 +109,23 @@ VARIABLES
     reserved,    \* the synced reservation: offsets below it are covered (Batch)
     synced,      \* the running epoch's next offset on disk (Batch)
     cuts,        \* power cuts so far
-    leaders      \* leader changes so far
+    leaders,     \* leader changes so far
+    raisedFor,   \* the size of the entry a synced raise was made for, or 0 (Batch)
+    topFirst     \* the highest first index of any epoch so far (Apart)
 
-batchVars == <<bucket, reserved, synced, cuts, leaders>>
-vars == <<now, burst, next, issued, backups, restores, lastRestore, reused, batchVars>>
+batchVars == <<bucket, reserved, synced, cuts, leaders, raisedFor>>
+vars == <<now, burst, next, issued, backups, restores, lastRestore, reused, batchVars, topFirst>>
 
 Max(S) == CHOOSE x \in S : \A y \in S : y <= x
 Min2(a, b) == IF a <= b THEN a ELSE b
 Max2(a, b) == IF a >= b THEN a ELSE b
 
-\* A new leader's bucket.
-FreshBucket == IF BucketStartsFull THEN Capacity ELSE 0
+\* A new leader's bucket: in debt by one maximum entry, so that a leader
+\* change never adds to the burst the old leader's debt took.
+FreshBucket ==
+    CASE BucketStartsFull -> Capacity
+      [] BucketStartsEmpty -> 0
+      [] OTHER -> -MaxBatch
 
 Init ==
     /\ now = 0
@@ -123,6 +141,8 @@ Init ==
     /\ synced = Gap + 1
     /\ cuts = 0
     /\ leaders = 0
+    /\ raisedFor = 0
+    /\ topFirst = Gap + 1
 
 Issue ==
     /\ ~Batch
@@ -131,29 +151,41 @@ Issue ==
     /\ issued' = issued \cup {next}
     /\ next' = next + 1
     /\ burst' = burst + 1
-    /\ UNCHANGED <<now, backups, restores, lastRestore, batchVars>>
+    /\ UNCHANGED <<now, backups, restores, lastRestore, batchVars, topFirst>>
 
-\* One entry of n offsets. The reservation is raised and synced before the
-\* entry counts.
+CanPropose == IF NoBucket THEN burst < Rate ELSE bucket > 0
+
+\* The synced raise an entry of n offsets past the reservation waits for.
+Raise(n) ==
+    /\ Batch
+    /\ CanPropose
+    /\ raisedFor = 0
+    /\ next + n > reserved
+    /\ reserved' = (IF RaiseFromNext THEN next ELSE next + n) + Step
+    /\ raisedFor' = n
+    /\ UNCHANGED <<now, burst, next, issued, backups, restores, lastRestore, reused,
+                   bucket, synced, cuts, leaders, topFirst>>
+
+\* One entry of n offsets, counted once its reservation is synced.
 IssueBatch(n) ==
     /\ Batch
-    /\ IF NoBucket THEN burst < Rate ELSE bucket > 0
+    /\ CanPropose
+    /\ next + n <= reserved \/ raisedFor = n \/ IssueBeforeRaise
     /\ burst' = IF NoBucket THEN burst + 1 ELSE burst
     /\ bucket' = IF NoBucket THEN bucket ELSE bucket - n
     /\ LET range == next..(next + n - 1)
        IN /\ reused' = (reused \/ range \cap issued # {})
           /\ issued' = issued \cup range
     /\ next' = next + n
-    /\ reserved' = IF next + n <= reserved THEN reserved
-                   ELSE (IF RaiseFromNext THEN next ELSE next + n) + Step
-    /\ UNCHANGED <<now, backups, restores, lastRestore, synced, cuts, leaders>>
+    /\ raisedFor' = 0
+    /\ UNCHANGED <<now, backups, restores, lastRestore, reserved, synced, cuts, leaders, topFirst>>
 
 Sync ==
     /\ Batch
     /\ synced < next
     /\ synced' = next
     /\ UNCHANGED <<now, burst, next, issued, backups, restores, lastRestore, reused,
-                   bucket, reserved, cuts, leaders>>
+                   bucket, reserved, cuts, leaders, raisedFor, topFirst>>
 
 \* The re-form after a power cut starts at its kept end or its reservation.
 PowerCut ==
@@ -164,22 +196,24 @@ PowerCut ==
     /\ synced' = Max2(synced, reserved)
     /\ reserved' = Max2(synced, reserved)
     /\ bucket' = FreshBucket
-    /\ UNCHANGED <<now, burst, issued, backups, restores, lastRestore, reused, leaders>>
+    /\ raisedFor' = 0
+    /\ UNCHANGED <<now, burst, issued, backups, restores, lastRestore, reused, leaders, topFirst>>
 
 Elect ==
     /\ Batch
     /\ leaders < MaxLeaders
     /\ leaders' = leaders + 1
     /\ bucket' = FreshBucket
+    /\ raisedFor' = 0
     /\ UNCHANGED <<now, burst, next, issued, backups, restores, lastRestore, reused,
-                   reserved, synced, cuts>>
+                   reserved, synced, cuts, topFirst>>
 
 \* A backup point is a committed offset at a frame end.
 Backup ==
     /\ Cardinality(backups) < MaxBackups
     /\ next \notin backups
     /\ backups' = backups \cup {next}
-    /\ UNCHANGED <<now, burst, next, issued, restores, lastRestore, reused, batchVars>>
+    /\ UNCHANGED <<now, burst, next, issued, restores, lastRestore, reused, batchVars, topFirst>>
 
 FirstIndex(end, clock) ==
     Max({end}
@@ -192,13 +226,16 @@ Restore ==
     /\ restores < MaxRestores
     /\ now >= lastRestore + MinApart
     /\ \E end \in backups, clock \in {c \in (now - Skew)..(now + Skew) : c >= 0} :
-        next' = FirstIndex(end, clock)
+        /\ Apart = 0 \/ FirstIndex(end, clock) >= topFirst + Apart
+        /\ next' = FirstIndex(end, clock)
+    /\ topFirst' = IF Apart > 0 THEN Max2(topFirst, next') ELSE topFirst
     /\ restores' = restores + 1
     /\ lastRestore' = now
     \* The restored epoch reserves its start and has a new leader.
     /\ reserved' = IF Batch THEN next' ELSE reserved
     /\ synced' = IF Batch THEN next' ELSE synced
     /\ bucket' = IF Batch THEN FreshBucket ELSE bucket
+    /\ raisedFor' = 0
     /\ UNCHANGED <<now, burst, issued, backups, reused, cuts, leaders>>
 
 Tick ==
@@ -207,11 +244,11 @@ Tick ==
     /\ burst' = 0
     /\ bucket' = IF Batch THEN Min2(Capacity, bucket + Rate) ELSE bucket
     /\ UNCHANGED <<next, issued, backups, restores, lastRestore, reused,
-                   reserved, synced, cuts, leaders>>
+                   reserved, synced, cuts, leaders, raisedFor, topFirst>>
 
 Next ==
     \/ Issue \/ Backup \/ Restore \/ Tick
-    \/ \E n \in 1..MaxBatch : IssueBatch(n)
+    \/ \E n \in 1..MaxBatch : Raise(n) \/ IssueBatch(n)
     \/ Sync \/ PowerCut \/ Elect
 
 Spec == Init /\ [][Next]_vars
@@ -220,6 +257,7 @@ Spec == Init /\ [][Next]_vars
 
 OffsetNeverReused == ~reused
 
+\* Not by construction: IssueBatch never raises the reservation itself.
 ReservedCovers == next <= reserved
 
 =============================================================================

@@ -2601,10 +2601,15 @@ the end of its lost range, and `LossReported` holds it to the floor.
 In `FelixRaftRestoreRepeated.tla`, `Batch` replaces the assumed rate with the
 propose-time token bucket: it fills at `Rate` per tick up to `Capacity`, a
 publish takes its count when the bucket is positive and may leave it in debt
-by up to one entry, and a new leader's bucket starts empty. An entry is
-counted before it is synced, a reservation raise covers the entry and `Step`
-offsets past it, and a power cut re-forms the shard at the higher of its
-synced end and its reservation.
+by up to one entry, and a new leader's bucket starts in debt by one maximum
+entry (`MaxBatch`). An entry is counted before it is synced, so an entry past
+the reservation waits for a raise that is synced first (`Raise`); the raise
+covers the entry and `Step` offsets past it, and a power cut re-forms the
+shard at the higher of its synced end and its reservation. `ReservedCovers`
+is not true by construction: the count never raises the reservation itself,
+and `...IssueBeforeRaise.cfg`, which counts first, breaks it. With `Apart`
+set, a restore is refused unless it starts that far above every earlier
+epoch's first index, the per-restore check of the time line.
 
 The two places that set a start, snapshot install and epoch start, are where
 the design says a bug would hide:
@@ -2613,8 +2618,11 @@ the design says a bug would hide:
   carry its last record's offset instead of the one after it, with followers
   that take the leader's stamp: a broker that installed it is elected and
   stamps a record at an offset a committed one holds. With the follower's
-  check on (`...Checked.cfg`) the same bug stops the group instead: every
-  follower refuses the new leader's appends.
+  check on (`...Checked.cfg`) a follower refuses that leader's append, and
+  TLC finds a state where nothing more can happen in the bounds and the
+  leader has not committed its record (`QuiescentServed`). That shows the
+  check turns the reuse into a stall in that trace; with the terms used up,
+  the model does not say whether a later election would recover.
 - **Epoch start.** `FelixRaftReformBatchAloneBase.cfg` is step 4's
   relaxed-crash example, small: the base ends at index 1 (a blank) with next
   offset 1, a record at offset 1 is acknowledged and then cut by a power cut,
@@ -2629,23 +2637,34 @@ the design says a bug would hide:
 `FelixRaftBatch`, `FelixRaftIdempotent`, `FelixRaftCond`, `FelixRaftCache` and
 the read, trim and group models still have the offset equal to the index; the
 design's table says which code step changes each. `FelixRaftReform` with
-`Batch` is checked for a group of one only: three brokers and two re-forms
-with kept copies ran past 140M distinct states in 150 minutes. The other
+`Batch` is checked for a group of one with up to two power cuts and two
+re-forms, for three brokers with one term, one write, one late append, one
+power cut and one re-form (`FelixRaftReformBatchKept.cfg`), and for an
+abandon with no kept copies. Three brokers with two re-forms and kept copies
+ran past 140M distinct states in 150 minutes and is not checked. The other
 re-form configurations run with the offset as the index.
+`FelixRaftEntriesSnapshotCrash.cfg` restarts a broker from its snapshot's
+next offset, but with one write: a record stamped after that restart is not
+checked.
 
-Two things the model shows about the restore time line, for review:
+What the model shows about the restore time line:
 
-- **A new leader's empty bucket forgives the old leader's debt.** A publish
-  may leave the bucket in debt by one entry, and a new leader starts at zero,
-  so every leader change, power cut and restore adds up to one entry to the
-  burst, not one in all.
+- **A new leader's bucket starts in debt.** A publish may leave the bucket in
+  debt by one entry. An empty bucket at every leader change forgives that
+  debt, so each leader change adds up to one entry to the burst:
+  `...BatchStartsEmpty.cfg` reuses an offset at a spacing that passes with
+  no leader change. Starting at minus one maximum entry, the leader changes
+  in `...Batch.cfg` add nothing.
 - **The gap cancels between two epochs on the line.** Each restored epoch
   starts at the line plus the gap, so what covers the burst between two
-  restores is their spacing: the line gains `TimeRate - Rate` a tick on the
-  shard. `FelixRaftRestoreRepeated.cfg` passes at five ticks apart with one
-  offset per entry; with batches, a bucket's debt and a reservation step it
-  needs eight (`...Batch.cfg`), and fails at five (`...BatchMinApart.cfg`).
-  The design's text has the gap cover the burst.
+  restores is their spacing. With the debt rule, batches need the same five
+  ticks as one offset per entry (`...Batch.cfg`) and fail at four
+  (`...BatchMinApart.cfg`). With the design's check on first indexes
+  (`Apart`) in place of a spacing in true time, `...BatchSkew.cfg` passes
+  with the planning clocks up to two ticks apart; `...SkewShort.cfg` lowers
+  `Apart` below what that skew needs and `...SkewStep.cfg` raises `Step`, the
+  offsets a relaxed re-form skips, and both reuse an offset. That is the
+  bound `E > 2D + 2B/R` in the design.
 
 ### Raft election liveness
 

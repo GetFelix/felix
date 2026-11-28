@@ -953,14 +953,19 @@ Pad(base, e) == IF Floor = "none" THEN StartPad(base, 0, {}, e) ELSE StartPad(ba
 LostEnd(baseNext, first) ==
     IF LostNotReported THEN baseNext ELSE Max(baseNext, Min(FloorOff, first))
 
+\* Without Batch the floor's offset is not kept on the record, so the
+\* configurations without it keep their state spaces.
+FormFloorOff == IF Batch THEN FloorOff ELSE 0
+FormLostEnd(baseNext, first) == IF Batch THEN LostEnd(baseNext, first) ELSE 0
+
 \* why and held are for the checks only: which rules of the vouch decided
 \* something, and the acknowledged records KeptLossBound says must survive.
 WriteForm(e, base, padded, voters, cut, marked, why, held) ==
     LET f == [e |-> e + 1, base |-> padded, end |-> Len(base), voters |-> voters,
               cut |-> cut, marked |-> marked, why |-> why, held |-> held,
               baseNext |-> NextOffOf(base), first |-> NextOffOf(padded),
-              floorOff |-> FloorOff,
-              lostEnd |-> LostEnd(NextOffOf(base), NextOffOf(padded))]
+              floorOff |-> FormFloorOff,
+              lostEnd |-> FormLostEnd(NextOffOf(base), NextOffOf(padded))]
     IN /\ f \notin forms
        /\ forms' = forms \cup {f}
        /\ cpEpoch' = e + 1
@@ -1216,8 +1221,8 @@ AbandonEpoch(e, l) ==
     LET f == [e |-> e + 1, base |-> AbandonBase, end |-> 0,
               voters |-> {Mid(l)}, cut |-> FALSE, marked |-> FALSE,
               why |-> {"abandon"}, held |-> {},
-              baseNext |-> 1, first |-> NextOffOf(AbandonBase), floorOff |-> FloorOff,
-              lostEnd |-> LostEnd(1, NextOffOf(AbandonBase))]
+              baseNext |-> 1, first |-> NextOffOf(AbandonBase), floorOff |-> FormFloorOff,
+              lostEnd |-> FormLostEnd(1, NextOffOf(AbandonBase))]
     IN /\ Abandon # "off"
        /\ ~Kept
        /\ e = cpEpoch
@@ -1352,7 +1357,7 @@ OffsetNeverReused ==
 \* floor saw committed are reported lost, and every acknowledged record the
 \* base lost below the floor is.
 LossReported ==
-    \A f \in forms :
+    Batch => \A f \in forms :
         /\ f.baseNext <= f.lostEnd /\ f.lostEnd <= f.first
         /\ f.lostEnd <= Max(f.baseNext, f.floorOff)
         /\ \A x \in acked :
