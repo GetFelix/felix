@@ -374,8 +374,8 @@ async fn a_raft_cache_watch_ends_when_its_credential_is_revoked() -> Result<()> 
 /// **A resume joins at the applied edge.** From the edge it is handed
 /// nothing until the next change; from below where the member began keeping
 /// changes, every change from there on, replayed from the Raft log as the
-/// hybrid replays its shard log; from past an edge this member never
-/// reaches, a retryable refusal.
+/// hybrid replays its shard log; from past the leader's log, which no
+/// member gave out, the typed in-future refusal.
 #[tokio::test]
 async fn a_raft_cache_watch_resumes_by_offset() -> Result<()> {
     let cache = RaftCache::start().await;
@@ -411,15 +411,16 @@ async fn a_raft_cache_watch_resumes_by_offset() -> Result<()> {
     assert_eq!(events.change().await?, (Some(b"two".to_vec()), now));
     assert_eq!(events.change().await?, (Some(b"three".to_vec()), next));
 
-    let (refused, _) = cache.watch(false, Some(cache.edge() + 5)).await?;
+    let past = cache.edge() + 5;
+    let (refused, _) = cache.watch(false, Some(past)).await?;
     assert!(
         matches!(
             refused,
-            Message::Error {
-                code: Some(felix_wire::ErrorCode::ShardUnavailable),
-                retry: Some(felix_wire::RetryClass::Retry),
+            Message::SubscribeCursorError {
+                reason: felix_wire::CursorErrorReason::InFuture,
+                requested,
                 ..
-            }
+            } if requested == past
         ),
         "{refused:?}"
     );
@@ -825,6 +826,75 @@ async fn a_replay_that_outlasts_the_live_queue_is_resnapshotted() -> Result<()> 
     let (value, at) = events.expect("events").change().await?;
     assert_eq!(value, Some(b"more".to_vec()));
     assert!(at <= last, "{at} past {last}");
+    Ok(())
+}
+
+/// **A leader that cannot confirm it still leads answers a resume past its
+/// log with a retryable refusal, not "in the future".** Cut off, it may have
+/// been deposed while another leader committed past its log, so the offset
+/// may exist; only a read-index round makes its log's end authoritative.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_cut_off_leader_does_not_call_a_resume_in_the_future() -> Result<()> {
+    use crate::shards::raft::tests::{BROKERS, Loopback, Member};
+    let net = Arc::new(Loopback::default());
+    let sessions = ShardKey {
+        stream: "sessions".to_string(),
+        ..cache_key()
+    };
+    let mut placed = fixture::assigned(sessions.clone(), fixture::INCARNATION);
+    placed.replicas = BROKERS.iter().map(|name| name.to_string()).collect();
+    let mut members = Vec::new();
+    for name in BROKERS {
+        members.push(Member::start_cache(&net, name).await);
+    }
+    let all: Vec<_> = members.iter().map(|member| &member.shards).collect();
+    fixture::form_on(&all, placed).await;
+    let mut leader = 0;
+    fixture::until("a member serves its term", || {
+        members
+            .iter()
+            .position(|member| member.shards.leading(&sessions).is_some())
+            .map(|at| leader = at)
+            .is_some()
+    })
+    .await;
+    let leader = &members[leader];
+    let edge = leader
+        .engine
+        .raft(&sessions)
+        .expect("a member here")
+        .cache_watch_point(&sessions, &|_| false)
+        .expect("a cache group")
+        .tail;
+
+    crate::shards::raft::tests::isolate(&net, leader.name);
+    assert!(
+        leader.engine.raft_term(&sessions).is_some(),
+        "the cut-off leader must still believe it leads for this to test anything"
+    );
+    let (refused, events) = open_watch(
+        &leader.broker,
+        &leader.engine,
+        "sessions",
+        false,
+        Some(edge + 5),
+        0,
+        None,
+    )
+    .await?;
+    assert!(events.is_none());
+    assert!(
+        matches!(
+            refused,
+            Message::Error {
+                code: Some(felix_wire::ErrorCode::ShardUnavailable),
+                retry: Some(felix_wire::RetryClass::Retry),
+                ..
+            }
+        ),
+        "{refused:?}"
+    );
+    crate::shards::raft::tests::stop(&members).await;
     Ok(())
 }
 

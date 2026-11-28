@@ -993,39 +993,6 @@ async fn a_subscribe_registered_after_a_lease_lapse_is_refused() -> Result<()> {
     assert_refused(&fixture, answer, "lease").await
 }
 
-/// **The same for a deposal**: a follower named a newer leader, which ends the
-/// readers here, and a subscribe registered after that is refused rather than
-/// left on a shard someone else leads.
-#[tokio::test]
-async fn a_subscribe_registered_after_a_deposal_is_refused() -> Result<()> {
-    use crate::test_support::leader::{self, Leader};
-
-    let fixture = Leader::start().await;
-    let key = leader::stream_key(leader::DURABLE);
-    assert!(admitted(&fixture));
-    fixture.ingress.fence().depose(&key, leader::GENERATION);
-    fixture
-        .broker
-        .end_subscriptions(
-            leader::TENANT,
-            leader::NAMESPACE,
-            leader::DURABLE,
-            0,
-            Some(felix_broker::ShardHandoff {
-                node_id: None,
-                addr: None,
-                generation: leader::GENERATION,
-            }),
-        )
-        .await;
-
-    let answer = subscribe_after_admission(&fixture).await?;
-    assert_refused(&fixture, answer, "stopped being served here").await?;
-    // And the routing check now refuses it before registering at all.
-    assert!(!admitted(&fixture));
-    Ok(())
-}
-
 /// A shard still served here takes the subscriber: the check after
 /// registering refuses only what has ended.
 #[tokio::test]

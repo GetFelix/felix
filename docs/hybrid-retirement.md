@@ -52,7 +52,7 @@ confirmed when stream shards on Raft (#2233) lands.
 | `replica.rs` | 3,216 | Deleted | Follower-side checks, promises and halting |
 | `quorum.rs` | 1,999 | Deleted | Quorum marks and waits. The commit index replaces them |
 | `reporter.rs` | 587 | Deleted | Replica reports to the control plane. Brokers report only who leads |
-| `engine.rs`, `engine/` | 832 | Part | The `Hybrid` engine and `HybridHost` go. The trait shrinks to the shape in `per-shard-raft.md` |
+| `engine.rs`, `engine/` | 832 | Part | The `Hybrid` engine and `HybridHost` go. The trait shrinks to the shape in `per-shard-raft.md` (PR 5): no `appended`, cache or counter waits, `read_skips_lease`, `await_readable` or `committed_bound`, which moved to the service's `StreamEngine` |
 | `controlplane_link.rs` | 340 | Part | Registration, heartbeats and the assignment watch stay. Reports, suspicions and confirmed reads go |
 | `metrics.rs` | 239 | Part | See "Metrics" |
 | `rebuild.rs`, `throttle.rs` | 371 | Kept | A snapshot install copies a record range the way a rebuild does, under the same bandwidth limit |
@@ -69,8 +69,8 @@ confirmed when stream shards on Raft (#2233) lands.
 | `shards/lifecycle/promotion.rs` | 157 | Deleted | Opens a shard after the promote fence |
 | `shards/confirmed.rs` | 155 | Deleted | Serves confirmed assignment reads |
 | `cluster/lease.rs` | 470 | Kept | The control-plane lease. Durable shards stop using it, but an in-memory shard's owner still needs it to refuse once cut off. See "In-memory shards" |
-| `shards/lifecycle/fence.rs` | 663 | Part | The write fence stays as `opened`, `deposed` and `quiesced`. The withheld, probed and gave-up callbacks go. The lease gate (`ShardFence::enter`, `check_lease`) stays for in-memory shards |
-| `shards/lifecycle.rs` | 2,445 | Part | Ownership follows the engine's `opened` and `deposed`. The fencing states go. `ShardReaders::watch_leadership` and `close_stream_shard` stay for in-memory shards. The watch takes no `QuorumMarks` (only an optional round check, which goes with the hybrid) and ends the readers of the shards `shards::memory` serves as well as `lifecycle.active()` |
+| `shards/lifecycle/fence.rs` | 663 | Part | The write fence stays as `opened`, `deposed` and `quiesced`. The withheld, probed and gave-up callbacks go. The lease gate (`ShardFence::enter`, `check_lease`) stays for in-memory shards. PR 5 removed the promotion, refusal, reclaim, lease-free and deposal state the hybrid set |
+| `shards/lifecycle.rs` | 2,445 | Part | Ownership follows the engine's `opened` and `deposed`. The fencing states go: PR 5 removed the `Fencing` phase, promotion and joint fencing. `ShardReaders::watch_leadership` and `close_stream_shard` stay for in-memory shards. The watch takes no `QuorumMarks` (only an optional round check, which goes with the hybrid) and ends the readers of the shards `shards::memory` serves as well as `lifecycle.active()` |
 | `shards/memory.rs` | | Kept | Serves in-memory stream shards on a Raft broker. See "In-memory shards" |
 | `shards/routing.rs` | 1,181 | Part | The router stays. `ShardServing` and the generation it serves at go; the leader is a hint from broker reports |
 | `node/cluster.rs`, `node/startup.rs`, `node/peer_dispatch.rs` | | Part | Wire one engine. No `Hybrid::start`, no read-round binding, no election table |
@@ -487,7 +487,7 @@ is closed or kept.
 | #2182 replication tests do not compile in release mode | Own fix, before the gate runs (#2243), which build in release mode |
 | #2162 subscribers registered past the quiesce cap | Engine independent. Re-tested by the soak run on Raft after #2233 |
 | #2135 staged move sticks when the successor's storage id rotates | Resolved by #2235 and #2250: a rotated copy is a new member, swapped in by the membership loop |
-| #2133 interim routing publish copies the map under the lifecycle lock | Resolved in PR 5, which rewrites how the lifecycle publishes routes |
+| #2133 interim routing publish copies the map under the lifecycle lock | Resolved in PR 5: the interim publish builds the table from a filtered iterator and copies no assignment |
 | #2131 sim: assert a restarted broker reopens its torn segment | Added with the `power-loss` mode on Raft (#2250) |
 | #2067 moves never complete under placement faults (seed 3) | The `placement` mode is gone. Raft moves are exercised by the history faults `MoveShard`, `Drain` and `InterruptedMove`; a whole-cluster Raft simulation mode is #3394 |
 | #2066 placement abandon refused on a held shard | Retires with the hybrid: no shard switches, so abandon is no longer the way out. Under Raft, #2250 restates the rule against re-forming |
@@ -516,7 +516,7 @@ is closed or kept.
 | #2148 RF 3 64 KiB publish p99 | #2243, RF 3 steady cell |
 | #2033 control plane and broker disagree on the leader | #2235. Routing takes the leader from broker reports |
 | #1992 promotion-burst throughput | #2243, promotion burst cell |
-| #1986 lifecycle stays locked after the heal | #2233, then PR 5 |
+| #1986 lifecycle stays locked after the heal | #2233, then PR 5. A pass holds the lifecycle lock only while it decides, and takes it briefly per action, so one slow open no longer holds every other shard's lock. A slow action still delays the pass's end-of-pass route publish. The seeds were hybrid runs and are not replayable |
 | #1805 failover at 1000 workloads | #2239 and the scale run of #2243 |
 | #1622 a new stream is not served for a few seconds | #2233. A new group elects before it serves; #2243 measures it |
 | #1196 brokers cannot rejoin while the control plane is down | #2250. A restarted broker passes the restore check by its run witness |
@@ -560,7 +560,7 @@ so the Raft engine (`raft/`) is included.
 | `felix-storage` hybrid state | 2,016 in 4 files | all | 0 | Not yet: PR 7 |
 | Broker service: confirmed reads, promotion gate | 312 in 2 files | all | 0 | Done: both deleted |
 | Broker service: control-plane lease | 470 in 1 file | none | 470, for in-memory shards | Kept |
-| Broker service: lifecycle and fence | 3,281 | reported | Under half, including the lease gate and reader watch in-memory shards keep | Service `src` 65,744 non-test and 82,021 test lines before, 63,399 and 76,369 after (11 files gone). The lifecycle and fence are cut down in PR 5 |
+| Broker service: lifecycle and fence | 3,281 | reported | Under half, including the lease gate and reader watch in-memory shards keep | Service `src` 65,744 non-test and 82,021 test lines before, 63,399 and 76,369 after (11 files gone). PR 5 cuts the lifecycle and fence from 3,090 to 2,631 lines |
 | Shard protocol specs | 7,994 lines, 8 specs, 426 configs | all | `FelixRaft` and its configs, reported | Not yet: PR 8 |
 | Hybrid cluster tests | about 7,800 lines, 16 files | all, some ported | Reported | Not yet: PR 9. They build without the hybrid and skip on Raft |
 | Environment variables | 11 hybrid | 11 | 0 | Done in PR 3. `FELIX_REPLICATION_REBUILD_*` and `FELIX_SHARD_MOVE_BYTES_PER_SEC` are retired in PR 4: read by nothing, listed in `RETIRED_VARS` |

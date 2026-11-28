@@ -87,7 +87,6 @@ means it takes writes; anything else gives the reason:
 | Reason | What it means | What to do |
 | --- | --- | --- |
 | `opening` | The broker is recovering the shard's log before it serves. Clients get `not_ready`. | Wait. A large active segment takes a while to scan. If it does not finish, read the broker's log for the shard. |
-| `fencing` | A promoted leader is waiting for a majority of its replicas to take its generation. Clients get `not_ready`. | See [Stuck fencing](#stuck-fencing) below. |
 | `failed` | The log could not be opened. The detail is the error. The shard is not retried until the assignment changes. | See [A broker will not start](#a-broker-will-not-start-or-will-not-open-a-shard): the same storage errors apply. |
 | `draining` | The leader stopped serving for a move. Writes are held for the cut-over and then forwarded. | Look at the move with `felixctl placement plan`. A move that does not finish is waiting for its destination to catch up. |
 | `lease_lapsed` | The broker could not renew its lease with the control plane, so it may no longer lead. Clients get `fenced`. | Check that the broker reaches the control plane (`FELIX_CONTROLPLANE_URL`) and that its node credential is accepted. Writes resume once the lease is renewed. |
@@ -99,35 +98,6 @@ the address the cluster advertises for it. Each replica's own phase and tail is
 still shown. Clients see `owner_unavailable` until the control plane notices
 the broker is gone and fails the shard over; see
 [the next section](#a-shard-lost-its-leader-and-waits-for-a-replica).
-
-### Stuck fencing
-
-A broker promoted to lead a shard by a failover fences it before it serves: it
-asks every replica to take the new generation and refuse the old leader, and
-takes the log of any replica that is ahead. It serves once a majority, counting
-itself, has answered. Once the fleet has finalized `majority_ack` it never
-opens on the lease instead, because the old leader no longer stops writing when
-its lease runs out. A replica that cannot be reached, or does not offer the
-fence, counts as one that has not answered. Before `majority_ack`, a shard
-whose replica does not offer the fence opens on the lease.
-
-`0 of 2 replicas took the fence` means neither replica answered in the latest
-attempt. The attempts back off from 200 ms, doubling to a 2 s cap. `FENCE`
-shows which replica took it. A detail that goes on to say a replica
-`has accepted a newer generation` means a replica already follows a later
-leader: this promotion is over, and the assignment feed will move on.
-
-A shard handed back to the broker that led it before a move at the generation
-right after the draining one, and a move's destination taking over, do not
-fence. A broker given a shard back at any later generation does, for example
-after a move finished and its destination then failed.
-
-**What to do.** Make a majority of the replicas reachable from the leader on
-the peer listener. Check each replica's broker is running, that the peer port
-(`5001` in the chart) is open between them, and that peer mTLS is accepted
-(see [A peer is refused](/reference/troubleshooting/#a-peer-is-refused)). The shard opens on the next attempt after
-a majority answers. `felix_broker_shard_phase{phase="fencing"}` counts how
-many shards wait now.
 
 ### Two of three replicas lost power together
 

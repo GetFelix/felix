@@ -15,7 +15,8 @@ use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use ed25519_dalek::SigningKey as Ed25519SigningKey;
 use felix_authz::{FelixTokenIssuer, Jwks, TenantId, TenantKeyCache, TenantKeyMaterial};
 use felix_broker::{Broker, CacheMetadata};
-use felix_broker_service::serving::{auth::BrokerAuth, quic};
+use felix_broker_service::serving::auth::BrokerAuth;
+use felix_broker_service::serving::quic::{self, ClusterContext};
 use felix_client::{CacheWatchFilter, CacheWatchItem, ClientConfig, Connection};
 use felix_storage::LogCache;
 use felix_storage::log::{FsyncMode, LogConfig};
@@ -24,6 +25,8 @@ use quinn::ClientConfig as QuinnClientConfig;
 use rcgen::generate_simple_self_signed;
 use rustls::RootCertStore;
 use rustls::pki_types::{CertificateDer, PrivatePkcs8KeyDer};
+use tokio_util::sync::CancellationToken;
+use tokio_util::task::TaskTracker;
 
 const DEMO_PRIVATE_KEY: [u8; 32] = [42u8; 32];
 const CACHE: &str = "sessions";
@@ -43,33 +46,82 @@ struct Running {
     server: Arc<QuicServer>,
     broker: Arc<Broker>,
     task: tokio::task::JoinHandle<Result<()>>,
+    groups: Option<Groups>,
 }
 
+/// The Raft groups of a broker with durable storage: their feed, the tasks
+/// writing under the root, and the members to close on stop.
+struct Groups {
+    stop: CancellationToken,
+    writers: TaskTracker,
+    engine: felix_broker_service::node::StandaloneEngine,
+}
+
+/// A broker with durable storage, which runs its cache as a Raft group of
+/// one, as the binary does with a data directory and no node id.
 async fn start(root: &std::path::Path) -> Result<Running> {
-    let cache = LogCache::open(
-        root,
-        LogConfig {
-            fsync_mode: FsyncMode::None,
-            preallocate_segments: false,
-            ..LogConfig::default()
+    start_snapshotting(root, None).await
+}
+
+/// [`start`], with the cache shard snapshotting every `every` entries in
+/// place of the default.
+async fn start_snapshotting(root: &std::path::Path, every: Option<u64>) -> Result<Running> {
+    let config = || LogConfig {
+        fsync_mode: FsyncMode::None,
+        preallocate_segments: false,
+        ..LogConfig::default()
+    };
+    let cache = LogCache::open(root.join("caches"), config()).context("open the cache log")?;
+    let storage =
+        felix_broker::DurableStorage::open(root, config()).context("open durable storage")?;
+    let broker = Arc::new(Broker::new(Box::new(cache)).with_durable_storage(storage));
+    let stop = CancellationToken::new();
+    let writers = TaskTracker::new();
+    let groups =
+        felix_broker_service::node::start_standalone_engine(&broker, every, &stop, &writers)?;
+    let running = serve(
+        broker,
+        ClusterContext {
+            engine: Arc::clone(&groups.engine),
+            ..Default::default()
         },
+        Some(Groups {
+            stop,
+            writers,
+            engine: groups,
+        }),
     )
-    .context("open the cache log")?;
-    start_with(Box::new(cache)).await
+    .await?;
+    running.until_the_group_serves().await?;
+    Ok(running)
 }
 
-/// A broker whose cache has no log, for proving watches are refused rather
-/// than faked over it.
+/// A broker with no durable storage, whose cache has no log, for proving
+/// watches are refused rather than faked over it.
 async fn start_ephemeral() -> Result<Running> {
-    start_with(Box::new(felix_storage::EphemeralCache::new())).await
+    let broker = Arc::new(Broker::new(Box::new(felix_storage::EphemeralCache::new())));
+    serve(broker, ClusterContext::default(), None).await
 }
 
-async fn start_with(cache: Box<dyn felix_storage::StorageApi + Send>) -> Result<Running> {
-    let broker = Arc::new(Broker::new(cache));
+async fn serve(
+    broker: Arc<Broker>,
+    cluster: ClusterContext,
+    groups: Option<Groups>,
+) -> Result<Running> {
     broker.register_tenant("t1").await?;
     broker.register_namespace("t1", "default").await?;
     broker
-        .register_cache("t1", "default", CACHE, CacheMetadata::default())
+        .register_cache(
+            "t1",
+            "default",
+            CACHE,
+            // As the control plane always names it: a group forms only once
+            // placement names as many brokers as this asks for.
+            CacheMetadata {
+                replication_factor: Some(1),
+                ..CacheMetadata::default()
+            },
+        )
         .await?;
 
     let config = felix_broker_service::config::BrokerConfig::from_env()?;
@@ -81,11 +133,18 @@ async fn start_with(cache: Box<dyn felix_storage::StorageApi + Send>) -> Result<
         TransportConfig::default(),
     )?);
     let addr = server.local_addr()?;
-    let task = tokio::spawn(quic::serve(
+    let limit = quic::ConnectionLimit::new(config.max_client_connections);
+    let limits = felix_broker_service::serving::limits::ListenerLimits::from_config(&config);
+    let task = tokio::spawn(quic::serve_with_shutdown(
         Arc::clone(&server),
         Arc::clone(&broker),
         config,
         demo_auth.auth,
+        CancellationToken::new(),
+        TaskTracker::new(),
+        cluster,
+        limit,
+        limits,
     ));
 
     Ok(Running {
@@ -95,6 +154,7 @@ async fn start_with(cache: Box<dyn felix_storage::StorageApi + Send>) -> Result<
         server,
         broker,
         task,
+        groups,
     })
 }
 
@@ -106,10 +166,32 @@ impl Running {
         Connection::connect(self.addr, "localhost", config).await
     }
 
+    /// Until the cache's group has opened and leads. Before that the broker
+    /// refuses its operations as retryable, as it does at startup.
+    async fn until_the_group_serves(&self) -> Result<()> {
+        let client = self.client().await?;
+        let deadline = tokio::time::Instant::now() + RECV_TIMEOUT;
+        loop {
+            match client.cache_get("t1", "default", CACHE, "probe").await {
+                Ok(_) => return Ok(()),
+                Err(err) if tokio::time::Instant::now() >= deadline => {
+                    return Err(err.context("the cache's Raft group never served"));
+                }
+                Err(_) => tokio::time::sleep(Duration::from_millis(20)).await,
+            }
+        }
+    }
+
     async fn stop(self) {
         self.task.abort();
         let _ = self.task.await;
         drop(self.server);
+        if let Some(groups) = self.groups {
+            groups.stop.cancel();
+            groups.writers.close();
+            groups.writers.wait().await;
+            groups.engine.shutdown().await;
+        }
         // A process going away takes its connections with it; aborting the
         // accept loop does not, so they would keep this broker's logs open.
         // Stop its storage the way the binary does.
@@ -360,21 +442,30 @@ async fn a_resumed_watch_is_gapless_under_concurrent_writes() -> Result<()> {
     Ok(())
 }
 
-/// A watch resuming from an offset compaction has collapsed gets the defined
-/// signal — resnapshot, then each matching key's current value, then live —
-/// never a silent gap.
+/// A watch resuming from an offset whose changes the shard no longer keeps
+/// gets the defined signal — resnapshot, then each matching key's current
+/// value, then live — never a silent gap. A cache's Raft member keeps
+/// changes only from the first watch of the shard on, so writes before any
+/// watch are history it cannot replay.
 #[tokio::test]
 async fn a_watch_from_a_compacted_offset_resnapshots() -> Result<()> {
+    const SNAPSHOT_EVERY: u64 = 8;
     let dir = tempfile::tempdir()?;
-    let running = start(dir.path()).await?;
+    let running = start_snapshotting(dir.path(), Some(SNAPSHOT_EVERY)).await?;
     let client = running.client().await?;
 
-    // Overwrite one key until compaction runs (the store compacts past 1MiB of
-    // log when it is 4x the live bytes), so offset 0 is collapsed history.
-    let big = vec![b'x'; 64 * 1024];
-    for _ in 0..40 {
+    // Enough overwrites that the shard snapshots past offset 0, so its
+    // changes from there are folded into the snapshot.
+    for round in 0..3 * SNAPSHOT_EVERY {
         client
-            .cache_put("t1", "default", CACHE, "hot", big.clone().into(), None)
+            .cache_put(
+                "t1",
+                "default",
+                CACHE,
+                "hot",
+                format!("old-{round}").into_bytes().into(),
+                None,
+            )
             .await?;
     }
     client
@@ -387,36 +478,29 @@ async fn a_watch_from_a_compacted_offset_resnapshots() -> Result<()> {
             None,
         )
         .await?;
-    // Compaction runs in the background, so wait for it to trim offset 0.
-    tokio::time::timeout(RECV_TIMEOUT, async {
-        loop {
-            let base = running
-                .broker
-                .shard_log(felix_broker::LogKind::Cache, "t1", "default", CACHE, 0)
-                .await
-                .map(|log| log.readable_base());
-            if base.is_some_and(|base| base > 0) {
-                return;
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-    })
-    .await
-    .context("the cache was never compacted")?;
-
-    let mut watch = client
-        .watch_cache(
+    // The snapshot is taken in the background, so resume until it covers 0.
+    let watch_from_zero = || {
+        client.watch_cache(
             "t1",
             "default",
             CACHE,
             CacheWatchFilter::Key("hot".to_string()),
             Some(0),
         )
-        .await?;
-    assert!(
-        watch.resnapshot(),
-        "a collapsed history must be signalled, not silently skipped",
-    );
+    };
+    let mut watch = tokio::time::timeout(RECV_TIMEOUT, async {
+        loop {
+            let watch = watch_from_zero().await?;
+            // Until the snapshot covers 0, the resume is replayed from the log.
+            if watch.resnapshot() {
+                return anyhow::Ok(watch);
+            }
+            drop(watch);
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .context("a resume below the snapshot was never resnapshotted")??;
 
     let snapshot = change(next_item(&mut watch).await);
     assert_eq!(

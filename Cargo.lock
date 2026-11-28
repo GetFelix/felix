@@ -1279,7 +1279,6 @@ dependencies = [
  "felix-broker",
  "felix-common",
  "felix-replication",
- "felix-router",
  "felix-storage",
  "felix-transport",
  "felix-wire",
