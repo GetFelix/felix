@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795829698715,
+  "lastUpdate": 1795830587382,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -74568,6 +74568,58 @@ window.BENCHMARK_DATA = {
             "range": "11268.94",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1211476.67\nmean: 1212578.73\nstdev: 11268.94\ncv: 0.93%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "810c7dce633ac1e4b85384dfb1241bb5af050a49",
+          "message": "test(raft): placement keeps internal brokers out, zones spread and voters in region (#2992) (#3404)\n\n* test(placement): Raft seats keep the internal, zone and region rules (#2992)\n\nEvery way a Raft set gains a member (the first full placement, a top-up,\nthe swap for a lost voter, and that swap in a re-formed group) is shown\nin placement unit tests to skip internal brokers, refill the zone the\nset lost, and stay inside the stream's region or a region bridged from\nit.\n\nThree cluster tests check the same on running brokers, on every\nplacement pass: an internal broker is never seated through formation, a\ndrain, and a lost voter it is the only spare for; a lost voter is\nreplaced by the other broker in its zone; and an eu stream's lost voter\nwaits with no bridge out of eu, then goes to us across eu>us and never\nto ap.\n\nSpec-Unaffected: tests only; placement code is unchanged.\n\n* ci: the affected-crates fixture knows felix-cluster's felix-router dev-dependency (#2992)\n\nSpec-Unaffected: CI fixture",
+          "timestamp": "2026-11-28T01:44:01Z",
+          "tree_id": "55f2fbf974be426ab0cf78bb24e34a568c1fc349",
+          "url": "https://github.com/GetFelix/felix/commit/810c7dce633ac1e4b85384dfb1241bb5af050a49"
+        },
+        "date": 1795830586677,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 508979.52,
+            "range": "26018.10",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 508979.52\nmean: 518850.51\nstdev: 26018.10\ncv: 5.01%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 508979.52,
+            "range": "26018.10",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 508979.52\nmean: 518850.51\nstdev: 26018.10\ncv: 5.01%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 116133.73,
+            "range": "2768.90",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 116133.73\nmean: 114699.07\nstdev: 2768.90\ncv: 2.41%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1161337.31,
+            "range": "27688.97",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1161337.31\nmean: 1146990.71\nstdev: 27688.97\ncv: 2.41%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
