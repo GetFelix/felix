@@ -731,8 +731,17 @@ pub fn routing_table_from<A: std::hash::BuildHasher, N: std::hash::BuildHasher>(
     assignments: &std::collections::HashMap<ShardKey, crate::shards::watch::ShardAssignment, A>,
     nodes: &std::collections::HashMap<String, felix_router::NodeRef, N>,
 ) -> felix_router::RoutingTable {
+    routing_table_of(assignments.values(), nodes)
+}
+
+/// [`routing_table_from`] for any set of assignments, so a caller can filter
+/// one without copying the map it holds.
+fn routing_table_of<'a, N: std::hash::BuildHasher>(
+    assignments: impl Iterator<Item = &'a crate::shards::watch::ShardAssignment>,
+    nodes: &std::collections::HashMap<String, felix_router::NodeRef, N>,
+) -> felix_router::RoutingTable {
     felix_router::RoutingTable::build_with(
-        assignments.values().map(|assignment| felix_router::Placed {
+        assignments.map(|assignment| felix_router::Placed {
             key: to_router_key(&assignment.key),
             leader: assignment.leader.clone(),
             // While a change is pending the route names the new set, as it
@@ -1208,7 +1217,7 @@ fn early_assignments(
 struct EarlyAdditions {
     routes: HashMap<ShardKey, crate::shards::watch::ShardAssignment>,
     /// The new shards in `routes`.
-    added: Vec<ShardKey>,
+    added: felix_common::random::HashSet<ShardKey>,
     /// The new shards' priors.
     priors: HashMap<felix_router::ShardKey, felix_router::PriorSet>,
 }
@@ -1263,16 +1272,14 @@ impl crate::shards::lifecycle::PassProgress for EarlyRoutes<'_> {
         // sees, and hundreds of shards still opening would hold its pass
         // slots while their followers open copies, starving shards that
         // already take writes.
-        let mut routes = early.routes.clone();
-        for key in &early.added {
-            let waiting = routes.get(key).is_some_and(|assignment| {
-                assignment.leader == self.local
-                    && early_servable.get(key) != Some(&assignment.generation)
-            });
-            if waiting {
-                routes.remove(key);
-            }
-        }
+        // Filtered as the table is built, not by copying the map: this runs
+        // under the lifecycle lock, and the map holds every shard (#2133).
+        let routes = early.routes.iter().filter(|(key, assignment)| {
+            let waiting = early.added.contains(*key)
+                && assignment.leader == self.local
+                && early_servable.get(*key) != Some(&assignment.generation);
+            !waiting
+        });
         let mut priors = self.published_priors.clone();
         priors.extend(
             early
@@ -1281,7 +1288,8 @@ impl crate::shards::lifecycle::PassProgress for EarlyRoutes<'_> {
                 .map(|(key, prior)| (key.clone(), prior.clone())),
         );
         self.ingress.publish(
-            routing_table_from(&routes, self.catalog).with_priors(priors),
+            routing_table_of(routes.map(|(_, assignment)| assignment), self.catalog)
+                .with_priors(priors),
             self.catalog,
             early_servable,
         );
