@@ -378,6 +378,32 @@ async fn serves_only_a_registered_in_memory_incarnation() {
     );
 }
 
+/// **Only stream shards are taken.** A cache shard is left in the feed for
+/// the engine that runs it; serving one here would answer for a cache this
+/// module has no store for.
+#[tokio::test]
+async fn take_leaves_cache_shards_in_the_feed() {
+    let root = tempfile::tempdir().expect("tempdir");
+    let broker = broker(root.path()).await;
+    let fence = Arc::new(ShardFence::default());
+    let memory = memory(&broker, &fence);
+    let cache = ShardKey {
+        kind: ShardKind::Cache,
+        ..key(0)
+    };
+    let mut fed = assignments(&[assigned(LOCAL, 5)]);
+    fed.insert(
+        cache.clone(),
+        ShardAssignment {
+            key: cache.clone(),
+            ..assigned(LOCAL, 5)
+        },
+    );
+    let taken = memory.take(&mut fed);
+    assert_eq!(taken.keys().collect::<Vec<_>>(), vec![&key(0)]);
+    assert_eq!(fed.keys().collect::<Vec<_>>(), vec![&cache]);
+}
+
 /// **Through the routing feed, an in-memory shard on a Raft broker serves at
 /// once and the hybrid lifecycle never holds it**, though that lifecycle
 /// fences every promotion.

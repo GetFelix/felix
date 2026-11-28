@@ -115,6 +115,18 @@ pub(crate) async fn handle_cache_watch_message(
             return Ok(true);
         }
     };
+    // A resume already reconstructs the state a retained start would shortcut,
+    // and delivering both would hand over every value twice. Checked before
+    // routing, so the answer is the same on every broker.
+    if request.retained && request.from_offset.is_some() {
+        responder
+            .send(
+                ClientError::invalid("cache_watch takes retained or from_offset, not both")
+                    .into_message(),
+            )
+            .await?;
+        return Ok(true);
+    }
 
     if !broker
         .cache_exists(&request.tenant_id, &request.namespace, &request.cache)
@@ -395,19 +407,8 @@ pub(crate) async fn handle_cache_watch_message(
         Snapshot,
     }
     let catch_up = match (request.retained, request.from_offset) {
-        (true, Some(_)) => {
-            // A resume already reconstructs the state a retained start would
-            // shortcut, and delivering both would hand over every value twice.
-            subscriptions.release();
-            responder
-                .send(
-                    ClientError::invalid("cache_watch takes retained or from_offset, not both")
-                        .into_message(),
-                )
-                .await?;
-            return Ok(true);
-        }
-        (true, None) => CatchUp::Snapshot,
+        // Retained with an offset was refused on arrival.
+        (true, _) => CatchUp::Snapshot,
         (false, None) => CatchUp::None,
         (false, Some(from)) if from > tail => {
             subscriptions.release();
