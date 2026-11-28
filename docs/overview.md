@@ -60,15 +60,15 @@ groups stay affordable. See [`per-shard-raft.md`](per-shard-raft.md) and
 
 The control plane decides **placement**: which brokers hold a shard's copies and
 which of them should lead. It does not decide who actually leads. Raft elects
-the leader, and the Raft term is the generation. Placement only influences the
+the leader, and leaders are identified by the Raft term. Placement only influences the
 outcome by moving copies and by asking a group to hand leadership to a
 preferred member.
 
 A cache shard and a counter shard are groups of the same kind. Their log holds
 puts, deletes and counter deltas. The cache index and the counter sums are
-rebuilt from a snapshot plus that log. A queue's consumer-group position is
-stored the way a cache key is, as the latest value for a key, so it replicates
-and recovers through the same machinery. See [`cache-on-log.md`](cache-on-log.md).
+rebuilt from a snapshot plus that log. A stream shard's consumer groups, which queues
+use, are entries in that shard's own Raft log. The state machine folds them as
+it applies them, and only the shard's leader serves them. See [`cache-on-log.md`](cache-on-log.md).
 
 ## How a publish travels
 
@@ -112,14 +112,13 @@ Each subscriber has a bounded queue. When it is full, the default policy
 publisher never waits for a subscriber.
 
 A drop is never silent on a durable stream. Delivered events carry their log
-offsets, so a jump in offsets is a drop. A client that negotiated the feature
-is also told: the subscription ends with `subscription_lagged` at its first
-drop, naming the offset to resume from, and the client resumes by reading the
+offsets, so a jump in offsets is a drop. Every subscription also ends with `subscription_lagged` at its first
+dropped batch, naming the offset to resume from, and the client resumes by reading the
 log. See the subscribe section of [`protocol.md`](protocol.md).
 
-New wire features are negotiated with flag bits during authentication, not with
-version numbers. An old peer that never negotiates gets the original behaviour
-and byte-identical frames.
+The 0.8 feature set is mandatory: a client or broker that lacks it is refused
+during authentication. Features added after 0.8 are negotiated with flag bits
+during authentication, not with version numbers.
 
 ## Storage
 
@@ -139,8 +138,8 @@ an fsync. See [`durable-storage.md`](durable-storage.md) and
 
 A shard is created through the control plane, which places its copies on
 brokers. Each broker starts a Raft member for it, and the members elect a
-leader. Writes go to the leader. A broker that does not own a shard's leader forwards
-the request to the broker that does.
+leader. Writes go to the leader. A broker that is not the shard's leader forwards
+the request to the one that is.
 
 If the leader dies, the followers stop hearing its heartbeats, hold an election
 and choose a new leader from the members with the most complete logs. The new
