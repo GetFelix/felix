@@ -27,8 +27,6 @@ pub(crate) struct Observed {
     pub(crate) route: Option<felix_router::Route>,
     pub(crate) phase: Option<PhaseRecord>,
     pub(crate) lease: Option<Lease>,
-    /// Writes at the held generation get in without the lease.
-    pub(crate) lease_free: bool,
     pub(crate) tail: Option<u64>,
     pub(crate) committed: Option<u64>,
     pub(crate) accepted_generation: Option<u64>,
@@ -58,9 +56,6 @@ pub(crate) async fn inspect(
                 .unwrap_or(0);
             observed.route = ingress.route(key);
             observed.phase = ingress.fence().phase_of(key);
-            if let Some(phase) = &observed.phase {
-                observed.lease_free = ingress.fence().lease_free(key, phase.generation);
-            }
         }
         None => {
             let exists = match key.kind {
@@ -115,7 +110,6 @@ pub(crate) fn build(observed: Observed) -> ShardInspection {
         route,
         phase,
         lease,
-        lease_free,
         tail,
         committed,
         accepted_generation,
@@ -175,13 +169,6 @@ pub(crate) fn build(observed: Observed) -> ShardInspection {
         draining: route.draining,
         successor: route.successor.clone(),
     });
-    let others: Vec<String> = assignment
-        .as_ref()
-        .map(|assignment| assignment.replicas.clone())
-        .unwrap_or_default();
-    let fencing = phase
-        .as_ref()
-        .is_some_and(|phase| phase.phase == Phase::Fencing);
     let (reason, detail) = if role != "leader" {
         let detail = match (&raft, &route) {
             (Some(raft), _) => match &raft.leader {
@@ -199,24 +186,11 @@ pub(crate) fn build(observed: Observed) -> ShardInspection {
         // The group has no fence or lease of this module's kind to wait out.
         (None, None)
     } else {
-        not_serving(phase.as_ref(), route.as_ref(), lease, lease_free, None)
+        not_serving(phase.as_ref(), route.as_ref(), lease)
     };
 
     let replicas = if role != "leader" {
         Vec::new()
-    } else if fencing {
-        others
-            .iter()
-            .map(|node| InspectedReplica {
-                node_id: node.clone(),
-                role: replica_role(route.as_ref(), node).to_string(),
-                next_offset: None,
-                lag: None,
-                fence: None,
-                state: "fencing".to_string(),
-                halted: None,
-            })
-            .collect()
     } else {
         // A Raft group's leader has its account of the other members.
         raft_replicas.unwrap_or_default()
@@ -249,14 +223,11 @@ pub(crate) fn build(observed: Observed) -> ShardInspection {
 }
 
 /// Why a shard this broker leads by its routing is not serving, or `None`
-/// when it is. `fence` is how many replicas took the fence, of how many, and
-/// why the latest attempt stopped.
+/// when it is.
 fn not_serving(
     phase: Option<&PhaseRecord>,
     route: Option<&felix_router::Route>,
     lease: Option<Lease>,
-    lease_free: bool,
-    fence: Option<(usize, usize, Option<&str>)>,
 ) -> (Option<&'static str>, Option<String>) {
     let Some(phase) = phase else {
         return (
@@ -271,27 +242,6 @@ fn not_serving(
             Some(match &phase.error {
                 Some(error) => format!("opening again on a later pass: {error}"),
                 None => "recovering the local log before it serves".to_string(),
-            }),
-        ),
-        Phase::Fencing => (
-            Some("fencing"),
-            Some(match fence {
-                // The board's count, then why the attempt stopped: another
-                // reason, such as a replica on a newer generation, or what
-                // follows the attempt's own count, such as a replica's refusal.
-                Some((took, of, Some(why))) => {
-                    let reason = if why.contains("replicas took the fence") {
-                        why.split_once("; ").map(|(_, reason)| reason)
-                    } else {
-                        Some(why)
-                    };
-                    match reason {
-                        Some(reason) => format!("{took} of {of} replicas took the fence; {reason}"),
-                        None => format!("{took} of {of} replicas took the fence"),
-                    }
-                }
-                Some((took, of, None)) => format!("{took} of {of} replicas took the fence"),
-                None => "waiting for the first fence attempt to finish".to_string(),
             }),
         ),
         Phase::Failed => (
@@ -317,20 +267,11 @@ fn not_serving(
                 phase.generation
             )),
         ),
-        Phase::Active if lease.is_some_and(|lease| !lease.valid) && !lease_free => (
+        Phase::Active if lease.is_some_and(|lease| !lease.valid) => (
             Some("lease_lapsed"),
             Some("this broker's lease ran out; writes resume once it renews".to_string()),
         ),
         Phase::Active => (None, None),
-    }
-}
-
-/// `learner` for a move's destination, `follower` for anyone else.
-fn replica_role(route: Option<&felix_router::Route>, node: &str) -> &'static str {
-    if route.and_then(|route| route.successor.as_deref()) == Some(node) {
-        "learner"
-    } else {
-        "follower"
     }
 }
 

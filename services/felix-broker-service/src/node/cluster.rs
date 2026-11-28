@@ -210,7 +210,7 @@ pub(super) fn start_standalone_raft_shards(
     );
     engine.set_raft(Arc::clone(&shards));
     // Readers see only what a group committed, as on a cluster member.
-    broker.set_read_bounds(Arc::new(replication::engine::CommittedReads::new(
+    broker.set_read_bounds(Arc::new(crate::shards::routing::CommittedReads::new(
         Arc::clone(engine),
     )));
     let (members, broker, stop) = (Arc::clone(&shards), Arc::clone(broker), stop.clone());
@@ -759,8 +759,7 @@ where
                         .with_generation_starts(shard_lifecycle::GenerationStarts {
                             broker: Arc::clone(broker),
                             fleet: Arc::clone(fleet),
-                        })
-                        .with_fence(Arc::clone(ingress.fence())),
+                        }),
                 ),
                 // Without durable storage there is no log to open, so taking a
                 // shard is bookkeeping only.

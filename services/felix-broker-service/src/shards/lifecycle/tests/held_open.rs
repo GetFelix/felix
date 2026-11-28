@@ -8,16 +8,14 @@ fn open_action(generation: u64) -> Action {
         key: key(0),
         generation,
         new_term: true,
-        fence: false,
         incarnation: 0,
     }
 }
 
-/// **A hold past the report bound keeps the shard opening**, not failed.
+/// **A long hold keeps the shard opening**, not failed.
 #[tokio::test(start_paused = true)]
-async fn a_hold_past_the_bound_keeps_retrying() {
+async fn a_long_hold_keeps_retrying() {
     let mut own = lifecycle();
-    own.report_held_after(Duration::from_secs(10));
     own.observe(&key(0), Some(&assigned_to("broker-a", 1)));
 
     assert!(

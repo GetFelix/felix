@@ -12,7 +12,7 @@
 mod router;
 mod table;
 
-pub use router::{ReplicaRole, Resolution, Routes, ShardRouter, Unavailable};
+pub use router::{Resolution, Routes, ShardRouter, Unavailable};
 pub use table::{
     NodeRef, PendingChange, Placed, PlacedSet, PriorSet, Readmitted, Route, RoutingTable,
     StreamPlacement,

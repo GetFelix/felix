@@ -1421,16 +1421,15 @@ older reader failing to decode the answer.
   routing, `0` when it knows nothing of it. A client inspecting a whole
   stream asks shard 0 first and learns the count from it.
 - `role` is this broker's place in the assignment its routing holds.
-  `phase` is its shard lifecycle phase: `unassigned`, `opening`, `fencing`,
-  `active`, `draining`, `closed` or `failed`.
+  `phase` is its shard lifecycle phase: `unassigned`, `opening`, `active`,
+  `draining`, `closed` or `failed`.
 - `serving` is false with a `reason` whenever this broker does not take writes
   for the shard: `not_assigned_here` (another broker leads it), `opening`,
-  `fencing`, `failed` (`detail` carries the error the open hit), `draining`,
+  `failed` (`detail` carries the error the open hit), `draining`,
   `lease_lapsed`, or `behind_generation` (it serves an older generation than
   the assignment names).
-- `fence` is present while a promoted leader waits for its replicas to take
-  its generation: who took it in the latest attempt, who has not, how many
-  attempts in a row left the shard closed, and when the next one starts.
+- `fence` is never set: no shard waits for its replicas to take a
+  generation before it serves.
 - `committed` is a leader's commit mark: every record below it is held by a
   majority. Only the leader of a `Quorum` shard has one.
 - `tail` and `accepted_generation` come from this broker's copy of the log,
@@ -1438,7 +1437,7 @@ older reader failing to decode the answer.
 - `replicas` is a leader's view of every other replica: the next offset it
   ships, how far behind the tail that is, and `state`, one of `shipping`,
   `stalled`, `copying` (a move's destination), `rebuilding`, `halted` (with the
-  reason, as `/replication/halted` names it) or `fencing`. A follower answers
+  reason, as `/replication/halted` names it). A follower answers
   with none.
 - `raft` is this broker's member of the shard's Raft group, present only when
   it holds one or its copy was stopped. `leader` is the broker the member follows while it hears

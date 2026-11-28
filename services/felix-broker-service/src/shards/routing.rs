@@ -144,7 +144,9 @@ pub type ServableShards = HashMap<ShardKey, u64>;
 
 pub(crate) use super::engine::RaftShard;
 pub(crate) use super::engine::leave_stores_to_engines;
-pub use super::engine::{RaftIdempotentPublish, RaftPublish, RaftRefusal, StreamEngine};
+pub use super::engine::{
+    CommittedReads, RaftIdempotentPublish, RaftPublish, RaftRefusal, StreamEngine,
+};
 
 /// Resolves ingress requests against cluster ownership.
 ///
@@ -468,7 +470,7 @@ impl IngressRouter {
     ///
     /// A shard between its fence and its cut-over is held until the routes
     /// show where it went, then dispatched there; see [`hold`]. So is one this
-    /// broker has just taken and is still fencing. A local answer
+    /// broker has just taken and is still opening. A local answer
     /// comes with the write's place in the fence, entered here so a fence that
     /// closes before the write claims its offsets still counts it and the move
     /// waits for it.
@@ -578,19 +580,16 @@ impl IngressRouter {
         }
     }
 
-    /// Whether this broker has just taken `key` and is opening or fencing it,
-    /// which usually takes a round trip. `Active` too: the lifecycle settles
-    /// the fence a moment before the servable set that says so is published.
+    /// Whether this broker has just taken `key` and is opening it, which
+    /// usually takes a round trip. `Active` too: the lifecycle opens the shard
+    /// a moment before the servable set that says so is published.
     /// Not an open held for a retry (it keeps its error): that waits for
     /// descriptors to free up, which is no round trip, so it is refused now.
     fn taking_over(&self, key: &ShardKey) -> bool {
-        self.fence.awaiting_promotion(key).is_some()
-            || self.fence.phase_of(key).is_some_and(|record| {
-                matches!(
-                    record.phase,
-                    Phase::Opening | Phase::Fencing | Phase::Active
-                ) && !(record.phase == Phase::Opening && record.error.is_some())
-            })
+        self.fence.phase_of(key).is_some_and(|record| {
+            matches!(record.phase, Phase::Opening | Phase::Active)
+                && !(record.phase == Phase::Opening && record.error.is_some())
+        })
     }
 
     fn dispatch_in(&self, view: &View, key: &ShardKey) -> Dispatch {
@@ -732,8 +731,17 @@ pub fn routing_table_from<A: std::hash::BuildHasher, N: std::hash::BuildHasher>(
     assignments: &std::collections::HashMap<ShardKey, crate::shards::watch::ShardAssignment, A>,
     nodes: &std::collections::HashMap<String, felix_router::NodeRef, N>,
 ) -> felix_router::RoutingTable {
+    routing_table_of(assignments.values(), nodes)
+}
+
+/// [`routing_table_from`] for any set of assignments, so a caller can filter
+/// one without copying the map it holds.
+fn routing_table_of<'a, N: std::hash::BuildHasher>(
+    assignments: impl Iterator<Item = &'a crate::shards::watch::ShardAssignment>,
+    nodes: &std::collections::HashMap<String, felix_router::NodeRef, N>,
+) -> felix_router::RoutingTable {
     felix_router::RoutingTable::build_with(
-        assignments.values().map(|assignment| felix_router::Placed {
+        assignments.map(|assignment| felix_router::Placed {
             key: to_router_key(&assignment.key),
             leader: assignment.leader.clone(),
             // While a change is pending the route names the new set, as it
@@ -1209,7 +1217,7 @@ fn early_assignments(
 struct EarlyAdditions {
     routes: HashMap<ShardKey, crate::shards::watch::ShardAssignment>,
     /// The new shards in `routes`.
-    added: Vec<ShardKey>,
+    added: felix_common::random::HashSet<ShardKey>,
     /// The new shards' priors.
     priors: HashMap<felix_router::ShardKey, felix_router::PriorSet>,
 }
@@ -1264,16 +1272,14 @@ impl crate::shards::lifecycle::PassProgress for EarlyRoutes<'_> {
         // sees, and hundreds of shards still opening would hold its pass
         // slots while their followers open copies, starving shards that
         // already take writes.
-        let mut routes = early.routes.clone();
-        for key in &early.added {
-            let waiting = routes.get(key).is_some_and(|assignment| {
-                assignment.leader == self.local
-                    && early_servable.get(key) != Some(&assignment.generation)
-            });
-            if waiting {
-                routes.remove(key);
-            }
-        }
+        // Filtered as the table is built, not by copying the map: this runs
+        // under the lifecycle lock, and the map holds every shard (#2133).
+        let routes = early.routes.iter().filter(|(key, assignment)| {
+            let waiting = early.added.contains(*key)
+                && assignment.leader == self.local
+                && early_servable.get(*key) != Some(&assignment.generation);
+            !waiting
+        });
         let mut priors = self.published_priors.clone();
         priors.extend(
             early
@@ -1282,7 +1288,8 @@ impl crate::shards::lifecycle::PassProgress for EarlyRoutes<'_> {
                 .map(|(key, prior)| (key.clone(), prior.clone())),
         );
         self.ingress.publish(
-            routing_table_from(&routes, self.catalog).with_priors(priors),
+            routing_table_of(routes.map(|(_, assignment)| assignment), self.catalog)
+                .with_priors(priors),
             self.catalog,
             early_servable,
         );

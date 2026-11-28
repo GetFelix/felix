@@ -3,7 +3,7 @@
 
 use std::sync::Arc;
 
-use super::{AppendedShards, Broker};
+use super::Broker;
 use crate::durable::StreamLog;
 use crate::error::{BrokerError, Result};
 
@@ -118,18 +118,13 @@ impl Broker {
 
     /// Signalled when a durable append marks a shard that was not already
     /// marked since replication last took the set, so one wake can stand for
-    /// many appends. [`Self::appended_shards`] says which shards they were for.
+    /// many appends.
     ///
     /// Replication waits on it so shipping starts when a record lands rather
     /// than on its next tick — which is most of a `Quorum` publish's latency
     /// when the tick is seconds and the shipping is milliseconds.
     pub fn appended(&self) -> Arc<tokio::sync::Notify> {
         self.appended.wake()
-    }
-
-    /// Which shards were appended to; marking one also wakes [`Self::appended`].
-    pub fn appended_shards(&self) -> &AppendedShards {
-        &self.appended
     }
 
     /// The log for one shard, whichever kind of thing it belongs to.
@@ -209,23 +204,6 @@ impl Broker {
         }
     }
 
-    /// [`Broker::shard_log`], creating the log at `base_offset` when this broker
-    /// has never held the shard. The base it comes back with is the authority.
-    pub async fn shard_log_at(
-        &self,
-        kind: LogKind,
-        tenant_id: &str,
-        namespace: &str,
-        name: &str,
-        shard: u32,
-        base_offset: u64,
-    ) -> Option<StreamLog> {
-        opened(
-            self.try_shard_log_at(kind, tenant_id, namespace, name, shard, base_offset)
-                .await,
-        )
-    }
-
     async fn try_shard_log_at(
         &self,
         kind: LogKind,
@@ -281,7 +259,7 @@ impl Broker {
         }
     }
 
-    /// [`Broker::shard_log`], or [`Broker::shard_log_at`] with a base, for a
+    /// [`Broker::shard_log`], created at `base_offset` when given, for a
     /// caller acting for a named incarnation of the stream: a replication
     /// request, or an assignment. With `Some`, a stream's own and group logs
     /// open only when that incarnation is the registered one, checked by the
@@ -485,29 +463,6 @@ impl Broker {
         }
     }
 
-    /// Whether a stream or cache shard has a copy on disk that is not open
-    /// yet. Reads the directory only; opens and recovers nothing.
-    pub fn copy_on_disk(
-        &self,
-        kind: LogKind,
-        tenant_id: &str,
-        namespace: &str,
-        name: &str,
-        shard: u32,
-    ) -> bool {
-        match kind {
-            LogKind::Stream => self
-                .durable_storage
-                .as_ref()
-                .is_some_and(|storage| storage.stream_on_disk(tenant_id, namespace, name, shard)),
-            LogKind::Cache => self
-                .cache
-                .as_log_cache()
-                .is_some_and(|cache| cache.on_disk(tenant_id, namespace, name, shard)),
-            _ => false,
-        }
-    }
-
     /// What [`Broker::shard_log_for`] would return, when the log is open
     /// already; `None` without opening anything otherwise.
     pub async fn opened_log(
@@ -619,26 +574,6 @@ impl Broker {
             .await?;
         let state = &handle.state;
         state.advance_to(durable_offset, || accepted_leader(state));
-        Ok(())
-    }
-
-    /// Tell a stream that an atomic commit reached its log by replication,
-    /// so a head trim is refused without reading the log for it.
-    pub async fn note_replicated_commit(
-        &self,
-        tenant_id: &str,
-        namespace: &str,
-        stream: &str,
-        shard: u32,
-    ) -> Result<()> {
-        let handle = self
-            .resolve_stream_handle(tenant_id, namespace, stream, shard)
-            .await?;
-        handle
-            .state
-            .commits
-            .seen
-            .store(true, std::sync::atomic::Ordering::Release);
         Ok(())
     }
 
