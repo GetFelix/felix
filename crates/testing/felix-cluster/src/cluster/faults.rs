@@ -617,6 +617,9 @@ impl Cluster {
     /// Write every broker's partition file from `refused`, removing the ones
     /// that list nobody.
     fn write_refusals(&self, refused: &HashMap<String, BTreeSet<String>>) -> Result<()> {
+        if refused.values().any(|peers| !peers.is_empty()) {
+            require_partition_injection(&self.binary)?;
+        }
         for node in &self.nodes {
             let path = partition_file(&node.data_dir);
             match refused.get(&node.node_id).filter(|peers| !peers.is_empty()) {
@@ -776,6 +779,43 @@ fn process_is_stopped(pid: u32) -> bool {
 /// nothing to do with what it is testing.
 fn await_partition_reread() {
     std::thread::sleep(PARTITION_REREAD);
+}
+
+/// The refusal a broker's partition check returns (felix-replication's
+/// `peer/pool.rs`). A binary without it has no partition code.
+const PARTITION_MARKER: &[u8] = b"partitioned from this broker (fault injection)";
+
+/// Refuse a partition the broker at `binary` could not inject.
+///
+/// An optimised broker built without `fault-injection` ignores its partition
+/// file, so a partition test against it would pass with nothing partitioned.
+/// Checked once per binary per process.
+fn require_partition_injection(binary: &Path) -> Result<()> {
+    static CHECKED: std::sync::Mutex<Vec<(PathBuf, bool)>> = std::sync::Mutex::new(Vec::new());
+    let mut checked = CHECKED
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let injects = match checked.iter().find(|(path, _)| path == binary) {
+        Some((_, injects)) => *injects,
+        None => {
+            let injects = carries_partition_injection(binary)?;
+            checked.push((binary.to_path_buf(), injects));
+            injects
+        }
+    };
+    if !injects {
+        bail!(
+            "{} has no peer-partition injection, so this partition would sever nothing; \
+             build it with `cargo build -p felix-broker-service --bin felix-broker --features fault-injection`",
+            binary.display()
+        );
+    }
+    Ok(())
+}
+
+fn carries_partition_injection(binary: &Path) -> Result<bool> {
+    let bytes = std::fs::read(binary).with_context(|| format!("read {}", binary.display()))?;
+    Ok(memchr::memmem::find(&bytes, PARTITION_MARKER).is_some())
 }
 
 /// Put `body` at `path` by rename, so a broker reading the file sees the old
