@@ -206,18 +206,40 @@ restated in offsets, and the rate is enforced instead of assumed:
   trims, group writes and the commits that ride on heartbeats take no
   offsets and never wait on the bucket, so the cap cannot stall a leader's
   own entries or an election.
-- **The line's gap covers the burst.** Over any span of `t` ms a shard gives
-  out at most `2^13 * t` offsets plus the bucket's capacity plus one entry's
-  worth (32 MiB over the smallest record frame), about 2^22 offsets in
-  all. The line rises at twice the rate, so the restore gap must be at
-  least that burst, in offsets. `felixctl reform`'s `MIN_OFFSET_GAP` (2^32,
-  the smallest gap taken without `--accept-short-gap`) covers it; a gap
-  accepted below 2^22 with `--accept-short-gap` does not, and the doc for
+- **The burst.** Over any span of `t` ms a shard gives out at most
+  `2^13 * t` offsets plus a burst `B`: the bucket's capacity, one entry's
+  worth (32 MiB over the smallest record frame) and, for each relaxed
+  re-form in the span, up to `STEP` (2^20, `raft_log/reserved.rs`) offsets
+  it skips between the last counted entry and the reservation it starts
+  from. With no re-form, `B` is about 2^22 offsets.
+- **A new leader's bucket starts in debt by one maximum entry.** A publish
+  may leave the bucket in debt by up to one entry, and a new leader cannot
+  know how much its predecessor owed. Starting at minus one maximum entry
+  means it pays back the most that can be owed before it proposes, so a
+  leader change, a power cut or a restore adds nothing to `B`. An empty
+  bucket would forgive the debt and add up to one entry at every leader
+  change (`FelixRaftRestoreRepeatedBatchStartsEmpty.cfg`).
+- **What absorbs the burst is the restore spacing, not the gap.** Each
+  restored epoch starts at the line plus its gap, so between two restores
+  with the same gap it cancels. The per-restore check does the work: a
+  restore must start `2^32 + (2^40 - gap)` above every earlier epoch's
+  first index (`docs/per-shard-raft.md`, the restore time line). Say the
+  earlier epoch was planned on a clock `D` ahead and this plan comes `E`
+  later in true time. The earlier epoch gives out at most `R/2 * E + B`
+  past its first index, with `R = 2^14` the line's slope, and this one
+  starts `R * (E - D)` above it, so no offset is reused while
+  `E > 2D + 2B/R`. The check holds `E` to at least `D + 2^18` ms, which
+  covers that for `D` up to `2^18 - 2B/R` ms: the skew tolerance drops by
+  `2B/R`, about 512 ms with no re-form and 128 ms more for each relaxed
+  re-form inside `E`. Control-plane clocks must agree within
+  `2^18 - 512` ms, about 4 min 21.6 s, instead of `2^18` ms.
+  `FelixRaftRestoreRepeatedBatchSkew.cfg` checks the bound and
+  `...SkewShort.cfg` and `...SkewStep.cfg` break it.
+- **The gap still has to hold a burst.** Every offset given out at time
+  `t` is below `R * t + gap` plus what skew added only while `B` is below
+  the gap. `felixctl reform`'s `MIN_OFFSET_GAP` (2^32) is far above it; a
+  gap accepted below 2^22 with `--accept-short-gap` is not, and the doc for
   that flag says so.
-- **A new leader's bucket starts empty.** A full bucket at every election
-  would let a leader change add a burst each time. Starting empty means a
-  leader earns its allowance at the rate, so the bound above holds across
-  leader changes.
 
 The index line stays for indexes, whose rate the entry count still bounds.
 
