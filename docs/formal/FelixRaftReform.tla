@@ -134,6 +134,15 @@
 (*   AbandonedNotLed    -- no live broker leads an epoch behind an         *)
 (*                         abandoned one: with OneLeaderPerTerm, the shard *)
 (*                         has one leader.                                 *)
+(*   LossReported       -- the jump in offsets at an epoch's start is      *)
+(*                         reported whole: offsets from the base's next    *)
+(*                         offset to the floor as lost in re-form, the     *)
+(*                         rest as skipped by re-form. Every acknowledged  *)
+(*                         record the base lost below the floor is in the  *)
+(*                         lost part, and nothing above the floor is.      *)
+(*   ReservedCovers     -- every offset a copy counted toward a commit is  *)
+(*                         below a reservation that copy synced, so no     *)
+(*                         re-form gives it out again. An action property. *)
 (*                                                                         *)
 (* Each knob removes one rule:                                             *)
 (*                                                                         *)
@@ -184,8 +193,37 @@
 (*                     control plane's start_reformed_epoch). Without it a *)
 (*                     copy rotated below an earlier base starts the group *)
 (*                     by itself under an index that epoch served (#3410). *)
+(*                     With Batch the bound is on unless EarlierNotBound.  *)
 (*                                                                         *)
-(* Three constants are not knobs:                                        *)
+(* Batch entries (docs/raft-batch-entries-design.md) are set by override   *)
+(* too. Without them every entry takes one offset and the offset is the    *)
+(* index, as the code does today:                                          *)
+(*                                                                         *)
+(*   Batch           -- FALSE, or BatchOn: a record entry holds 1 to       *)
+(*                      MaxBatch records, a new leader appends a blank     *)
+(*                      entry, and blank, membership and gap entries take  *)
+(*                      no offset. An entry's offset is derived from the   *)
+(*                      log: where the entry before it ends. The floor and *)
+(*                      every reservation carry an offset beside the       *)
+(*                      index, and an epoch starts at a first index and a  *)
+(*                      first offset, each the highest of its own bounds.  *)
+(*                      A jump in offsets the index padding does not carry *)
+(*                      is one more gap entry that takes the jump, where   *)
+(*                      the frame stamps it on the epoch's first entry.    *)
+(*   MaxBatch        -- 1, or MaxBatchTwo.                                 *)
+(*   OffsetBounds    -- "offsets" is the design. Each other value removes  *)
+(*                      a rule: "index" keeps reservations in indexes and  *)
+(*                      starts the epoch's offsets at its first index, as  *)
+(*                      step 4 of the design does; "base" starts them at   *)
+(*                      the base's next offset, as a member that derives   *)
+(*                      the start from its base instead of the epoch       *)
+(*                      record would.                                      *)
+(*   LostNotReported -- removes a rule: the whole jump is reported as      *)
+(*                      skipped by re-form, none of it as lost.            *)
+(*   EarlierNotBound -- removes a rule: an epoch's first index and first   *)
+(*                      offset are not held above every earlier epoch's.   *)
+(*                                                                         *)
+(* Three constants are not knobs:                                          *)
 (*                                                                         *)
 (*   WaitPlaced -- TRUE: the command lists the placed brokers. FALSE: it   *)
 (*                 lists the voters in the control plane's own record of   *)
@@ -284,7 +322,7 @@ VARIABLES
     writes, steps, places, rotations, rejoins, restarts,
     keptLogs,   \* the copies a broker's rotations kept (Kept)
     synced,     \* how far the current copy's log is on disk (Kept)
-    reserve,    \* the index the current copy reserved, synced (Kept)
+    reserve,    \* the index and next offset the current copy reserved, synced (Kept)
     cuts, returns
 
 diskVars == <<keptLogs, synced, reserve, cuts, returns>>
@@ -317,16 +355,48 @@ CommonPrefix(s, t) ==
 
 Has(l, x) == x.i <= Len(l) /\ l[x.i] = x.ent
 
+\* Batch entries, set by override in a cfg (see the header).
+Batch == FALSE
+BatchOn == TRUE
+MaxBatch == 1
+MaxBatchTwo == 2
+OffsetBounds == "offsets"
+OffsetBoundsIndex == "index"
+OffsetBoundsBase == "base"
+LostNotReported == FALSE
+EarlierNotBound == FALSE
+Yes == TRUE
+
+\* What an entry that holds no record takes.
+ZeroN == IF Batch THEN 0 ELSE 1
+
+RECURSIVE SumN(_)
+SumN(l) == IF l = <<>> THEN 0 ELSE Head(l).n + SumN(Tail(l))
+
+\* The offset after a log, and the offset of entry i: where the entry
+\* before it ends. Without Batch every entry takes one, so it is the index.
+NextOffOf(l) == IF Batch THEN 1 + SumN(l) ELSE Len(l) + 1
+Off(l, i) == NextOffOf(SubSeq(l, 1, i - 1))
+
 \* A log id: an index, and the epoch and term of the entry there.
 LogId(l, i) == [i |-> i, e |-> l[i].e, t |-> l[i].t]
-NoFloor == [i |-> 0, e |-> 0, t |-> 0]
+\* The floor adds the next offset after the entry.
+FloorAt(l, i) == [i |-> i, e |-> l[i].e, t |-> l[i].t, o |-> NextOffOf(SubSeq(l, 1, i))]
+NoFloor == [i |-> 0, e |-> 0, t |-> 0, o |-> 1]
 \* A gap a later re-form padded up to the floor stands for the floor's entry:
 \* everything up to it is that epoch's base, which is committed.
 HoldsFloor(l) ==
     \/ cpFloor.i = 0
     \/ /\ cpFloor.i <= Len(l)
-       /\ \/ LogId(l, cpFloor.i) = cpFloor
+       /\ \/ LogId(l, cpFloor.i) = [i |-> cpFloor.i, e |-> cpFloor.e, t |-> cpFloor.t]
           \/ l[cpFloor.i].k = "gap" /\ l[cpFloor.i].e > cpFloor.e
+
+\* A reservation: an index and the next offset past it. "index" keeps only
+\* the index and reads it as an offset.
+NoRes == [i |-> 0, o |-> 1]
+ResAt(l, i) ==
+    [i |-> i, o |-> IF OffsetBounds = "index" THEN i + 1 ELSE NextOffOf(SubSeq(l, 1, i))]
+RaiseRes(r, x) == [i |-> Max(r.i, x.i), o |-> Max(r.o, x.o)]
 
 LastKey(l) == IF Len(l) = 0 THEN <<0, 0>> ELSE <<l[Len(l)].e, l[Len(l)].t>>
 KeyLess(k1, k2) == k1[1] < k2[1] \/ (k1[1] = k2[1] /\ k1[2] < k2[2])
@@ -415,7 +485,7 @@ Init ==
     /\ rotations = 0 /\ rejoins = 0 /\ restarts = 0
     /\ keptLogs = [b \in Brokers |-> {}]
     /\ synced = [b \in Brokers |-> 0]
-    /\ reserve = [b \in Brokers |-> 0]
+    /\ reserve = [b \in Brokers |-> NoRes]
     /\ cuts = 0 /\ returns = 0
 
 cpVars == <<cpEpoch, cpMem, ordered, placed, everPlaced, dead, cpFloor, plans, forms, lost>>
@@ -440,7 +510,11 @@ Elect(b, Q) ==
                     IF q = b THEN "leader" ELSE IF q \in Q THEN "follower" ELSE role[q]]
     /\ match' = [match EXCEPT ![b] = [f \in Brokers |-> 0]]
     /\ elected' = elected \cup {[e |-> ep[b], t |-> term[b] + 1, b |-> b]}
-    /\ UNCHANGED <<ep, cid, log, commit, retired, boot, msgs, acked>>
+    \* With Batch the new leader's blank entry, which takes no offset.
+    /\ log' = IF Batch
+              THEN [log EXCEPT ![b] = Append(@, [e |-> ep[b], t |-> term[b] + 1, k |-> "blank", v |-> 0, n |-> 0])]
+              ELSE log
+    /\ UNCHANGED <<ep, cid, commit, retired, boot, msgs, acked>>
     /\ UNCHANGED <<cpVars, counters>>
     /\ UNCHANGED diskVars
 
@@ -468,8 +542,9 @@ ClientWrite(l) ==
     /\ Leads(l)
     /\ writes < MaxWrites
     /\ writes' = writes + 1
-    /\ log' = [log EXCEPT ![l] =
-                Append(@, [e |-> ep[l], t |-> term[l], k |-> "rec", v |-> writes + 1])]
+    /\ \E n \in 1..MaxBatch :
+        log' = [log EXCEPT ![l] =
+                Append(@, [e |-> ep[l], t |-> term[l], k |-> "rec", v |-> writes + 1, n |-> n])]
     /\ UNCHANGED <<ep, cid, term, role, commit, match, retired, boot, msgs, acked, elected>>
     /\ UNCHANGED <<cpVars, steps, places, rotations, rejoins, restarts>>
     /\ UNCHANGED diskVars
@@ -498,7 +573,7 @@ ProposeChange(l) ==
                 (in \in placed /\ ep[in] = ep[l] /\ Mid(in) \notin c.o)
           /\ ordered' = ordered \cup {[e |-> ep[l], v |-> next]}
           /\ log' = [log EXCEPT ![l] =
-                        Append(@, [e |-> ep[l], t |-> term[l], k |-> "cfg", v |-> next])]
+                        Append(@, [e |-> ep[l], t |-> term[l], k |-> "cfg", v |-> next, n |-> ZeroN])]
     /\ steps' = steps + 1
     /\ UNCHANGED <<ep, cid, term, role, commit, match, retired, boot, msgs, acked, elected>>
     /\ UNCHANGED <<cpEpoch, cpMem, placed, everPlaced, dead, cpFloor, plans, forms, lost, writes, places, rotations, rejoins, restarts>>
@@ -510,7 +585,8 @@ ProposeChange(l) ==
 Written(f, new) ==
     /\ synced' = IF Kept THEN [synced EXCEPT ![f] = Min(@, Len(CommonPrefix(log[f], new)))]
                  ELSE synced
-    /\ reserve' = IF Kept /\ Reserve = "every" THEN [reserve EXCEPT ![f] = Max(@, Len(new))]
+    /\ reserve' = IF Kept /\ Reserve = "every"
+                  THEN [reserve EXCEPT ![f] = RaiseRes(@, ResAt(new, Len(new)))]
                   ELSE reserve
 
 \* What a follower's log is after an append carrying the sender's log. It
@@ -581,10 +657,11 @@ Commit(l, i) ==
     /\ AckQuorum(Config(l), l, {l} \cup {f \in Brokers \ {l} : match[l][f] >= i})
     /\ commit' = [commit EXCEPT ![l] = i]
     /\ acked' = acked \cup
-            {[e |-> ep[l], t |-> term[l], i |-> j, ent |-> log[l][j]] :
+            {[e |-> ep[l], t |-> term[l], i |-> j, o |-> Off(log[l], j), ent |-> log[l][j]] :
                 j \in (commit[l] + 1)..i}
-    /\ cpFloor' = IF Floor = "exact" /\ i > cpFloor.i THEN LogId(log[l], i) ELSE cpFloor
-    /\ reserve' = IF Kept /\ Reserve # "none" THEN [reserve EXCEPT ![l] = Max(@, i)] ELSE reserve
+    /\ cpFloor' = IF Floor = "exact" /\ i > cpFloor.i THEN FloorAt(log[l], i) ELSE cpFloor
+    /\ reserve' = IF Kept /\ Reserve # "none"
+                  THEN [reserve EXCEPT ![l] = RaiseRes(@, ResAt(log[l], i))] ELSE reserve
     /\ UNCHANGED <<ep, cid, term, role, log, match, retired, boot, msgs, elected>>
     /\ UNCHANGED <<cpEpoch, cpMem, ordered, placed, everPlaced, dead, plans, forms, lost, counters>>
     /\ UNCHANGED <<keptLogs, synced, cuts, returns>>
@@ -629,7 +706,7 @@ NewCopy(b, kept) ==
 \* then a broker declared dead and a lost disk can be every copy that
 \* counted a record, the documented residual of a trailing floor.
 ReplacedReserve(b) == reserve
-LostReserve(b) == [reserve EXCEPT ![b] = 0]
+LostReserve(b) == [reserve EXCEPT ![b] = NoRes]
 
 \* With Kept a rotation renames the whole copy into a kept copy, with the
 \* vote it held, why it rotated and its reservation, and the broker starts
@@ -644,7 +721,7 @@ KeepCopyAt(b, l, t, by, s) ==
     /\ keptLogs' = [keptLogs EXCEPT ![b] = @ \cup {[KeptCopy(b, l, t, by) EXCEPT !.commit = s]}]
     /\ NewCopy(b, <<>>)
     /\ synced' = [synced EXCEPT ![b] = 0]
-    /\ reserve' = [reserve EXCEPT ![b] = 0]
+    /\ reserve' = [reserve EXCEPT ![b] = NoRes]
 
 KeepCopy(b, l, t, by) == KeepCopyAt(b, l, t, by, Min(commit[b], Len(l)))
 
@@ -774,7 +851,7 @@ ReportFloor(l) ==
     /\ Leads(l)
     /\ ep[l] = cpEpoch
     /\ commit[l] > cpFloor.i
-    /\ cpFloor' = LogId(log[l], commit[l])
+    /\ cpFloor' = FloorAt(log[l], commit[l])
     /\ UNCHANGED brokerVars
     /\ UNCHANGED <<cpEpoch, cpMem, ordered, placed, everPlaced, dead, plans, forms, lost, counters>>
     /\ UNCHANGED diskVars
@@ -858,35 +935,67 @@ Stop(b) ==
     /\ UNCHANGED <<cpVars, counters>>
     /\ UNCHANGED diskVars
 
-Gap(e) == [e |-> e, t |-> 0, k |-> "gap", v |-> 0]
+Gap(e) == [e |-> e, t |-> 0, k |-> "gap", v |-> 0, n |-> ZeroN]
 
 PadTo(base, n, e) ==
     IF n <= Len(base) THEN base ELSE base \o [j \in 1..(n - Len(base)) |-> Gap(e)]
 
+FloorOff == IF Floor = "none" THEN 1 ELSE cpFloor.o
+
+MaxIn(X) == CHOOSE x \in X : \A y \in X : y <= x
+
+\* The base padded to the first index less one, and with Batch to the first
+\* offset: the highest of `offs` and the padded base's next offset.
+StartPad(base, n, offs, e) ==
+    LET p == PadTo(base, n, e)
+        first == CASE OffsetBounds = "index" -> Max(Len(p) + 1, NextOffOf(p))
+                   [] OffsetBounds = "base" -> NextOffOf(p)
+                   [] OTHER -> MaxIn({NextOffOf(p)} \cup offs)
+    IN IF Batch /\ first > NextOffOf(p)
+       THEN Append(p, [Gap(e) EXCEPT !.n = first - NextOffOf(p)])
+       ELSE p
+
 EarlierBound == FALSE
 EarlierBoundOn == TRUE
 
-\* With EarlierBound, the padded base is at least as long as every earlier
-\* epoch's, so the epoch starts at or above every earlier first index.
+\* An epoch starts at or above every earlier epoch's first index, and with
+\* Batch its first offset, as raft_copy/vouch.rs does. Without Batch the
+\* bound is on only with EarlierBound, so those state spaces stay as they were.
+EarlierOn == IF Batch THEN ~EarlierNotBound ELSE EarlierBound
 EarlierIndex ==
-    LET ends == {Len(f.base) : f \in forms} \cup {0}
-    IN IF EarlierBound THEN CHOOSE n \in ends : \A m \in ends : m <= n ELSE 0
+    IF EarlierOn THEN MaxIn({Len(f.base) : f \in forms} \cup {0}) ELSE 0
+EarlierOffs == IF Batch /\ EarlierOn THEN {f.first : f \in forms} ELSE {}
 
 \* Offsets up to the floor are not given out again.
-Pad(base, e) == PadTo(base, Max(IF Floor = "none" THEN 0 ELSE cpFloor.i, EarlierIndex), e)
+Pad(base, e) ==
+    IF Floor = "none" THEN StartPad(base, EarlierIndex, EarlierOffs, e)
+    ELSE StartPad(base, Max(cpFloor.i, EarlierIndex), {cpFloor.o} \cup EarlierOffs, e)
+
+\* The split of the jump in offsets at the epoch's start: below lostEnd it
+\* is lost in re-form, above it skipped by re-form.
+LostEnd(baseNext, first) ==
+    IF LostNotReported THEN baseNext ELSE Max(baseNext, Min(FloorOff, first))
+
+\* Without Batch the floor's offset is not kept on the record, so the
+\* configurations without it keep their state spaces.
+FormFloorOff == IF Batch THEN FloorOff ELSE 0
+FormLostEnd(baseNext, first) == IF Batch THEN LostEnd(baseNext, first) ELSE 0
 
 \* why and held are for the checks only: which rules of the vouch decided
 \* something, and the acknowledged records KeptLossBound says must survive.
 WriteForm(e, base, padded, voters, cut, marked, why, held) ==
     LET f == [e |-> e + 1, base |-> padded, end |-> Len(base), voters |-> voters,
-              cut |-> cut, marked |-> marked, why |-> why, held |-> held]
+              cut |-> cut, marked |-> marked, why |-> why, held |-> held,
+              baseNext |-> NextOffOf(base), first |-> NextOffOf(padded),
+              floorOff |-> FormFloorOff,
+              lostEnd |-> FormLostEnd(NextOffOf(base), NextOffOf(padded))]
     IN /\ f \notin forms
        /\ forms' = forms \cup {f}
        /\ cpEpoch' = e + 1
        /\ cpMem' = Simple(voters)
        \* Everything at or below the base is served as committed from here.
        /\ acked' = acked \cup
-            {[e |-> e + 1, t |-> 0, i |-> j, ent |-> base[j]] : j \in 1..Len(base)}
+            {[e |-> e + 1, t |-> 0, i |-> j, o |-> Off(base, j), ent |-> base[j]] : j \in 1..Len(base)}
 
 \* The compare-and-swap is the caller's guard on e. A record is a documented
 \* loss if no disk holds it, or the base was cut and no disk that holds it
@@ -1031,7 +1140,7 @@ ReformKept(p, src) ==
         base == SubSeq(src.log, 1, V(src))
         voters == {<<b, cid[b]>> : b \in {x \in S : \E c \in Copies(x) : IsPrefix(base, c.log)}}
         top == Max(Max(Len(base), EarlierIndex),
-                   Max(IF Floor = "none" THEN 0 ELSE cpFloor.i, MaxOf({c.res : c \in R})))
+                   Max(IF Floor = "none" THEN 0 ELSE cpFloor.i, MaxOf({c.res.i : c \in R})))
         \* Unmarked, and no vote a majority reached is above every entry read.
         tEntry == ~mk /\ Top(e, R, FALSE) = MaxKey({LastKey(c.log) : c \in R})
         held == IF tEntry \/ one
@@ -1046,7 +1155,8 @@ ReformKept(p, src) ==
        /\ ReportNotPromise \/ \A b \in S : ep[b] = e => retired[b]
        /\ \A c \in R : V(c) <= V(src)
        /\ voters # {}
-       /\ WriteForm(e, base, PadTo(base, top, e + 1), voters, TRUE, mk, Decided(R, e, T, mk), held)
+       /\ WriteForm(e, base, StartPad(base, top, {FloorOff} \cup {c.res.o : c \in R} \cup EarlierOffs, e + 1),
+                     voters, TRUE, mk, Decided(R, e, T, mk), held)
        /\ lost' = lost \cup
             {x \in acked : x.e <= e /\ \A c \in R : ~Has(c.log, x) \/ x.i > V(c)}
        \* The next epoch's record leaves out the dead.
@@ -1094,6 +1204,18 @@ AbandonFirst ==
     IF Abandon = "floor" THEN cpFloor.i + 1
     ELSE Max(Line, Max(cpFloor.i + 1, MaxOf({Len(f.base) + 2 : f \in forms} \cup {0})))
 
+\* The same in offsets, with Batch: above every offset given out so far, the
+\* floor and every earlier epoch's first offset.
+LineOff ==
+    MaxOf({x.o + x.ent.n : x \in acked} \cup {NextOffOf(log[b]) : b \in Brokers}
+            \cup {NextOffOf(m.log) : m \in msgs} \cup {1})
+
+AbandonFirstOff ==
+    IF Abandon = "floor" THEN FloorOff
+    ELSE Max(LineOff, Max(FloorOff, MaxOf({f.first + 1 : f \in forms} \cup {0})))
+
+AbandonBase == StartPad(<<>>, AbandonFirst - 1, {AbandonFirstOff}, cpEpoch + 1)
+
 \* The brokers whose copies an abandon gives up.
 Stranded == everPlaced \cup placed
 
@@ -1119,9 +1241,11 @@ AbandonCheck(e) ==
 \* here that is l's copy now. Every record the group held is a documented
 \* loss, unless a stranded broker is not dead at the write.
 AbandonEpoch(e, l) ==
-    LET f == [e |-> e + 1, base |-> PadTo(<<>>, AbandonFirst - 1, e + 1), end |-> 0,
+    LET f == [e |-> e + 1, base |-> AbandonBase, end |-> 0,
               voters |-> {Mid(l)}, cut |-> FALSE, marked |-> FALSE,
-              why |-> {"abandon"}, held |-> {}]
+              why |-> {"abandon"}, held |-> {},
+              baseNext |-> 1, first |-> NextOffOf(AbandonBase), floorOff |-> FormFloorOff,
+              lostEnd |-> FormLostEnd(1, NextOffOf(AbandonBase))]
     IN /\ Abandon # "off"
        /\ ~Kept
        /\ e = cpEpoch
@@ -1178,7 +1302,7 @@ StartEpoch(b, f) ==
     /\ boot' = [boot EXCEPT ![b] = Simple(f.voters)]
     \* The start syncs the copy and reserves up to the epoch's first index.
     /\ synced' = IF Kept THEN [synced EXCEPT ![b] = Len(log'[b])] ELSE synced
-    /\ reserve' = IF Kept THEN [reserve EXCEPT ![b] = Max(@, Len(f.base))] ELSE reserve
+    /\ reserve' = IF Kept THEN [reserve EXCEPT ![b] = RaiseRes(@, ResAt(f.base, Len(f.base)))] ELSE reserve
     /\ UNCHANGED <<cid, match, msgs, acked, elected>>
     /\ UNCHANGED <<cpVars, counters, keptLogs, cuts, returns>>
 
@@ -1216,7 +1340,7 @@ TypeOK ==
     /\ placed \subseteq Brokers
     /\ everPlaced \subseteq Brokers
     /\ dead \subseteq Brokers
-    /\ cpFloor \in [i : Nat, e : 0..MaxEpoch, t : 0..MaxTerm]
+    /\ cpFloor \in [i : Nat, e : 0..MaxEpoch, t : 0..MaxTerm, o : Nat]
     /\ \A p \in plans : p.e \in 0..MaxEpoch /\ DOMAIN p.facts \subseteq Brokers
     /\ \A b \in Brokers : commit[b] <= Len(log[b])
     /\ lost \subseteq acked
@@ -1242,8 +1366,39 @@ StateMachineSafety ==
         (x.i = y.i /\ x.ent # y.ent /\ IsRecord(x) /\ IsRecord(y))
             => (x \in lost \/ y \in lost)
 
+\* The offsets [x.o, x.o + n) an acknowledged entry holds. A gap holds none.
+HoldsOffsets(x) == IsRecord(x) /\ x.ent.n > 0
+Overlap(x, y) == x.o < y.o + y.ent.n /\ y.o < x.o + x.ent.n
+
 OffsetNeverReused ==
-    \A x, y \in acked : (x.i = y.i /\ IsRecord(x) /\ IsRecord(y)) => x.ent = y.ent
+    \A x, y \in acked : (HoldsOffsets(x) /\ HoldsOffsets(y) /\ Overlap(x, y))
+        => x.ent = y.ent /\ x.o = y.o
+
+\* The jump in offsets at an epoch's start, from its base's next offset to
+\* its first offset, is split at lostEnd: lost in re-form below it, skipped
+\* by re-form above it. None of it is reported as nothing, only offsets the
+\* floor saw committed are reported lost, and every acknowledged record the
+\* base lost below the floor is.
+LossReported ==
+    Batch => \A f \in forms :
+        /\ f.baseNext <= f.lostEnd /\ f.lostEnd <= f.first
+        /\ f.lostEnd <= Max(f.baseNext, f.floorOff)
+        /\ \A x \in acked :
+            (/\ x.e < f.e /\ x.t > 0 /\ HoldsOffsets(x) /\ ~Has(f.base, x)
+             /\ f.baseNext <= x.o /\ x.o < f.floorOff)
+                => x.o + x.ent.n <= f.lostEnd
+
+\* What each copy of b reserved: the current one and every kept one.
+ReservedBy(b) == {reserve[b]} \cup {k.res : k \in keptLogs[b]}
+
+\* A commit counts the leader's copy and every voter it recorded a match
+\* for. Each of them has reserved past the entries counted, in offsets, by
+\* the end of the step, on the copy that counted or on one it rotated to.
+ReservedCovers ==
+    [][\A l \in Brokers :
+        (role[l] = "leader" /\ commit'[l] > commit[l] /\ acked' # acked) =>
+            \A b \in {l} \cup {f \in Brokers \ {l} : match[l][f] >= commit'[l]} :
+                \E r \in ReservedBy(b)' : r.o >= NextOffOf(SubSeq(log[l], 1, commit'[l]))]_vars
 
 NothingLost == lost = {}
 
@@ -1322,8 +1477,8 @@ NeverPadsByReserve ==
     ~/\ cuts = 2
      /\ \E f \in forms : f.e = 2 /\ Len(f.base) > Max(f.end, cpFloor.i)
      /\ \E b \in Brokers : \E k \in keptLogs[b] :
-            /\ k.by = "power-cut" /\ k.res > Len(k.log)
-            /\ \E x \in acked : x.e = k.e /\ x.t > 0 /\ x.i = k.res
+            /\ k.by = "power-cut" /\ k.res.i > Len(k.log)
+            /\ \E x \in acked : x.e = k.e /\ x.t > 0 /\ x.i = k.res.i
 
 \* The cap of an epoch lowers what a copy of it vouches for.
 NeverCaps == \A f \in forms : "cap" \notin f.why
