@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795846764895,
+  "lastUpdate": 1795870167466,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix latency - batch=1, GitHub-hosted runner": [
@@ -95436,6 +95436,72 @@ window.BENCHMARK_DATA = {
             "range": "851.31",
             "unit": "us",
             "extra": "trials: 5\nmedian: 858.00\nmean: 1266.60\nstdev: 851.31\ncv: 67.21%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "d170c94dc38a37e1140ace7b93609d5fb3d03b24",
+          "message": "ci(gate): each side of the perf gate runs its own harness and load generator (#3429)\n\n* ci(gate): the baseline side names the hybrid engine so head's harness skips the Raft hand-over wait\n\nHead's felix-cluster starts both sides' brokers and waits for placed Raft\nleaders unless a broker names another engine. v0.7.1 brokers are hybrid and\nnever open a Raft member, so every baseline trial timed out.\n\nSpec-Unaffected: CI workflow only, no modelled behaviour\n\n* ci(gate): the baseline side runs its own cluster harness\n\nHead's felix-cluster waits for placed Raft leaders and expects a Raft control\nplane, neither of which a v0.7.1 hybrid broker supports, so every baseline\ntrial failed. Build felix-cluster from the baseline worktree, with a small\npatch that gives its up command --stream and --replication-factor.\n\nSpec-Unaffected: CI workflow only, no modelled behaviour\n\n* ci(gate): the baseline side drives its broker with its own load generator\n\nThe 0.8 client refuses a broker that does not advertise the 0.8 wire\nbaseline, so head's felix-loadgen cannot drive v0.7.1. Build the baseline's\nloadgen from its worktree, log each side's source commit per trial, and say\nwhy in the verdict summary.\n\nSpec-Unaffected: CI workflow only, no modelled behaviour\n\n* ci(gate): same fsync policy on both sides, cluster logs kept, baseline checked for no raft marker\n\nSpec-Unaffected: CI workflow only, no modelled behaviour",
+          "timestamp": "2026-11-28T04:42:31-08:00",
+          "tree_id": "e23c1272c21661c818fc3f23ef723fb3dbff8d3c",
+          "url": "https://github.com/GetFelix/felix/commit/d170c94dc38a37e1140ace7b93609d5fb3d03b24"
+        },
+        "date": 1795870152528,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p50 (us)",
+            "value": 96,
+            "range": "1.00",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 96.00\nmean: 96.00\nstdev: 1.00\ncv: 1.04%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p99 (us)",
+            "value": 130,
+            "range": "2.07",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 130.00\nmean: 129.60\nstdev: 2.07\ncv: 1.60%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=1 batch=1 payload=256B - p999 (us)",
+            "value": 181,
+            "range": "228.40",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 181.00\nmean: 277.60\nstdev: 228.40\ncv: 82.28%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 3aece2726b89\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p50 (us)",
+            "value": 132,
+            "range": "0.89",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 132.00\nmean: 132.60\nstdev: 0.89\ncv: 0.67%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p99 (us)",
+            "value": 259,
+            "range": "4.98",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 259.00\nmean: 260.40\nstdev: 4.98\ncv: 1.91%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
+          },
+          {
+            "name": "balanced/P1_hash fanout=10 batch=1 payload=256B - p999 (us)",
+            "value": 371,
+            "range": "78.26",
+            "unit": "us",
+            "extra": "trials: 5\nmedian: 371.00\nmean: 396.40\nstdev: 78.26\ncv: 19.74%\ndirection: lower is better\nsemantics: publish-to-delivery latency\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 8a4105d7bbc8\nbinary: false"
           }
         ]
       }
