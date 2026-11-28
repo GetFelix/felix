@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795846769790,
+  "lastUpdate": 1795870171115,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -75140,6 +75140,58 @@ window.BENCHMARK_DATA = {
             "range": "11069.77",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 807617.81\nmean: 810067.33\nstdev: 11069.77\ncv: 1.37%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "d170c94dc38a37e1140ace7b93609d5fb3d03b24",
+          "message": "ci(gate): each side of the perf gate runs its own harness and load generator (#3429)\n\n* ci(gate): the baseline side names the hybrid engine so head's harness skips the Raft hand-over wait\n\nHead's felix-cluster starts both sides' brokers and waits for placed Raft\nleaders unless a broker names another engine. v0.7.1 brokers are hybrid and\nnever open a Raft member, so every baseline trial timed out.\n\nSpec-Unaffected: CI workflow only, no modelled behaviour\n\n* ci(gate): the baseline side runs its own cluster harness\n\nHead's felix-cluster waits for placed Raft leaders and expects a Raft control\nplane, neither of which a v0.7.1 hybrid broker supports, so every baseline\ntrial failed. Build felix-cluster from the baseline worktree, with a small\npatch that gives its up command --stream and --replication-factor.\n\nSpec-Unaffected: CI workflow only, no modelled behaviour\n\n* ci(gate): the baseline side drives its broker with its own load generator\n\nThe 0.8 client refuses a broker that does not advertise the 0.8 wire\nbaseline, so head's felix-loadgen cannot drive v0.7.1. Build the baseline's\nloadgen from its worktree, log each side's source commit per trial, and say\nwhy in the verdict summary.\n\nSpec-Unaffected: CI workflow only, no modelled behaviour\n\n* ci(gate): same fsync policy on both sides, cluster logs kept, baseline checked for no raft marker\n\nSpec-Unaffected: CI workflow only, no modelled behaviour",
+          "timestamp": "2026-11-28T04:42:31-08:00",
+          "tree_id": "e23c1272c21661c818fc3f23ef723fb3dbff8d3c",
+          "url": "https://github.com/GetFelix/felix/commit/d170c94dc38a37e1140ace7b93609d5fb3d03b24"
+        },
+        "date": 1795870170233,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 504722.43,
+            "range": "51629.82",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 504722.43\nmean: 527801.96\nstdev: 51629.82\ncv: 9.78%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 504722.43,
+            "range": "51629.82",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 504722.43\nmean: 527801.96\nstdev: 51629.82\ncv: 9.78%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 122946.33,
+            "range": "392.20",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 122946.33\nmean: 122903.75\nstdev: 392.20\ncv: 0.32%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1229463.3,
+            "range": "3921.96",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1229463.30\nmean: 1229037.52\nstdev: 3921.96\ncv: 0.32%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
