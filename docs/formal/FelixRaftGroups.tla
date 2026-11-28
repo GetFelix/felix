@@ -58,11 +58,11 @@
 (* decides that under the shard lock from the table and its tracker: a     *)
 (* group with nothing committed but records handed out exists.             *)
 (*                                                                         *)
-(* An acknowledgement is answered once every entry it proposed has         *)
-(* committed and applied: the advance it closed, the finish of a redriven  *)
-(* record, or the ack of a record above a gap. A new leader's tracker      *)
-(* takes the table's acks above the cursor as settled, as it does its dead *)
-(* letters there.                                                          *)
+(* An acknowledgement is answered once every entry it proposed, and every *)
+(* entry the leader decided before it, has committed and applied: the      *)
+(* advance it closed, the finish of a redriven record, or the ack of a     *)
+(* record above a gap. A new leader's tracker takes the table's acks       *)
+(* above the cursor as settled, as it does its dead letters there.         *)
 (*                                                                         *)
 (* What is checked:                                                        *)
 (*                                                                         *)
@@ -333,8 +333,10 @@ HandOut(o) ==
     /\ UNCHANGED <<log, tail, pend, leader, acks, badIfNew, changes, waiting, answered>>
 
 \* The acknowledgement is answered once what it proposed has applied (see
-\* Answer); proposing nothing, it is answered at once. An ack above a gap
-\* closes no run, so it proposes `ack(o)` of its own.
+\* Answer), and so has everything the leader decided before it: the code
+\* waits for its own last proposal before any operation of the group. With
+\* nothing to wait on it is answered at once. An ack above a gap closes no
+\* run, so it proposes `ack(o)` of its own.
 Ack(o) ==
     LET t == Lead
         t1 == [t EXCEPT !.out = @ \ {o}, !.owed = @ \ {o}]
@@ -346,20 +348,21 @@ Ack(o) ==
                  THEN {[kind |-> "ack", o |-> o, hyd |-> t.hyd, cre |-> t.cre]}
                  ELSE {}
         es == s.adv \cup fin \cup ahead
+        wait == es \cup pend \cup Range(tail)
     IN
     /\ ~t.none
     /\ o \in t.out
     /\ trk' = [trk EXCEPT ![leader] = s.t]
     /\ pend' = pend \cup es
     /\ acks' = [acks EXCEPT ![o] = @ \cup {t.hyd}]
-    /\ IF es = {}
+    /\ IF wait = {}
        THEN /\ answered' = answered \cup {[o |-> o, cre |-> t.cre]}
             /\ UNCHANGED waiting
-       ELSE /\ waiting' = waiting \cup {[o |-> o, cre |-> t.cre, es |-> es]}
+       ELSE /\ waiting' = waiting \cup {[o |-> o, cre |-> t.cre, es |-> wait]}
             /\ UNCHANGED answered
     /\ UNCHANGED <<log, tail, leader, served, badIfNew, changes, reissued>>
 
-\* Every entry the acknowledgement proposed has committed and applied.
+\* Every entry the acknowledgement waits on has committed and applied.
 Answer(w) ==
     /\ w \in waiting
     /\ w.es \subseteq KeptFrom(T0, log, 1, {})
