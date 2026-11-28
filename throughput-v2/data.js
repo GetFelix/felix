@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795829340559,
+  "lastUpdate": 1795829698715,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -74516,6 +74516,58 @@ window.BENCHMARK_DATA = {
             "range": "3238.36",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1151755.22\nmean: 1151440.32\nstdev: 3238.36\ncv: 0.28%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "ab0c653b408aa3cbf7a4fc515e6ffcaefbf208ea",
+          "message": "test(cluster): a Raft move undone as soon as its destination votes, under publish and subscribe (#3330) (#3401)\n\nThe existing cancel test moves the seat back only once the new voters\nare final. The control plane takes the move back as soon as the new\ntarget settles, which can be while the group is still in its joint\nchange, so the new test asks for it the moment the reported voters name\nthe destination and retries until it is taken. It checks the same\nthings: every acknowledged record replays once at its offset from every\nmember, the subscriber reads each offset once and in order (resuming\nafter an end), nothing refused is held, and the set ends as it began\nwith the old leader leading.\n\nBoth tests and their harness move to raft_shards/cancel.rs. The move\nback now also checks the stored leader and followers, not only the\nreported voters.\n\nSpec-Unaffected: cluster tests only; no product code or protocol change.",
+          "timestamp": "2026-11-28T01:22:20Z",
+          "tree_id": "8248fdf0e2071da4658c359491534feda2d91d34",
+          "url": "https://github.com/GetFelix/felix/commit/ab0c653b408aa3cbf7a4fc515e6ffcaefbf208ea"
+        },
+        "date": 1795829698100,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 495987.09,
+            "range": "36698.46",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 495987.09\nmean: 507832.28\nstdev: 36698.46\ncv: 7.23%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 495987.09,
+            "range": "36698.46",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 495987.09\nmean: 507832.28\nstdev: 36698.46\ncv: 7.23%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 121147.67,
+            "range": "1126.89",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 121147.67\nmean: 121257.88\nstdev: 1126.89\ncv: 0.93%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1211476.67,
+            "range": "11268.94",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1211476.67\nmean: 1212578.73\nstdev: 11268.94\ncv: 0.93%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
