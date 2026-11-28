@@ -3513,6 +3513,11 @@ impl Group {
     }
 
     #[cfg(test)]
+    pub(crate) fn reads_waiting(&self) -> bool {
+        self.reading.waiting()
+    }
+
+    #[cfg(test)]
     pub(crate) fn read_rounds_asked(&self) -> u64 {
         self.reads.asked()
     }

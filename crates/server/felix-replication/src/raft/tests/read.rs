@@ -62,6 +62,44 @@ async fn heartbeats_go_alone_only_while_a_read_waits() {
     led.cluster.stop().await;
 }
 
+/// A read stops counting as waiting however it ends: refused, or dropped by
+/// its caller mid-round (a client timeout, a closed connection). A count left
+/// behind would keep the group's heartbeats out of batches for good.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_read_stops_waiting_when_refused_or_dropped() {
+    let mut led = led().await;
+    let member = led
+        .cluster
+        .runtime(&led.leader.broker)
+        .group(&shard(0))
+        .expect("group");
+    let key = shard(0);
+    led.cut_followers();
+
+    // Dropped by its caller while the round is out.
+    let read = led.engine.confirm_read(&key, led.term);
+    let dropped = tokio::time::timeout(timers().heartbeat * 2, read).await;
+    assert!(
+        dropped.is_err(),
+        "the read finished with its followers cut off"
+    );
+    assert!(
+        !member.reads_waiting(),
+        "a dropped read still counts as waiting"
+    );
+
+    // Refused: no majority answers within its bound.
+    let refused = led.engine.confirm_read(&key, led.term).await;
+    assert!(refused.is_err(), "{refused:?}");
+    assert!(
+        !member.reads_waiting(),
+        "a refused read still counts as waiting"
+    );
+
+    led.heal();
+    led.cluster.stop().await;
+}
+
 /// 1 KiB records, written while one follower was cut off.
 const CATCH_UP_RECORD: usize = 1024;
 
