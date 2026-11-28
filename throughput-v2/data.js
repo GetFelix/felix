@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795842505739,
+  "lastUpdate": 1795844230978,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -74932,6 +74932,58 @@ window.BENCHMARK_DATA = {
             "range": "11100.30",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 1218094.55\nmean: 1212937.02\nstdev: 11100.30\ncv: 0.92%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "da24c654af150af4fe7247283b8206bc700a25da",
+          "message": "fix(raft): a lease read is not failed by heartbeats a batch refused as late (#3032) (#3409)\n\n* fix(raft): heartbeats a read waits on go alone, not in a batch (#3032)\n\nA read-index round needs a majority to answer a heartbeat sent after it was\nasked. In a heartbeat batch, a member that answers more than the straggler\nwait after the first answer is refused as slow. Under bulk shard creation a\nfollower's core answered the lease cache's heartbeats 200 to 800 ms late, so\nthe round lost them, waited out the 1.5 s lease, answered QuorumNotEnough,\nand the client asked again through another broker: 2 to 3.3 s reads.\n\nWhile any read of a group waits in read_index, the router marks that\ngroup's heartbeats alone and Beats sends them on their own, answered\nwhenever the member answers. Groups with no read waiting still batch.\n\nSpec-Unaffected: heartbeat transport batching only; read-index semantics unchanged\n\n* test(raft): a read dropped or refused stops counting as waiting (#3032)\n\nSpec-Unaffected: test only\n\n* fix(raft): a read round without a majority is asked again within the read's bound (#3032)\n\nA heartbeat sent late in a round's lease can answer after the round gave\nup with QuorumNotEnough, and the read then failed although it had time\nleft, so the client retried through another broker. The read now asks a\nfresh round, which needs its own majority, until its bound or one peer\ndeadline past the first round, so a cut-off leader still refuses early.\n\nSpec-Unaffected: read retry timing only; every confirmed read still needs a fresh ReadIndex majority round\n\n* docs(raft): per-shard-raft.md back under its line ceiling (#3032)\n\nThe read and heartbeat additions put the page over the ratchet in\nscripts/check_doc_size.py. Tighten the Reads section and the heartbeat\nbullets without dropping a claim, and fix the stale round bound: a round\nis dropped after a lease, not the election timeout.\n\nSpec-Unaffected: docs only",
+          "timestamp": "2026-11-28T05:30:25Z",
+          "tree_id": "60bde82d2733860d75ac408b705ab83a4239aeaa",
+          "url": "https://github.com/GetFelix/felix/commit/da24c654af150af4fe7247283b8206bc700a25da"
+        },
+        "date": 1795844229940,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 362868.2,
+            "range": "37476.92",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 362868.20\nmean: 344457.18\nstdev: 37476.92\ncv: 10.88%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 362868.2,
+            "range": "37476.92",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 362868.20\nmean: 344457.18\nstdev: 37476.92\ncv: 10.88%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 81614.6,
+            "range": "676.06",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 81614.60\nmean: 81637.18\nstdev: 676.06\ncv: 0.83%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 816145.99,
+            "range": "6760.64",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 816145.99\nmean: 816371.76\nstdev: 6760.64\ncv: 0.83%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
