@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1795845626828,
+  "lastUpdate": 1795846369082,
   "repoUrl": "https://github.com/GetFelix/felix",
   "entries": {
     "Felix throughput - batch=64, GitHub-hosted runner": [
@@ -75036,6 +75036,58 @@ window.BENCHMARK_DATA = {
             "range": "15883.01",
             "unit": "msg/s",
             "extra": "trials: 5\nmedian: 800033.63\nmean: 792334.20\nstdev: 15883.01\ncv: 2.00%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "gabrielloewen@outlook.com",
+            "name": "Gabriel",
+            "username": "el-bri-ga"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "a28755a94e4601edebebf27e0e8f976196048c13",
+          "message": "refactor!: delete the hybrid replication engine (#2260) (#3415)\n\n* refactor(replication)!: delete the hybrid from felix-replication (#2260)\n\nThe election driver, promotion and joint fences, suspicion, unclean and\nreclaim, confirmed reads, the fence read round, kept sets, the driver,\nship, follower cursors, the replica handler, quorum marks, the reporter,\nrebuilds, the move throttle, the hybrid side of the switch seal, the\ndriver status board and their metrics go. No broker runs any of it since\none engine at run time (#2259).\n\nWhat the Raft engine used from them moves to engine: CommitError (was\nQuorumError), Unreadable, Access, CacheWrite, and WriteFence cut to\nquiesced, opened and deposed. ShardServing goes; the Raft host only\nreports opened and deposed. PeerRequester loses offers_fence and\noffers_election.\n\nSpec-Unaffected: deletes code no broker runs; TLA specs are untouched.\n\n* refactor(broker)!: delete the hybrid from the broker service (#2260)\n\nThe promotion gate, confirmed reads, the hybrid start (driver, replica\nhandler, read rounds, elections, reporter, suspicion, rebuild and move\nthrottle wiring), quorum marks and their attestation plumbing, the unclean\nstart, the shard status board, shard_confirmed_reads_total, the simulator's\nSimNode and the `sim` feature go. A cache watch with no Raft member of the\nshard open here is refused as retryable.\n\nStreamEngine answers a shard no Raft member runs here (in-memory shards,\na standalone broker without a disk) from shards/engine/local.rs, as the\nhybrid did for such a shard: nothing waits on a majority, a shard not\nserved here is refused, and a state read is confirmed by the lease. Fleet\nfeatures come from StreamEngine::fleet_supports. The Raft reporters take\nNodeCredential. FELIX_TEST_PRE_VOTE_GATE, read by nothing, leaves the\nregistry.\n\nSpec-Unaffected: deletes code no broker runs; TLA specs are untouched.\n\n* test(sim)!: delete the hybrid whole-cluster simulation (#2260)\n\nThe simulator's hybrid cluster, its checkers, nemeses, control plane, link,\nnetwork and tests/seeds.rs go. The Raft groups simulation keeps what it\nused, moved to modules of its own: payload decoding (payload), the power\ncut bounds (power), the run deadline (run) and the virtual clock, cut to\nthe one clock it installs.\n\nCI: the hybrid seed steps leave sim-seeds; the sim job and\n`task sim:determinism` run tests/raft_seeds.rs (pinned seeds and the\nreplay check) instead, so CI ok keeps a simulator gate. `task sim:replay`\ngoes; `task sim:raft-replay` replays a seed. scripts/sim-sweep.sh runs only\nthe Raft modes, `raft` by default.\n\nSpec-Unaffected: deletes code no broker runs; TLA specs are untouched.\n\n* test(broker): integration tests build without the hybrid (#2260)\n\nThe broker service's integration tests build a StreamEngine with no quorum\nmarks and start membership without suspects or an incarnation counter.\n\nSpec-Unaffected: deletes code no broker runs; TLA specs are untouched.\n\n* test(broker): port the cache watch tests the hybrid deletion took to Raft (#2260)\n\nA retained watch with an offset is now refused before routing, so every\nbroker gives the same answer and the control-loop test runs again. The\nrevoked-credential watch test runs on a Raft cache group, and the\nin-memory take test keeps its cache-shard half.\n\nSpec-Unaffected: request validation order and tests only\n\n* ci(sim): the determinism job replays 20 Raft seeds again (#2260)\n\nThe hybrid job replayed 20 seeds; with it gone the Raft replay check fell\nback to its default of 2. Twenty took 67 s in release on a laptop.\n\nSpec-Unaffected: CI seed count only\n\n* docs: the hybrid's metrics, alerts and citations go with its code (#2260)\n\nThe metrics only the hybrid fed leave the reference, the dashboard and\nthe alert rules, which show the Raft metrics in their place.\ndocs/replication-design.md becomes a pointer to its v0.7.0 copy, and\nthe pages and spec configs citing deleted tests or files now say where\nthose are. The retirement page records PR 4 and its line counts. The\nrebuild and move limits are read by nothing now; their reference rows\nsay so until PR 5 wires or retires them.\n\nSpec-Unaffected: evidence comments in configs only, no model change\n\n* docs, ops: point operators at the Raft stopped-copy signals; retire the rebuild knobs; Raft sim commands\n\nfelix_shard_replicas_halted and /replication/halted are never fed on Raft:\nthe docs, helm NOTES, dashboard and alerts now point at\nfelix_broker_raft_shards_stopped_on_storage_error and shard inspect. The\nhalted metric and endpoint are kept for PR 6 and documented as not reported.\nFELIX_REPLICATION_REBUILD_* and FELIX_SHARD_MOVE_BYTES_PER_SEC are removed\nfrom the config and listed in RETIRED_VARS. The simulator docs use raft_seeds\nand sim:raft-replay, and sim:determinism compares two processes again.\n\nSpec-Unaffected: docs, ops files, an unread config knob and a Taskfile check; no protocol or spec change",
+          "timestamp": "2026-11-27T22:07:10-08:00",
+          "tree_id": "bf7e0ea8dbedf6bc67ef7ddb3fcc2f0b685028d2",
+          "url": "https://github.com/GetFelix/felix/commit/a28755a94e4601edebebf27e0e8f976196048c13"
+        },
+        "date": 1795846368190,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 468828.02,
+            "range": "40584.03",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 468828.02\nmean: 489330.18\nstdev: 40584.03\ncv: 8.29%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=1 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 468828.02,
+            "range": "40584.03",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 468828.02\nmean: 489330.18\nstdev: 40584.03\ncv: 8.29%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 232f55671db0\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - throughput (msg/s)",
+            "value": 116735.15,
+            "range": "9498.65",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 116735.15\nmean: 113280.78\nstdev: 9498.65\ncv: 8.39%\ndirection: higher is better\nsemantics: publisher message rate\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
+          },
+          {
+            "name": "balanced/P8_hash fanout=10 batch=64 payload=1024B - delivered throughput (msg/s)",
+            "value": 1167351.46,
+            "range": "94986.53",
+            "unit": "msg/s",
+            "extra": "trials: 5\nmedian: 1167351.46\nmean: 1132807.73\nstdev: 94986.53\ncv: 8.39%\ndirection: higher is better\nsemantics: aggregate subscriber deliveries\nrunner: Linux-7.0.0-1020-azure-x86_64-with-glibc2.43 (x86_64, 4 CPUs)\nrustc: rustc 1.100.0 (0ef1bc386 2026-11-09)\nconfig: 59b8778b5929\nbinary: true"
           }
         ]
       }
